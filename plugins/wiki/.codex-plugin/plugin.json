@@ -1,16 +1,17 @@
 {
   "name": "wiki",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "AI-native filesystem wiki management for AI agents.",
   "author": {
-    "name": "Local developer"
+    "name": "Jinwuk-Lee",
+    "url": "https://github.com/Jeis-Jw"
   },
   "skills": "./skills/",
   "interface": {
     "displayName": "Wiki",
     "shortDescription": "Manage an AI-native project wiki.",
     "longDescription": "Initializes, reads, writes, retires, and validates a filesystem-first wiki under wiki/ for project SSOTs, runbooks, intents, decisions, rejected alternatives, trial-error records, and observations.",
-    "developerName": "Local developer",
+    "developerName": "Jinwuk-Lee",
     "category": "Productivity",
     "capabilities": ["Read", "Write", "Validation"],
     "defaultPrompt": [

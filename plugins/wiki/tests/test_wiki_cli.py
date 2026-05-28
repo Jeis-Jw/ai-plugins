@@ -2033,5 +2033,80 @@ class WikiCliV1_8Tests(unittest.TestCase):
             self.assertTrue(any("intent/intent.md" in m for m in miss))
 
 
+class WikiCliCodexParityTests(unittest.TestCase):
+    """Scenarios grafted from the Codex-side test suite to keep parity."""
+
+    def test_init_dry_run_creates_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = run_cli("init", "--dry-run", cwd=tmp)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertFalse((Path(tmp) / "wiki").exists())
+
+    def test_retire_dry_run_does_not_move_or_update(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_cli("init", cwd=tmp)
+            env_old = {"WIKI_NOW": "2026-04-17T14:30:52"}
+            env_new = {"WIKI_NOW": "2026-05-01T09:00:00"}
+            run_cli("capture", "decision", "--title", "Old Auth Choice",
+                    "--summary", "Old auth choice.", "--tags", "auth",
+                    cwd=tmp, env=env_old)
+            run_cli("capture", "decision", "--title", "New Auth Choice",
+                    "--summary", "New auth choice.", "--tags", "auth",
+                    cwd=tmp, env=env_new)
+            old_id = "DEC-2026-04-17-143052-old-auth-choice"
+            new_id = "DEC-2026-05-01-090000-new-auth-choice"
+            r = run_cli("retire", old_id, "--type", "superseded",
+                        "--superseded-by", new_id, "--dry-run",
+                        cwd=tmp, env=env_new)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            old_path = Path(tmp) / "wiki" / "context" / "decision" / f"{old_id}.md"
+            retired_path = (Path(tmp) / "wiki" / "context" / "decision"
+                            / "retired" / f"{old_id}.md")
+            new_path = Path(tmp) / "wiki" / "context" / "decision" / f"{new_id}.md"
+            self.assertTrue(old_path.exists())
+            self.assertFalse(retired_path.exists())
+            self.assertNotIn("supersedes", new_path.read_text(encoding="utf-8"))
+
+    def test_capture_supersedes_missing_ref_leaves_no_partial_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_cli("init", cwd=tmp)
+            env = {"WIKI_NOW": "2026-05-01T09:00:00"}
+            r = run_cli("capture", "decision", "--title", "New Auth Choice",
+                        "--summary", "New auth choice.", "--tags", "auth",
+                        "--supersedes", "missing-old-choice",
+                        cwd=tmp, env=env)
+            self.assertEqual(r.returncode, 4)
+            partial = (Path(tmp) / "wiki" / "context" / "decision"
+                       / "DEC-2026-05-01-090000-new-auth-choice.md")
+            self.assertFalse(partial.exists())
+
+
+class WikiCliFuzzyReadTests(unittest.TestCase):
+    """Coverage for the new --fuzzy opt-in flag on `recall --read`."""
+
+    def test_recall_read_strict_rejects_slug_fragment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_cli("init", cwd=tmp)
+            run_cli("capture", "intent", "--title", "Auth refactor",
+                    "--summary", "rework", "--tags", "auth", cwd=tmp,
+                    env={"WIKI_NOW": "2026-05-01T09:00:00"})
+            r = run_cli("recall", "--read", "auth-refactor", "--json", cwd=tmp)
+            self.assertEqual(r.returncode, 4, r.stderr)
+            payload = json.loads(r.stdout)
+            self.assertEqual(payload["error_code"], "read_missing")
+
+    def test_recall_read_fuzzy_resolves_slug_fragment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_cli("init", cwd=tmp)
+            run_cli("capture", "intent", "--title", "Auth refactor",
+                    "--summary", "rework", "--tags", "auth", cwd=tmp,
+                    env={"WIKI_NOW": "2026-05-01T09:00:00"})
+            r = run_cli("recall", "--read", "auth-refactor", "--fuzzy",
+                        "--json", cwd=tmp)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            payload = json.loads(r.stdout)
+            self.assertIn("INT-2026-05-01-090000-auth-refactor", payload["path"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,5 +1,0 @@
-{
-  "name": "wiki",
-  "version": "0.1.7",
-  "description": "AI-native wiki (v1) — filesystem-primary, headless. context(intent/decision/rejected_decision/trial_error/observation)와 ssot/runbook을 결정 그래프로 관리. 토큰 효율적 3-stage recall + batch read, affects_paths/search_terms, 13종 무결성 검사. NFC 정규화 일원화. refresh --fix index가 삭제된 표준 인덱스도 복구."
-}

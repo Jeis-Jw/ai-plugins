@@ -1,0 +1,14 @@
+{
+  "name": "jeis-ai-plugins",
+  "interface": {
+    "displayName": "Jeis AI Plugins"
+  },
+  "plugins": [
+    {
+      "name": "wiki",
+      "source": { "source": "local", "path": "./plugins/wiki" },
+      "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
+      "category": "Productivity"
+    }
+  ]
+}

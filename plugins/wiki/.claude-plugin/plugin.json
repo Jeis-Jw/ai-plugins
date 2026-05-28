@@ -1,0 +1,5 @@
+{
+  "name": "wiki",
+  "version": "0.2.0",
+  "description": "AI-native wiki plugin (v1) — filesystem-primary, headless. Manages context (intent / decision / rejected_decision / trial_error / observation) and ssot / runbook as a decision graph. Token-efficient 3-stage recall + batch read, affects_paths / search_terms, 13 integrity checks, NFC normalization, opt-in fuzzy --read."
+}

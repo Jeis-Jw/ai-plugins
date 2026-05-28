@@ -1,0 +1,15 @@
+{
+  "name": "jeis-ai-plugins",
+  "owner": {
+    "name": "Jinwuk-Lee",
+    "url": "https://github.com/Jeis-Jw"
+  },
+  "plugins": [
+    {
+      "name": "wiki",
+      "source": "./plugins/wiki",
+      "description": "AI-native wiki plugin (v1) — filesystem-primary decision graph. Captures intents/decisions/rejections/trial-error/observations and manages SSOT/runbook with deterministic CLI, 3-stage recall, and 13 integrity checks.",
+      "version": "0.2.0"
+    }
+  ]
+}

@@ -47,55 +47,101 @@ EXIT_STRICT = 6
 # ──────────────────────────────────────────────────────────────────────────
 # Type registry (§3·§6·§7·§8·§11)
 # ──────────────────────────────────────────────────────────────────────────
-TYPE_SPECS = {
-    "intent": {
-        "folder": ("context", "intent"),
-        "prefix": "INT", "is_record": True,
-        "allowed_relations": (),
-        "sections": ["취지", "배경"],
-    },
-    "decision": {
-        "folder": ("context", "decision"),
-        "prefix": "DEC", "is_record": True,
-        "allowed_relations": ("intents", "rejected_decisions", "ssot", "tasks"),
-        "sections": ["결정", "취지", "배경", "고려한 대안", "트레이드오프", "재평가 조건"],
-    },
-    "rejected_decision": {
-        "folder": ("context", "rejected_decision"),
-        "prefix": "REJ", "is_record": True,
-        "allowed_relations": ("intents",),
-        "sections": ["대안", "반려 사유", "이 대안의 취지", "재고 조건"],
-    },
-    "trial_error": {
-        "folder": ("context", "trial_error"),
-        "prefix": "TRI", "is_record": True,
-        "allowed_relations": ("decisions", "tasks"),
-        "sections": ["교훈", "상황", "피해야 할 것", "대안 또는 우회", "현재도 유효한가"],
-    },
-    "observation": {
-        "folder": ("context", "observation"),
-        "prefix": "OBS", "is_record": True,
-        "allowed_relations": ("ssot", "runbook", "decisions", "tasks"),
-        "sections": ["관찰", "근거", "영향", "현재 처리", "후속 분류 조건"],
-    },
-    "ssot": {
-        "folder": ("ssot",),
-        "prefix": None, "is_record": False,
-        "allowed_relations": (),
-        "sections": ["현재 상태", "취지", "구성요소"],
-    },
-    "runbook": {
-        "folder": ("runbook",),
-        "prefix": None, "is_record": False,
-        "allowed_relations": (),
-        "sections": ["목적", "절차", "주의점"],
-    },
+@dataclass(frozen=True)
+class TypeSpec:
+    folder: Tuple[str, ...]
+    prefix: Optional[str]
+    is_record: bool
+    allowed_relations: Tuple[str, ...]
+    sections: Tuple[str, ...]
+    allow_verified_at: bool = False
+    allow_affects_paths: bool = False
+    is_time_stale: bool = False
+    is_path_stale: bool = False
+    is_hub: bool = False
+    is_living: bool = False
+
+
+TYPE_SPECS: "dict[str, TypeSpec]" = {
+    "intent": TypeSpec(
+        folder=("context", "intent"),
+        prefix="INT", is_record=True,
+        allowed_relations=(),
+        sections=("취지", "배경"),
+        is_hub=True,
+    ),
+    "decision": TypeSpec(
+        folder=("context", "decision"),
+        prefix="DEC", is_record=True,
+        allowed_relations=("intents", "rejected_decisions", "ssot", "tasks"),
+        sections=("결정", "취지", "배경", "고려한 대안", "트레이드오프", "재평가 조건"),
+    ),
+    "rejected_decision": TypeSpec(
+        folder=("context", "rejected_decision"),
+        prefix="REJ", is_record=True,
+        allowed_relations=("intents",),
+        sections=("대안", "반려 사유", "이 대안의 취지", "재고 조건"),
+    ),
+    "trial_error": TypeSpec(
+        folder=("context", "trial_error"),
+        prefix="TRI", is_record=True,
+        allowed_relations=("decisions", "tasks"),
+        sections=("교훈", "상황", "피해야 할 것", "대안 또는 우회", "현재도 유효한가"),
+        allow_verified_at=True,
+        allow_affects_paths=True,
+        is_time_stale=True,
+        is_path_stale=True,
+    ),
+    "observation": TypeSpec(
+        folder=("context", "observation"),
+        prefix="OBS", is_record=True,
+        allowed_relations=("ssot", "runbook", "decisions", "tasks"),
+        sections=("관찰", "근거", "영향", "현재 처리", "후속 분류 조건"),
+        allow_verified_at=True,
+        allow_affects_paths=True,
+        is_path_stale=True,
+    ),
+    "ssot": TypeSpec(
+        folder=("ssot",),
+        prefix=None, is_record=False,
+        allowed_relations=(),
+        sections=("현재 상태", "취지", "구성요소"),
+        allow_verified_at=True,
+        allow_affects_paths=True,
+        is_time_stale=True,
+        is_path_stale=True,
+        is_hub=True,
+        is_living=True,
+    ),
+    "runbook": TypeSpec(
+        folder=("runbook",),
+        prefix=None, is_record=False,
+        allowed_relations=(),
+        sections=("목적", "절차", "주의점"),
+        allow_verified_at=True,
+        allow_affects_paths=True,
+        is_time_stale=True,
+        is_path_stale=True,
+        is_hub=True,
+        is_living=True,
+    ),
 }
 
-HUB_TYPES = ("intent", "ssot", "runbook")
-LIVING_TYPES = ("ssot", "runbook")
-RECORD_TYPES = ("intent", "decision", "rejected_decision", "trial_error", "observation")
-CONTEXT_RECORD_TYPES = ("decision", "rejected_decision", "trial_error", "observation", "intent")
+# Cross-cutting category tuples — derived from TYPE_SPECS so adding a new type
+# only requires editing TypeSpec flags above. Order preserves intent/decision/…
+# CONTEXT_RECORD_TYPES historically lists intent last (after the others);
+# preserved here for stable error-message output.
+HUB_TYPES: Tuple[str, ...] = tuple(t for t, s in TYPE_SPECS.items() if s.is_hub)
+LIVING_TYPES: Tuple[str, ...] = tuple(t for t, s in TYPE_SPECS.items() if s.is_living)
+RECORD_TYPES: Tuple[str, ...] = tuple(t for t, s in TYPE_SPECS.items() if s.is_record)
+CONTEXT_RECORD_TYPES: Tuple[str, ...] = tuple(
+    [t for t, s in TYPE_SPECS.items() if s.is_record and s.folder[:1] == ("context",) and t != "intent"]
+    + (["intent"] if TYPE_SPECS["intent"].is_record else [])
+)
+VERIFIED_AT_TYPES: Tuple[str, ...] = tuple(t for t, s in TYPE_SPECS.items() if s.allow_verified_at)
+AFFECTS_PATHS_TYPES: Tuple[str, ...] = tuple(t for t, s in TYPE_SPECS.items() if s.allow_affects_paths)
+TIME_STALE_TYPES: Tuple[str, ...] = tuple(t for t, s in TYPE_SPECS.items() if s.is_time_stale)
+PATH_STALE_TYPES: Tuple[str, ...] = tuple(t for t, s in TYPE_SPECS.items() if s.is_path_stale)
 
 # Relation sub-key → expected target doc_type (used by capture + refresh schema).
 # `tasks` is external; not in this map.
@@ -110,15 +156,6 @@ RELATION_TARGET_TYPES = {
 # Fields forbidden in frontmatter (v1 §7, §17 반려).
 FORBIDDEN_FIELDS = ("id", "status", "classified_as")
 LIFECYCLE_FIELDS = ("supersedes", "superseded_by", "retired_at", "retired_type")
-
-# Types that may carry verified_at / affects_paths (§7)
-VERIFIED_AT_TYPES = ("ssot", "runbook", "trial_error", "observation")
-AFFECTS_PATHS_TYPES = ("ssot", "runbook", "trial_error", "observation")
-
-# Types subject to time-based stale checks (§7 stale-check table)
-TIME_STALE_TYPES = ("ssot", "runbook", "trial_error")
-# Types subject to changed-path-stale checks
-PATH_STALE_TYPES = ("ssot", "runbook", "trial_error", "observation")
 
 # Init-time seed: the standard folders that always exist after `init`.
 INIT_INDEX_FOLDERS: List[Tuple[str, ...]] = [
@@ -381,7 +418,7 @@ def doc_type_from_path(vault: Path, path: Path) -> Optional[str]:
     if head == "context" and len(rel) >= 2:
         sub = rel[1]
         for t, spec in TYPE_SPECS.items():
-            if spec["folder"] == ("context", sub):
+            if spec.folder == ("context", sub):
                 return t
     return None
 
@@ -462,7 +499,7 @@ def sanitize_slug(s: str) -> str:
 
 
 def record_basename(type_name: str, dt: datetime, slug: str) -> str:
-    prefix = TYPE_SPECS[type_name]["prefix"]
+    prefix = TYPE_SPECS[type_name].prefix
     return f"{prefix}-{dt.strftime('%Y-%m-%d-%H%M%S')}-{slug}"
 
 
@@ -495,7 +532,7 @@ def ensure_vault(vault: Path) -> None:
 
 
 def folder_dir(vault: Path, type_name: str) -> Path:
-    return vault.joinpath(*TYPE_SPECS[type_name]["folder"])
+    return vault.joinpath(*TYPE_SPECS[type_name].folder)
 
 
 def index_path(vault: Path, folder_parts: Tuple[str, ...]) -> Path:
@@ -690,15 +727,23 @@ def find_doc_anywhere(vault: Path, basename: str,
 # ──────────────────────────────────────────────────────────────────────────
 # (d) relations / resolver
 # ──────────────────────────────────────────────────────────────────────────
-def resolve_friendly(vault: Path, ref: str) -> str:
-    """Resolve a friendly wiki-doc ref to a full basename.
+def resolve_friendly(vault: Path, ref: str, *, allow_fuzzy: bool = True) -> str:
+    """Resolve a wiki-doc ref to a full basename.
+
     1) exact basename match (active or retired).
-    2) slug-fragment match against record basenames.
+    2) if allow_fuzzy: slug-fragment match against record basenames.
     Ambiguous/missing → CliError(EXIT_VALIDATION, ...).
-    Input is NFC-normalized; on-disk basenames are NFC-normalized in read_doc."""
+
+    allow_fuzzy=False makes this behave like find_doc_anywhere but raises
+    structured errors — call from contexts where exact-id matching is desired
+    yet uniform error semantics matter (e.g., `recall --read` without `--fuzzy`).
+    Input is NFC-normalized; on-disk basenames are NFC-normalized in read_doc.
+    """
     ref = _nfc(ref)
     if find_doc_anywhere(vault, ref) is not None:
         return ref
+    if not allow_fuzzy:
+        raise CliError(EXIT_VALIDATION, "ref_missing", f"reference not found: {ref}")
     pattern = re.compile(r"^[A-Z]{3}-\d{4}-\d{2}-\d{2}-\d{6}-" + re.escape(ref) + r"$")
     candidates = [_nfc(p.stem) for p in iter_all_docs(vault, include_retired=True)
                   if pattern.match(_nfc(p.stem))]
@@ -953,7 +998,7 @@ def cmd_capture(args) -> int:
         raise CliError(EXIT_USAGE, "living_no_supersede",
                        f"living type '{t}' cannot --supersedes")
     if t not in HUB_TYPES:
-        allowed = set(spec["allowed_relations"])
+        allowed = set(spec.allowed_relations)
         for k, v in rel_inputs.items():
             if v and k not in allowed:
                 raise CliError(EXIT_USAGE, "relation_not_allowed",
@@ -1006,7 +1051,7 @@ def cmd_capture(args) -> int:
         raise CliError(EXIT_USAGE, "empty_slug",
                        "could not derive slug from title (try --slug explicitly)")
     folder = folder_dir(vault, t)
-    if spec["is_record"]:
+    if spec.is_record:
         initial = record_basename(t, now(), slug)
         bn = unique_basename(folder, initial)
     else:
@@ -1089,7 +1134,7 @@ def cmd_capture(args) -> int:
         fm["relations"] = resolved
 
     body_lines = [""]
-    for sec in spec["sections"]:
+    for sec in spec.sections:
         body_lines.append(f"## {sec}")
         body_lines.append("")
     body = "\n".join(body_lines) + "\n"
@@ -1125,7 +1170,7 @@ def _supersede_old(vault: Path, old_id: str, new_id: str) -> None:
         return
     write_doc(old.path, old.frontmatter, old.body)
     spec = TYPE_SPECS[old.doc_type]
-    rd = retired_subdir(vault.joinpath(*spec["folder"]))
+    rd = retired_subdir(vault.joinpath(*spec.folder))
     rd.mkdir(parents=True, exist_ok=True)
     shutil.move(str(old.path), str(rd / old.path.name))
 
@@ -1178,7 +1223,7 @@ def cmd_retire(args) -> int:
     write_doc(td.path, td.frontmatter, td.body, dry_run=args.dry_run)
 
     spec = TYPE_SPECS[td.doc_type]
-    rd = retired_subdir(vault.joinpath(*spec["folder"]))
+    rd = retired_subdir(vault.joinpath(*spec.folder))
     if not args.dry_run:
         rd.mkdir(parents=True, exist_ok=True)
         shutil.move(str(td.path), str(rd / td.path.name))
@@ -1229,7 +1274,14 @@ def cmd_recall(args) -> int:
             raise CliError(EXIT_USAGE, "read_empty", "--read requires at least one basename")
         results: List[dict] = []
         for ref in refs:
-            p = find_doc_anywhere(vault, ref)
+            if args.fuzzy:
+                # resolve_friendly raises ref_missing/ref_ambiguous itself —
+                # downgrade to read_missing only if it returns a basename we
+                # then fail to open (shouldn't happen, but mirrors strict path).
+                resolved = resolve_friendly(vault, ref, allow_fuzzy=True)
+                p = find_doc_anywhere(vault, resolved)
+            else:
+                p = find_doc_anywhere(vault, ref)
             if p is None:
                 raise CliError(EXIT_VALIDATION, "read_missing", f"not found: {ref}")
             is_retired = "retired" in p.relative_to(vault).parts
@@ -1741,7 +1793,7 @@ def cmd_refresh(args) -> int:
                 # relation sub-keys must be in the type's allowed list
                 spec = TYPE_SPECS.get(d.doc_type)
                 if spec is not None:
-                    allowed = set(spec["allowed_relations"])
+                    allowed = set(spec.allowed_relations)
                     for k, vs in rel.items():
                         if k in LIFECYCLE_FIELDS:
                             continue
@@ -2057,6 +2109,8 @@ def build_parser() -> argparse.ArgumentParser:
     pq.add_argument("--read", default=None,
                     help="comma-separated basenames; batch reads preserve order")
     pq.add_argument("--include-retired", action="store_true", dest="include_retired")
+    pq.add_argument("--fuzzy", action="store_true",
+                    help="allow slug-fragment fallback when --read can't find an exact match")
     pq.set_defaults(func=cmd_recall)
 
     pf = sub.add_parser("refresh", help="integrity report (read-only by default)")
