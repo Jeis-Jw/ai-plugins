@@ -1,0 +1,7 @@
+interface:
+  display_name: "Wiki"
+  short_description: "Manage AI-native project wiki knowledge"
+  default_prompt: "Use $wiki to recall context, capture decisions, and refresh the project wiki."
+
+policy:
+  allow_implicit_invocation: true

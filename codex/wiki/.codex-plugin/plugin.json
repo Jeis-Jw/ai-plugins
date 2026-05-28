@@ -1,0 +1,22 @@
+{
+  "name": "wiki",
+  "version": "0.1.0",
+  "description": "AI-native filesystem wiki management for AI agents.",
+  "author": {
+    "name": "Local developer"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Wiki",
+    "shortDescription": "Manage an AI-native project wiki.",
+    "longDescription": "Initializes, reads, writes, retires, and validates a filesystem-first wiki under wiki/ for project SSOTs, runbooks, intents, decisions, rejected alternatives, trial-error records, and observations.",
+    "developerName": "Local developer",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write", "Validation"],
+    "defaultPrompt": [
+      "Use $wiki to recall the project context before changing code.",
+      "Use $wiki to capture this decision and refresh indexes.",
+      "Use $wiki to validate wiki consistency."
+    ]
+  }
+}
