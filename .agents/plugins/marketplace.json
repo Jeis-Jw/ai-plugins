@@ -5,8 +5,8 @@
   },
   "plugins": [
     {
-      "name": "wiki",
-      "source": { "source": "local", "path": "./plugins/wiki" },
+      "name": "wiki-markdown",
+      "source": { "source": "local", "path": "./plugins/wiki-markdown" },
       "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
       "category": "Productivity"
     }
