@@ -56,6 +56,18 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" capture observation \
   --affects-paths "src/webhook/**" \
   --tasks owner/repo#42
 
+# 3b. Record a task (bridge node: a unit of work linked to decisions + an issue).
+python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" capture task \
+  --title "Move payment session to the BFF" \
+  --summary "Payment-side of the BFF migration; driven by the move-to-BFF decision." \
+  --tags payment,architecture \
+  --decisions move-auth-to-a-bff \
+  --intents signup-conversion-speed \
+  --tasks owner/repo#42
+# Finish it (active → task/done/) when the linked issue closes; reopen to undo.
+python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" complete TASK-2026-04-17-143052-move-payment-session-to-the-bff
+python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" reopen   TASK-2026-04-17-143052-move-payment-session-to-the-bff
+
 # 4. Recall (3-stage + batch read + backlinks).
 python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" recall "auth" --json
 python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" recall "auth" --stage 2 --section 취지
@@ -83,10 +95,13 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" refresh --fix index,retired-in
 | "Found something but not sure if it's a decision, lesson, or SSOT update yet" | `observation` | Pre-classification record; gets retired as `superseded` when a successor TRI/DEC/SSOT-update is captured. |
 | "How is X currently structured / behaving" | `ssot` | Living, updated in place. |
 | "How do we run / deploy / operate X" | `runbook` | Living, procedural. |
+| "A unit of work driven by decisions, tracked against an external issue" | `task` | Third category — bridge node. Carries relations (intents/decisions/ssot/tasks); binary active/done state by path. |
 
 **Living vs Record.** `ssot` and `runbook` are *living* — updated in place per topic. A second `capture` for the same slug exits `5` (conflict). `context/*` types are *immutable + superseded* — never edited; replace with a new record.
 
 **Observation vs trial_error.** A `trial_error` has an explicit lesson. An `observation` is a finding too early to classify. When the classification firms up, capture a successor (TRI/DEC/SSOT-update) and `retire` the observation as `superseded` with the successor as primary replacement.
+
+**Task (third category).** `task` is neither living nor record: its body is updated in place (living-like) and it carries relations (record-like), but its lifecycle is **binary by path** — active `task/` vs done `task/done/`. It's a *pure leaf* bridge: it points outward (`intents`/`decisions`/`ssot`/`tasks`) and nothing points back at it (reverse is derived backlinks — `recall --backlinks-of <DEC>` surfaces the tasks a decision spawned, **including completed ones by default** — done is a valid terminal state, not a retired one). Finish a task with `complete` (→ `task/done/`), undo with `reopen`. A task never supersedes; an *invalid* task is `retire --type deprecated` (which, like any retired doc, then needs `--include-retired` to appear in backlinks). `--tasks owner/repo#N` links it to its external work item (e.g. a GitHub issue); the wiki never reads that tracker.
 
 ## Workflow (when you encounter a decision / intent / observation)
 
@@ -105,7 +120,9 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" refresh --fix index,retired-in
 |-----|----------|-------------|------------|
 | `init` | — | `--dry-run` | `0` ok, `1` FS error |
 | `capture` | `<type>` `--title` `--summary` `--tags` | `--slug` `--intents` `--ssot` `--runbook` `--rejected` `--decisions` `--tasks` `--supersedes` `--verified-at` `--audience` `--affects-paths` `--search-terms` `--dry-run` | `0` ok · `2` arg/scope violation (hub-with-relations, living-supersede, verified_at/affects_paths on wrong type, observation→intent relation, successor not a record, placeholder input) · `3` no vault · `4` ref ambiguous/missing/bad task format · `5` living slug global collision |
-| `retire` | `<basename>` `--type deprecated\|superseded` | `--superseded-by <ref>` (required for superseded; must be an **active context/* record**), `--dry-run` | `0` · `2` arg / successor-not-record · `3` · `4` |
+| `retire` | `<basename>` `--type deprecated\|superseded` | `--superseded-by <ref>` (required for superseded; must be an **active context/* record**), `--dry-run` | `0` · `2` arg / successor-not-record / task-with-superseded · `3` · `4` |
+| `complete` | `<basename>` | `--dry-run` | `0` · `2` not-a-task · `3` · `4` missing / already-done |
+| `reopen` | `<basename>` | `--dry-run` | `0` · `2` not-a-task · `3` · `4` missing / not-done |
 | `recall` | — or `<query>` | `--type` `--tag` (repeatable) `--section` `--stage` `--limit` `--backlinks-of` `--read <a,b,c>` `--fuzzy` `--include-retired` | `0` always (zero hits is success), `4` only when `--read` target is missing |
 | `refresh` | — | `--check <name,..>` (13 + `all`) `--days N` `--path <sub>` `--changed-path <p,..>` `--fix index,retired-in-index` `--strict` | `0` · `2` (unknown `--check`, `--fix` whitelist violation, bare `--fix`) · `6` (strict + ≥1 issue) |
 
@@ -161,6 +178,7 @@ Unknown `--check` names or empty `--check ""` exit `2` so CI catches typos immed
 - **Capture a trial_error alongside the decision** that surfaced it: `capture trial_error --decisions <DEC-...>` immediately after the decision.
 - **Use observation for pre-classification finds**: `capture observation --ssot <ssot> --affects-paths "src/<area>/**"`. When classification firms up, capture the successor and `retire --type superseded --superseded-by`.
 - **Audit an intent's win/loss footprint**: `recall --backlinks-of <INT-...>` returns the decisions that won *and* the rejections, side-by-side.
+- **Trace a decision to the work it spawned**: `recall --backlinks-of <DEC-...>` surfaces the `task` nodes that point at it — "what work did this decision produce?" — and keeps showing them after they're completed (done tasks stay in default backlinks; only `retire`d docs need `--include-retired`). Capture the task with `--decisions <DEC> --tasks owner/repo#N` so the link exists.
 - **Run `refresh` right after `retire ... --type superseded`** to confirm both sides of the supersede edge.
 - **Manage the tag vocabulary**: drop allowed tags under an `## 어휘` section in `wiki/ssot/tag-vocabulary.md`. The `tags` check then flags vocabulary violations; absent the file, the check is skipped.
 - **Re-verification**: stamp living notes with `--verified-at YYYY-MM-DD`; `refresh --check stale --days 90` reports anything past the threshold.

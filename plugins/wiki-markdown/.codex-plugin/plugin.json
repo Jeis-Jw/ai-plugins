@@ -1,6 +1,6 @@
 {
   "name": "wiki-markdown",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Markdown-backed AI-native filesystem wiki management for AI agents.",
   "author": {
     "name": "Jinwuk-Lee",
@@ -10,7 +10,7 @@
   "interface": {
     "displayName": "Wiki (Markdown)",
     "shortDescription": "Manage an AI-native project wiki backed by markdown files.",
-    "longDescription": "Initializes, reads, writes, retires, and validates a markdown-backed wiki under wiki/ for project SSOTs, runbooks, intents, decisions, rejected alternatives, trial-error records, and observations.",
+    "longDescription": "Initializes, reads, writes, retires, completes/reopens, and validates a markdown-backed wiki under wiki/ for project SSOTs, runbooks, intents, decisions, rejected alternatives, trial-error records, observations, and task bridge nodes.",
     "developerName": "Jinwuk-Lee",
     "category": "Productivity",
     "capabilities": ["Read", "Write", "Validation"],

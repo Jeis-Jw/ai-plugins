@@ -60,8 +60,8 @@ audience: [human, agent]
 
 ## 노트
 
-- [[wiki-data-model]] — 위키 그래프의 정적 구조 정본: 5종 record + 2종 living 타입 체계, basename 정본 ID, YAML 관계 모델(비대칭 작성). plugin-definition 영역의 sub-ssot.
+- [[wiki-data-model]] — 위키 그래프의 정적 구조 정본: 5종 record + 2종 living + 1종 task(제3 범주) 타입 체계, basename 정본 ID, YAML 관계 모델(비대칭 작성). plugin-definition 영역의 sub-ssot.
 - [[wiki-external-tools-policy]] — 외부 도구(Obsidian 등)와의 경계 정본: AI 검색 정본은 filesystem 단일(ripgrep+YAML), wikilink는 사람용 장식, .obsidian/ gitignore. plugin-definition 영역의 sub-ssot.
 - [[wiki-four-layer-separation]] — mechanism/policy/agent entry/knowledge 4계층 분리 정본: plugin agent-neutral, promotion threshold는 plugin spec 의미 판정은 operating model, agent entry는 정책 ssot의 포인터. plugin-definition 영역의 sub-ssot.
-- [[wiki-lifecycle]] — Record와 Living의 라이프사이클 정본: 경로 기반 active/retired, deprecated/superseded 2값 retire 모델, supersede pair 양방향 저장. plugin-definition 영역의 sub-ssot.
+- [[wiki-lifecycle]] — Record와 Living의 라이프사이클 정본: 경로 기반 active/retired, deprecated/superseded 2값 retire 모델, supersede pair 양방향 저장, task 이진 상태(활성/done) + 정본 위임. plugin-definition 영역의 sub-ssot.
 - [[wiki-retrieval]] — 인덱스 파생과 조회 표면 정본: 폴더 단위 독립 인덱스, 3-stage recall + batch read, search_terms recognized optional, affects_paths + changed-path-stale, refresh --fix 화이트리스트. plugin-definition 영역의 sub-ssot.

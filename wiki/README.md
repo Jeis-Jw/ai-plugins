@@ -19,6 +19,7 @@ audience: [human, agent]
 - [[context/rejected_decision/rejected_decision]] — 반려된 대안 (record)
 - [[context/trial_error/trial_error]] — 시행착오 (record)
 - [[context/observation/observation]] — 관찰 (record, 분류 전 임시)
+- [[task/task]] — 작업 (제3 범주: 결정·취지를 외부 이슈에 잇는 브릿지, 이진 상태)
 
 ## 에이전트 탐색 힌트
 
@@ -28,5 +29,6 @@ audience: [human, agent]
 - "이건 어떻게 운영하나?" → `runbook/`
 - "이 함정 또 안 밟으려면?" → `context/trial_error/`
 - "이거 발견했는데 어디로 분류할지 모르겠다" → `context/observation/`
+- "어떤 결정으로 무슨 작업을 하나? / 이 작업의 근거는?" → `task/` (결정·취지 ↔ 이슈 브릿지)
 - 검색: `wiki:recall <query>` (Stage 1 frontmatter scan)
 - 점검: `wiki:refresh` (무결성 리포트)

@@ -4,7 +4,7 @@ Single-file reference for the wiki plugin. Condenses the implementation contract
 
 ## Purpose
 
-The wiki is the project's knowledge source of truth for AI agents. It stores current design state, operational procedures, durable intents, decisions, rejected alternatives, lessons, and observations so an agent can read minimal valid context before acting.
+The wiki is the project's knowledge source of truth for AI agents. It stores current design state, operational procedures, durable intents, decisions, rejected alternatives, lessons, observations, and task bridge nodes so an agent can read minimal valid context before acting.
 
 ## Vault
 
@@ -25,8 +25,9 @@ The wiki is the project's knowledge source of truth for AI agents. It stores cur
 | `rejected_decision` | `context/rejected_decision/` | record rejected alternative | `REJ-YYYY-MM-DD-HHMMSS-<slug>` |
 | `trial_error` | `context/trial_error/` | record trap or lesson | `TRI-YYYY-MM-DD-HHMMSS-<slug>` |
 | `observation` | `context/observation/` | record observation not yet classifiable | `OBS-YYYY-MM-DD-HHMMSS-<slug>` |
+| `task` | `task/` | **third category** — work bridge to an external issue | `TASK-YYYY-MM-DD-HHMMSS-<slug>` |
 
-Living notes are updated in place. Records are immutable in meaning and are retired or superseded.
+Living notes are updated in place. Records are immutable in meaning and are retired or superseded. **`task` is a third category**: its body is updated in place (living-like) and it carries relations (record-like), but its lifecycle is binary by path — active `task/` vs done `task/done/` (and `task/retired/` for an invalid task). Move it with `complete` / `reopen` (not supersede). A pure leaf: it points outward and nothing points back at it (reverse is derived backlinks).
 
 ## Frontmatter
 
@@ -89,6 +90,7 @@ Canonical relations are YAML plain IDs in frontmatter — *not* body wikilinks.
 | `rejected_decision` | `intents` |
 | `trial_error` | `decisions`, `tasks` |
 | `observation` | `ssot`, `runbook`, `decisions`, `tasks` |
+| `task` | `intents`, `decisions`, `ssot`, `tasks` |
 | `ssot`, `runbook` | (none — `relations` key forbidden) |
 
 Each sub-key takes an inline list. Wiki refs are **always full basenames**; `tasks` alone takes external IDs (`owner/repo#N`).
@@ -162,6 +164,13 @@ Section headers and order are **fixed** — `recall --stage 2` relies on them. S
 | `## 절차` | Numbered steps; each with a verifiable result. |
 | `## 주의점` | Common mistakes, rollback, failure checks. |
 
+### `task`
+| Section | Intent |
+|---------|--------|
+| `## 개요` | What this work is, at a glance — the bridge summary a wiki reader sees. |
+| `## 근거` | Which decisions / intents this work flows from, and why it exists now. |
+| `## 범위와 완료 기준` | Scope boundary + what "done" means. Detailed execution lives in the linked issue. |
+
 ## Lifecycle
 
 Active records live in their type folder. Retired records move to `<folder>/retired/`.
@@ -178,14 +187,16 @@ Observation uses the same two-value lifecycle. When an observation eventually po
 
 ## CLI Contract
 
-The bundled CLI (`scripts/wiki_cli.py`, stdlib only) supports five subcommands.
+The bundled CLI (`scripts/wiki_cli.py`, stdlib only) supports seven subcommands.
 
 | Subcommand | Purpose |
 |------------|---------|
-| `init` | Create the vault skeleton and derived indexes (including `context/observation`). Idempotent. |
-| `capture <type>` | Create a note, resolve friendly refs to basenames, validate task refs, enforce v1 field scopes, regenerate touched indexes. |
-| `retire <basename>` | Retire (`--type deprecated`) or supersede (`--type superseded --superseded-by <ref>`) a context record; rewrite both sides of the supersede edge; regenerate indexes. |
-| `recall` | Read-only query — Stage 1 (summary scan), Stage 2 (`--section <name>`), Stage 3 (full doc), batch `--read a,b,c` (preserves input order), derived backlinks via `--backlinks-of`. |
+| `init` | Create the vault skeleton and derived indexes (including `context/observation` and `task/` with its `done/` and `retired/`). Idempotent. |
+| `capture <type>` | Create a note, resolve friendly refs to basenames, validate task refs, enforce v1 field scopes, regenerate touched indexes. `<type>` includes `task`. |
+| `retire <basename>` | Retire (`--type deprecated`) or supersede (`--type superseded --superseded-by <ref>`) a context record; rewrite both sides of the supersede edge; regenerate indexes. A `task` may be retired `deprecated` only (use `complete` to finish it). |
+| `complete <basename>` | Move a `task` from active (`task/`) to done (`task/done/`). Task-only. Refuses to overwrite an existing destination. |
+| `reopen <basename>` | Move a done `task` back to active (`task/`). Task-only. |
+| `recall` | Read-only query — Stage 1 (summary scan), Stage 2 (`--section <name>`), Stage 3 (full doc), batch `--read a,b,c` (preserves input order), derived backlinks via `--backlinks-of` (done tasks included by default). |
 | `refresh` | Integrity report. Read-only by default; `--strict` exits `6` on issues; `--fix` accepts only `index` and `retired-in-index` (the safe, purely-derived fixes). |
 
 ### Refresh checks (13 total)

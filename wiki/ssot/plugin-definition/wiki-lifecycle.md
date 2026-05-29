@@ -1,7 +1,7 @@
 ---
 title: 위키 라이프사이클
 created_at: 2026-05-29
-summary: Record와 Living의 라이프사이클 정본: 경로 기반 active/retired, deprecated/superseded 2값 retire 모델, supersede pair 양방향 저장. plugin-definition 영역의 sub-ssot.
+summary: Record와 Living의 라이프사이클 정본: 경로 기반 active/retired, deprecated/superseded 2값 retire 모델, supersede pair 양방향 저장, task 이진 상태(활성/done) + 정본 위임. plugin-definition 영역의 sub-ssot.
 tags: [wiki, lifecycle, ssot]
 verified_at: 2026-05-29
 ---
@@ -49,6 +49,16 @@ verified_at: 2026-05-29
 
 → [[REJ-2026-05-29-105500-obs-classified-retired-type]] (v1에서 반려)
 
+### Task 라이프사이클 (이진 상태, 경로 기반)
+
+- task는 retire 2값 모델이 아니라 **이진 상태**: 활성(`task/`) vs 완료(`task/done/`). 완료는 `done/`로 **물리 이동**(`retired/`의 형제, "경로=정본 상태" 동일 원칙).
+- 본문은 **제자리 갱신**(living처럼) + 상태 전이는 **폴더 이동** — 둘이 직교.
+- 전이 명령: `complete`(활성→`done/`), `reopen`(`done/`→활성). retire(틀림/대체)와 별개 — 정상 완료다.
+- **정본 위임**: 작업 플러그인 미연결이면 위키가 완료/미완 정본. 연결되면 **외부 트래커(GitHub 이슈)가 정본**이고 위키 `done/`는 그 투영 — 동기화는 작업 플러그인 책임이며 위키 CLI는 외부 트래커를 모른다.
+- task가 완료가 아니라 **무효**(잘못 만들어짐)일 때는 일반 record처럼 `retire`로 처리(`done`과 구분).
+
+→ [[DEC-2026-05-29-181259-task-binary-state-github-sot]]
+
 ## 취지
 
 이 라이프사이클 모델이 추구하는 일급 원칙:
@@ -61,6 +71,7 @@ verified_at: 2026-05-29
 이 영역에 응집된 결정 anchor:
 
 - [[DEC-2026-05-29-105234-retire-two-value-model]] — 2값 retire 모델
+- [[DEC-2026-05-29-181259-task-binary-state-github-sot]] — task 이진 상태 + 정본 위임
 
-반려 대안: [[REJ-2026-05-29-105500-obs-classified-retired-type]] (분류 완료 상태를 별도 retired_type으로 만들자는 안).
+반려 대안: [[REJ-2026-05-29-105500-obs-classified-retired-type]] (분류 완료 상태를 별도 retired_type으로 만들자는 안) / [[REJ-2026-05-29-181259-wiki-holds-task-detailed-phase]] (위키가 상세 단계 보유).
 

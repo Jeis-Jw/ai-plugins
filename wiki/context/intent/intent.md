@@ -19,3 +19,4 @@ audience: [human, agent]
 - [[INT-2026-05-29-104711-plugin-agent-neutrality]] — Plugin 메커니즘은 특정 AI 도구(Claude/Codex 등) 이름을 박지 않는다. 미래 도구 교체에도 메커니즘이 흔들리지 않게.
 - [[INT-2026-05-29-104712-parallel-safe-headless-operation]] — ID·관계·인덱스 메커니즘은 CI/git hook/워크트리/자율 에이전트 등 헤드리스 환경에서 충돌 없이 작동해야 한다.
 - [[INT-2026-05-29-104713-single-canonical-current-state]] — Living(ssot/runbook) 정본은 현재 상태 하나여야 한다. 이력은 git과 context 결정들이 별도로 보유한다 — 정본에 시점 분기를 두지 않는다.
+- [[INT-2026-05-29-181219-task-decision-execution-traceability]] — 위키의 결정 그래프와 실제 작업(이슈) 실행을 양방향 추적 가능하게 잇는다 — 결정에서 작업으로, 작업에서 근거로.

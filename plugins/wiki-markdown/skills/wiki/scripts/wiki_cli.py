@@ -3,7 +3,7 @@
 
 Single-file CLI implementing the wiki plugin design at
 wiki/ssot/plugin_definition_v1.md. Subcommands: init, capture, retire,
-recall, refresh. See SKILL.md and rules/knowledge-protocol.md.
+complete, reopen, recall, refresh. See SKILL.md and rules/knowledge-protocol.md.
 """
 from __future__ import annotations
 
@@ -60,6 +60,7 @@ class TypeSpec:
     is_path_stale: bool = False
     is_hub: bool = False
     is_living: bool = False
+    is_task: bool = False
 
 
 TYPE_SPECS: "dict[str, TypeSpec]" = {
@@ -125,6 +126,13 @@ TYPE_SPECS: "dict[str, TypeSpec]" = {
         is_hub=True,
         is_living=True,
     ),
+    "task": TypeSpec(
+        folder=("task",),
+        prefix="TASK", is_record=False,
+        allowed_relations=("intents", "decisions", "ssot", "tasks"),
+        sections=("개요", "근거", "범위와 완료 기준"),
+        is_task=True,
+    ),
 }
 
 # Cross-cutting category tuples — derived from TYPE_SPECS so adding a new type
@@ -142,6 +150,7 @@ VERIFIED_AT_TYPES: Tuple[str, ...] = tuple(t for t, s in TYPE_SPECS.items() if s
 AFFECTS_PATHS_TYPES: Tuple[str, ...] = tuple(t for t, s in TYPE_SPECS.items() if s.allow_affects_paths)
 TIME_STALE_TYPES: Tuple[str, ...] = tuple(t for t, s in TYPE_SPECS.items() if s.is_time_stale)
 PATH_STALE_TYPES: Tuple[str, ...] = tuple(t for t, s in TYPE_SPECS.items() if s.is_path_stale)
+TASK_TYPES: Tuple[str, ...] = tuple(t for t, s in TYPE_SPECS.items() if s.is_task)
 
 # Relation sub-key → expected target doc_type (used by capture + refresh schema).
 # `tasks` is external; not in this map.
@@ -163,6 +172,7 @@ INIT_INDEX_FOLDERS: List[Tuple[str, ...]] = [
     ("context", "intent"), ("context", "decision"),
     ("context", "rejected_decision"), ("context", "trial_error"),
     ("context", "observation"),
+    ("task",),
 ]
 CONTEXT_FOLDERS: List[Tuple[str, ...]] = [
     ("context", "intent"), ("context", "decision"),
@@ -397,6 +407,7 @@ class WikiDoc:
     frontmatter: dict
     body: str
     retired: bool
+    done: bool = False
 
 
 def doc_type_from_path(vault: Path, path: Path) -> Optional[str]:
@@ -409,10 +420,12 @@ def doc_type_from_path(vault: Path, path: Path) -> Optional[str]:
         rel = path.relative_to(vault).parts
     except ValueError:
         return None
-    rel = tuple(p for p in rel if p != "retired")
+    rel = tuple(p for p in rel if p not in ("retired", "done"))
     if not rel:
         return None
     head = rel[0]
+    if head == "task":
+        return "task"
     if head in LIVING_FOLDER_NAMES:
         return head
     if head == "context" and len(rel) >= 2:
@@ -427,13 +440,15 @@ def read_doc(vault: Path, path: Path) -> WikiDoc:
     text = path.read_text(encoding="utf-8")
     fm_text, body = split_frontmatter(text)
     fm = parse_frontmatter(fm_text or "")
+    _rel_parts = path.relative_to(vault).parts
     return WikiDoc(
         path=path,
         doc_id=_nfc(path.stem),  # NFC-normalize so by_id lookups match NFC refs
         doc_type=doc_type_from_path(vault, path) or "",
         frontmatter=fm,
         body=body,
-        retired="retired" in path.relative_to(vault).parts,
+        retired="retired" in _rel_parts,
+        done="done" in _rel_parts,
     )
 
 
@@ -504,10 +519,17 @@ def record_basename(type_name: str, dt: datetime, slug: str) -> str:
 
 
 def unique_basename(folder: Path, basename: str) -> str:
-    """Append -b, -c, ... on collision; timestamp never altered (§5)."""
+    """Append -b, -c, ... on collision; timestamp never altered (§5).
+
+    Checks every lifecycle location a basename can occupy: the folder root
+    (active), `retired/` (all types), and `done/` (task only). Missing the
+    `done/` check would let a completed task share a basename with a freshly
+    captured one (same timestamp+slug), violating global basename uniqueness."""
     candidate = basename
     idx = 1
-    while (folder / f"{candidate}.md").exists() or (folder / "retired" / f"{candidate}.md").exists():
+    while ((folder / f"{candidate}.md").exists()
+           or (folder / "retired" / f"{candidate}.md").exists()
+           or (folder / "done" / f"{candidate}.md").exists()):
         idx += 1
         if idx > 26:
             raise CliError(EXIT_CONFLICT, "basename_overflow",
@@ -620,6 +642,11 @@ def discover_index_folders(vault: Path) -> List[Tuple[str, ...]]:
     for parts in CONTEXT_FOLDERS:
         if vault.joinpath(*parts).is_dir():
             out.append(parts)
+    # task is a flat top-level index folder; its done/ and retired/ subdirs
+    # are lifecycle locations, not nested index folders (iter_active is
+    # non-recursive, so they don't leak into the active set).
+    if vault.joinpath("task").is_dir():
+        out.append(("task",))
     return out
 
 
@@ -643,11 +670,24 @@ def iter_retired_docs(vault: Path, parts: Tuple[str, ...]) -> List[Path]:
                   key=lambda p: p.name)
 
 
+def iter_done_docs(vault: Path, parts: Tuple[str, ...]) -> List[Path]:
+    """Completed task docs under `<folder>/done/`. Only the task folder ever
+    has a `done/` subdir; every other folder returns []. Done tasks are
+    terminal — excluded from active-only checks, but still part of the graph
+    (validated by refresh, reachable by find_doc_anywhere / backlinks)."""
+    folder = vault.joinpath(*parts) / "done"
+    if not folder.is_dir():
+        return []
+    return sorted([p for p in folder.iterdir() if p.is_file() and p.suffix == ".md"],
+                  key=lambda p: p.name)
+
+
 def iter_all_docs(vault: Path, include_retired: bool = True) -> Iterable[Path]:
     for parts in discover_index_folders(vault):
         yield from iter_active_docs(vault, parts)
         if include_retired:
             yield from iter_retired_docs(vault, parts)
+            yield from iter_done_docs(vault, parts)
 
 
 def iter_every_md(vault: Path) -> Iterable[Path]:
@@ -704,6 +744,9 @@ def find_doc_anywhere(vault: Path, basename: str,
         ret = vault.joinpath(*parts) / "retired" / f"{basename}.md"
         if ret.is_file():
             return ret
+        dn = vault.joinpath(*parts) / "done" / f"{basename}.md"
+        if dn.is_file():
+            return dn
     # 2) NFD fallback for notes (iter_all_docs already excludes index files).
     for p in iter_all_docs(vault, include_retired=True):
         if _nfc(p.stem) == basename:
@@ -839,6 +882,11 @@ def find_backlinks(vault: Path, target: str, include_retired: bool = False) -> L
     paths: List[Path] = []
     for parts in discover_index_folders(vault):
         paths.extend(iter_active_docs(vault, parts))
+        # done tasks are a valid TERMINAL state, not retired/invalid: a
+        # completed unit of work is exactly what "what did this decision
+        # spawn?" should surface, so include it by default. Only retired
+        # (wrong / superseded) docs stay behind the --include-retired opt-in.
+        paths.extend(iter_done_docs(vault, parts))
         if include_retired:
             paths.extend(iter_retired_docs(vault, parts))
     for p in paths:
@@ -880,6 +928,7 @@ audience: [human, agent]
 - [[context/rejected_decision/rejected_decision]] — 반려된 대안 (record)
 - [[context/trial_error/trial_error]] — 시행착오 (record)
 - [[context/observation/observation]] — 관찰 (record, 분류 전 임시)
+- [[task/task]] — 작업 (제3 범주: 결정·취지 ↔ 이슈 브릿지, 활성/done)
 
 ## 에이전트 탐색 힌트
 
@@ -889,6 +938,7 @@ audience: [human, agent]
 - "이건 어떻게 운영하나?" → `runbook/`
 - "이 함정 또 안 밟으려면?" → `context/trial_error/`
 - "이거 발견했는데 어디로 분류할지 모르겠다" → `context/observation/`
+- "어떤 결정으로 무슨 작업? / 이 작업의 근거?" → `task/` (결정·취지 ↔ 이슈 브릿지)
 - 검색: `wiki:recall <query>` (Stage 1 frontmatter scan)
 - 점검: `wiki:refresh` (무결성 리포트)
 """
@@ -908,6 +958,8 @@ INDEX_FILE_DESC = {
                                  "교훈·피해야 할 것·현재 유효성(record)."),
     ("context", "observation"): ("Observations — 관찰",
                                  "발견·관찰. 분류 전 임시 record. 후속 TRI/DEC/SSOT 갱신으로 승격되며 supersede."),
+    ("task",): ("Tasks — 작업",
+                "결정·취지를 외부 이슈에 잇는 작업 브릿지(제3 범주). 활성은 여기, 완료는 done/."),
 }
 
 
@@ -938,6 +990,9 @@ def cmd_init(args) -> int:
         folder = vault.joinpath(*parts)
         ensure_dir(folder)
         if parts[0] == "context":
+            ensure_dir(folder / "retired")
+        if parts == ("task",):
+            ensure_dir(folder / "done")
             ensure_dir(folder / "retired")
 
     write_if_absent(vault / "README.md", ROOT_README_TEMPLATE.format(today=today))
@@ -997,6 +1052,9 @@ def cmd_capture(args) -> int:
     if t in LIVING_TYPES and supersedes_arg:
         raise CliError(EXIT_USAGE, "living_no_supersede",
                        f"living type '{t}' cannot --supersedes")
+    if t in TASK_TYPES and supersedes_arg:
+        raise CliError(EXIT_USAGE, "task_no_supersede",
+                       f"task type '{t}' cannot --supersedes (use complete/reopen)")
     if t not in HUB_TYPES:
         allowed = set(spec.allowed_relations)
         for k, v in rel_inputs.items():
@@ -1051,7 +1109,7 @@ def cmd_capture(args) -> int:
         raise CliError(EXIT_USAGE, "empty_slug",
                        "could not derive slug from title (try --slug explicitly)")
     folder = folder_dir(vault, t)
-    if spec.is_record:
+    if spec.prefix:  # record or task — timestamped id, collision-suffixed
         initial = record_basename(t, now(), slug)
         bn = unique_basename(folder, initial)
     else:
@@ -1194,9 +1252,14 @@ def cmd_retire(args) -> int:
     if tp is None:
         raise CliError(EXIT_VALIDATION, "retire_missing", f"target not found: {bn}")
     td = read_doc(vault, tp)
-    if td.doc_type not in RECORD_TYPES:
+    _spec_td = TYPE_SPECS.get(td.doc_type)
+    if _spec_td is None or not (_spec_td.is_record or _spec_td.is_task):
         raise CliError(EXIT_USAGE, "retire_not_record",
-                       f"only context records can be retired (got {td.doc_type})")
+                       f"only records or task can be retired (got {td.doc_type})")
+    if _spec_td.is_task and args.type == "superseded":
+        raise CliError(EXIT_USAGE, "task_no_supersede",
+                       "task cannot be superseded; use complete to finish it, "
+                       "or retire --type deprecated for an invalid task")
     if td.retired:
         raise CliError(EXIT_VALIDATION, "already_retired", f"{bn} is already retired")
 
@@ -1250,6 +1313,62 @@ def cmd_retire(args) -> int:
             text_lines=[f"retired: {bn} → retired_type={args.type}"
                         + (f" superseded_by={new_id}" if new_id else "")])
     return EXIT_OK
+
+
+def _move_task(vault: Path, args, *, to_done: bool) -> int:
+    """Shared mechanism for complete (active→done/) and reopen (done/→active).
+
+    task is the only type with a binary active/done state expressed by path —
+    mirrors the active/retired path convention ("path is the canonical
+    state"). The body is edited in place; this flips only the lifecycle
+    location. In connected mode, task-github keeps the GitHub issue as the
+    source of truth and projects state here; the wiki CLI never reads GitHub."""
+    ensure_vault(vault)
+    bn = args.basename
+    p = find_doc_anywhere(vault, bn)
+    if p is None:
+        raise CliError(EXIT_VALIDATION, "task_missing", f"target not found: {bn}")
+    d = read_doc(vault, p)
+    verb = "complete" if to_done else "reopen"
+    if d.doc_type != "task":
+        raise CliError(EXIT_USAGE, f"{verb}_not_task",
+                       f"only task can be {verb}d (got {d.doc_type or 'unknown'})")
+    if d.retired:
+        raise CliError(EXIT_VALIDATION, f"{verb}_retired",
+                       f"{bn} is retired, not active/done; {verb} does not apply")
+    if to_done and d.done:
+        raise CliError(EXIT_VALIDATION, "already_done", f"{bn} is already done")
+    if (not to_done) and (not d.done):
+        raise CliError(EXIT_VALIDATION, "not_done",
+                       f"{bn} is already active (not done)")
+    task_root = vault.joinpath(*TYPE_SPECS["task"].folder)
+    dest_dir = (task_root / "done") if to_done else task_root
+    dest = dest_dir / d.path.name
+    # Never clobber a same-named file at the destination (defends the
+    # basename-uniqueness invariant even if a vault was hand-edited into a
+    # colliding state).
+    if dest.exists():
+        raise CliError(EXIT_CONFLICT, f"{verb}_dest_exists",
+                       f"destination already exists: {dest} — "
+                       f"refusing to overwrite (basename collision)")
+    if not args.dry_run:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(d.path), str(dest))
+        refresh_all_indexes(vault)
+    state = "done" if to_done else "active"
+    emit_ok(args,
+            {"id": bn, "state": state, "path": str(dest)},
+            text_lines=[f"{'완료' if to_done else '재개'}: {bn} → "
+                        f"task/{'done/' if to_done else ''}"])
+    return EXIT_OK
+
+
+def cmd_complete(args) -> int:
+    return _move_task(resolve_vault(args.vault), args, to_done=True)
+
+
+def cmd_reopen(args) -> int:
+    return _move_task(resolve_vault(args.vault), args, to_done=False)
 
 
 def cmd_recall(args) -> int:
@@ -1309,6 +1428,8 @@ def cmd_recall(args) -> int:
             docs.append(read_doc(vault, p))
         if args.include_retired:
             for p in iter_retired_docs(vault, parts):
+                docs.append(read_doc(vault, p))
+            for p in iter_done_docs(vault, parts):
                 docs.append(read_doc(vault, p))
 
     type_filter = args.type
@@ -1496,6 +1617,11 @@ def cmd_refresh(args) -> int:
             all_active.append(read_doc(vault, p))
         for p in iter_retired_docs(vault, parts):
             all_retired.append(read_doc(vault, p))
+        # done tasks are terminal: part of the graph (all_docs) for schema /
+        # broken-rel / supersede / duplicate checks, but excluded from
+        # active-only checks (stale / orphan / empty-lesson use all_active).
+        for p in iter_done_docs(vault, parts):
+            all_retired.append(read_doc(vault, p))
     all_docs = all_active + all_retired
     by_id = {d.doc_id: d for d in all_docs}
 
@@ -1593,7 +1719,7 @@ def cmd_refresh(args) -> int:
                                        "message": f"{d.doc_id}.relations.{field} → {v} (위키 문서 부재)"})
                 else:
                     tp_retired = "retired" in tp.relative_to(vault).parts
-                    if (not d.retired) and tp_retired and "active-ref-retired" in checks:
+                    if (not d.retired) and (not d.done) and tp_retired and "active-ref-retired" in checks:
                         issues.append({"check": "active-ref-retired", "path": str(d.path),
                                        "field": field, "target": v,
                                        "message": f"active {d.doc_id} → retired {v}"})
@@ -2096,6 +2222,18 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--superseded-by", default=None, dest="superseded_by")
     pr.add_argument("--dry-run", action="store_true")
     pr.set_defaults(func=cmd_retire)
+
+    pco = sub.add_parser("complete", help="mark a task done (move to task/done/)")
+    _sub_common(pco)
+    pco.add_argument("basename")
+    pco.add_argument("--dry-run", action="store_true")
+    pco.set_defaults(func=cmd_complete)
+
+    pre = sub.add_parser("reopen", help="reopen a done task (move back to task/)")
+    _sub_common(pre)
+    pre.add_argument("basename")
+    pre.add_argument("--dry-run", action="store_true")
+    pre.set_defaults(func=cmd_reopen)
 
     pq = sub.add_parser("recall", help="hierarchical query (read-only)")
     _sub_common(pq)

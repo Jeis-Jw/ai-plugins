@@ -26,3 +26,5 @@ audience: [human, agent]
 - [[DEC-2026-05-29-105325-refresh-fix-whitelist]] — v1 명확화: --fix는 index/retired-in-index 인자만 허용. bare --fix와 그 외 인자 모두 exit 2. 의미 판단 필요한 자동수정은 명시 capture/Edit으로.
 - [[DEC-2026-05-29-105326-plugin-agent-neutral-cli-schema]] — v1 명시화: CLI 인자/출력 메시지/frontmatter 필드명/알고리즘 명세에 Claude/Codex 등 agent 이름 없음. agent별 규약은 operating model로 격리.
 - [[DEC-2026-05-29-105327-promotion-threshold-in-plugin-spec]] — v1 신규: plugin은 capture된 문서가 타입별 구조/스키마를 만족하는지만 검증. 의미적 승격 가치 판정(누가 무엇을 언제)은 agent-operating-model.md 영역.
+- [[DEC-2026-05-29-181259-task-binary-state-github-sot]] — task는 활성과 완료 이진만 추적하고 done은 경로 이동으로 표현 — 독립은 위키 정본, 연결은 GitHub 정본이며 task-github가 done 투영과 reconcile을 담당하고 위키는 gh를 모른다. CLI는 complete와 reopen.
+- [[DEC-2026-05-29-181259-task-third-category]] — 결정과 취지를 이슈에 잇는 작업 브릿지 노드 task를 신설 — 제자리 갱신과 관계 보유를 조합한 순수 잎, relations는 intents/decisions/tasks/ssot, ID는 TASK 프리픽스, 경로는 wiki/task.

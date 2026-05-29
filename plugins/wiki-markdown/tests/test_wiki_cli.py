@@ -2108,5 +2108,183 @@ class WikiCliFuzzyReadTests(unittest.TestCase):
             self.assertIn("INT-2026-05-01-090000-auth-refactor", payload["path"])
 
 
+class WikiCliTaskTests(unittest.TestCase):
+    """task — 제3 범주 (record/living 아님): 이진 상태(활성/done), 순수 잎,
+    relations(intents/decisions/ssot/tasks), complete/reopen 생명주기."""
+
+    def _init(self, tmp):
+        result = run_cli("init", cwd=tmp)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def _seed_decision(self, tmp):
+        """intent + decision 시드. (full basenames 반환)"""
+        run_cli("capture", "intent", "--slug", "ship-fast",
+                "--title", "Ship fast", "--summary", "Be fast.",
+                "--tags", "flow", cwd=tmp, env={"WIKI_NOW": "2026-05-29T10:00:00"})
+        run_cli("capture", "decision", "--slug", "move-bff",
+                "--title", "Move BFF", "--summary", "BFF owns sessions.",
+                "--tags", "arch", "--intents", "ship-fast", cwd=tmp,
+                env={"WIKI_NOW": "2026-05-29T10:00:01"})
+        return ("INT-2026-05-29-100000-ship-fast",
+                "DEC-2026-05-29-100001-move-bff")
+
+    def _capture_task(self, tmp, *extra):
+        args = ["capture", "task", "--slug", "pay-bff",
+                "--title", "결제 BFF", "--summary", "결제 세션 BFF 이관.",
+                "--tags", "payment", "--decisions", "move-bff",
+                "--intents", "ship-fast", "--tasks", "owner/repo#42", *extra]
+        return run_cli(*args, cwd=tmp, env={"WIKI_NOW": "2026-05-29T10:00:02"})
+
+    def test_init_creates_task_folder_index_done_retired(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            v = Path(tmp) / "wiki"
+            self.assertTrue((v / "task" / "task.md").is_file())
+            self.assertTrue((v / "task" / "done").is_dir())
+            self.assertTrue((v / "task" / "retired").is_dir())
+
+    def test_capture_task_writes_relations_and_timestamp_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            intent_id, dec_id = self._seed_decision(tmp)
+            r = self._capture_task(tmp)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            tid = "TASK-2026-05-29-100002-pay-bff"
+            tpath = Path(tmp) / "wiki" / "task" / f"{tid}.md"
+            self.assertTrue(tpath.is_file())
+            text = tpath.read_text()
+            self.assertIn(f"intents: [{intent_id}]", text)
+            self.assertIn(f"decisions: [{dec_id}]", text)
+            self.assertIn("tasks: [owner/repo#42]", text)
+            self.assertNotIn("id:", text)
+            for sec in ("## 개요", "## 근거", "## 범위와 완료 기준"):
+                self.assertIn(sec, text)
+
+    def test_task_is_backlink_of_decision_and_intent(self):
+        # 핵심 기능: "이 결정이 낳은 작업" — task가 파생 백링크로 잡힌다.
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            intent_id, dec_id = self._seed_decision(tmp)
+            self._capture_task(tmp)
+            tid = "TASK-2026-05-29-100002-pay-bff"
+            r = run_cli("recall", "--backlinks-of", dec_id, "--json", cwd=tmp)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn(tid, [x["id"] for x in json.loads(r.stdout)["results"]])
+            r2 = run_cli("recall", "--backlinks-of", intent_id, "--json", cwd=tmp)
+            ids2 = [x["id"] for x in json.loads(r2.stdout)["results"]]
+            self.assertIn(tid, ids2)
+            self.assertIn(dec_id, ids2)  # decision도 같은 intent를 가리킴
+
+    def test_complete_moves_to_done_and_reopen_restores(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            self._seed_decision(tmp)
+            self._capture_task(tmp)
+            tid = "TASK-2026-05-29-100002-pay-bff"
+            v = Path(tmp) / "wiki"
+            active = v / "task" / f"{tid}.md"
+            done = v / "task" / "done" / f"{tid}.md"
+            r = run_cli("complete", tid, cwd=tmp)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertTrue(done.is_file())
+            self.assertFalse(active.is_file())
+            self.assertNotIn(f"[[{tid}]]", (v / "task" / "task.md").read_text())
+            self.assertNotEqual(run_cli("complete", tid, cwd=tmp).returncode, 0)
+            r2 = run_cli("reopen", tid, cwd=tmp)
+            self.assertEqual(r2.returncode, 0, r2.stderr)
+            self.assertTrue(active.is_file())
+            self.assertFalse(done.is_file())
+            self.assertNotEqual(run_cli("reopen", tid, cwd=tmp).returncode, 0)
+
+    def test_complete_rejects_non_task(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            _, dec_id = self._seed_decision(tmp)
+            self.assertEqual(run_cli("complete", dec_id, cwd=tmp).returncode, 2)
+
+    def test_task_rejects_supersedes_and_superseded_retire(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            self._seed_decision(tmp)
+            bad = run_cli("capture", "task", "--slug", "x",
+                          "--title", "X", "--summary", "x.", "--tags", "t",
+                          "--supersedes", "move-bff", cwd=tmp,
+                          env={"WIKI_NOW": "2026-05-29T10:00:03"})
+            self.assertEqual(bad.returncode, 2, bad.stderr)
+            run_cli("capture", "task", "--slug", "badt",
+                    "--title", "Bad", "--summary", "invalid.", "--tags", "t",
+                    cwd=tmp, env={"WIKI_NOW": "2026-05-29T10:00:04"})
+            badid = "TASK-2026-05-29-100004-badt"
+            sup = run_cli("retire", badid, "--type", "superseded",
+                          "--superseded-by", "move-bff", cwd=tmp)
+            self.assertEqual(sup.returncode, 2, sup.stderr)
+            dep = run_cli("retire", badid, "--type", "deprecated", cwd=tmp)
+            self.assertEqual(dep.returncode, 0, dep.stderr)
+            self.assertTrue((Path(tmp) / "wiki" / "task" / "retired"
+                             / f"{badid}.md").is_file())
+
+    def test_refresh_strict_clean_with_task(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            self._seed_decision(tmp)
+            self._capture_task(tmp)
+            r = run_cli("refresh", "--strict", "--json", cwd=tmp)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertEqual(json.loads(r.stdout)["issues"], [])
+
+    def test_done_task_is_backlink_of_decision_by_default(self):
+        # 회귀(Codex #2): 완료된 task도 기본 backlinks에 나와야 한다 —
+        # done은 유효한 terminal 상태이지 retired가 아니다.
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            _, dec_id = self._seed_decision(tmp)
+            self._capture_task(tmp)
+            tid = "TASK-2026-05-29-100002-pay-bff"
+            self.assertEqual(run_cli("complete", tid, cwd=tmp).returncode, 0)
+            # complete 후에도 기본(플래그 없이) backlinks에 task가 보여야 함
+            r = run_cli("recall", "--backlinks-of", dec_id, "--json", cwd=tmp)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn(tid, [x["id"] for x in json.loads(r.stdout)["results"]])
+
+    def test_capture_after_complete_no_basename_collision(self):
+        # 회귀(Codex #1a): done/으로 옮긴 뒤 같은 시각·slug로 재캡처해도
+        # basename이 충돌하지 않고 -b suffix가 붙어야 하며 vault는 clean.
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            self._seed_decision(tmp)
+            self._capture_task(tmp)              # WIKI_NOW 10:00:02 pay-bff
+            tid = "TASK-2026-05-29-100002-pay-bff"
+            self.assertEqual(run_cli("complete", tid, cwd=tmp).returncode, 0)
+            r = self._capture_task(tmp, "--json")  # 동일 WIKI_NOW + slug 재캡처
+            self.assertEqual(r.returncode, 0, r.stderr)
+            new_id = json.loads(r.stdout)["id"]
+            self.assertNotEqual(new_id, tid)      # 같은 basename 재사용 금지
+            self.assertTrue(new_id.endswith("-b"))
+            # duplicate-basename 검출 0
+            chk = run_cli("refresh", "--check", "duplicate-basename",
+                          "--strict", "--json", cwd=tmp)
+            self.assertEqual(chk.returncode, 0, chk.stdout + chk.stderr)
+            self.assertEqual(json.loads(chk.stdout)["issues"], [])
+
+    def test_complete_refuses_to_clobber_existing_done_file(self):
+        # 회귀(Codex #1b): done/에 동명 파일이 이미 있으면 complete가 덮어쓰지
+        # 않고 conflict(exit 5)로 거부해야 한다.
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            self._seed_decision(tmp)
+            self._capture_task(tmp)
+            tid = "TASK-2026-05-29-100002-pay-bff"
+            v = Path(tmp) / "wiki"
+            # done/에 동명 파일을 손으로 심어 충돌 상태를 만든다
+            (v / "task" / "done").mkdir(parents=True, exist_ok=True)
+            (v / "task" / "done" / f"{tid}.md").write_text(
+                "---\ntitle: planted\ncreated_at: 2026-05-29\n"
+                "summary: planted.\ntags: [x]\n---\n## 개요\n", encoding="utf-8")
+            r = run_cli("complete", tid, cwd=tmp)
+            self.assertEqual(r.returncode, 5, r.stdout + r.stderr)
+            # 원본은 active에 그대로 남아 있어야 함(이동 안 됨)
+            self.assertTrue((v / "task" / f"{tid}.md").is_file())
+
+
 if __name__ == "__main__":
     unittest.main()

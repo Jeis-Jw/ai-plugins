@@ -20,3 +20,6 @@ audience: [human, agent]
 - [[REJ-2026-05-29-105500-obs-classified-retired-type]] — Observation 분류 완료 상태를 위한 별도 retired_type(classified) + classified_as 필드 도입 안. lifecycle 축이 무효/대체에서 분류완료로 부풀어남. 2값 모델 유지로 반려.
 - [[REJ-2026-05-29-105501-promotion-auto-judgment]] — Plugin이 어떤 발견을 정식 record로 승격할지 자동 판정하는 안. 의미·운영 판단이라 자동화 시 거짓 양/음성 누적. plugin은 구조 검증만, 판정은 운영자로 반려.
 - [[REJ-2026-05-29-105502-upper-index-recursive-collection]] — ssot/ssot.md가 ssot/auth/auth-session.md 같은 하위 문서 summary까지 재귀 수집하는 안. nested 도입 의도(분할)와 충돌, 중복 노출, 부모 비대화. 폴더 단위 독립으로 반려.
+- [[REJ-2026-05-29-181259-task-as-immutable-record]] — task를 다른 record처럼 불변으로 두고 진행은 연결된 이슈에서만 본다 — 독립 사용 시 문서 내 상태 가시성이 없고 상태 변경마다 supersede가 비현실적이라 반려.
+- [[REJ-2026-05-29-181259-task-as-living-relax-invariant]] — task를 ssot처럼 living으로 두되 관계를 갖도록 기존 불변식을 완화하는 안 — 핵심 불변식을 훼손하므로 제3 범주 신설이 더 깨끗하여 반려.
+- [[REJ-2026-05-29-181259-wiki-holds-task-detailed-phase]] — 위키 task가 todo/doing/done 상세 단계를 추적하는 안 — 연결 시 GitHub 상태와 이중 정본 동기화 문제를 낳아, 이진(완료/미완)으로 축소하고 상세는 플러그인에 위임하기로 반려.

@@ -1,7 +1,7 @@
 ---
 title: 위키 데이터 모델
 created_at: 2026-05-29
-summary: 위키 그래프의 정적 구조 정본: 5종 record + 2종 living 타입 체계, basename 정본 ID, YAML 관계 모델(비대칭 작성). plugin-definition 영역의 sub-ssot.
+summary: 위키 그래프의 정적 구조 정본: 5종 record + 2종 living + 1종 task(제3 범주) 타입 체계, basename 정본 ID, YAML 관계 모델(비대칭 작성). plugin-definition 영역의 sub-ssot.
 tags: [wiki, data-model, ssot]
 verified_at: 2026-05-29
 ---
@@ -12,12 +12,14 @@ verified_at: 2026-05-29
 
 - **Living** (제자리 갱신): `ssot`, `runbook`
 - **Record** (불변 + supersede): `context/intent`, `context/decision`, `context/rejected_decision`, `context/trial_error`, `context/observation`
+- **Task** (제3 범주 — 제자리 갱신 + 관계 보유): `task`. 결정·취지를 외부 이슈에 잇는 브릿지 노드(순수 잎). 상태는 이진(활성 / 완료=`done/` 경로 이동), 상세 진행은 연결된 작업 플러그인에 위임 ([[wiki-lifecycle]]).
 
-→ [[DEC-2026-05-29-105231-wiki-type-taxonomy]] / [[DEC-2026-05-29-105322-observation-record-type]]
+→ [[DEC-2026-05-29-105231-wiki-type-taxonomy]] / [[DEC-2026-05-29-105322-observation-record-type]] / [[DEC-2026-05-29-181259-task-third-category]]
 
 ### ID 체계
 
 - Record basename: `<TYPE>-<YYYY-MM-DD-HHMMSS>-<slug>.md` (TYPE ∈ INT/DEC/REJ/TRI/OBS)
+- Task basename: `TASK-<YYYY-MM-DD-HHMMSS>-<slug>.md` (record와 동일 채번, 경로 `wiki/task/`)
 - Living basename: `<slug>.md`, **vault 전역 유일**
 - basename 자체가 정본 ID, YAML `id` 필드 없음
 - ssot/runbook은 영역이 커지면 **nested 폴더 허용** (예: `wiki/ssot/plugin-definition/`)
@@ -33,6 +35,7 @@ verified_at: 2026-05-29
   - `rejected_decision.relations`: intents(진 취지)
   - `trial_error.relations`: decisions, tasks
   - `observation.relations`: ssot, runbook, decisions, tasks
+  - `task.relations`: intents, decisions, ssot, tasks(외부 이슈) — **순수 잎**(다른 타입이 task를 가리키지 않음; 역방향은 파생 백링크)
   - `intent` / `ssot` / `runbook`: **relations 키 자체 없음** (불변식)
 - 양방향 *탐색* 보장, 양방향 *저장*은 supersede 쌍만 예외 ([[wiki-lifecycle]])
 
@@ -65,6 +68,7 @@ verified_at: 2026-05-29
 - [[DEC-2026-05-29-105322-observation-record-type]] — observation 신설
 - [[DEC-2026-05-29-105232-relations-asymmetric-write]] — 비대칭 관계 작성
 - [[DEC-2026-05-29-105319-nested-ssot-runbook-with-global-unique-basename]] — nested + 전역 유일
+- [[DEC-2026-05-29-181259-task-third-category]] — task 제3 범주 신설(작업↔결정 브릿지)
 
-반려 대안: [[REJ-2026-05-29-105454-sequential-numeric-id]] / [[REJ-2026-05-29-105456-wikilink-as-relation-source]] / [[REJ-2026-05-29-105458-living-writes-relations]].
+반려 대안: [[REJ-2026-05-29-105454-sequential-numeric-id]] / [[REJ-2026-05-29-105456-wikilink-as-relation-source]] / [[REJ-2026-05-29-105458-living-writes-relations]] / [[REJ-2026-05-29-181259-task-as-immutable-record]] / [[REJ-2026-05-29-181259-task-as-living-relax-invariant]].
 
