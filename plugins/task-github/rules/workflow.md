@@ -1,0 +1,107 @@
+# GitHub/Git 워크플로우 규약
+
+> 이 룰은 GitHub·Git 조작의 **공통 절차**다. 모든 스킬이 공유한다.
+
+---
+
+## 1. 라벨 체계
+
+라벨은 **2계열**로 나뉜다.
+
+### 상태 라벨 (작업 단계, 교체/제거)
+
+| 라벨 | 의미 |
+|------|------|
+| `in-progress` | 작업/재작업 중 |
+| `in-review` | 리뷰 대기/검토 중 |
+| `changes-requested` | 피드백 반영 필요 |
+
+### 기어 라벨 (작업 성격, 1개 필수, 영구 유지)
+
+| 라벨 | 의미 | 색상 |
+|------|------|------|
+| `gear:micro` | 자기 파일 내부 | `0E8A16` |
+| `gear:normal` | 자기 서비스 내부 | `FBCA04` |
+| `gear:major` | 외부 계약 변경 | `D93F0B` |
+
+> **불변식**: 상태 라벨은 "교체만", 기어 라벨은 "한 번 붙이면 유지". 정리 로직(done/review/merge)은 **상태 라벨만 제거하고 `gear:*`는 절대 건드리지 않는다.**
+
+---
+
+## 2. 상태 전이
+
+### Issue
+```
+(없음) ──start──► in-progress ──done(PR생성)──► in-review
+                                              │
+         ┌────────────────────────────────────┘
+         │ review
+         ▼
+  APPROVED → merge → (라벨 제거 + close)
+  CHANGES_REQUESTED → changes-requested ──run(재작업)──► in-progress
+```
+
+### PR
+```
+done(PR 생성, 라벨 없음) ──review 픽업──► in-review ──► APPROVED → merge
+                                                    └─► CHANGES_REQUESTED → changes-requested
+```
+- `done`은 PR을 **라벨 없이** 생성한다(Issue만 `in-review`로 전이). PR의 `in-review`는 **`review`가 픽업할 때** 부착한다(중복 검토 방지). 재작업 후 push 시 PR `in-progress`는 제거돼 다시 리뷰어 픽업 대기 상태(라벨 없음)로 돌아간다.
+
+### 위키 task 노드 (이진 상태, 연동 시)
+```
+define(capture) ──► 활성(wiki/task/) ──루트 이슈 close(merge)──► 완료(wiki/task/done/)
+                       완료 ──reopen(이슈 재오픈)──► 활성
+```
+- 연동 시 **GitHub 이슈가 상태 정본**, 위키 task는 그 투영. merge가 루트 이슈를 close하면 task를 `complete`로 전이. 상세는 [wiki-bridge.md](wiki-bridge.md).
+
+### 중복 방지 쿼리 (team 협업)
+```bash
+is:open is:issue label:in-progress,in-review                  # 점유됨(건드리지 않음)
+is:open is:issue label:changes-requested                      # 재작업 대기(원작업자 우선)
+is:open is:issue -label:in-progress -label:in-review -label:changes-requested no:assignee  # 가용
+is:open is:pr -label:in-review -label:in-progress             # 리뷰 가능 PR
+```
+
+---
+
+## 3. 브랜치 · 커밋 · 워크트리
+
+| 항목 | 규칙 |
+|------|------|
+| 메인 브랜치 | `main` |
+| 작업 브랜치 | `task/issue-{N}` |
+| 워크트리 경로 | `.claude/worktrees/issue-{N}` |
+| 커밋 형식 | `{type}: {요약} (#{N}) — {Why}` |
+| 커밋 type | `feat`/`fix`/`docs`/`refactor`/`test`/`chore` |
+| 커밋 원칙 | 원자적(1커밋=1논리변경), WIP 금지 |
+
+워크트리 사용 조건: 병렬 작업 / main 오염 방지 / 다중 브랜치 전환.
+```bash
+git worktree add .claude/worktrees/issue-{N} -b task/issue-{N}
+git worktree remove .claude/worktrees/issue-{N} && git branch -d task/issue-{N}
+```
+- `.worktreeinclude` 파일이 있으면 gitignore된 파일(`.env` 등)을 워크트리로 복사.
+- 진입 후 `git status --short`로 잔재 점검 — 있으면 `git clean -fd` **제안만**(자동 실행 금지).
+
+---
+
+## 4. PR 규약
+
+PR 본문은 다음을 포함한다:
+```
+Closes #{N}
+
+## 구현 결과
+- 무엇을 만들었는가
+
+## 테스트 증거
+- 어떻게 검증했는가
+
+## 검토 포인트
+- 사령관이 특히 확인할 부분
+```
+
+---
+
+*이 룰이 바뀌면 모든 스킬의 GitHub 조작이 바뀐다.*
