@@ -8,8 +8,14 @@
     {
       "name": "wiki-markdown",
       "source": "./plugins/wiki-markdown",
-      "description": "Markdown-backed AI-native wiki (v1) — filesystem-primary decision graph. Captures intents/decisions/rejections/trial-error/observations and manages SSOT/runbook with deterministic CLI, 3-stage recall, and 13 integrity checks.",
-      "version": "0.2.0"
+      "description": "Markdown-backed AI-native wiki — filesystem-primary decision graph. Captures intents/decisions/rejections/trial-error/observations, task bridge nodes, and manages SSOT/runbook with deterministic CLI, 3-stage recall, and integrity checks.",
+      "version": "0.3.0"
+    },
+    {
+      "name": "task-github",
+      "source": "./plugins/task-github",
+      "description": "GitHub 기반 자율 작업 프로토콜 — Issue 추적·Plan Mode·PR 검증을 wiki-markdown task 노드로 결정 그래프와 연계. 프로파일·기어·플로우 3축 분류, 10개 스킬, PR 검증 서브에이전트.",
+      "version": "3.0.0"
     }
   ]
 }
