@@ -5,6 +5,4 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 
-# 로컬 전용 (커밋 안 함)
-.claude/
-backup/
+*.local.*
