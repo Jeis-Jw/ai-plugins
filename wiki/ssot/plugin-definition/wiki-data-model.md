@@ -1,0 +1,70 @@
+---
+title: 위키 데이터 모델
+created_at: 2026-05-29
+summary: 위키 그래프의 정적 구조 정본: 5종 record + 2종 living 타입 체계, basename 정본 ID, YAML 관계 모델(비대칭 작성). plugin-definition 영역의 sub-ssot.
+tags: [wiki, data-model, ssot]
+verified_at: 2026-05-29
+---
+
+## 현재 상태
+
+### 타입 체계
+
+- **Living** (제자리 갱신): `ssot`, `runbook`
+- **Record** (불변 + supersede): `context/intent`, `context/decision`, `context/rejected_decision`, `context/trial_error`, `context/observation`
+
+→ [[DEC-2026-05-29-105231-wiki-type-taxonomy]] / [[DEC-2026-05-29-105322-observation-record-type]]
+
+### ID 체계
+
+- Record basename: `<TYPE>-<YYYY-MM-DD-HHMMSS>-<slug>.md` (TYPE ∈ INT/DEC/REJ/TRI/OBS)
+- Living basename: `<slug>.md`, **vault 전역 유일**
+- basename 자체가 정본 ID, YAML `id` 필드 없음
+- ssot/runbook은 영역이 커지면 **nested 폴더 허용** (예: `wiki/ssot/plugin-definition/`)
+
+→ [[DEC-2026-05-29-105230-record-living-id-system]] / [[DEC-2026-05-29-105319-nested-ssot-runbook-with-global-unique-basename]]
+
+### 관계 모델
+
+- 정본 = frontmatter YAML의 plain basename (본문 wikilink는 사람용 장식, [[wiki-external-tools-policy]] 참조)
+- **Record만 작성**, 허브(intent/ssot/runbook)는 **백링크로 파생**
+- 작성 테이블:
+  - `decision.relations`: intents(이긴 취지), rejected_decisions, ssot, tasks
+  - `rejected_decision.relations`: intents(진 취지)
+  - `trial_error.relations`: decisions, tasks
+  - `observation.relations`: ssot, runbook, decisions, tasks
+  - `intent` / `ssot` / `runbook`: **relations 키 자체 없음** (불변식)
+- 양방향 *탐색* 보장, 양방향 *저장*은 supersede 쌍만 예외 ([[wiki-lifecycle]])
+
+→ [[DEC-2026-05-29-105232-relations-asymmetric-write]]
+
+### Frontmatter 코어
+
+- 공통 필수: `title`, `created_at`, `summary`, `tags`
+- 타입별 한정 (요지):
+  - `verified_at`: living 권장, trial_error/observation 선택, intent/decision/rejected 없음
+  - `affects_paths`: ssot/runbook/trial_error/observation 선택 ([[wiki-retrieval]])
+  - `search_terms`: 전 타입 선택 (recognized optional)
+- 금지: `id`, `status`, `classified_as`
+- 생명주기 필드는 top-level (relations 안에 두지 않음): `supersedes`, `superseded_by`, `retired_at`, `retired_type` ([[wiki-lifecycle]])
+
+## 취지
+
+이 데이터 모델이 추구하는 일급 원칙:
+
+- [[INT-2026-05-29-104708-atomic-knowledge-records]] — 각 record가 독립 라이프사이클
+- [[INT-2026-05-29-104712-parallel-safe-headless-operation]] — timestamp+slug 채번이 병렬 충돌 0
+- [[INT-2026-05-29-104707-token-efficient-context-loading]] — 작은 단위 → 선택 읽기
+
+## 구성요소
+
+이 영역에 응집된 결정 anchor:
+
+- [[DEC-2026-05-29-105230-record-living-id-system]] — 이중 ID 체계
+- [[DEC-2026-05-29-105231-wiki-type-taxonomy]] — 5종 record + 2종 living
+- [[DEC-2026-05-29-105322-observation-record-type]] — observation 신설
+- [[DEC-2026-05-29-105232-relations-asymmetric-write]] — 비대칭 관계 작성
+- [[DEC-2026-05-29-105319-nested-ssot-runbook-with-global-unique-basename]] — nested + 전역 유일
+
+반려 대안: [[REJ-2026-05-29-105454-sequential-numeric-id]] / [[REJ-2026-05-29-105456-wikilink-as-relation-source]] / [[REJ-2026-05-29-105458-living-writes-relations]].
+

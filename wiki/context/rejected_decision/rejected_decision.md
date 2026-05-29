@@ -1,0 +1,22 @@
+---
+title: Rejected Decisions — 반려된 대안
+created_at: 2026-05-29
+summary: 이 대안이 섬길 진 취지를 보유(record).
+tags: [meta]
+audience: [human, agent]
+---
+
+# Rejected Decisions — 반려된 대안
+
+이 대안이 섬길 진 취지를 보유(record).
+
+## 노트
+
+- [[REJ-2026-05-29-105454-sequential-numeric-id]] — DEC-00005 같은 5자리 순차 번호 ID. 단일 채번자·전역 max 스캔 + 병렬 브랜치 충돌 + 재채번 불가 = 병렬과 양립 불가. timestamp+slug로 반려.
+- [[REJ-2026-05-29-105456-wikilink-as-relation-source]] — 관계 정본을 본문 [[wikilink]]로 두자는 안. 코드블록 오탐, 파싱 모호, 양방향 정합성 검사 곤란, obsidian-cli 절단 전제 붕괴로 반려. YAML plain ID가 정본.
+- [[REJ-2026-05-29-105457-obsidian-cli-primary-search]] — AI 검색의 1차 경로로 obsidian-cli/Dataview/Bases를 쓰자는 안. 캐시 신선도 지연, 헤드리스 미동작, 데이터모델이 강점을 이미 대체. filesystem+ripgrep 단일로 반려.
+- [[REJ-2026-05-29-105458-living-writes-relations]] — ssot/runbook이 자기 frontmatter에 relations를 쓰자는 안. 스키마 검증 복잡화, 허브 헤더 비대화. 늦게 발견된 영향은 새 record가 가리키게 해서 반려.
+- [[REJ-2026-05-29-105459-plugin-spec-with-agent-names]] — CLI 인자/스키마/알고리즘 출력에 Claude/Codex 같은 특정 도구 이름 박는 안. 미래 도구 호환성 깨짐. agent별 규약은 operating model로 격리해 반려.
+- [[REJ-2026-05-29-105500-obs-classified-retired-type]] — Observation 분류 완료 상태를 위한 별도 retired_type(classified) + classified_as 필드 도입 안. lifecycle 축이 무효/대체에서 분류완료로 부풀어남. 2값 모델 유지로 반려.
+- [[REJ-2026-05-29-105501-promotion-auto-judgment]] — Plugin이 어떤 발견을 정식 record로 승격할지 자동 판정하는 안. 의미·운영 판단이라 자동화 시 거짓 양/음성 누적. plugin은 구조 검증만, 판정은 운영자로 반려.
+- [[REJ-2026-05-29-105502-upper-index-recursive-collection]] — ssot/ssot.md가 ssot/auth/auth-session.md 같은 하위 문서 summary까지 재귀 수집하는 안. nested 도입 의도(분할)와 충돌, 중복 노출, 부모 비대화. 폴더 단위 독립으로 반려.

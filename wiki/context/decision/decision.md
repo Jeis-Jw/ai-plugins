@@ -1,0 +1,28 @@
+---
+title: Decisions — 결정
+created_at: 2026-05-29
+summary: 결정·취지·트레이드오프·재평가 조건(record).
+tags: [meta]
+audience: [human, agent]
+---
+
+# Decisions — 결정
+
+결정·취지·트레이드오프·재평가 조건(record).
+
+## 노트
+
+- [[DEC-2026-05-29-105230-record-living-id-system]] — Record는 TYPE-YYYY-MM-DD-HHMMSS-slug, living은 slug만 사용. basename이 정본 ID, YAML id 필드 없음.
+- [[DEC-2026-05-29-105231-wiki-type-taxonomy]] — ssot/runbook(living) + context의 intent/decision/rejected_decision/trial_error/observation(record)으로 분리. fact·pattern·overview·planning은 흡수/이관.
+- [[DEC-2026-05-29-105232-relations-asymmetric-write]] — 관계 정본은 frontmatter YAML의 plain basename. record(decision/rejected/trial/observation)만 작성하고 허브(intent/ssot/runbook)는 백링크로 파생.
+- [[DEC-2026-05-29-105233-obsidian-zero-runtime-dependency]] — AI 검색 정본은 filesystem 단일(ripgrep+YAML). obsidian-cli/Dataview/Bases는 AI 파이프라인 제외. wikilink는 사람용 장식.
+- [[DEC-2026-05-29-105234-retire-two-value-model]] — 모든 record(OBS 포함)는 deprecated(틀림/무효) 또는 superseded(새 record로 대체) 2값으로 retire. classified 같은 별도 분류 축 미도입.
+- [[DEC-2026-05-29-105318-four-layer-separation]] — v1 시점 결정: 4계층 분리 = plugin 메커니즘 / agent-operating-model.md 정책 / CLAUDE.md·AGENTS.md agent entry / wiki/* knowledge. v0 3계층 분리를 supersede.
+- [[DEC-2026-05-29-105319-nested-ssot-runbook-with-global-unique-basename]] — v1 시점 결정: ssot/runbook은 하위 폴더 허용. basename은 vault 전역 유일. resolver 단순성 + nested 분할 가능성 양립. v0 평면 디렉토리 supersede.
+- [[DEC-2026-05-29-105321-folder-independent-index-derivation]] — v1 시점 결정: 재귀=폴더 발견, 비재귀=노트 수집. 각 폴더 인덱스는 직속 문서만 모음. 상위는 하위 문서 summary 중복 수집 안 함. v0 단순 폴더 인덱스 supersede.
+- [[DEC-2026-05-29-105322-observation-record-type]] — v1 신규: 실행 중 발견했지만 아직 결정/교훈/정본 갱신으로 분류하기 이른 사실을 안전하게 보존하는 임시 record. 다른 record와 같은 2값 supersede 모델.
+- [[DEC-2026-05-29-105323-affects-paths-and-changed-path-stale]] — v1 신규: ssot/runbook/trial_error/observation의 affects_paths(glob) + git diff 매칭으로 verified_at 미갱신 문서 자동 식별. 코드 변경발 drift 능동 감지.
+- [[DEC-2026-05-29-105324-search-terms-recognized-optional]] — v1 신규: 전 타입 선택 필드. capture 기본 생성 X, refresh 누락 검사 X, recall Stage 1 매칭 O. summary+tags+본문 외 검색 escape hatch.
+- [[DEC-2026-05-29-105325-refresh-fix-whitelist]] — v1 명확화: --fix는 index/retired-in-index 인자만 허용. bare --fix와 그 외 인자 모두 exit 2. 의미 판단 필요한 자동수정은 명시 capture/Edit으로.
+- [[DEC-2026-05-29-105326-plugin-agent-neutral-cli-schema]] — v1 명시화: CLI 인자/출력 메시지/frontmatter 필드명/알고리즘 명세에 Claude/Codex 등 agent 이름 없음. agent별 규약은 operating model로 격리.
+- [[DEC-2026-05-29-105327-promotion-threshold-in-plugin-spec]] — v1 신규: plugin은 capture된 문서가 타입별 구조/스키마를 만족하는지만 검증. 의미적 승격 가치 판정(누가 무엇을 언제)은 agent-operating-model.md 영역.
