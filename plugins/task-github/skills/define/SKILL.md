@@ -5,7 +5,7 @@ description: 업무를 GitHub Issue(루트 + 트리)로 등록하고, 위키가 
 
 # define — 업무 정의 (루트 이슈 + 위키 task 노드)
 
-작업을 Issue(단일 또는 트리)로 구조화하고, **위키가 있으면 업무 단위로 task 노드를 1:1 연결**한다. **등록 전 반드시 사령관 확인.**
+작업을 Issue(단일 또는 트리)로 구조화하고, 필요하면 하위 작업 간 GitHub Issue dependency를 정의한다. **위키가 있으면 업무 단위로 task 노드를 1:1 연결**한다. **등록 전 반드시 사령관 확인.**
 
 > **업무 1개 = 루트 이슈 1개 + 위키 task 노드 1개.** task 노드는 업무(루트) 단위이며 **리프마다 만들지 않는다.** ([wiki-bridge.md](../../rules/wiki-bridge.md) §4)
 
@@ -31,6 +31,7 @@ $ARGUMENTS:
 ```bash
 # 레포 정보 (owner/repo + repository node id 확보)
 read OWNER REPO < <(gh repo view --json owner,name --jq '"\(.owner.login) \(.name)"')
+API_VERSION="2026-03-10"
 REPO_ID=$(gh api graphql -f query='query($o:String!,$r:String!){ repository(owner:$o,name:$r){ id } }' -F o="$OWNER" -F r="$REPO" --jq '.data.repository.id')
 
 # 루트 이슈 — 생성과 동시에 번호를 확보 (이후 단계가 ROOT를 쓴다)
@@ -40,9 +41,22 @@ ROOT=$(gh issue create --title "{title}" --body "{body}
 (define이 task 노드 연결 후 채움)" | grep -oE '[0-9]+$')
 echo "루트 이슈 #$ROOT"
 
-# (분해 시) 서브이슈 — 부모 node id 확보 후 GraphQL 연결
+# (분해 시) 서브이슈 — 부모 node id 확보 후 GraphQL 연결.
+# 생성한 번호는 dependency 연결에서 다시 쓰므로 변수로 보관한다.
 PARENT_ID=$(gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){ repository(owner:$o,name:$r){ issue(number:$n){ id } } }' -F o="$OWNER" -F r="$REPO" -F n=$ROOT --jq '.data.repository.issue.id')
-gh api graphql -f query='mutation($rid:ID!,$pid:ID!,$t:String!,$b:String!){ createIssue(input:{ repositoryId:$rid, parentIssueId:$pid, title:$t, body:$b }){ issue { number url } } }' -F rid="$REPO_ID" -F pid="$PARENT_ID" -F t="{제목}" -F b="{본문}"
+CHILD=$(gh api graphql -f query='mutation($rid:ID!,$pid:ID!,$t:String!,$b:String!){ createIssue(input:{ repositoryId:$rid, parentIssueId:$pid, title:$t, body:$b }){ issue { number url } } }' -F rid="$REPO_ID" -F pid="$PARENT_ID" -F t="{제목}" -F b="{본문}" --jq '.data.createIssue.issue.number')
+```
+
+분해 기준이 단계/선후관계/공유 계약을 포함하면 각 하위 작업의 dependency도 함께 생성한다([dependencies.md](../../rules/dependencies.md)):
+```bash
+# 예: 이 하위 이슈 $CHILD가 선행 이슈 $BLOCKER 완료 뒤에만 시작 가능할 때
+BLOCKER_ID=$(gh api -H "X-GitHub-Api-Version: $API_VERSION" \
+  "repos/$OWNER/$REPO/issues/$BLOCKER" --jq '.id')
+
+gh api -X POST -H "X-GitHub-Api-Version: $API_VERSION" \
+  "repos/$OWNER/$REPO/issues/$CHILD/dependencies/blocked_by" \
+  -F issue_id="$BLOCKER_ID" \
+  || gh issue comment "$CHILD" --body "[관찰] dependency API 실패: 이 이슈는 #$BLOCKER 완료 뒤 진행되어야 한다. GitHub dependency가 기록되지 않았으므로 start 전 수동 확인 필요."
 ```
 5. **(위키 가용 시) task 노드 생성 + 연결** (제안 후 확인) — **생성한 TASK ID를 확보해 루트 이슈 본문에 실제로 기록**한다. merge/done이 이 본문의 `[[TASK-...]]`를 읽어 완료 전이하므로(읽는 쪽의 전제), 여기서 반드시 실제 ID를 박아야 한다([wiki-bridge.md](../../rules/wiki-bridge.md) §4):
 ```bash
@@ -78,12 +92,23 @@ gh issue edit "$ROOT" --body "$NEW_BODY"
 
 ### 모드 C — 기준에 따라 분해
 1. 기준(도메인/계층/단계 등)에 따라 서브이슈 목록 제시
+   - 각 하위 이슈의 `blocked_by` 목록도 함께 제시한다.
+   - dependency가 없으면 병렬 가능으로 표시한다.
+   - 예: `#B blocked_by #A` = B는 A 완료 뒤 시작.
 2. 사령관 확인
 3. 각 서브이슈를 GraphQL로 생성 (부모 연결)
-4. **task 노드는 새로 만들지 않는다** — 루트의 task 노드를 자식들이 공유. (분해는 구조 변경이지 새 업무가 아님)
+4. 필요한 dependency를 REST Issue dependency로 생성
+5. **task 노드는 새로 만들지 않는다** — 루트의 task 노드를 자식들이 공유. (분해는 구조 변경이지 새 업무가 아님)
+
+### 전 모드 — Knowledge Capture Audit
+업무 정의 과정에서 새 결정·반려·관찰이 생기면 [knowledge-capture.md](../../rules/knowledge-capture.md)에 따라 처리한다.
+- 자동 분해 기준, dependency 방향, rejected split 기준처럼 장기 운영 판단이면 `decision`/`rejected_decision` 후보로 제안한다.
+- 분류 전 발견은 `observation`으로 자동 캡처할 수 있다.
+- 후보가 없으면 `none`과 이유를 등록 전 확인안에 포함한다.
 
 ## 불변식
 - **자동 분해 금지** — 기준 없이 분해하지 않는다. 기준은 사령관이 준다.
+- 하위 작업 선후관계는 GitHub Issue dependency가 정본이다. `parallel`/`sequential` 라벨은 만들지 않는다.
 - **기어 라벨을 붙이지 않는다** — define은 구조 생성만(기어는 start의 책임).
 - **task 노드는 업무(루트) 1:1** — 리프·서브이슈마다 만들지 않는다.
 - task 노드 캡처는 **제안 후 확인**. 위키 미가용이면 이슈만 만들고 task 노드는 스킵(정상).

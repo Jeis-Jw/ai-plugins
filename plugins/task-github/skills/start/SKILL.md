@@ -43,18 +43,33 @@ gh issue edit $N --add-assignee @me --add-label "in-progress" --add-label "gear:
 5. 다음 단계 권장 — micro이므로 `run {N}` 또는 직접 편집 후 `done {N}`. (micro 단발이라 대화 요약 코멘트·위키 task 노드 주입은 생략 — 그 맥락이 필요한 업무면 애초에 define 경로로 갔어야 한다.)
 
 ### 모드 B — 기존 이슈 점유
-1. 이슈 현황 + 트리 관계 확인 (open과 동일 조회)
+1. 이슈 현황 + 트리 관계 + dependency 확인 (open과 동일 조회)
 2. **컨테이너 차단**: 자식 있으면 작업 불가 안내
-3. 점유 가능 판단:
+3. **dependency 차단**: 열린 `blocked_by`가 있으면 작업 불가 안내
+```bash
+read OWNER REPO < <(gh repo view --json owner,name --jq '"\(.owner.login) \(.name)"')
+API_VERSION="2026-03-10"
+OPEN_BLOCKERS=$(gh api -H "X-GitHub-Api-Version: $API_VERSION" \
+  "repos/$OWNER/$REPO/issues/{N}/dependencies/blocked_by" \
+  --jq '[.[] | select(.state == "open") | "#\(.number) \(.title)"] | join("\n")')
+
+if [ -n "$OPEN_BLOCKERS" ]; then
+  echo "차단: 이 이슈는 아직 열린 blocker가 있습니다."
+  printf '%s\n' "$OPEN_BLOCKERS"
+  exit 1
+fi
+```
+dependency API 조회가 실패하면 자동 점유하지 않는다. 사령관에게 수동 확인 필요성을 보고하고, override 지시가 있을 때만 `[결정] dependency override` 코멘트를 남긴 뒤 진행한다([dependencies.md](../../rules/dependencies.md)).
+4. 점유 가능 판단:
    - `in-progress`/`in-review` → 차단
    - `changes-requested` + 타인 Assignee → 경고 후 확인
    - 그 외 → 가용
-4. 점유 + 기어 라벨 부여/유지:
+5. 점유 + 기어 라벨 부여/유지:
 ```bash
 gh issue edit {N} --add-assignee @me --add-label "in-progress"
 # 기어 라벨 없으면 재판단 후 부여; 있으면 유지(재판단 결과가 다르면 사령관 확인 후 교체)
 ```
-5. 기어별 다음 단계 권장 호출 제시
+6. 기어별 다음 단계 권장 호출 제시
 
 ### (전 모드) 위키 task 맥락 주입 — normal/major
 ```bash
@@ -68,5 +83,6 @@ gh issue edit {N} --add-assignee @me --add-label "in-progress"
 ## 불변식
 - 기어 판단·라벨 부여의 **단일 책임 지점**. (기존 gear 라벨 있으면 유지, 없으면 부여)
 - 컨테이너 이슈는 작업 대상이 아니다(차단).
+- 열린 `blocked_by`가 있는 이슈는 작업 대상이 아니다(차단).
 - 점유 중복 방지 — 타인 점유 Issue는 사령관 확인 없이 시작 금지.
 - start는 위키를 **읽기만**(recall) — task 노드 생성은 define의 책임.

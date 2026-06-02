@@ -65,7 +65,19 @@ is:open is:pr -label:in-review -label:in-progress             # 리뷰 가능 PR
 
 ---
 
-## 3. 브랜치 · 커밋 · 워크트리
+## 3. Issue dependency
+
+GitHub sub-issue는 업무 분해 구조이고, 작업 선후관계는 GitHub Issue dependencies가 정본이다. 자세한 절차는 [dependencies.md](dependencies.md).
+
+| 관계 | 의미 | 워크플로우 효과 |
+|------|------|----------------|
+| dependency 없음 | 선행 제약 없음 | 병렬 가능 |
+| `blocked_by` | 선행 이슈 완료 대기 | 열린 blocker가 있으면 `start`/`run`/`done`/`merge` 차단 |
+| `blocking` | downstream을 막음 | 완료 후 downstream ready 후보 안내 |
+
+---
+
+## 4. 브랜치 · 커밋 · 워크트리
 
 | 항목 | 규칙 |
 |------|------|
@@ -86,7 +98,7 @@ git worktree remove .claude/worktrees/issue-{N} && git branch -d task/issue-{N}
 
 ---
 
-## 4. PR 규약
+## 5. PR 규약
 
 PR 본문은 다음을 포함한다:
 ```

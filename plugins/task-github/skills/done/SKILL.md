@@ -15,6 +15,24 @@ $ARGUMENTS: {N}
 
 ## 절차
 
+### dependency 차단 재확인
+완료 처리 전에 열린 blocker를 다시 확인한다. blocker가 열려 있으면 이 이슈를 PR/close로 넘기지 않는다:
+```bash
+read OWNER REPO < <(gh repo view --json owner,name --jq '"\(.owner.login) \(.name)"')
+API_VERSION="2026-03-10"
+OPEN_BLOCKERS=$(gh api -H "X-GitHub-Api-Version: $API_VERSION" \
+  "repos/$OWNER/$REPO/issues/{N}/dependencies/blocked_by" \
+  --jq '[.[] | select(.state == "open") | "#\(.number) \(.title)"] | join("\n")')
+
+if [ -n "$OPEN_BLOCKERS" ]; then
+  gh issue comment {N} --body "[중단] 열린 blocker가 있어 done을 중단합니다.
+
+$OPEN_BLOCKERS"
+  exit 1
+fi
+```
+dependency API 조회가 실패하면 자동 종료하지 않고 사령관에게 수동 확인을 요청한다([dependencies.md](../../rules/dependencies.md)).
+
 ### 경로 판단
 ```bash
 git worktree list
@@ -41,7 +59,14 @@ PR=$(gh pr create --title "{type}: {요약} (#{N})" --body "Closes #{N}
 ..." | grep -oE '[0-9]+$')
 echo "PR #$PR"
 ```
-4. 로컬 정리:
+4. downstream 확인 — PR 머지 전까지 downstream은 아직 GitHub상 blocked 상태일 수 있다:
+```bash
+BLOCKING=$(gh api -H "X-GitHub-Api-Version: $API_VERSION" \
+  "repos/$OWNER/$REPO/issues/{N}/dependencies/blocking" \
+  --jq '[.[] | select(.state == "open") | "#\(.number) \(.title)"] | join("\n")')
+[ -n "$BLOCKING" ] && printf 'PR 머지 후 재검토할 downstream:\n%s\n' "$BLOCKING"
+```
+5. 로컬 정리:
 ```bash
 git worktree remove .claude/worktrees/issue-{N} 2>/dev/null || true
 git checkout main && git branch -d task/issue-{N} 2>/dev/null || true
@@ -54,6 +79,11 @@ gh issue comment {N} --body "## 결과
 ..."
 gh issue edit {N} --remove-label "in-progress" --remove-label "in-review" --remove-label "changes-requested"
 gh issue close {N}
+
+BLOCKING=$(gh api -H "X-GitHub-Api-Version: $API_VERSION" \
+  "repos/$OWNER/$REPO/issues/{N}/dependencies/blocking" \
+  --jq '[.[] | select(.state == "open") | "#\(.number) \(.title)"] | join("\n")')
+[ -n "$BLOCKING" ] && printf '이 이슈 close 후 재검토할 downstream:\n%s\n' "$BLOCKING"
 ```
 **gear:* 라벨 유지.**
 
@@ -97,8 +127,19 @@ fi
 ```
   `{N}`이 컨테이너의 리프 중 하나일 뿐이면(부모 있음) task 전이는 하지 않는다(업무 미완료) — 마지막 자식까지 끝나 루트가 닫힐 때 `merge`/reconcile이 처리.
 
+### Knowledge Capture Audit
+최종 보고 전에 [knowledge-capture.md](../../rules/knowledge-capture.md)에 따라 감사한다.
+```bash
+[ -d "./wiki" ] && wiki recall "{작업 키워드}" --stage 1 --limit 10 --json
+```
+- 작업 중 자동 캡처한 observation이 있으면 `recorded`와 OBS ID를 보고한다.
+- decision/rejected_decision/trial_error/ssot/runbook 후보가 있으면 제목·요약·태그·관계와 함께 `proposed`로 보고한다.
+- 없으면 `none`과 이유를 보고한다.
+
 ## 불변식
 - PR은 코드 변경이 있을 때만 생성.
 - 상태 라벨만 정리, `gear:*` 유지.
+- 열린 `blocked_by`가 있으면 종료 금지. 종료 후 `blocking` downstream을 안내.
 - 위키 드리프트는 **안내만**(경로 A 한정) — done이 위키를 자동 수정하지 않는다.
 - task 노드 done 전이: 경로 A는 merge에 위임, 경로 B는 **루트 이슈를 직접 close할 때만** done이 수행.
+- 최종 보고 전에 Knowledge Capture Audit 결과를 포함한다.

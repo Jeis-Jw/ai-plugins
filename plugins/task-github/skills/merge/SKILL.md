@@ -28,22 +28,46 @@ ISSUE=$(gh pr view {PR} --json body,headRefName \
 HEADREF=$(gh pr view {PR} --json headRefName --jq .headRefName)
 echo "연결 이슈 #$ISSUE / 브랜치 $HEADREF"
 ```
-> 분해된 업무라면 이 `$ISSUE`가 컨테이너의 리프일 수 있다. Step 5의 task 전이는 **업무 루트**가 닫힐 때만 하므로, 부모를 거슬러 루트를 따로 확인한다(아래).
+> 분해된 업무라면 이 `$ISSUE`가 컨테이너의 리프일 수 있다. Step 6의 task 전이는 **업무 루트**가 닫힐 때만 하므로, 부모를 거슬러 루트를 따로 확인한다(아래).
 
-### Step 3. 라벨 정리 (상태만, gear 유지)
+### Step 3. dependency 차단 재확인
+머지 전에 연결 이슈의 열린 blocker를 확인한다. blocker가 열려 있으면 PR을 머지하지 않는다:
+```bash
+read OWNER REPO < <(gh repo view --json owner,name --jq '"\(.owner.login) \(.name)"')
+API_VERSION="2026-03-10"
+OPEN_BLOCKERS=$(gh api -H "X-GitHub-Api-Version: $API_VERSION" \
+  "repos/$OWNER/$REPO/issues/$ISSUE/dependencies/blocked_by" \
+  --jq '[.[] | select(.state == "open") | "#\(.number) \(.title)"] | join("\n")')
+
+if [ -n "$OPEN_BLOCKERS" ]; then
+  gh issue comment "$ISSUE" --body "[중단] 열린 blocker가 있어 merge를 중단합니다.
+
+$OPEN_BLOCKERS"
+  exit 1
+fi
+```
+dependency API 조회가 실패하면 자동 머지하지 않고 사령관에게 수동 확인을 요청한다.
+
+### Step 4. 라벨 정리 (상태만, gear 유지)
 ```bash
 gh pr edit {PR} --remove-label "in-review" --remove-label "in-progress" --remove-label "changes-requested" 2>/dev/null || true
 gh issue edit "$ISSUE" --remove-label "in-review" --remove-label "in-progress" --remove-label "changes-requested" 2>/dev/null || true
 ```
 
-### Step 4. 머지 + 브랜치 정리
+### Step 5. 머지 + 브랜치 정리
 ```bash
 gh pr merge {PR} --merge --delete-branch
+
+BLOCKING=$(gh api -H "X-GitHub-Api-Version: $API_VERSION" \
+  "repos/$OWNER/$REPO/issues/$ISSUE/dependencies/blocking" \
+  --jq '[.[] | select(.state == "open") | "#\(.number) \(.title)"] | join("\n")')
+[ -n "$BLOCKING" ] && printf '이 머지 후 재검토할 downstream:\n%s\n' "$BLOCKING"
+
 git branch -d "$HEADREF" 2>/dev/null || true
 git checkout main && git pull
 ```
 
-### Step 5. (위키 가용 시) task 노드 done 전이 + 드리프트 확정
+### Step 6. (위키 가용 시) task 노드 done 전이 + 드리프트 확정
 ```bash
 [ -d "./wiki" ] && echo "위키 가용"
 ```
@@ -71,8 +95,16 @@ fi
 GitHub 이슈가 상태 정본이고 위키 done/는 투영이다([wiki-bridge.md](../../rules/wiki-bridge.md) §5). task 노드 ID는 루트 이슈 `## Wiki Context`가 정본 — `--backlinks-of`는 외부 이슈 ref(`owner/repo#N`)를 역링크 대상으로 찾지 못하므로 쓰지 않는다([wiki-bridge.md](../../rules/wiki-bridge.md) §4).
 2. **영향 record 갱신 안내** — done의 drift 리포트에 걸렸던 ssot/runbook은 `verified_at` 갱신 또는 supersede **안내**(자동 변경 안 함).
 
+### Step 7. Knowledge Capture Audit
+최종 보고 전에 [knowledge-capture.md](../../rules/knowledge-capture.md)에 따라 감사한다.
+- 이 머지로 완료된 업무에서 새 observation/decision/trial_error 후보가 생겼는지 확인한다.
+- `blocking` downstream 안내가 운영상 새 교훈이나 runbook 변경을 요구하면 `proposed`로 보고한다.
+- 후보가 없으면 `none`과 이유를 보고한다.
+
 ## 불변식
 - `--merge`(머지 커밋) 방식.
 - 상태 라벨 제거하되 `gear:*` 유지.
+- 열린 `blocked_by`가 있으면 머지 금지. 머지 후 `blocking` downstream을 안내.
 - Issue는 PR의 `Closes #N`으로 자동 close.
 - task 노드 done 전이는 **루트 이슈가 실제 close될 때만**. 리프 하나 머지가 곧 업무 완료는 아니다.
+- 최종 보고 전에 Knowledge Capture Audit 결과를 포함한다.

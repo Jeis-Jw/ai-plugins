@@ -87,6 +87,8 @@ plugins/task-github/
 ├── rules/                   # 프로토콜 규약 (스킬이 공유하는 헌법)
 │   ├── task-protocol.md     #   역할·프로파일·기어·플로우·태그·에러복구·완료조건
 │   ├── workflow.md          #   GitHub/Git 워크플로우·라벨 체계·상태 전이·브랜치·커밋·PR
+│   ├── dependencies.md      #   GitHub Issue dependencies 기반 선후관계·차단 규약
+│   ├── knowledge-capture.md #   작업 종료 전 지식 기록 감사 규약
 │   └── wiki-bridge.md       #   ★신규: 위키 감지·task 노드 연결·호출 규약(mechanism 측). 결합 정책은 위키 policy 참조
 ├── skills/                  # 호출 단위 동작 (10종)
 │   ├── setup/SKILL.md       #   git+GitHub 초기화 (+위키 vault 부재 시 init 제안)
@@ -192,7 +194,7 @@ major   →  planned --full    →  plan {N} --full        위키: task 노드 +
 
 ---
 
-## 5. 라벨 · Issue 트리 · 태그 어휘
+## 5. 라벨 · Issue 트리 · dependency · 태그 어휘
 
 ### 5.1 라벨 체계 — 2계열
 
@@ -236,7 +238,19 @@ major   →  planned --full    →  plan {N} --full        위키: task 노드 +
 - 트리 생성/분해·task 노드 생성은 `define`, 점유·작업은 `start` 이하(역할 분리).
 - **task 노드는 업무(루트) 단위**다 — 리프마다 만들지 않는다. 리프는 부모 루트의 task 노드를 통해 위키와 이어진다.
 
-### 5.3 Issue 코멘트 태그 어휘 (위키 7+1타입과 정렬)
+### 5.3 Issue dependency — 실행 선후관계
+
+GitHub sub-issue는 **분해 구조**만 나타낸다. 하위 작업의 실행 순서와 병렬 가능 여부는 GitHub **Issue dependencies**가 정본이다([rules/dependencies.md](rules/dependencies.md)).
+
+| 관계 | 의미 | task-github 동작 |
+|------|------|------------------|
+| dependency 없음 | 선행 제약 없음 | 병렬 가능으로 간주 |
+| `#B blocked_by #A` | B는 A 완료 뒤 실행 | `start`/`run`/`done`/`merge`에서 열린 A가 있으면 차단 |
+| `#A blocking #B` | A가 B의 진행을 막음 | A 완료 후 B가 ready인지 안내 |
+
+`parallel`/`sequential` 라벨은 두지 않는다. A/B는 병렬, C는 A+B 뒤 같은 혼합 DAG를 정확히 표현하려면 dependency 관계가 필요하다.
+
+### 5.4 Issue 코멘트 태그 어휘 (위키 7+1타입과 정렬)
 
 실행 중 의미 있는 활동을 Issue 코멘트에 **태그**로 남긴다. 이것이 세션 간 맥락 복원과 위키 승격의 원천이다.
 
@@ -407,25 +421,25 @@ python3 <wiki-cli> refresh --check changed-path-stale --changed-path "$(paste -s
 - **위키**: `./wiki/` 없고 위키 플러그인 감지되면 `wiki init` 제안(강제 아님).
 
 ### 7.2 `open` — Issue 읽기 전용 로드
-- **입력**: `{N}`(필수). **동작**: `gh issue view`+GraphQL(부모/자식/진행률)+연결 PR. 상태/기어 라벨 분리 표시. **부작용 0.**
+- **입력**: `{N}`(필수). **동작**: `gh issue view`+GraphQL(부모/자식/진행률)+REST dependency(`blocked_by`/`blocking`)+연결 PR. 상태/기어 라벨 분리 표시. **부작용 0.**
 - **위키**: 루트 이슈면 본문 `## Wiki Context`의 task 노드+결정을 `recall --read`로 브리핑. 리프면 부모 루트의 task 노드로 거슬러 표시. 읽기만.
 
 ### 7.3 `define` — 업무 정의 (루트 이슈 + task 노드)
 - **입력 3모드**: (없음) 대화→업무 / `{N}` 분해 기준 요청 / `{N} {기준}` 분해.
-- **동작**: 루트=`gh issue create`, 서브=GraphQL `createIssue(parentIssueId)`. **등록 전 사령관 확인. 자동 분해 금지. 기어 라벨 안 붙임**(start의 책임).
+- **동작**: 루트=`gh issue create`, 서브=GraphQL `createIssue(parentIssueId)`, 필요 시 REST Issue dependency 생성. **등록 전 사령관 확인. 자동 분해 금지. 기어 라벨 안 붙임**(start의 책임).
 - **위키(핵심)**: 업무의 루트 이슈를 만들 때 task 노드를 함께 만들어 잇는다 —
   1. 관련 결정/취지 `recall` (이 업무가 어떤 결정에서 나오는지)
   2. 루트 이슈 생성 → 이슈 번호 확보
   3. `capture task --title … --summary <업무 요약> --decisions <관련 DEC> --intents <상위 INT> --tasks owner/repo#<루트이슈>` (제안 후 확인)
   4. 루트 이슈 본문 `## Wiki Context`에 task 노드(메인)+결정(보조) 링크
   5. (이슈 상세는 task 노드 요약 + 결정 컨텍스트를 재료로 풍부하게)
-- **불변식**: task 노드는 **업무(루트) 단위 1:1**. 리프마다 만들지 않는다.
+- **불변식**: task 노드는 **업무(루트) 단위 1:1**. 리프마다 만들지 않는다. dependency는 GitHub Issue dependencies가 정본이고, 없으면 병렬 가능으로 본다.
 
 ### 7.4 `start` — 리프 점유 + 기어 판단
 - **입력 2모드**: `"제목" [설명]`(생성+점유, **micro 단발 전용** — normal/major 업무는 define 경유) / `{N}`(기존 점유).
-- **동작**: ①기어 판단(파급력) ②컨테이너 차단/이슈 생성 ③점유 가능 판단(`in-progress`/`in-review`면 차단) ④`gh issue edit --add-assignee @me --add-label in-progress --add-label gear:{micro|normal|major}` ⑤(코드 변경 시) 워크트리 ⑥다음 단계 권장. (라벨은 항상 micro/normal/major — `gear:full` 없음; solo의 `full`은 플로우 단위일 뿐.)
+- **동작**: ①기어 판단(파급력) ②컨테이너 차단/이슈 생성 ③dependency 차단 체크(`blocked_by` 중 open 있으면 차단) ④점유 가능 판단(`in-progress`/`in-review`면 차단) ⑤`gh issue edit --add-assignee @me --add-label in-progress --add-label gear:{micro|normal|major}` ⑥(코드 변경 시) 워크트리 ⑦다음 단계 권장. (라벨은 항상 micro/normal/major — `gear:full` 없음; solo의 `full`은 플로우 단위일 뿐.)
 - **위키**: 모드 B에서 점유한 리프의 부모 루트에 연결된 task 노드 + 그 결정/취지를 세션 컨텍스트로 주입(재조회 최소화). 모드 A(micro 단발)는 주입 생략.
-- **불변식**: 기어 판단·라벨 부여의 **단일 책임 지점**. 컨테이너 차단. 점유 중복 방지.
+- **불변식**: 기어 판단·라벨 부여의 **단일 책임 지점**. 컨테이너 차단. 열린 blocker가 있는 이슈 점유 금지. 점유 중복 방지.
 
 ### 7.5 `plan` — Plan Mode 계획 수립
 - **입력**: `{N} [--full]`.
@@ -434,19 +448,19 @@ python3 <wiki-cli> refresh --check changed-path-stale --changed-path "$(paste -s
 - **불변식**: 계획 전문 기록(축약 금지). 검증 체크리스트 = plan↔verify 계약. 승인 없는 plan 없음.
 
 ### 7.6 `run` — 실행
-- **입력**: `{N}`. **동작**: 계획 있으면 태스크 목록, 없으면 완료 조건 기준. 재작업 감지(`changes-requested`→`in-progress`). 워크트리·`.worktreeinclude`. **원자적 커밋**.
+- **입력**: `{N}`. **동작**: dependency 차단 재확인 후 계획 있으면 태스크 목록, 없으면 완료 조건 기준. 재작업 감지(`changes-requested`→`in-progress`). 워크트리·`.worktreeinclude`. **원자적 커밋**.
 - **위키**: 작업 중 `[관찰]` 발견 시 `capture observation`(자동, `--tasks` 역링크 + `--affects-paths`). `[결정]/[시행착오]`는 코멘트 태그로 남기고 verify에서 승격.
 - **불변식**: 원자적 커밋(1커밋=1논리변경, WIP 금지). 워크트리 미커밋 변경 보존.
 
 ### 7.7 `verify` — 검증 리포트 생성
 - **입력**: `{N}`. **본질**: "구조화된 검증 결과 문서의 생성".
 - **동작**: ①plan의 **검증 체크리스트** 추출(없으면 `[중단]`) ②완료 조건 실질(MUST)/형식(SHOULD) 대조 ③(복잡 PR) pr-verifier ④**지식 기록 검토**(태그→타입 캡처 제안) ⑤고정 형식 리포트를 Issue 코멘트로.
-- **위키**: (a) Issue 코멘트의 `[결정]/[시행착오]/[관찰]/[사실]` 태그를 [§5.3](#53-issue-코멘트-태그-어휘-위키-71타입과-정렬) 매핑대로 캡처. 캡처하는 decision/trial_error/observation은 `--tasks`로 루트 이슈에도 연결(같은 업무로 묶임) (b) `[관찰]` observation 중 분류 확정분 **승격 제안**(+retire) (c) `refresh --strict`로 무결성 게이트(이슈 있으면 리포트). major면 plan의 ADR 초안 confirm.
+- **위키**: (a) Issue 코멘트의 `[결정]/[시행착오]/[관찰]/[사실]` 태그를 [§5.4](#54-issue-코멘트-태그-어휘-위키-71타입과-정렬) 매핑대로 캡처. 캡처하는 decision/trial_error/observation은 `--tasks`로 루트 이슈에도 연결(같은 업무로 묶임) (b) `[관찰]` observation 중 분류 확정분 **승격 제안**(+retire) (c) `refresh --strict`로 무결성 게이트(이슈 있으면 리포트). major면 plan의 ADR 초안 confirm.
 - **판정**: 실질 미충족 0 → 통과(done). ≥1 → CHANGES_REQUESTED(run 복귀).
 - **불변식**: 산출물은 코멘트 1개·고정 형식. **기록이 본질.**
 
 ### 7.8 `done` — PR 생성 또는 close
-- **입력**: `{N}`. **2경로**: (A) 변경 있음 → 커밋→`in-progress→in-review`(gear 유지)→`git push`+`gh pr create`(본문 `Closes #N`)→로컬 정리. (B) 변경 없음 → 결과 코멘트→상태 라벨 제거→`gh issue close`.
+- **입력**: `{N}`. **2경로**: dependency 차단 재확인 후 (A) 변경 있음 → 커밋→`in-progress→in-review`(gear 유지)→`git push`+`gh pr create`(본문 `Closes #N`)→downstream 안내→로컬 정리. (B) 변경 없음 → 결과 코멘트→상태 라벨 제거→`gh issue close`→downstream 안내.
 - **위키**: (a) **drift 검사** — PR diff 파일을 `refresh --check changed-path-stale`에 던져 낡은 위키 문서 리포트 (b) major면 ADR 초안 → `capture decision`(`--intents` + `--tasks` + `--rejected`). (task 노드 done 전이는 merge에서 — 리프 done이 곧 업무 완료는 아니므로.)
 - **불변식**: PR은 코드 변경 시만. 상태 라벨만 정리, `gear:*` 유지.
 
@@ -456,7 +470,7 @@ python3 <wiki-cli> refresh --check changed-path-stale --changed-path "$(paste -s
 - **불변식**: review는 판정·라벨까지, 머지는 merge가. team은 `--auto-merge` 명시 필요(solo 자동 허용).
 
 ### 7.10 `merge` — PR 머지
-- **입력**: `{PR}`. **동작**: 연결 Issue 추출→PR+Issue **상태 라벨만 제거**(gear 유지)→`gh pr merge --merge --delete-branch`→로컬 정리+`git checkout main`+`git pull`.
+- **입력**: `{PR}`. **동작**: 연결 Issue 추출→dependency 차단 재확인→PR+Issue **상태 라벨만 제거**(gear 유지)→`gh pr merge --merge --delete-branch`→downstream 안내→로컬 정리+`git checkout main`+`git pull`.
 - **위키(핵심)**: 이 머지로 **루트 이슈가 close되면**(업무 완료) 연결 task 노드를 `complete`로 `done/` 전이([§6.5]). 단일 리프 업무면 그 이슈 close가 곧 업무 완료. 컨테이너 업무면 마지막 자식 close 시점. + drift 리포트에 걸린 문서 `verified_at` 갱신/ supersede 안내(자동 변경 안 함).
 - **불변식**: `--merge` 방식. 상태 라벨 제거하되 `gear:*` 유지. Issue는 `Closes #N`으로 자동 close.
 
@@ -566,11 +580,12 @@ is:open is:pr -label:in-review -label:in-progress             # 리뷰 가능 PR
 | `git` | 브랜치·커밋·워크트리·push | **필수** |
 | `python3` | wiki CLI 실행 | 위키 연동에만 필요(보통 존재) |
 | GitHub sub-issue(GraphQL) | 트리 구조 | 트리만 제약, 단일 이슈 정상 |
+| GitHub Issue dependencies(REST) | 하위 작업 선후관계와 blocked 상태 | 생성 실패는 fallback 코멘트, 조회 실패는 수동 확인 |
 | Plan Mode | `plan` 읽기 전용 분석 | planned 플로우 핵심 |
 | 서브에이전트 타입 | 위임 | 직접 수행으로 대체 |
 | **`wiki-markdown` 플러그인** | 결정 그래프 연계(task 노드/recall/capture/refresh) | **선택** — `./wiki/` 미감지 시 그레이스풀 스킵([§6.3](#63-감지--호출-메커니즘-ruleswiki-bridgemd)) |
 
-> **GraphQL 주의**: sub-issue API는 비교적 최신 기능. `gh` 버전·권한에 따라 동작 안 하면 단일 이슈 흐름으로 폴백.
+> **GitHub API 주의**: sub-issue GraphQL과 Issue dependency REST API는 권한·플랜·`gh` 버전에 따라 동작하지 않을 수 있다. sub-issue 실패 시 단일 이슈 흐름으로, dependency 생성 실패 시 fallback 코멘트로 폴백한다. dependency 조회 실패는 자동 작업/종료를 멈추고 수동 확인을 요구한다.
 > **위키 CLI task 지원**: 위키 CLI v0.3.0이 task 타입·`complete`·`reopen`을 구현했다([§6.8]).
 
 ---
@@ -588,6 +603,15 @@ is:open is:pr -label:in-review -label:in-progress             # 리뷰 가능 PR
 | `verify` | `decision`, `rejected_decision`, `trial_error`, `observation` 승격 | 제안 후 확인 |
 | `done`(major) | `decision`(ADR) | 제안 후 확인 |
 | `merge` | `task` → `complete`(done/), `ssot` 갱신 안내 | 자동 전이 / 갱신은 제안 |
+
+### 13.1.1 Knowledge Capture Audit
+
+모든 비 trivial 작업은 종료 전 [rules/knowledge-capture.md](rules/knowledge-capture.md)의 Knowledge Capture Audit를 수행한다. 감사 결과는 반드시 `recorded`/`proposed`/`none` 중 하나다.
+
+- `observation`: 분류 전 발견·저위험이면 자동 캡처 가능.
+- `decision`/`rejected_decision`/`trial_error`: 1급 record이므로 제안 후 확인.
+- `ssot`/`runbook`: living 문서 제자리 갱신 후보로 제안.
+- 이슈가 없는 작업도 감사 대상이며, 이 경우 자동 observation은 `--tasks` 없이 캡처할 수 있다.
 
 ### 13.2 업무↔이슈 연결 규약
 
@@ -673,20 +697,23 @@ is:open is:pr -label:in-review -label:in-progress             # 리뷰 가능 PR
 10. verify의 본질은 기록(구조화 리포트 생성).
 11. 기어 판단·라벨 부여의 단일 책임 = `start`.
 12. 컨테이너 이슈 직접 작업 금지 — 리프만 점유.
-13. 점유 중복 방지 — 타인 점유 Issue는 사령관 확인.
-14. 워크트리 미커밋 변경 보존 — `git clean`은 컨펌 후.
-15. 자동 반복 ≤ 3회.
-16. review와 merge 분리 / pr-verifier는 판정만(관심사 분리).
+13. Issue dependency는 GitHub REST 관계가 정본 — dependency 없음은 병렬 가능.
+14. 열린 `blocked_by`가 있는 이슈는 `start`/`run`/`done`/`merge`에서 차단.
+15. 점유 중복 방지 — 타인 점유 Issue는 사령관 확인.
+16. 워크트리 미커밋 변경 보존 — `git clean`은 컨펌 후.
+17. 자동 반복 ≤ 3회.
+18. review와 merge 분리 / pr-verifier는 판정만(관심사 분리).
 
 **위키 통합 불변식**
-17. **비대칭 결합** — wiki-markdown으로의 역방향 의존을 만들지 않는다(wiki는 task를 모름).
-18. **그레이스풀** — `./wiki/` 미감지 시 모든 위키 호출 스킵, 핵심 흐름 유지. 위키는 작업의 게이트가 아니다.
-19. **결합 규약은 policy에** — "누가·언제·어떤 타입을" 같은 운영 규약은 task-github의 rules가 아니라 `agent-operating-model.md`에 둔다(agent-neutrality 보존).
-20. **자동 승격 금지** — observation 자동 캡처는 허용하되, 1급 노드(task/decision/intent/trial_error) 캡처와 모든 승격은 **제안 후 확인**.
-21. **업무 단위 = task 노드 1:1** — task 노드는 업무(루트 이슈) 하나에 하나. 리프마다 만들지 않는다.
-22. **task 노드 상태 정본은 하나** — 연결 시 GitHub 이슈가 정본, 위키는 투영. 상세 phase는 위키가 복제하지 않는다(이진만).
-23. **타입별 관계 제약 준수** — task의 `relations.tasks`는 외부 이슈 ref만. task는 순수 잎(아무도 task를 저장 edge로 가리키지 않음). 위키 hub(intent/ssot/runbook)에 `--tasks` 시도 금지(exit 2).
-24. **위키 정본 존중** — task-github는 위키 인덱스·retired/done 디렉토리를 **직접 쓰지 않는다**. 오직 wiki CLI(`capture/retire/recall/refresh/complete/reopen`)를 통해서만 vault를 변경.
+19. **비대칭 결합** — wiki-markdown으로의 역방향 의존을 만들지 않는다(wiki는 task를 모름).
+20. **그레이스풀** — `./wiki/` 미감지 시 모든 위키 호출 스킵, 핵심 흐름 유지. 위키는 작업의 게이트가 아니다.
+21. **결합 규약은 policy에** — "누가·언제·어떤 타입을" 같은 운영 규약은 task-github의 rules가 아니라 `agent-operating-model.md`에 둔다(agent-neutrality 보존).
+22. **자동 승격 금지** — observation 자동 캡처는 허용하되, 1급 노드(task/decision/intent/trial_error) 캡처와 모든 승격은 **제안 후 확인**.
+23. **지식 기록 감사 의무** — 비 trivial 작업은 종료 전 `recorded`/`proposed`/`none` 중 하나로 Knowledge Capture Audit 결과를 남긴다.
+24. **업무 단위 = task 노드 1:1** — task 노드는 업무(루트 이슈) 하나에 하나. 리프마다 만들지 않는다.
+25. **task 노드 상태 정본은 하나** — 연결 시 GitHub 이슈가 정본, 위키는 투영. 상세 phase는 위키가 복제하지 않는다(이진만).
+26. **타입별 관계 제약 준수** — task의 `relations.tasks`는 외부 이슈 ref만. task는 순수 잎(아무도 task를 저장 edge로 가리키지 않음). 위키 hub(intent/ssot/runbook)에 `--tasks` 시도 금지(exit 2).
+27. **위키 정본 존중** — task-github는 위키 인덱스·retired/done 디렉토리를 **직접 쓰지 않는다**. 오직 wiki CLI(`capture/retire/recall/refresh/complete/reopen`)를 통해서만 vault를 변경.
 
 ---
 
@@ -735,6 +762,7 @@ python3 <wiki-cli> init    # ./wiki/ vault 생성 (task 타입 지원 버전 필
 - [ ] 기어 라벨 3종 / 상태 라벨 3종
 - [ ] `CLAUDE.md` 프로파일 명시(기본 solo)
 - [ ] sub-issue(GraphQL) 동작 확인 — 안 되면 단일 이슈 폴백
+- [ ] Issue dependency(REST) 동작 확인 — 안 되면 fallback 코멘트로 수동 확인
 - [ ] (위키 연계) `./wiki/` 존재 또는 `wiki init` / 위키 CLI가 **task 타입 지원** / `agent-operating-model.md`에 §13 반영 / `CLAUDE.md` policy 포인터
 - [ ] 메인 브랜치가 `main`이 아니면 `rules/workflow.md` 조정
 - [ ] `.claude/worktrees/`가 `.gitignore`에 포함

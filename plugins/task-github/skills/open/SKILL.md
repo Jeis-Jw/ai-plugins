@@ -34,12 +34,48 @@ query {
 }'
 ```
 
-### Step 3. 연결 PR 확인
+### Step 3. Issue dependency 조회 (REST)
+```bash
+read OWNER REPO < <(gh repo view --json owner,name --jq '"\(.owner.login) \(.name)"')
+API_VERSION="2026-03-10"
+
+BLOCKED_BY=$(gh api -H "X-GitHub-Api-Version: $API_VERSION" \
+  "repos/$OWNER/$REPO/issues/{N}/dependencies/blocked_by" \
+  --jq '[.[] | "#\(.number) [\(.state)] \(.title)"] | join("\n")')
+
+BLOCKING=$(gh api -H "X-GitHub-Api-Version: $API_VERSION" \
+  "repos/$OWNER/$REPO/issues/{N}/dependencies/blocking" \
+  --jq '[.[] | "#\(.number) [\(.state)] \(.title)"] | join("\n")')
+```
+dependency API가 실패하면 실패 사실만 브리핑하고 상태 변경은 하지 않는다. 열린 `blocked_by`가 있으면 이 이슈는 `start` 대상이 아니다([dependencies.md](../../rules/dependencies.md)).
+
+컨테이너/루트 이슈라면 자식별 ready 상태도 읽기 전용으로 계산한다:
+```bash
+CHILDREN=$(gh api graphql -f query='
+query($o:String!,$r:String!,$n:Int!){
+  repository(owner:$o,name:$r){
+    issue(number:$n){ subIssues(first:50){ nodes{ number title state } } }
+  }
+}' -F o="$OWNER" -F r="$REPO" -F n={N} --jq '.data.repository.issue.subIssues.nodes[].number')
+
+for C in $CHILDREN; do
+  OPEN_BLOCKERS=$(gh api -H "X-GitHub-Api-Version: $API_VERSION" \
+    "repos/$OWNER/$REPO/issues/$C/dependencies/blocked_by" \
+    --jq '[.[] | select(.state == "open") | "#\(.number)"] | join(", ")')
+  if [ -n "$OPEN_BLOCKERS" ]; then
+    echo "#$C blocked_by: $OPEN_BLOCKERS"
+  else
+    echo "#$C ready"
+  fi
+done
+```
+
+### Step 4. 연결 PR 확인
 ```bash
 gh pr list --search "{N}" --json number,title,state,headRefName
 ```
 
-### Step 4. (위키 가용 시) Wiki Context 브리핑
+### Step 5. (위키 가용 시) Wiki Context 브리핑
 ```bash
 [ -d "./wiki" ] && echo "위키 가용"
 ```
@@ -48,10 +84,11 @@ gh pr list --search "{N}" --json number,title,state,headRefName
 - 리프 이슈면: 부모 루트의 task 노드로 거슬러 표시
 - 자세한 규약은 [wiki-bridge.md](../../rules/wiki-bridge.md) §4.
 
-### Step 5. 브리핑 출력
+### Step 6. 브리핑 출력
 - 제목·상태·번호
 - 상태 라벨 / 기어 라벨 **분리 표시**
 - 부모/자식 관계 + 진행률
+- dependency: blocked_by / blocking, 열린 blocker 유무, 자식별 ready/blocked
 - 연결된 PR
 - (위키) Wiki Context: task 노드 + 근거 결정
 - 컨테이너/리프 판별 → 다음 행동 제안 (`define`/`start`)

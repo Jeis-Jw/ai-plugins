@@ -21,7 +21,25 @@ $ARGUMENTS: {N}
 - 계획 있음 → 태스크 목록 기준
 - 계획 없음 → 완료 조건 기준 (express)
 
-### Step 2. 재작업 감지
+### Step 2. dependency 차단 재확인
+`start`를 우회해 `run`이 직접 호출될 수 있으므로 열린 blocker를 다시 확인한다:
+```bash
+read OWNER REPO < <(gh repo view --json owner,name --jq '"\(.owner.login) \(.name)"')
+API_VERSION="2026-03-10"
+OPEN_BLOCKERS=$(gh api -H "X-GitHub-Api-Version: $API_VERSION" \
+  "repos/$OWNER/$REPO/issues/{N}/dependencies/blocked_by" \
+  --jq '[.[] | select(.state == "open") | "#\(.number) \(.title)"] | join("\n")')
+
+if [ -n "$OPEN_BLOCKERS" ]; then
+  gh issue comment {N} --body "[중단] 열린 blocker가 있어 run을 중단합니다.
+
+$OPEN_BLOCKERS"
+  exit 1
+fi
+```
+dependency API 조회가 실패하면 자동 실행하지 않고 사령관에게 수동 확인을 요청한다.
+
+### Step 3. 재작업 감지
 ```bash
 gh issue view {N} --json labels --jq '.labels[].name'
 ```
@@ -41,18 +59,18 @@ gh issue edit {N} --remove-label "in-progress" --add-label "in-review"
 ```
 > Issue와 PR의 전이가 비대칭이다: Issue는 `in-review`를 **달고**, PR은 라벨을 **떼어** 픽업 대기로 둔다(PR의 `in-review`는 review 스킬이 픽업 시 부착). 이 규약의 정본은 [workflow.md](../../rules/workflow.md) "상태 전이".
 
-### Step 3. 워크트리 (소스 변경 시)
+### Step 4. 워크트리 (소스 변경 시)
 ```bash
 git worktree add .claude/worktrees/issue-{N} -b task/issue-{N}
 # .worktreeinclude 처리 + 잔재 점검 (git clean은 컨펌 후)
 ```
 
-### Step 4. 작업 수행
+### Step 5. 작업 수행
 - 계획 태스크 순차 실행
 - 복잡/독립 태스크는 서브에이전트 위임
 - **원자적 커밋**: `{type}: {요약} (#{N}) — {Why}`
 
-### Step 5. 예외 처리 (Issue 코멘트에 태그 기록)
+### Step 6. 예외 처리 (Issue 코멘트에 태그 기록)
 | 상황 | 태그 | 행동 |
 |------|------|------|
 | 판단 필요 | `[질문]` | 사령관 확인 후 계속 |
@@ -61,7 +79,7 @@ git worktree add .claude/worktrees/issue-{N} -b task/issue-{N}
 | 실패·우회 | `[시행착오]` | Issue 코멘트 기록, verify에서 trial_error 승격 |
 | 복구 불가 | `[중단]` | 실패 지점·원인·상태 기록 후 사령관 보고 |
 
-### Step 6. (위키 가용 시) 관찰 자동 캡처
+### Step 7. (위키 가용 시) 관찰 자동 캡처
 ```bash
 [ -d "./wiki" ] && echo "위키 가용"
 ```
@@ -79,7 +97,15 @@ wiki capture observation \
 - `[결정]`/`[시행착오]`는 코멘트 태그로만 남기고 **verify에서 승격 제안**(1급 노드는 제안 후 확인).
 - 미가용 → Issue 코멘트 태그로만.
 
+### Step 8. Knowledge Capture Audit
+작업 종료 전 [knowledge-capture.md](../../rules/knowledge-capture.md)에 따라 감사한다.
+- 자동 캡처한 observation이 있으면 `recorded`와 OBS ID를 남긴다.
+- `[결정]`/`[시행착오]` 후보가 있으면 Issue 코멘트에 태그로 남겨 `verify`가 승격 제안하게 한다.
+- 기록할 것이 없으면 `none`과 이유를 남긴다.
+
 ## 불변식
 - 원자적 커밋(1커밋=1논리변경, WIP 금지).
 - 워크트리 미커밋 변경 보존.
+- 열린 `blocked_by`가 있으면 실행 금지.
 - observation만 자동 캡처. decision/trial_error는 verify에서 확인 후 승격.
+- Knowledge Capture Audit 결과를 남긴다.

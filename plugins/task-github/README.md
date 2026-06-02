@@ -46,12 +46,33 @@ task-github:review {PR} --auto-merge
 
 연동 메커니즘은 [rules/wiki-bridge.md](rules/wiki-bridge.md), 운영 정책은 위키 `wiki/ssot/agent-operating-model.md`에 있다(4계층 분리).
 
+## Issue dependency
+
+하위 작업의 병렬/직렬 실행 가능성은 GitHub **Issue dependencies**가 정본이다.
+- sub-issue는 업무 분해 구조만 표현한다.
+- `blocked_by`가 없으면 병렬 가능으로 간주한다.
+- 열린 `blocked_by`가 있으면 `start`/`run`/`done`/`merge`가 차단한다.
+- 이슈 완료 후에는 `blocking` downstream을 안내한다.
+
+세부 규약은 [rules/dependencies.md](rules/dependencies.md)에 있다.
+
+## Knowledge Capture Audit
+
+비 trivial 작업은 끝내기 전에 위키 기록 후보를 감사한다.
+- `observation`은 분류 전·저위험이면 자동 캡처한다.
+- `decision`/`rejected_decision`/`trial_error`와 `ssot`/`runbook` 갱신은 제안 후 확인한다.
+- 후보가 없으면 `none`과 이유를 최종 보고나 Issue 코멘트에 남긴다.
+
+세부 규약은 [rules/knowledge-capture.md](rules/knowledge-capture.md)에 있다.
+
 ## 구성
 
 | 구성요소 | 역할 |
 |---------|------|
 | `rules/task-protocol.md` | 프로파일·기어·플로우·태그·완료조건 (헌법) |
 | `rules/workflow.md` | 라벨·상태전이·브랜치·커밋·PR |
+| `rules/dependencies.md` | GitHub Issue dependencies 기반 선후관계·차단 |
+| `rules/knowledge-capture.md` | 작업 종료 전 지식 기록 감사 |
 | `rules/wiki-bridge.md` | 위키 감지·호출·task 노드 연동 (mechanism) |
 | `skills/*` (10종) | setup·open·define·start·plan·run·verify·done·review·merge |
 | `agents/pr-verifier.md` | PR 독립 검증 서브에이전트 |

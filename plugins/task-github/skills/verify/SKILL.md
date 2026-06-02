@@ -25,6 +25,16 @@ $ARGUMENTS: {N}
 - **실질(MUST) 미충족**: 보완 방법 파악 → `run` 복귀 → CHANGES_REQUESTED
 - **형식(SHOULD) 미충족**: "제안"으로만, 판정 영향 없음
 
+dependency 상태도 실질 조건으로 기록한다. 열린 `blocked_by`가 있으면 프로토콜 위반이므로 통과 판정을 내리지 않는다:
+```bash
+read OWNER REPO < <(gh repo view --json owner,name --jq '"\(.owner.login) \(.name)"')
+API_VERSION="2026-03-10"
+OPEN_BLOCKERS=$(gh api -H "X-GitHub-Api-Version: $API_VERSION" \
+  "repos/$OWNER/$REPO/issues/{N}/dependencies/blocked_by" \
+  --jq '[.[] | select(.state == "open") | "#\(.number) \(.title)"] | join("\n")')
+```
+dependency API 조회가 실패하면 "확인 불가"로 기록하고 사령관 확인 없이는 `done`으로 넘기지 않는다.
+
 ### Step 3. (복잡 PR) pr-verifier 서브에이전트로 독립 검증
 
 ### Step 4. 지식 기록 검토 (위키 가용 시)
@@ -56,6 +66,8 @@ ROOT=${PARENT:-{N}}   # 이후 --tasks "$OWNER/$REPO#$ROOT"
 - **무결성 게이트**: `wiki refresh --strict --json` — 이슈 있으면 **리포트**(작업 차단 아님).
 - 미가용 → Issue 코멘트 기록만 유지.
 
+이 단계는 [knowledge-capture.md](../../rules/knowledge-capture.md)의 Knowledge Capture Audit다. 후보가 없더라도 `none`과 이유를 검증 리포트에 기록한다. 후보가 있으면 `recorded` 또는 `proposed`로 남기며, 1급 노드는 사령관 확인 없이 캡처하지 않는다.
+
 ### Step 5. 검증 리포트 기록 (고정 형식)
 ```bash
 gh issue comment {N} --body "## 검증 결과
@@ -64,14 +76,18 @@ gh issue comment {N} --body "## 검증 결과
 | # | 조건 | 판정 | 근거 |
 |---|------|------|------|
 | 1 | ... | ✅ 충족 | {커밋/파일} |
+| D | 열린 dependency blocker 없음 | ... | {blocked_by 조회 결과} |
 
 ### 제안 (형식)
 - {항목} — {개선안}
 
 ### 지식 기록 검토
-| 태그 | 위키 타입 | 실행 |
-|------|----------|------|
-| [결정] | decision | ✅ 또는 ⏭️(사유) |
+| 후보 | 위키 타입 | 처리 | 근거 |
+|------|----------|------|------|
+| [결정] | decision | proposed 또는 실행 ID | 장기 운영 규칙 변경 |
+
+### Knowledge Capture Audit
+- recorded/proposed/none: {결과와 이유}
 
 ### 판정
 - 실질 미충족: N건 → 통과/CHANGES_REQUESTED
@@ -86,3 +102,4 @@ gh issue comment {N} --body "## 검증 결과
 - 항목 누락 시 verify 미완료.
 - **기록이 본질이다.**
 - 1급 노드(decision/rejected/trial_error) 캡처와 승격은 **제안 후 확인**. refresh는 게이트가 아니라 리포트.
+- Knowledge Capture Audit가 없으면 verify 미완료.

@@ -75,7 +75,7 @@
 
 | 레이어 | 스킬 | 역할 |
 |--------|------|------|
-| L1 전략 | `define` | 작업을 Issue 트리 + 위키 task 노드로 구조화 |
+| L1 전략 | `define` | 작업을 Issue 트리 + dependency + 위키 task 노드로 구조화 |
 | L2 전술 | `start`, `plan`, `verify` | 작업 점유·계획·검증 |
 | L3 실행 | `run`, `done` | 코드 변경·완료 |
 
@@ -91,6 +91,10 @@
 워크트리 미커밋 변경은 **보존**(함부로 삭제 금지).
 
 **위키 호출 실패**: wiki CLI가 비0 종료해도 **작업을 막지 않는다** — 해당 캡처/전이만 스킵하고 `[관찰]` 코멘트로 사유 기록 후 사령관에 알림. 위키는 보조이지 작업의 게이트가 아니다.
+
+**Issue dependency API 실패**: GitHub dependency를 생성/조회하지 못하면 그 dependency의 자동 강제는 적용되지 않는다. `define`은 fallback 코멘트를 남기고, `start`/`run`/`done`/`merge`는 사령관에게 수동 확인 필요성을 보고한다. 정상 조회 시 열린 `blocked_by`는 작업 차단 조건이다.
+
+**지식 기록 감사**: 비 trivial 작업은 종료 전 [knowledge-capture.md](knowledge-capture.md)의 Knowledge Capture Audit를 수행한다. 결과는 `recorded`/`proposed`/`none` 중 하나로 최종 보고나 Issue 코멘트에 남긴다.
 
 ---
 

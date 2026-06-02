@@ -49,6 +49,7 @@ wiki recall "{Issue 키워드}" --stage 1 --limit 10 --json
 - 서브에이전트 위임 여부
 - 리스크 / 결정 필요 지점
 - 관련 지식 참조 (Step 3 결과)
+- 지식 기록 예상 후보 (작업 중 기록할 observation/decision/trial_error 가능성)
 - 예상 커밋 구조
 - **검증 체크리스트** (plan↔verify 계약)
 
@@ -57,6 +58,7 @@ wiki recall "{Issue 키워드}" --stage 1 --limit 10 --json
 - 영향 범위 분석
 - ADR 초안 (done 후 `capture decision`으로 승격 검토)
 - "고려한 대안" — verify에서 `capture rejected_decision` 후보
+- Knowledge Capture Audit 예상 결과 (`recorded`/`proposed`/`none` 중 어느 쪽이 유력한지)
 
 ### Step 5. 승인 → ExitPlanMode
 
@@ -71,5 +73,6 @@ gh issue comment {N} --body "## 작업 계획
 ## 불변식
 - **계획은 전문 기록** — run이 이 코멘트를 기준으로 작업한다.
 - **검증 체크리스트 = plan↔verify 계약.** 반드시 산출.
+- 지식 기록 예상 후보를 명시해 run/verify가 놓치지 않게 한다.
 - 승인 없는 plan은 없다.
 - plan은 위키를 **읽기만**(recall). 캡처는 verify/done에서.

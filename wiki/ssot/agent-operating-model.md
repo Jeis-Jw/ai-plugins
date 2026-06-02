@@ -1,9 +1,9 @@
 ---
 title: 에이전트 운영 모델 (정책 정본)
 created_at: 2026-05-29
-summary: 이 위키를 사용하는 에이전트들의 운영 정책 정본. 4계층 분리(plugin_definition)에서 policy 계층에 해당. task-github 작업관리 플러그인↔위키 결합 규약(캡처 권한·task 노드 연결·promotion·PR 흐름)을 여기서 정의.
+summary: 이 위키를 사용하는 에이전트들의 운영 정책 정본. 4계층 분리(plugin_definition)에서 policy 계층에 해당. task-github 작업관리 플러그인↔위키 결합 규약(캡처 권한·task 노드 연결·promotion·PR 흐름·지식 기록 감사)을 여기서 정의.
 tags: [wiki, policy, ssot]
-verified_at: 2026-05-29
+verified_at: 2026-06-02
 ---
 
 ## 현재 상태
@@ -33,6 +33,22 @@ Plugin 메커니즘과 운영 정책을 **다른 변경 빈도**로 분리하기
 | `merge` | `task`→`complete`(done/), `ssot` 갱신 안내 | 자동 전이 / 갱신은 제안 |
 
 1급 노드(task/decision/intent/rejected/trial_error) 캡처와 모든 승격은 **제안 후 확인**. observation만 자동(분류 전·저위험). 자동 승격 금지 → [[plugin-definition]].
+
+### 1.1 Knowledge Capture Audit
+
+모든 비 trivial 작업은 종료 전 **Knowledge Capture Audit**를 수행한다. 특히 `DESIGN.md`, `rules/`, `skills/`, `wiki/ssot/`, `wiki/runbook/`처럼 운영 규약이나 정책을 바꾼 작업은 생략할 수 없다.
+
+감사는 다음 셋 중 하나로 끝나야 한다.
+
+| 결과 | 의미 |
+|------|------|
+| `recorded` | 규약상 자동 캡처 가능한 observation을 실제 기록했다. |
+| `proposed` | decision/rejected_decision/trial_error 또는 ssot/runbook 갱신 후보를 사령관에게 제안했다. |
+| `none` | 장기 재사용 가능한 지식이 없다고 판단했고 이유를 남겼다. |
+
+에이전트는 기록 후보를 판단하기 전에 `recall`로 기존 기록을 확인한다. observation은 자동 캡처할 수 있지만, 1급 노드 캡처와 observation 승격은 반드시 제안 후 확인한다. 이슈가 없는 작업이라도 감사는 수행하며, 자동 observation에는 `--tasks`를 생략할 수 있다.
+
+이 감사 정책의 채택 결정은 [[DEC-2026-06-02-120100-task-github-작업-종료-전-knowledge-capture-audit-의무화]], 누락 사례의 교훈은 [[TRI-2026-06-02-120200-작업-종료-전-지식-기록-감사를-생략하면-결정-그래프가-비게-된다]]에 기록한다.
 
 ### 2. 업무↔이슈 연결 규약 (leaf issue 규약)
 
@@ -80,4 +96,4 @@ Plugin 메커니즘과 운영 정책을 **다른 변경 빈도**로 분리하기
 
 ---
 
-작성·갱신 시에는 일반 ssot처럼 제자리 수정 + `verified_at` 갱신. 운영 정책 자체의 결정/반려/교훈은 `wiki/context/`에 record로 capture해 본 ssot가 그 record들로 anchor됨.
+작성·갱신 시에는 일반 ssot처럼 제자리 수정 + `verified_at` 갱신. 운영 정책 자체의 결정/반려/교훈은 `wiki/context/`에 record로 capture해 본 ssot가 그 record들로 anchor됨. 작업 보고에는 Knowledge Capture Audit 결과(`recorded`/`proposed`/`none`)를 포함한다.

@@ -23,3 +23,4 @@ audience: [human, agent]
 - [[REJ-2026-05-29-181259-task-as-immutable-record]] — task를 다른 record처럼 불변으로 두고 진행은 연결된 이슈에서만 본다 — 독립 사용 시 문서 내 상태 가시성이 없고 상태 변경마다 supersede가 비현실적이라 반려.
 - [[REJ-2026-05-29-181259-task-as-living-relax-invariant]] — task를 ssot처럼 living으로 두되 관계를 갖도록 기존 불변식을 완화하는 안 — 핵심 불변식을 훼손하므로 제3 범주 신설이 더 깨끗하여 반려.
 - [[REJ-2026-05-29-181259-wiki-holds-task-detailed-phase]] — 위키 task가 todo/doing/done 상세 단계를 추적하는 안 — 연결 시 GitHub 상태와 이중 정본 동기화 문제를 낳아, 이진(완료/미완)으로 축소하고 상세는 플러그인에 위임하기로 반려.
+- [[REJ-2026-06-02-120300-parallel-sequential-라벨로-하위-작업-실행-순서-표현]] — 하위 작업의 병렬/직렬 가능성을 parallel/sequential 라벨로 표시하는 방식. 혼합 DAG를 표현하기 어렵고 GitHub Issue dependencies와 중복되므로 반려.
