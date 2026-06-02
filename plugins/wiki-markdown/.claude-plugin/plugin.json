@@ -1,5 +1,5 @@
 {
   "name": "wiki-markdown",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Markdown-backed AI-native wiki — filesystem-primary, headless. Manages context (intent / decision / rejected_decision / trial_error / observation), task bridge nodes, and ssot / runbook as a decision graph. Token-efficient 3-stage recall + batch read, affects_paths / search_terms, integrity checks, NFC normalization, opt-in fuzzy --read."
 }

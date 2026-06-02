@@ -113,14 +113,14 @@ plugins/task-github/
 ```json
 {
   "name": "task-github",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "GitHub 기반 자율 작업 프로토콜 — Issue 추적·Plan Mode·PR 검증을 wiki-markdown task 노드로 결정 그래프와 연계"
 }
 ```
 
 루트 `.claude-plugin/marketplace.json`의 `plugins` 배열에 추가:
 ```json
-{ "name": "task-github", "source": "./plugins/task-github", "version": "0.1.0",
+{ "name": "task-github", "source": "./plugins/task-github", "version": "0.2.0",
   "description": "GitHub 기반 자율 작업 프로토콜 — wiki-markdown task 노드 연계" }
 ```
 
