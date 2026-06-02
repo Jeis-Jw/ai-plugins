@@ -38,13 +38,7 @@ Plugin 메커니즘과 운영 정책을 **다른 변경 빈도**로 분리하기
 
 모든 비 trivial 작업은 종료 전 **Knowledge Capture Audit**를 수행한다. 특히 `DESIGN.md`, `rules/`, `skills/`, `wiki/ssot/`, `wiki/runbook/`처럼 운영 규약이나 정책을 바꾼 작업은 생략할 수 없다.
 
-감사는 다음 셋 중 하나로 끝나야 한다.
-
-| 결과 | 의미 |
-|------|------|
-| `recorded` | 규약상 자동 캡처 가능한 observation을 실제 기록했다. |
-| `proposed` | decision/rejected_decision/trial_error 또는 ssot/runbook 갱신 후보를 사령관에게 제안했다. |
-| `none` | 장기 재사용 가능한 지식이 없다고 판단했고 이유를 남겼다. |
+감사는 `recorded`/`proposed`/`none` 중 하나로 끝나야 한다. 각 값의 정의·타입 판정·출력 형식 정본은 task-github의 `rules/knowledge-capture.md`(메커니즘)에 둔다 — 이 어휘는 위키 없이도 플러그인이 산출하므로 메커니즘이 정본이고, 본 policy는 의무를 규정한다.
 
 에이전트는 기록 후보를 판단하기 전에 `recall`로 기존 기록을 확인한다. observation은 자동 캡처할 수 있지만, 1급 노드 캡처와 observation 승격은 반드시 제안 후 확인한다. 이슈가 없는 작업이라도 감사는 수행하며, 자동 observation에는 `--tasks`를 생략할 수 있다.
 

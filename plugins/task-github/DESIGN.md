@@ -606,12 +606,7 @@ is:open is:pr -label:in-review -label:in-progress             # 리뷰 가능 PR
 
 ### 13.1.1 Knowledge Capture Audit
 
-모든 비 trivial 작업은 종료 전 [rules/knowledge-capture.md](rules/knowledge-capture.md)의 Knowledge Capture Audit를 수행한다. 감사 결과는 반드시 `recorded`/`proposed`/`none` 중 하나다.
-
-- `observation`: 분류 전 발견·저위험이면 자동 캡처 가능.
-- `decision`/`rejected_decision`/`trial_error`: 1급 record이므로 제안 후 확인.
-- `ssot`/`runbook`: living 문서 제자리 갱신 후보로 제안.
-- 이슈가 없는 작업도 감사 대상이며, 이 경우 자동 observation은 `--tasks` 없이 캡처할 수 있다.
+모든 비 trivial 작업은 종료 전 Knowledge Capture Audit를 수행하고 결과를 `recorded`/`proposed`/`none` 중 하나로 보고한다. 절차·타입 판정·출력 어휘 정본은 [rules/knowledge-capture.md](rules/knowledge-capture.md)에 두고, 정책 의무는 위키 policy(agent-operating-model.md §1.1)에 둔다.
 
 ### 13.2 업무↔이슈 연결 규약
 
