@@ -17,7 +17,13 @@
 
 ---
 
-## 2. 공통 변수
+## 2. 부모 연결 정본
+
+서브이슈 부모 연결은 GraphQL `createIssue(parentIssueId)`를 정본으로 쓴다. REST `sub_issues` 경로와 섞지 않는다. `define`은 `skills/define/scripts/create_issue_tree.py`를 사용해 루트 생성, 부모 연결, dependency 생성을 한 경로로 처리한다.
+
+---
+
+## 3. 공통 변수
 
 ```bash
 read OWNER REPO < <(gh repo view --json owner,name --jq '"\(.owner.login) \(.name)"')
@@ -33,7 +39,7 @@ BLOCKER_ID=$(gh api -H "X-GitHub-Api-Version: $API_VERSION" \
 
 ---
 
-## 3. dependency 생성
+## 4. dependency 생성
 
 `{ISSUE}`가 `{BLOCKER}` 완료 뒤에만 실행되어야 하면:
 
@@ -50,7 +56,7 @@ gh api -X POST -H "X-GitHub-Api-Version: $API_VERSION" \
 
 ---
 
-## 4. 시작/종료 차단 체크
+## 5. 시작/종료 차단 체크
 
 `start`, `run`, `done`, `merge`는 같은 체크를 쓴다:
 
@@ -70,7 +76,7 @@ fi
 
 ---
 
-## 5. downstream 안내
+## 6. downstream 안내
 
 이슈가 close되었거나 close될 예정이면, 이 이슈가 막고 있던 downstream을 안내한다:
 
@@ -86,7 +92,7 @@ downstream이 실제로 ready인지 확정하려면 각 downstream의 `blocked_b
 
 ---
 
-## 6. 실패 처리
+## 7. 실패 처리
 
 Issue dependency API는 권한/플랜/gh 버전에 따라 실패할 수 있다. `define`의 dependency 생성 실패는 sub-issue 생성을 되돌리지 않고 fallback 코멘트로 남긴다. `start`/`run`/`done`/`merge`의 dependency 조회 실패는 자동 진행하지 않고 사령관에게 수동 확인을 요청한다.
 

@@ -6,6 +6,9 @@ tags: [wiki, layering, v1]
 supersedes: [DEC-2026-05-29-105235-three-layer-mechanism-policy-knowledge]
 relations:
   intents: [INT-2026-05-29-104711-plugin-agent-neutrality, INT-2026-05-29-104708-atomic-knowledge-records]
+retired_at: 2026-06-03
+retired_type: superseded
+superseded_by: DEC-2026-06-03-103000-운영정책-statement는-자동로드-agent-entry에-둔다
 ---
 
 ## 결정

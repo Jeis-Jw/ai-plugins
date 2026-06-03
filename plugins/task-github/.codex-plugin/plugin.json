@@ -1,0 +1,23 @@
+{
+  "name": "task-github",
+  "version": "0.3.0",
+  "description": "GitHub-based autonomous task protocol with wiki-markdown task-node integration.",
+  "author": {
+    "name": "Jinwuk-Lee",
+    "url": "https://github.com/Jeis-Jw"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Task GitHub",
+    "shortDescription": "Run GitHub Issue/PR task workflows with wiki context.",
+    "longDescription": "Defines, opens, starts, plans, runs, verifies, completes, reviews, and merges GitHub-tracked work. Integrates with wiki-markdown task bridge nodes when a local wiki vault exists and follows auto-loaded agent operating policy from CLAUDE.md or AGENTS.md.",
+    "developerName": "Jinwuk-Lee",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write", "GitHub", "Workflow"],
+    "defaultPrompt": [
+      "Use $start to claim and load an issue.",
+      "Use $plan to prepare a planned task.",
+      "Use $done to finish work and prepare a PR."
+    ]
+  }
+}

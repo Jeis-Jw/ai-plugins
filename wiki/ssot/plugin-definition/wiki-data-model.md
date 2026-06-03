@@ -3,7 +3,7 @@ title: 위키 데이터 모델
 created_at: 2026-05-29
 summary: 위키 그래프의 정적 구조 정본: 5종 record + 2종 living + 1종 task(제3 범주) 타입 체계, basename 정본 ID, YAML 관계 모델(비대칭 작성). plugin-definition 영역의 sub-ssot.
 tags: [wiki, data-model, ssot]
-verified_at: 2026-05-29
+verified_at: 2026-06-03
 ---
 
 ## 현재 상태
@@ -38,6 +38,7 @@ verified_at: 2026-05-29
   - `task.relations`: intents, decisions, ssot, tasks(외부 이슈) — **순수 잎**(다른 타입이 task를 가리키지 않음; 역방향은 파생 백링크)
   - `intent` / `ssot` / `runbook`: **relations 키 자체 없음** (불변식)
 - 양방향 *탐색* 보장, 양방향 *저장*은 supersede 쌍만 예외 ([[wiki-lifecycle]])
+- 관계 보강은 `capture` 또는 `relate` CLI로만 수행한다. `relate`는 task 노드의 semantic relation 보강과 record의 외부 `tasks` ref 추가만 허용한다. record의 semantic relation을 바꿀 필요가 있으면 새 record를 capture/supersede한다.
 
 → [[DEC-2026-05-29-105232-relations-asymmetric-write]]
 
@@ -69,6 +70,6 @@ verified_at: 2026-05-29
 - [[DEC-2026-05-29-105232-relations-asymmetric-write]] — 비대칭 관계 작성
 - [[DEC-2026-05-29-105319-nested-ssot-runbook-with-global-unique-basename]] — nested + 전역 유일
 - [[DEC-2026-05-29-181259-task-third-category]] — task 제3 범주 신설(작업↔결정 브릿지)
+- [[DEC-2026-06-03-155419-define-batch-helper-and-wiki-relate]] — `wiki relate`와 define 배치 헬퍼 배포
 
 반려 대안: [[REJ-2026-05-29-105454-sequential-numeric-id]] / [[REJ-2026-05-29-105456-wikilink-as-relation-source]] / [[REJ-2026-05-29-105458-living-writes-relations]] / [[REJ-2026-05-29-181259-task-as-immutable-record]] / [[REJ-2026-05-29-181259-task-as-living-relax-invariant]].
-

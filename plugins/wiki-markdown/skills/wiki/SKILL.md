@@ -24,7 +24,7 @@ Invoke this skill whenever the user asks to:
 - **Initialize a vault**: "set up the wiki", "create the knowledge base"
 - **Retire or supersede**: "mark this decision deprecated", "supersede X with Y"
 
-Per the v1 design principle (`wiki/ssot/plugin_definition_v1.md` §1), always **`recall` before deciding** and **`capture` after deciding**.
+Per the mechanism design principle in `rules/knowledge-protocol.md`, always **`recall` before deciding** and **`capture` after deciding**.
 
 ## Quick start
 
@@ -67,6 +67,10 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" capture task \
 # Finish it (active → task/done/) when the linked issue closes; reopen to undo.
 python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" complete TASK-2026-04-17-143052-move-payment-session-to-the-bff
 python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" reopen   TASK-2026-04-17-143052-move-payment-session-to-the-bff
+
+# Add a relation to an existing node without hand-editing frontmatter.
+python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" relate DEC-2026-04-17-143052-move-auth-to-a-bff --add-tasks owner/repo#18
+python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" relate TASK-2026-04-17-143052-move-payment-session-to-the-bff --add-decisions move-auth-to-a-bff
 
 # 4. Recall (3-stage + batch read + backlinks).
 python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" recall "auth" --json
@@ -123,6 +127,7 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" refresh --fix index,retired-in
 | `retire` | `<basename>` `--type deprecated\|superseded` | `--superseded-by <ref>` (required for superseded; must be an **active context/* record**), `--dry-run` | `0` · `2` arg / successor-not-record / task-with-superseded · `3` · `4` |
 | `complete` | `<basename>` | `--dry-run` | `0` · `2` not-a-task · `3` · `4` missing / already-done |
 | `reopen` | `<basename>` | `--dry-run` | `0` · `2` not-a-task · `3` · `4` missing / not-done |
+| `relate` | `<basename>` | `--add-intents` `--add-decisions` `--add-ssot` `--add-tasks` `--dry-run` | `0` · `2` relation_not_allowed / empty · `3` · `4` missing / ambiguous / bad task format |
 | `recall` | — or `<query>` | `--type` `--tag` (repeatable) `--section` `--stage` `--limit` `--backlinks-of` `--read <a,b,c>` `--fuzzy` `--include-retired` | `0` always (zero hits is success), `4` only when `--read` target is missing |
 | `refresh` | — | `--check <name,..>` (13 + `all`) `--days N` `--path <sub>` `--changed-path <p,..>` `--fix index,retired-in-index` `--strict` | `0` · `2` (unknown `--check`, `--fix` whitelist violation, bare `--fix`) · `6` (strict + ≥1 issue) |
 
@@ -134,11 +139,11 @@ Common: `--vault <path>` (default `./wiki`), `--json` (machine output). JSON suc
 - a full basename: `DEC-2026-04-17-143052-move-auth-to-a-bff`, or
 - a slug fragment: `move-auth-to-a-bff`.
 
-The CLI resolves fragments to the canonical basename; ambiguous fragments exit `4`. **Storage is always the full basename.**
+The CLI resolves fragments to the canonical basename; ambiguous fragments exit `4`. Matching checks exact basename first, then slug exact, slug prefix, and slug substring, all NFC-normalized so Korean/CJK + Latin mixed slugs work. Missing refs include candidate basenames in the error message. **Storage is always the full basename.**
 
 The positional `retire <basename>` and `recall --read` default to **exact** basename matching for safety. Pass `--fuzzy` on `recall --read` to opt into fragment resolution.
 
-`--tasks` entries are external task IDs (`owner/repo#N`); the wiki validates format only — it does not verify the task exists.
+`--tasks` entries are external task IDs (`owner/repo#N`); the wiki validates format only — it does not verify the task exists. Human-edited quoted refs such as `["owner/repo#N"]` are accepted and normalized by CLI writes.
 
 ### Refresh checks (13)
 
@@ -179,6 +184,7 @@ Unknown `--check` names or empty `--check ""` exit `2` so CI catches typos immed
 - **Use observation for pre-classification finds**: `capture observation --ssot <ssot> --affects-paths "src/<area>/**"`. When classification firms up, capture the successor and `retire --type superseded --superseded-by`.
 - **Audit an intent's win/loss footprint**: `recall --backlinks-of <INT-...>` returns the decisions that won *and* the rejections, side-by-side.
 - **Trace a decision to the work it spawned**: `recall --backlinks-of <DEC-...>` surfaces the `task` nodes that point at it — "what work did this decision produce?" — and keeps showing them after they're completed (done tasks stay in default backlinks; only `retire`d docs need `--include-retired`). Capture the task with `--decisions <DEC> --tasks owner/repo#N` so the link exists.
+- **Add a missing relation without frontmatter edits**: use `relate`. Task nodes may add semantic relations (`--add-decisions`, `--add-intents`, `--add-ssot`) and external tasks. Immutable records only accept `--add-tasks`; capture a successor record for semantic changes.
 - **Run `refresh` right after `retire ... --type superseded`** to confirm both sides of the supersede edge.
 - **Manage the tag vocabulary**: drop allowed tags under an `## 어휘` section in `wiki/ssot/tag-vocabulary.md`. The `tags` check then flags vocabulary violations; absent the file, the check is skipped.
 - **Re-verification**: stamp living notes with `--verified-at YYYY-MM-DD`; `refresh --check stale --days 90` reports anything past the threshold.
@@ -187,12 +193,13 @@ Unknown `--check` names or empty `--check ""` exit `2` so CI catches typos immed
 
 ## Four-layer separation (§15)
 
-This plugin is the **mechanism** layer — agent-neutral. Agent-specific operating policy (who captures what, when, GitHub-Issue flow, etc.) belongs in the project's `wiki/ssot/agent-operating-model.md` (the *policy* layer). A short policy pointer lives in `CLAUDE.md` / `AGENTS.md` (the *agent entry* layer). Accumulated content lives in `wiki/` (the *knowledge* layer).
+This plugin is the **mechanism** layer — agent-neutral. Working-environment operating policy (who captures what, when to isolate worktrees, GitHub-Issue flow, promotion triggers, etc.) belongs in auto-loaded agent entry files such as `CLAUDE.md`, `AGENTS.md`, or `.claude/`. The optional `agent-policy` skill scaffolds those files idempotently. Accumulated product/system knowledge lives in `wiki/`; this skill does not create a consumer project's `wiki/ssot/agent-operating-model.md`.
 
 ## References
 
 - `references/wiki-protocol.md` — Full schema / sections / lifecycle / CLI contract in one place.
 - `../../rules/knowledge-protocol.md` — Mechanism layer; ships with the plugin.
+- `../agent-policy/` — Optional Claude/Codex operating-policy scaffold for auto-loaded entry files.
 - `../../templates/` — Per-type body skeletons (human reference).
 
 ## Output interpretation tips

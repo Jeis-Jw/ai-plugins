@@ -1,8 +1,8 @@
 # 위키 브릿지 규약 (mechanism)
 
 > 이 룰은 task-github → `wiki-markdown` 연동의 **메커니즘**(감지·호출·반응)만 정의한다.
-> **정책**(누가·언제·어떤 타입을 캡처/승격하는가)은 위키 policy 계층 `wiki/ssot/agent-operating-model.md`에 있다.
-> 이 분리는 위키의 4계층 원칙(plugin은 agent-neutral, 정책은 operating-model)을 따른다. [DESIGN.md](../DESIGN.md) §2·§6 참조.
+> **정책**(누가·언제·어떤 타입을 캡처/승격하는가)은 자동로드 agent-entry 파일(`CLAUDE.md` / `AGENTS.md`)의 operating policy 블록에 있다.
+> 이 분리는 위키의 4계층 원칙(plugin은 agent-neutral, 작업환경 정책은 자동로드 표면, 소비 프로젝트 wiki는 지식 저장소)을 따른다. [DESIGN.md](../DESIGN.md) §2·§6 참조.
 
 ---
 
@@ -74,6 +74,7 @@ wiki refresh --strict --json
 ## 4. task 노드 — 업무↔이슈 1:1 다리
 
 **업무 1개 = 위키 task 노드 1개 + GitHub 루트 이슈 1개.** task 노드는 업무 단위이며 **리프마다 만들지 않는다.**
+단위별 상세 설계는 서브이슈 본문 또는 그 단위 실행 중 캡처되는 `decision`/`observation`에 둔다. brainstorm 산출물을 리프 task 노드로 옮기지 않는다.
 
 ```
    intent ◄── decision ◄── task 노드 ──relations.tasks──► GitHub 루트 이슈
@@ -85,10 +86,11 @@ wiki refresh --strict --json
 - **task 노드 → 이슈**: `relations.tasks: [owner/repo#<루트이슈>]` (task는 record 성질이라 이 역링크를 **가질 수 있다** — 이것이 task 노드를 신설한 이유).
 - **task 노드 → 결정/취지**: `--decisions` / `--intents` (이 업무가 어떤 결정·취지에서 나왔나).
 - **이슈 → task 노드**: 루트 이슈 본문 `## Wiki Context`에 task 노드 basename을 **메인**, 결정/취지를 **보조**로.
+- **리프/서브이슈 → 상세 설계**: 서브이슈 본문이 정본이다. 이미 리프 task 노드를 만들었다면 내용을 서브이슈로 이전하고 task 노드는 deprecated로 retire한다.
 - **역방향 조회(결정→작업)**: `recall --backlinks-of {DEC}`로 "이 결정이 낳은 작업"을 조회(완료된 task도 기본 포함 — done은 유효한 terminal 상태).
 - **task 노드 ID 조회(이슈→task)**: **루트 이슈 본문 `## Wiki Context`가 정본 경로다.** `recall --backlinks-of {owner/repo#N}`은 **쓰지 않는다** — 위키는 외부 이슈 ref(`owner/repo#N`)를 역링크 대상으로 찾지 못한다(`tasks`는 형식만 검증되는 외부 참조).
 
-루트 이슈 `## Wiki Context` 포맷(정확한 규약은 policy):
+루트 이슈 `## Wiki Context` 포맷(정확한 규약은 자동로드 operating policy):
 ```markdown
 ## Wiki Context
 **메인**: [[TASK-2026-…-payment-bff]] — 이 업무의 정의(요약·근거)
@@ -154,7 +156,7 @@ TASK=$(gh issue view "$ROOT" --json body --jq '.body' \
 | `observation` | **자동** | 저위험·분류 전 |
 | `task` 생성, `decision`/`intent`/`rejected`/`trial_error`, 승격 | **제안 후 확인** | 그래프 1급 노드, 되돌리기 비용 |
 
-> 구체적 임계·권한은 mechanism이 아니라 **policy**의 몫이다. 위키는 자동 승격을 반려했다(`REJ-…-promotion-auto-judgment`).
+> 구체적 임계·권한은 mechanism이 아니라 **policy**의 몫이다. 정책은 `CLAUDE.md` / `AGENTS.md` 같은 자동로드 표면에 둔다. 위키는 자동 승격을 반려했다(`REJ-…-promotion-auto-judgment`).
 
 ---
 

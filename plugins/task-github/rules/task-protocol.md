@@ -123,7 +123,7 @@
 | `[질문]` | 사령관 확인 필요 | — | 캡처 안 함 |
 | `[중단]` | 복구 불가 실패 | — | 캡처 안 함 |
 
-- 위키↔task 연동의 **방법(감지·호출)**은 [wiki-bridge.md](wiki-bridge.md)에, **정책(누가·언제·어떤 타입을)**은 위키 policy(`wiki/ssot/agent-operating-model.md`)에 둔다.
+- 위키↔task 연동의 **방법(감지·호출)**은 [wiki-bridge.md](wiki-bridge.md)에, **정책(누가·언제·어떤 타입을)**은 자동로드 agent-entry 파일(`CLAUDE.md` / `AGENTS.md`)의 operating policy 블록에 둔다.
 - 위키 미가용(`./wiki/` 없음) 시 모든 승격을 **스킵하고 Issue 코멘트 태그로만** 남긴다(정상 동작).
 
 ---

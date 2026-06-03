@@ -18,4 +18,4 @@ audience: [human, agent]
 
 ## 노트
 
-- [[agent-operating-model]] — 이 위키를 사용하는 에이전트들의 운영 정책 정본. 4계층 분리(plugin_definition)에서 policy 계층에 해당. task-github 작업관리 플러그인↔위키 결합 규약(캡처 권한·task 노드 연결·promotion·PR 흐름·지식 기록 감사)을 여기서 정의.
+- [[agent-operating-model]] — 이전 4계층 설계에서 작업환경 운영정책 정본으로 쓰던 레거시 슬롯. 2026-06-03 이후 운영정책 statement는 CLAUDE.md/AGENTS.md 자동로드 entry 표면이 정본이고, 이 문서는 이관 기록과 구버전 참조 호환만 담당한다.

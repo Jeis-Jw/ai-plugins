@@ -44,12 +44,13 @@ task-github:review {PR} --auto-merge
 - `recall --backlinks-of {DEC}`로 "이 결정이 낳은 작업" 추적
 - PR이 낡게 만든 위키 문서 자동 탐지(`changed-path-stale`)
 
-연동 메커니즘은 [rules/wiki-bridge.md](rules/wiki-bridge.md), 운영 정책은 위키 `wiki/ssot/agent-operating-model.md`에 있다(4계층 분리).
+연동 메커니즘은 [rules/wiki-bridge.md](rules/wiki-bridge.md), 운영 정책은 자동로드 agent-entry 파일(`CLAUDE.md` / `AGENTS.md`)에 있다. `wiki-markdown`의 `agent-policy` 스킬로 두 파일의 관리 블록을 스캐폴드할 수 있다.
 
 ## Issue dependency
 
 하위 작업의 병렬/직렬 실행 가능성은 GitHub **Issue dependencies**가 정본이다.
 - sub-issue는 업무 분해 구조만 표현한다.
+- `define`은 `skills/define/scripts/create_issue_tree.py`로 루트/서브이슈/dependency를 한 spec에서 생성한다.
 - `blocked_by`가 없으면 병렬 가능으로 간주한다.
 - 열린 `blocked_by`가 있으면 `start`/`run`/`done`/`merge`가 차단한다.
 - 이슈 완료 후에는 `blocking` downstream을 안내한다.

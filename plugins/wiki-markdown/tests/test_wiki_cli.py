@@ -2285,6 +2285,125 @@ class WikiCliTaskTests(unittest.TestCase):
             # 원본은 active에 그대로 남아 있어야 함(이동 안 됨)
             self.assertTrue((v / "task" / f"{tid}.md").is_file())
 
+    def test_capture_relation_resolves_mixed_cjk_slug_prefix(self):
+        # 회귀: 라틴+CJK 혼합 slug의 유효한 접두 fragment가 ref_missing으로
+        # 떨어지면 매번 full basename을 요구하게 된다.
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            run_cli(
+                "capture", "decision",
+                "--slug", "관계형-메타-룰은-파생-fact로-흡수",
+                "--title", "관계형 메타 룰은 파생 fact로 흡수",
+                "--summary", "관계형 메타 룰 저장 방향.",
+                "--tags", "schema",
+                cwd=tmp, env={"WIKI_NOW": "2026-06-03T10:00:00"},
+            )
+            r = run_cli(
+                "capture", "task",
+                "--slug", "schema-u1",
+                "--title", "Schema U1",
+                "--summary", "스키마 첫 단위.",
+                "--tags", "schema",
+                "--decisions", "관계형-메타-룰은-파생-fact",
+                "--tasks", "owner/repo#77",
+                cwd=tmp, env={"WIKI_NOW": "2026-06-03T10:00:01"},
+            )
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            text = (Path(tmp) / "wiki" / "task"
+                    / "TASK-2026-06-03-100001-schema-u1.md").read_text()
+            self.assertIn(
+                "DEC-2026-06-03-100000-관계형-메타-룰은-파생-fact로-흡수",
+                text,
+            )
+
+    def test_missing_fuzzy_ref_reports_existing_candidates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            run_cli(
+                "capture", "decision",
+                "--slug", "move-bff",
+                "--title", "Move BFF",
+                "--summary", "BFF owns sessions.",
+                "--tags", "arch",
+                cwd=tmp, env={"WIKI_NOW": "2026-06-03T10:00:00"},
+            )
+            r = run_cli(
+                "capture", "task",
+                "--title", "Pay BFF",
+                "--summary", "Payment work.",
+                "--tags", "payment",
+                "--decisions", "missing-bff",
+                "--tasks", "owner/repo#42",
+                cwd=tmp, env={"WIKI_NOW": "2026-06-03T10:00:01"},
+            )
+            self.assertEqual(r.returncode, 4)
+            self.assertIn("candidates:", r.stderr)
+            self.assertIn("DEC-2026-06-03-100000-move-bff", r.stderr)
+
+    def test_refresh_accepts_quoted_task_refs_from_human_frontmatter(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            decision_path = (Path(tmp) / "wiki" / "context" / "decision"
+                             / "DEC-2026-06-03-100000-quoted-task.md")
+            decision_path.write_text(
+                "---\n"
+                "title: Quoted task\n"
+                "created_at: 2026-06-03\n"
+                "summary: Human-edited relation.\n"
+                "tags: [task]\n"
+                "relations:\n"
+                "  tasks: [\"owner/repo#42\"]\n"
+                "---\n"
+                "## 맥락\n\n## 결정\n\n## 결과\n\n## 재검토 트리거\n",
+                encoding="utf-8",
+            )
+            r = run_cli("refresh", "--check", "task-ref", "--strict", "--json", cwd=tmp)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertEqual(json.loads(r.stdout)["issues"], [])
+
+    def test_relate_adds_task_ref_to_decision_idempotently(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            _, dec_id = self._seed_decision(tmp)
+            first = run_cli("relate", dec_id, "--add-tasks", "owner/repo#42",
+                            "--json", cwd=tmp)
+            self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+            second = run_cli("relate", dec_id, "--add-tasks", "owner/repo#42",
+                             "--json", cwd=tmp)
+            self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+            text = (Path(tmp) / "wiki" / "context" / "decision"
+                    / f"{dec_id}.md").read_text()
+            self.assertEqual(text.count("owner/repo#42"), 1)
+            chk = run_cli("refresh", "--check", "task-ref", "--strict", "--json", cwd=tmp)
+            self.assertEqual(chk.returncode, 0, chk.stdout + chk.stderr)
+
+    def test_relate_adds_decision_to_task_and_rejects_record_semantic_relation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            _, dec_id = self._seed_decision(tmp)
+            task = run_cli(
+                "capture", "task",
+                "--slug", "docs",
+                "--title", "Docs",
+                "--summary", "Write docs.",
+                "--tags", "docs",
+                "--tasks", "owner/repo#43",
+                cwd=tmp, env={"WIKI_NOW": "2026-06-03T10:00:01"},
+            )
+            self.assertEqual(task.returncode, 0, task.stderr)
+            task_id = "TASK-2026-06-03-100001-docs"
+            ok = run_cli("relate", task_id, "--add-decisions", "move-bff",
+                         "--json", cwd=tmp)
+            self.assertEqual(ok.returncode, 0, ok.stdout + ok.stderr)
+            task_text = (Path(tmp) / "wiki" / "task" / f"{task_id}.md").read_text()
+            self.assertIn(f"decisions: [{dec_id}]", task_text)
+
+            rejected = run_cli("relate", dec_id, "--add-decisions", "move-bff",
+                               "--json", cwd=tmp)
+            self.assertEqual(rejected.returncode, 2)
+            payload = json.loads(rejected.stdout)
+            self.assertEqual(payload["error_code"], "relation_not_allowed")
+
 
 if __name__ == "__main__":
     unittest.main()

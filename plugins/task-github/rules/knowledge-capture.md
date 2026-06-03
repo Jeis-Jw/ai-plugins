@@ -2,7 +2,7 @@
 
 > 이 룰은 작업 중 나온 결정·취지·반려·시행착오·관찰을 위키에 남길지 판단하는 공통 절차다. 위키가 없어도 감사 자체는 수행하고, 결과는 최종 보고나 Issue 코멘트에 남긴다.
 >
-> **정본 경계**: `recorded`/`proposed`/`none` 어휘와 타입 판정의 정본은 이 룰(메커니즘)이다 — 위키 없이도 산출하므로. "모든 비 trivial 작업은 감사한다"는 의무 정본은 위키 policy(agent-operating-model.md §1.1). DESIGN §13.1.1은 이 둘을 가리키는 포인터다.
+> **정본 경계**: `recorded`/`proposed`/`none` 어휘와 타입 판정의 정본은 이 룰(메커니즘)이다 — 위키 없이도 산출하므로. "모든 비 trivial 작업은 감사한다"는 의무 정본은 자동로드 operating policy(`CLAUDE.md` / `AGENTS.md`). DESIGN §13.1.1은 이 둘을 가리키는 포인터다.
 
 ---
 
@@ -75,4 +75,3 @@
 ### Knowledge Capture Audit
 - none: 단순 실행/검증만 있었고 장기 재사용 가능한 결정·관찰·교훈이 없음.
 ```
-

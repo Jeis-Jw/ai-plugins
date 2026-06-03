@@ -6,6 +6,9 @@ tags: [wiki, layering, lesson]
 verified_at: 2026-05-29
 relations:
   decisions: [DEC-2026-05-29-105318-four-layer-separation]
+retired_at: 2026-06-03
+retired_type: superseded
+superseded_by: DEC-2026-06-03-103000-운영정책-statement는-자동로드-agent-entry에-둔다
 ---
 
 ## 교훈

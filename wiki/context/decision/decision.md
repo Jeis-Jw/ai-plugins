@@ -17,7 +17,6 @@ audience: [human, agent]
 - [[DEC-2026-05-29-105232-relations-asymmetric-write]] — 관계 정본은 frontmatter YAML의 plain basename. record(decision/rejected/trial/observation)만 작성하고 허브(intent/ssot/runbook)는 백링크로 파생.
 - [[DEC-2026-05-29-105233-obsidian-zero-runtime-dependency]] — AI 검색 정본은 filesystem 단일(ripgrep+YAML). obsidian-cli/Dataview/Bases는 AI 파이프라인 제외. wikilink는 사람용 장식.
 - [[DEC-2026-05-29-105234-retire-two-value-model]] — 모든 record(OBS 포함)는 deprecated(틀림/무효) 또는 superseded(새 record로 대체) 2값으로 retire. classified 같은 별도 분류 축 미도입.
-- [[DEC-2026-05-29-105318-four-layer-separation]] — v1 시점 결정: 4계층 분리 = plugin 메커니즘 / agent-operating-model.md 정책 / CLAUDE.md·AGENTS.md agent entry / wiki/* knowledge. v0 3계층 분리를 supersede.
 - [[DEC-2026-05-29-105319-nested-ssot-runbook-with-global-unique-basename]] — v1 시점 결정: ssot/runbook은 하위 폴더 허용. basename은 vault 전역 유일. resolver 단순성 + nested 분할 가능성 양립. v0 평면 디렉토리 supersede.
 - [[DEC-2026-05-29-105321-folder-independent-index-derivation]] — v1 시점 결정: 재귀=폴더 발견, 비재귀=노트 수집. 각 폴더 인덱스는 직속 문서만 모음. 상위는 하위 문서 summary 중복 수집 안 함. v0 단순 폴더 인덱스 supersede.
 - [[DEC-2026-05-29-105322-observation-record-type]] — v1 신규: 실행 중 발견했지만 아직 결정/교훈/정본 갱신으로 분류하기 이른 사실을 안전하게 보존하는 임시 record. 다른 record와 같은 2값 supersede 모델.
@@ -30,3 +29,5 @@ audience: [human, agent]
 - [[DEC-2026-05-29-181259-task-third-category]] — 결정과 취지를 이슈에 잇는 작업 브릿지 노드 task를 신설 — 제자리 갱신과 관계 보유를 조합한 순수 잎, relations는 intents/decisions/tasks/ssot, ID는 TASK 프리픽스, 경로는 wiki/task.
 - [[DEC-2026-06-02-120100-task-github-작업-종료-전-knowledge-capture-audit-의무화]] — 비 trivial task-github 작업은 종료 전에 위키 기록 후보를 감사하고 recorded/proposed/none 중 하나를 최종 보고나 Issue 코멘트에 남긴다.
 - [[DEC-2026-06-02-120400-하위-작업-실행-순서는-github-issue-dependencies를-정본으로-사용]] — sub-issue는 작업 분해 구조만 표현하고, 하위 작업의 선후관계와 blocked 상태는 GitHub Issue dependencies의 blocked_by/blocking 관계를 정본으로 사용한다.
+- [[DEC-2026-06-03-103000-운영정책-statement는-자동로드-agent-entry에-둔다]] — wiki-markdown 배포 설계에서 작업환경 운영정책 statement의 정본 위치를 소비 프로젝트 wiki/ssot/agent-operating-model.md가 아니라 CLAUDE.md/AGENTS.md 같은 자동로드 agent-entry 표면으로 재배치한다. 이 repo의 위키에는 플러그인 설계 결정만 dogfood로 남기고, 플러그인 패키지는 agent-policy 스캐폴드로 CLAUDE.md/AGENTS.md 관리 블록을 만든다.
+- [[DEC-2026-06-03-155419-define-batch-helper-and-wiki-relate]] — task-github define은 테스트된 issue-tree 헬퍼로 루트·서브이슈·dependency를 만들고, wiki-markdown은 기존 노드 관계 보강을 위해 relate와 견고한 ref/task-ref 정규화를 제공한다.

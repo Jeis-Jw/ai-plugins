@@ -1,6 +1,6 @@
 # AI-Native Wiki Protocol
 
-Single-file reference for the wiki plugin. Condenses the implementation contract from `wiki/ssot/plugin_definition_v1.md` (the source of truth for design intent). When this file and the SSOT disagree, the SSOT wins.
+Single-file reference for the wiki plugin. Condenses the implementation contract from the shipped mechanism documents (`rules/knowledge-protocol.md` and `skills/wiki/SKILL.md`). The plugin development repo dogfoods the design rationale under `wiki/ssot/plugin-definition/`, but consumer projects do not need that vault content for the CLI contract.
 
 ## Purpose
 
@@ -187,7 +187,7 @@ Observation uses the same two-value lifecycle. When an observation eventually po
 
 ## CLI Contract
 
-The bundled CLI (`scripts/wiki_cli.py`, stdlib only) supports seven subcommands.
+The bundled CLI (`scripts/wiki_cli.py`, stdlib only) supports eight subcommands.
 
 | Subcommand | Purpose |
 |------------|---------|
@@ -196,6 +196,7 @@ The bundled CLI (`scripts/wiki_cli.py`, stdlib only) supports seven subcommands.
 | `retire <basename>` | Retire (`--type deprecated`) or supersede (`--type superseded --superseded-by <ref>`) a context record; rewrite both sides of the supersede edge; regenerate indexes. A `task` may be retired `deprecated` only (use `complete` to finish it). |
 | `complete <basename>` | Move a `task` from active (`task/`) to done (`task/done/`). Task-only. Refuses to overwrite an existing destination. |
 | `reopen <basename>` | Move a done `task` back to active (`task/`). Task-only. |
+| `relate <basename>` | Add relations to an existing document without hand-editing frontmatter. Task nodes may add `intents`/`decisions`/`ssot`/`tasks`; immutable records only accept external `tasks`. |
 | `recall` | Read-only query — Stage 1 (summary scan), Stage 2 (`--section <name>`), Stage 3 (full doc), batch `--read a,b,c` (preserves input order), derived backlinks via `--backlinks-of` (done tasks included by default). |
 | `refresh` | Integrity report. Read-only by default; `--strict` exits `6` on issues; `--fix` accepts only `index` and `retired-in-index` (the safe, purely-derived fixes). |
 
@@ -206,7 +207,7 @@ The bundled CLI (`scripts/wiki_cli.py`, stdlib only) supports seven subcommands.
 | `stale` | `verified_at` older than the per-type threshold |
 | `supersede` | Both ends of a supersede edge agree |
 | `broken-rel` | A `relations.*` ref points at nothing (or at an index file) |
-| `task-ref` | Malformed `tasks` entries (must be `owner/repo#N`) |
+| `task-ref` | Malformed `tasks` entries (must be `owner/repo#N`; quoted human edits are accepted) |
 | `orphan` | Record with neither backlinks nor outbound relations |
 | `index` | Index file missing or out-of-sync with the folder |
 | `retired-in-index` | Index still lists a retired record |

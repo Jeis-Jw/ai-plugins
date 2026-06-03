@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """wiki_cli — AI-native wiki CLI (stdlib only).
 
-Single-file CLI implementing the wiki plugin design at
-wiki/ssot/plugin_definition_v1.md. Subcommands: init, capture, retire,
-complete, reopen, recall, refresh. See SKILL.md and rules/knowledge-protocol.md.
+Single-file CLI implementing the shipped wiki plugin mechanism contract.
+Subcommands: init, capture, retire, complete, reopen, relate, recall, refresh.
+See SKILL.md and rules/knowledge-protocol.md.
 """
 from __future__ import annotations
 
@@ -183,6 +183,7 @@ LIVING_FOLDER_NAMES = ("ssot", "runbook")
 INDEX_HEADER = "## 노트"
 
 TASK_REF_RE = re.compile(r"^[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+#\d+$")
+RECORD_ID_RE = re.compile(r"^[A-Z]{3}-\d{4}-\d{2}-\d{2}-\d{6}-(.+)$")
 ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 # Placeholder pattern: angle-bracketed instruction text or pure whitespace.
@@ -774,7 +775,8 @@ def resolve_friendly(vault: Path, ref: str, *, allow_fuzzy: bool = True) -> str:
     """Resolve a wiki-doc ref to a full basename.
 
     1) exact basename match (active or retired).
-    2) if allow_fuzzy: slug-fragment match against record basenames.
+    2) if allow_fuzzy: slug match against active/retired document basenames.
+       Priority is exact slug, then slug prefix, then slug substring.
     Ambiguous/missing → CliError(EXIT_VALIDATION, ...).
 
     allow_fuzzy=False makes this behave like find_doc_anywhere but raises
@@ -787,21 +789,64 @@ def resolve_friendly(vault: Path, ref: str, *, allow_fuzzy: bool = True) -> str:
         return ref
     if not allow_fuzzy:
         raise CliError(EXIT_VALIDATION, "ref_missing", f"reference not found: {ref}")
-    pattern = re.compile(r"^[A-Z]{3}-\d{4}-\d{2}-\d{2}-\d{6}-" + re.escape(ref) + r"$")
-    candidates = [_nfc(p.stem) for p in iter_all_docs(vault, include_retired=True)
-                  if pattern.match(_nfc(p.stem))]
+    candidates = _friendly_ref_candidates(vault, ref)
     if not candidates:
-        raise CliError(EXIT_VALIDATION, "ref_missing", f"reference not found: {ref}")
+        listed = _format_ref_candidates(vault)
+        suffix = f"; candidates: {listed}" if listed else ""
+        raise CliError(EXIT_VALIDATION, "ref_missing", f"reference not found: {ref}{suffix}")
     if len(candidates) > 1:
         raise CliError(EXIT_VALIDATION, "ref_ambiguous",
                        f"reference '{ref}' matches {len(candidates)}: {', '.join(candidates)}")
     return candidates[0]
 
 
-def validate_task_ref(s: str) -> None:
-    if not TASK_REF_RE.match(s):
+def _basename_slug_part(basename: str) -> str:
+    m = RECORD_ID_RE.match(_nfc(basename))
+    return m.group(1) if m else _nfc(basename)
+
+
+def _friendly_ref_candidates(vault: Path, ref: str) -> List[str]:
+    ref = _nfc(ref)
+    by_id = sorted({_nfc(p.stem) for p in iter_all_docs(vault, include_retired=True)})
+    buckets: List[List[str]] = [
+        [bn for bn in by_id if _basename_slug_part(bn) == ref],
+        [bn for bn in by_id if _basename_slug_part(bn).startswith(ref)],
+        [bn for bn in by_id if ref in _basename_slug_part(bn)],
+    ]
+    seen = set()
+    out: List[str] = []
+    for bucket in buckets:
+        for bn in bucket:
+            if bn not in seen:
+                out.append(bn)
+                seen.add(bn)
+        if out:
+            return out
+    return out
+
+
+def _format_ref_candidates(vault: Path, limit: int = 8) -> str:
+    names = sorted({_nfc(p.stem) for p in iter_all_docs(vault, include_retired=True)})
+    if not names:
+        return ""
+    visible = names[:limit]
+    suffix = " ..." if len(names) > limit else ""
+    return ", ".join(visible) + suffix
+
+
+def normalize_task_ref(s: str) -> str:
+    s = _nfc(s).strip()
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in ("'", '"'):
+        s = s[1:-1].strip()
+    return s
+
+
+def validate_task_ref(s: str) -> str:
+    normalized = normalize_task_ref(s)
+    if not TASK_REF_RE.match(normalized):
         raise CliError(EXIT_VALIDATION, "task_format",
                        f"invalid task ref (expected owner/repo#N): {s}")
+    return normalized
 
 
 def parse_csv(s: Optional[str]) -> List[str]:
@@ -1134,9 +1179,9 @@ def cmd_capture(args) -> int:
         if not vals:
             continue
         if k == "tasks":
+            resolved[k] = []
             for v in vals:
-                validate_task_ref(v)
-            resolved[k] = list(vals)
+                resolved[k].append(validate_task_ref(v))
             continue
         resolved[k] = []
         expected = RELATION_TARGET_TYPES.get(k)
@@ -1369,6 +1414,111 @@ def cmd_complete(args) -> int:
 
 def cmd_reopen(args) -> int:
     return _move_task(resolve_vault(args.vault), args, to_done=False)
+
+
+def _resolve_relation_values(vault: Path, field: str, values: List[str]) -> List[str]:
+    if field == "tasks":
+        return [validate_task_ref(v) for v in values]
+    expected = RELATION_TARGET_TYPES.get(field)
+    resolved: List[str] = []
+    for v in values:
+        full = resolve_friendly(vault, v)
+        if expected is not None:
+            target_path = find_doc_anywhere(vault, full)
+            if target_path is None:
+                raise CliError(EXIT_VALIDATION, "ref_unresolvable",
+                               f"--add-{field} {v}: resolved to {full!r} but path lookup failed")
+            target_doc = read_doc(vault, target_path)
+            if target_doc.doc_type != expected:
+                raise CliError(EXIT_VALIDATION, "relation_type_mismatch",
+                               f"--add-{field} {v}: 타입 불일치 (예상={expected}, "
+                               f"실제={target_doc.doc_type})")
+        resolved.append(full)
+    return resolved
+
+
+def _relate_allowed(doc: WikiDoc, field: str) -> None:
+    spec = TYPE_SPECS.get(doc.doc_type)
+    if spec is None:
+        raise CliError(EXIT_USAGE, "unknown_type",
+                       f"cannot relate unknown doc type for {doc.doc_id}")
+    if doc.retired:
+        raise CliError(EXIT_USAGE, "retired_not_mutable",
+                       f"cannot relate retired document: {doc.doc_id}")
+    if field not in spec.allowed_relations:
+        raise CliError(EXIT_USAGE, "relation_not_allowed",
+                       f"type '{doc.doc_type}' does not write relations.{field}")
+    if doc.doc_type == "task":
+        return
+    if spec.is_record and field == "tasks":
+        return
+    raise CliError(EXIT_USAGE, "relation_not_allowed",
+                   "relate only adds external task refs to immutable records; "
+                   "capture a successor record for semantic relation changes")
+
+
+def _merge_relation(fm: dict, field: str, values: List[str]) -> Tuple[List[str], List[str]]:
+    rel = fm.get("relations")
+    if not isinstance(rel, dict):
+        rel = {}
+        fm["relations"] = rel
+    existing = rel.get(field)
+    if not isinstance(existing, list):
+        existing = []
+    normalized_existing = [normalize_task_ref(x) if field == "tasks" else _nfc(x)
+                           for x in existing]
+    added: List[str] = []
+    unchanged: List[str] = []
+    for value in values:
+        comparable = normalize_task_ref(value) if field == "tasks" else _nfc(value)
+        if comparable in normalized_existing:
+            unchanged.append(comparable)
+            continue
+        existing.append(comparable)
+        normalized_existing.append(comparable)
+        added.append(comparable)
+    rel[field] = existing
+    return added, unchanged
+
+
+def cmd_relate(args) -> int:
+    vault = resolve_vault(args.vault)
+    ensure_vault(vault)
+
+    target_id = resolve_friendly(vault, args.basename)
+    target_path = find_doc_anywhere(vault, target_id)
+    if target_path is None:
+        raise CliError(EXIT_VALIDATION, "relate_missing", f"target not found: {args.basename}")
+    doc = read_doc(vault, target_path)
+
+    relation_inputs = {
+        "intents": parse_csv(args.add_intents),
+        "decisions": parse_csv(args.add_decisions),
+        "ssot": parse_csv(args.add_ssot),
+        "tasks": parse_csv(args.add_tasks),
+    }
+    if not any(relation_inputs.values()):
+        raise CliError(EXIT_USAGE, "relate_empty", "provide at least one --add-* relation")
+
+    added_payload = {}
+    unchanged_payload = {}
+    for field, values in relation_inputs.items():
+        if not values:
+            continue
+        _relate_allowed(doc, field)
+        resolved = _resolve_relation_values(vault, field, values)
+        added, unchanged = _merge_relation(doc.frontmatter, field, resolved)
+        if added:
+            added_payload[field] = added
+        if unchanged:
+            unchanged_payload[field] = unchanged
+
+    write_doc(doc.path, doc.frontmatter, doc.body, dry_run=args.dry_run)
+    emit_ok(args,
+            {"id": doc.doc_id, "path": str(doc.path),
+             "added": added_payload, "unchanged": unchanged_payload},
+            text_lines=[f"관계 갱신: {doc.doc_id}"])
+    return EXIT_OK
 
 
 def cmd_recall(args) -> int:
@@ -1705,7 +1855,8 @@ def cmd_refresh(args) -> int:
             if field == "tasks":
                 if "task-ref" in checks:
                     for t in values:
-                        if not TASK_REF_RE.match(t):
+                        normalized_task = normalize_task_ref(t)
+                        if not TASK_REF_RE.match(normalized_task):
                             issues.append({"check": "task-ref", "path": str(d.path),
                                            "field": "tasks", "target": t,
                                            "message": f"{d.doc_id}.relations.tasks: '{t}' (owner/repo#N 형식 아님)"})
@@ -2234,6 +2385,20 @@ def build_parser() -> argparse.ArgumentParser:
     pre.add_argument("basename")
     pre.add_argument("--dry-run", action="store_true")
     pre.set_defaults(func=cmd_reopen)
+
+    prel = sub.add_parser("relate", help="add relations to an existing wiki document")
+    _sub_common(prel)
+    prel.add_argument("basename")
+    prel.add_argument("--add-intents", default=None, dest="add_intents",
+                      help="comma-separated intent refs")
+    prel.add_argument("--add-decisions", default=None, dest="add_decisions",
+                      help="comma-separated decision refs")
+    prel.add_argument("--add-ssot", default=None, dest="add_ssot",
+                      help="comma-separated ssot refs")
+    prel.add_argument("--add-tasks", default=None, dest="add_tasks",
+                      help="comma-separated owner/repo#N refs")
+    prel.add_argument("--dry-run", action="store_true")
+    prel.set_defaults(func=cmd_relate)
 
     pq = sub.add_parser("recall", help="hierarchical query (read-only)")
     _sub_common(pq)

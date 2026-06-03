@@ -1,24 +1,24 @@
 ---
-title: 에이전트 운영 모델 (정책 정본)
+title: 에이전트 운영 모델 (레거시 정책 슬롯)
 created_at: 2026-05-29
-summary: 이 위키를 사용하는 에이전트들의 운영 정책 정본. 4계층 분리(plugin_definition)에서 policy 계층에 해당. task-github 작업관리 플러그인↔위키 결합 규약(캡처 권한·task 노드 연결·promotion·PR 흐름·지식 기록 감사)을 여기서 정의.
+summary: 이전 4계층 설계에서 작업환경 운영정책 정본으로 쓰던 레거시 슬롯. 2026-06-03 이후 운영정책 statement는 CLAUDE.md/AGENTS.md 자동로드 entry 표면이 정본이고, 이 문서는 이관 기록과 구버전 참조 호환만 담당한다.
 tags: [wiki, policy, ssot]
-verified_at: 2026-06-02
+verified_at: 2026-06-03
 ---
 
 ## 현재 상태
 
-> `wiki/*`는 지식 저장소이며, 그 안의 본 문서(`agent-operating-model.md`)는 **운영 정책의 정본**이다 — knowledge 계층과 policy 계층의 물리 위치는 같지만 역할이 다르다 (4계층 분리: [[plugin-definition]]).
+> 본 문서는 더 이상 운영정책 statement의 정본이 아니다. 현재 정본은 루트 `CLAUDE.md`와 `AGENTS.md`의 `agent-operating-policy` 관리 블록이다.
 
-본 ssot는 **작업관리 플러그인 `task-github`(marketplace `jeis-ai-plugins/task-github`)와 위키의 결합 규약**을 담는다. task-github는 agent-neutral *mechanism*(작업 프로토콜)이고, "누가·언제·어떤 타입을 캡처/승격/연결하는가"의 *policy*가 본 문서다. task-github의 mechanism 정본은 그 플러그인의 `rules/`·`skills/`·`DESIGN.md`에 있고, 위키 타입·관계의 정본은 [[wiki-data-model]]에 있다.
+이 문서는 v3 이전의 **작업관리 플러그인 `task-github`(marketplace `jeis-ai-plugins/task-github`)와 위키의 결합 규약**을 보존하는 레거시 슬롯이다. task-github mechanism 정본은 그 플러그인의 `rules/`·`skills/`·`DESIGN.md`에 있고, 위키 타입·관계의 정본은 [[wiki-data-model]]에 있다. 현재 policy 위치 변경 결정은 [[DEC-2026-06-03-103000-운영정책-statement는-자동로드-agent-entry에-둔다]].
 
-위키 미가용 환경(`./wiki/` 없음)에서도 task-github는 mechanism만으로 완전 동작한다 — 본 정책은 위키가 있을 때만 적용된다.
+위키 미가용 환경(`./wiki/` 없음)에서도 task-github는 mechanism만으로 완전 동작한다. policy statement도 wiki recall 없이 자동로드 entry에서 읽힌다.
 
 ## 취지
 
-Plugin 메커니즘과 운영 정책을 **다른 변경 빈도**로 분리하기 위한 정책 정본 자리. CLAUDE.md/AGENTS.md에 운영 정책을 직접 적으면 안정 자산(plugin spec)과 변동 자산(agent 운영 규약)이 한 파일에 묶여 함께 흔들린다 → [[TRI-2026-05-29-105533-claude-md-as-policy-conflates-mechanism-and-policy]].
+이 문서는 기존 결정을 깨지 않고 이관 흔적을 남기기 위한 자리다. 장문 rationale까지 `CLAUDE.md`/`AGENTS.md`에 넣으면 prompt 비용과 파일 혼합 문제가 생기지만, 짧은 operative statement는 자동로드 표면에 있어야 한다 → [[DEC-2026-06-03-103000-운영정책-statement는-자동로드-agent-entry에-둔다]].
 
-본 ssot가 정책 정본이면, 운영 정책의 진화도 위키 메커니즘(supersede / verified_at / refresh) 안으로 들어와 추적 가능(dogfooding). plugin은 구조만 검증하고 의미 판정은 여기 둔다 → [[DEC-2026-05-29-105327-promotion-threshold-in-plugin-spec]].
+이 repo에서는 플러그인 설계 결정을 wiki `decision`으로 dogfood하지만, 소비 프로젝트의 wiki vault에는 운영정책을 자동 생성하지 않는다. plugin은 구조만 검증하고 의미 판정은 자동로드 policy statement가 담당한다 → [[DEC-2026-05-29-105327-promotion-threshold-in-plugin-spec]].
 
 ## 구성요소
 
@@ -90,4 +90,4 @@ Plugin 메커니즘과 운영 정책을 **다른 변경 빈도**로 분리하기
 
 ---
 
-작성·갱신 시에는 일반 ssot처럼 제자리 수정 + `verified_at` 갱신. 운영 정책 자체의 결정/반려/교훈은 `wiki/context/`에 record로 capture해 본 ssot가 그 record들로 anchor됨. 작업 보고에는 Knowledge Capture Audit 결과(`recorded`/`proposed`/`none`)를 포함한다.
+이 문서는 일반 ssot처럼 제자리 수정 + `verified_at` 갱신으로 레거시 상태를 표시한다. 현재 운영정책 statement 변경은 `CLAUDE.md`/`AGENTS.md` 관리 블록에서 수행하고, 이 repo의 플러그인 설계 결정만 `wiki/context/`에 dogfood 기록한다. 작업 보고에는 Knowledge Capture Audit 결과(`recorded`/`proposed`/`none`)를 포함한다.
