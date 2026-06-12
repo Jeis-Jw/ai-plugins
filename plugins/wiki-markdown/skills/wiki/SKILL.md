@@ -20,6 +20,7 @@ Invoke this skill whenever the user asks to:
 - **Record durable knowledge**: "log this decision", "save the intent", "note why we rejected X", "record this trap", "we found something but don't know how to classify it yet"
 - **Document state or procedure**: "write up the current auth architecture", "document the deploy procedure"
 - **Retrieve context before acting**: "what did we decide about X?", "show related intents", "anything we tried before?", "who superseded this?", "batch-read these records"
+- **Save or resume unresolved conversation context**: "save this discussion", "load the previous context", "search discussion snapshots"
 - **Run integrity / drift checks**: "check the wiki", "find stale facts", "any broken links?", "regenerate indexes", "what does this code change affect?"
 - **Initialize a vault**: "set up the wiki", "create the knowledge base"
 - **Retire or supersede**: "mark this decision deprecated", "supersede X with Y"
@@ -78,11 +79,21 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" recall "auth" --stage 2 --sect
 python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" recall --backlinks-of INT-2026-04-17-143052-signup-conversion-speed --json
 python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" recall --read DEC-2026-04-17-143052-move-auth-to-a-bff,INT-2026-04-17-143052-signup-conversion-speed
 
-# 5. Retire / supersede.
+# 5. Save/load unresolved conversation context outside the canonical graph.
+python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" snapshot save \
+  --title "Auth migration discussion" \
+  --summary "Context checkpoint before deciding the auth migration boundary." \
+  --tags auth,discussion \
+  --discussion "Current thread summary..." \
+  --open-questions "Which service owns refresh rotation?"
+python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" snapshot list auth --json
+python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" snapshot load auth-migration-discussion
+
+# 6. Retire / supersede.
 python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" retire DEC-... --type superseded --superseded-by DEC-new
 python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" retire DEC-... --type deprecated
 
-# 6. Integrity (report-only by default; --fix is whitelisted).
+# 7. Integrity (report-only by default; --fix is whitelisted).
 python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" refresh --strict --json
 python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" refresh --check changed-path-stale --changed-path "src/auth/x.ts,src/payment/y.ts"
 python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" refresh --fix index,retired-in-index
@@ -100,12 +111,15 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" refresh --fix index,retired-in
 | "How is X currently structured / behaving" | `ssot` | Living, updated in place. |
 | "How do we run / deploy / operate X" | `runbook` | Living, procedural. |
 | "A unit of work driven by decisions, tracked against an external issue" | `task` | Third category — bridge node. Carries relations (intents/decisions/ssot/tasks); binary active/done state by path. |
+| "Save this ongoing discussion so another session can resume it" | `snapshot` CLI | Staging layer outside the canonical graph; searchable/loadable but excluded from `recall`/`refresh` graph checks until explicitly captured/promoted later. |
 
 **Living vs Record.** `ssot` and `runbook` are *living* — updated in place per topic. A second `capture` for the same slug exits `5` (conflict). `context/*` types are *immutable + superseded* — never edited; replace with a new record.
 
 **Observation vs trial_error.** A `trial_error` has an explicit lesson. An `observation` is a finding too early to classify. When the classification firms up, capture a successor (TRI/DEC/SSOT-update) and `retire` the observation as `superseded` with the successor as primary replacement.
 
 **Task (third category).** `task` is neither living nor record: its body is updated in place (living-like) and it carries relations (record-like), but its lifecycle is **binary by path** — active `task/` vs done `task/done/`. It's a *pure leaf* bridge: it points outward (`intents`/`decisions`/`ssot`/`tasks`) and nothing points back at it (reverse is derived backlinks — `recall --backlinks-of <DEC>` surfaces the tasks a decision spawned, **including completed ones by default** — done is a valid terminal state, not a retired one). Finish a task with `complete` (→ `task/done/`), undo with `reopen`. A task never supersedes; an *invalid* task is `retire --type deprecated` (which, like any retired doc, then needs `--include-retired` to appear in backlinks). `--tasks owner/repo#N` links it to its external work item (e.g. a GitHub issue); the wiki never reads that tracker.
+
+**Snapshot (staging layer).** `snapshot` is not a wiki graph type. Files live under `snapshot/active`, `snapshot/archived`, or `snapshot/promoted`, use `SNAP-YYYY-MM-DD-HHMMSS-<slug>` basenames, and are managed by `snapshot save/list/search/load/archive`. Default saves are append-only; `snapshot save --continues <ref>` links a follow-up checkpoint, and `snapshot save --update <ref>` rewrites an active snapshot only when explicitly requested. Snapshot files are searchable by snapshot commands but excluded from `recall`, relation resolution, `refresh --strict`, and duplicate-basename checks.
 
 ## Workflow (when you encounter a decision / intent / observation)
 
@@ -128,6 +142,10 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" refresh --fix index,retired-in
 | `complete` | `<basename>` | `--dry-run` | `0` · `2` not-a-task · `3` · `4` missing / already-done |
 | `reopen` | `<basename>` | `--dry-run` | `0` · `2` not-a-task · `3` · `4` missing / not-done |
 | `relate` | `<basename>` | `--add-intents` `--add-decisions` `--add-ssot` `--add-tasks` `--dry-run` | `0` · `2` relation_not_allowed / empty · `3` · `4` missing / ambiguous / bad task format |
+| `snapshot save` | `--title` `--summary` `--tags` | `--slug` `--continues <ref>` `--update <ref>` `--search-terms` fixed section options | `0` · `2` missing/placeholder input · `3` · `4` snapshot ref missing/ambiguous · `5` basename conflict overflow |
+| `snapshot list/search` | — / `<query>` | `--include-archived` `--include-promoted` `--all` `--limit N` | `0` · `3` |
+| `snapshot load` | `<ref>` | slug fragments accepted | `0` · `3` · `4` missing/ambiguous |
+| `snapshot archive` | `<ref>` | active snapshots only | `0` · `3` · `4` missing/ambiguous · `5` destination collision |
 | `recall` | — or `<query>` | `--type` `--tag` (repeatable) `--section` `--stage` `--limit` `--backlinks-of` `--read <a,b,c>` `--fuzzy` `--include-retired` | `0` always (zero hits is success), `4` only when `--read` target is missing |
 | `refresh` | — | `--check <name,..>` (13 + `all`) `--days N` `--path <sub>` `--changed-path <p,..>` `--fix index,retired-in-index` `--strict` | `0` · `2` (unknown `--check`, `--fix` whitelist violation, bare `--fix`) · `6` (strict + ≥1 issue) |
 
@@ -182,6 +200,7 @@ Unknown `--check` names or empty `--check ""` exit `2` so CI catches typos immed
 
 - **Capture a trial_error alongside the decision** that surfaced it: `capture trial_error --decisions <DEC-...>` immediately after the decision.
 - **Use observation for pre-classification finds**: `capture observation --ssot <ssot> --affects-paths "src/<area>/**"`. When classification firms up, capture the successor and `retire --type superseded --superseded-by`.
+- **Use snapshot for discussion checkpoints**: `snapshot save` when the user says to save the current conversation context but the content is not yet ready to become an `observation`, `decision`, `ssot`, or `runbook`.
 - **Audit an intent's win/loss footprint**: `recall --backlinks-of <INT-...>` returns the decisions that won *and* the rejections, side-by-side.
 - **Trace a decision to the work it spawned**: `recall --backlinks-of <DEC-...>` surfaces the `task` nodes that point at it — "what work did this decision produce?" — and keeps showing them after they're completed (done tasks stay in default backlinks; only `retire`d docs need `--include-retired`). Capture the task with `--decisions <DEC> --tasks owner/repo#N` so the link exists.
 - **Add a missing relation without frontmatter edits**: use `relate`. Task nodes may add semantic relations (`--add-decisions`, `--add-intents`, `--add-ssot`) and external tasks. Immutable records only accept `--add-tasks`; capture a successor record for semantic changes.

@@ -184,6 +184,7 @@ INDEX_HEADER = "## 노트"
 
 TASK_REF_RE = re.compile(r"^[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+#\d+$")
 RECORD_ID_RE = re.compile(r"^[A-Z]{3}-\d{4}-\d{2}-\d{2}-\d{6}-(.+)$")
+SNAPSHOT_ID_RE = re.compile(r"^SNAP-\d{4}-\d{2}-\d{2}-\d{6}-(.+)$")
 ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 # Placeholder pattern: angle-bracketed instruction text or pure whitespace.
@@ -193,6 +194,16 @@ PLACEHOLDER_RE = re.compile(r"^\s*(<[^>]+>\s*)+$")
 PLACEHOLDER_SCALAR_RE = re.compile(r"^\s*<[^>]+>\s*$")
 
 FIX_WHITELIST = ("index", "retired-in-index")
+SNAPSHOT_STATES = ("active", "archived", "promoted")
+SNAPSHOT_SECTIONS = (
+    ("discussion", "현재 논의"),
+    ("background", "배경"),
+    ("decided", "정해진 것"),
+    ("open_questions", "아직 열린 질문"),
+    ("next_steps", "다음에 볼 것"),
+    ("references", "관련 파일/문서"),
+    ("promotion_candidates", "승격 후보"),
+)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -696,6 +707,12 @@ def iter_every_md(vault: Path) -> Iterable[Path]:
     if not vault.is_dir():
         return
     for current, _dirnames, filenames in os.walk(vault):
+        try:
+            rel = Path(current).relative_to(vault).parts
+        except ValueError:
+            rel = ()
+        if rel and rel[0] == "snapshot":
+            continue
         for name in filenames:
             if name.endswith(".md"):
                 yield Path(current) / name
@@ -974,6 +991,7 @@ audience: [human, agent]
 - [[context/trial_error/trial_error]] — 시행착오 (record)
 - [[context/observation/observation]] — 관찰 (record, 분류 전 임시)
 - [[task/task]] — 작업 (제3 범주: 결정·취지 ↔ 이슈 브릿지, 활성/done)
+- [[snapshot/snapshot]] — 대화 맥락 스냅샷 (graph 밖 staging layer)
 
 ## 에이전트 탐색 힌트
 
@@ -984,6 +1002,7 @@ audience: [human, agent]
 - "이 함정 또 안 밟으려면?" → `context/trial_error/`
 - "이거 발견했는데 어디로 분류할지 모르겠다" → `context/observation/`
 - "어떤 결정으로 무슨 작업? / 이 작업의 근거?" → `task/` (결정·취지 ↔ 이슈 브릿지)
+- "대화 맥락을 정식 정리 전 저장/재개하고 싶다" → `snapshot save/list/load`
 - 검색: `wiki:recall <query>` (Stage 1 frontmatter scan)
 - 점검: `wiki:refresh` (무결성 리포트)
 """
@@ -1006,6 +1025,185 @@ INDEX_FILE_DESC = {
     ("task",): ("Tasks — 작업",
                 "결정·취지를 외부 이슈에 잇는 작업 브릿지(제3 범주). 활성은 여기, 완료는 done/."),
 }
+
+
+SNAPSHOT_INDEX_TEMPLATE = """---
+title: Snapshots — 대화 맥락 스냅샷
+created_at: {today}
+summary: 정식 graph로 승격하기 전 대화 맥락 체크포인트. recall/refresh graph 밖에서 snapshot CLI로 조회한다.
+tags: [meta, snapshot]
+audience: [human, agent]
+---
+
+# Snapshots
+
+이 폴더는 아직 `decision`/`observation`/`ssot`/`runbook`으로 정리하지 않은 대화 맥락을 저장하는 staging layer다.
+
+## 노트
+"""
+
+
+def snapshot_root(vault: Path) -> Path:
+    return vault / "snapshot"
+
+
+def snapshot_state_dir(vault: Path, state: str) -> Path:
+    return snapshot_root(vault) / state
+
+
+def ensure_snapshot_tree(vault: Path) -> None:
+    root = snapshot_root(vault)
+    root.mkdir(parents=True, exist_ok=True)
+    for state in SNAPSHOT_STATES:
+        (root / state).mkdir(parents=True, exist_ok=True)
+
+
+def snapshot_index_path(vault: Path) -> Path:
+    return snapshot_root(vault) / "snapshot.md"
+
+
+def _snapshot_slug_part(basename: str) -> str:
+    m = SNAPSHOT_ID_RE.match(_nfc(basename))
+    return m.group(1) if m else _nfc(basename)
+
+
+def iter_snapshot_paths(vault: Path, *, include_archived: bool = False,
+                        include_promoted: bool = False) -> Iterable[Tuple[str, Path]]:
+    states = ["active"]
+    if include_archived:
+        states.append("archived")
+    if include_promoted:
+        states.append("promoted")
+    for state in states:
+        folder = snapshot_state_dir(vault, state)
+        if not folder.is_dir():
+            continue
+        for path in sorted(folder.glob("*.md"), key=lambda p: p.name):
+            yield state, path
+
+
+def iter_all_snapshot_paths(vault: Path) -> Iterable[Tuple[str, Path]]:
+    for state in SNAPSHOT_STATES:
+        folder = snapshot_state_dir(vault, state)
+        if not folder.is_dir():
+            continue
+        for path in sorted(folder.glob("*.md"), key=lambda p: p.name):
+            yield state, path
+
+
+def snapshot_item(path: Path, state: str) -> dict:
+    text = path.read_text(encoding="utf-8")
+    fm_text, body = split_frontmatter(text)
+    fm = parse_frontmatter(fm_text or "")
+    return {
+        "id": _nfc(path.stem),
+        "state": state,
+        "path": str(path),
+        "title": fm.get("title", ""),
+        "summary": fm.get("summary", ""),
+        "tags": fm.get("tags", []),
+        "created_at": fm.get("created_at"),
+        "updated_at": fm.get("updated_at"),
+        "continues": fm.get("continues"),
+        "search_terms": fm.get("search_terms", []),
+        "text": text,
+        "body": body,
+        "frontmatter": fm,
+    }
+
+
+def _snapshot_ref_candidates(vault: Path, ref: str,
+                             states: Tuple[str, ...] = SNAPSHOT_STATES) -> List[Tuple[str, Path]]:
+    ref = _nfc(ref)
+    items = [(state, path) for state, path in iter_all_snapshot_paths(vault)
+             if state in states and path.stem != "snapshot"]
+    for state, path in items:
+        if _nfc(path.stem) == ref:
+            return [(state, path)]
+    buckets: List[List[Tuple[str, Path]]] = [
+        [(s, p) for s, p in items if _snapshot_slug_part(p.stem) == ref],
+        [(s, p) for s, p in items if _snapshot_slug_part(p.stem).startswith(ref)],
+        [(s, p) for s, p in items if ref in _snapshot_slug_part(p.stem)],
+    ]
+    seen = set()
+    out: List[Tuple[str, Path]] = []
+    for bucket in buckets:
+        for state, path in bucket:
+            key = (state, str(path))
+            if key not in seen:
+                out.append((state, path))
+                seen.add(key)
+        if out:
+            return out
+    return out
+
+
+def resolve_snapshot_path(vault: Path, ref: str,
+                          states: Tuple[str, ...] = SNAPSHOT_STATES) -> Tuple[str, Path]:
+    matches = _snapshot_ref_candidates(vault, ref, states=states)
+    if not matches:
+        raise CliError(EXIT_VALIDATION, "snapshot_missing", f"snapshot not found: {ref}")
+    if len(matches) > 1:
+        ids = ", ".join(_nfc(path.stem) for _state, path in matches)
+        raise CliError(EXIT_VALIDATION, "snapshot_ambiguous",
+                       f"snapshot ref '{ref}' matches {len(matches)}: {ids}")
+    return matches[0]
+
+
+def unique_snapshot_basename(vault: Path, basename: str) -> str:
+    candidate = basename
+    idx = 1
+    while any((snapshot_state_dir(vault, state) / f"{candidate}.md").exists()
+              for state in SNAPSHOT_STATES):
+        idx += 1
+        if idx > 26:
+            raise CliError(EXIT_CONFLICT, "snapshot_basename_overflow",
+                           f"too many collisions for {basename}")
+        candidate = f"{basename}-{chr(ord('a') + idx - 1)}"
+    return candidate
+
+
+def _require_snapshot_text(name: str, value: str) -> str:
+    value = _nfc(value).strip()
+    if not value:
+        raise CliError(EXIT_USAGE, f"{name}_required", f"--{name.replace('_', '-')} is required")
+    if _is_placeholder_value(value):
+        raise CliError(EXIT_USAGE, "placeholder_input",
+                       f"--{name.replace('_', '-')} must not be a placeholder")
+    return value
+
+
+def snapshot_body_from_args(args) -> str:
+    blocks: List[str] = []
+    for attr, header in SNAPSHOT_SECTIONS:
+        value = _nfc(getattr(args, attr, None) or "").strip()
+        blocks.append(f"## {header}\n\n{value}\n")
+    return "\n".join(blocks).rstrip() + "\n"
+
+
+def write_snapshot(path: Path, fm: dict, body: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(serialize_frontmatter(fm) + body, encoding="utf-8")
+
+
+def rewrite_snapshot_index(vault: Path) -> bool:
+    idx = snapshot_index_path(vault)
+    if not idx.is_file():
+        return False
+    lines = []
+    for state, path in iter_snapshot_paths(vault, include_archived=True, include_promoted=True):
+        if path.name == "snapshot.md":
+            continue
+        item = snapshot_item(path, state)
+        summary = item["summary"]
+        state_label = state
+        lines.append(f"- [[{state}/{item['id']}]] ({state_label}) — {summary}")
+    text = idx.read_text(encoding="utf-8")
+    new_text = _replace_section(text, INDEX_HEADER, lines)
+    if new_text != text:
+        idx.write_text(new_text, encoding="utf-8")
+        return True
+    return False
 
 
 def cmd_init(args) -> int:
@@ -1039,8 +1237,11 @@ def cmd_init(args) -> int:
         if parts == ("task",):
             ensure_dir(folder / "done")
             ensure_dir(folder / "retired")
+    if not args.dry_run:
+        ensure_snapshot_tree(vault)
 
     write_if_absent(vault / "README.md", ROOT_README_TEMPLATE.format(today=today))
+    write_if_absent(snapshot_index_path(vault), SNAPSHOT_INDEX_TEMPLATE.format(today=today))
 
     for parts in INIT_INDEX_FOLDERS:
         title, summary = INDEX_FILE_DESC[parts]
@@ -1518,6 +1719,140 @@ def cmd_relate(args) -> int:
             {"id": doc.doc_id, "path": str(doc.path),
              "added": added_payload, "unchanged": unchanged_payload},
             text_lines=[f"관계 갱신: {doc.doc_id}"])
+    return EXIT_OK
+
+
+def cmd_snapshot_save(args) -> int:
+    vault = resolve_vault(args.vault)
+    ensure_vault(vault)
+    ensure_snapshot_tree(vault)
+
+    title = _require_snapshot_text("title", args.title)
+    summary = _require_snapshot_text("summary", args.summary)
+    tags = parse_csv(args.tags)
+    if not tags:
+        raise CliError(EXIT_USAGE, "tags_required", "--tags requires at least one tag")
+    for tag in tags:
+        if _is_placeholder_value(tag):
+            raise CliError(EXIT_USAGE, "placeholder_input", "--tags must not contain placeholders")
+
+    current = now()
+    today = current.strftime("%Y-%m-%d")
+    timestamp = current.strftime("%Y-%m-%d-%H%M%S")
+    body = snapshot_body_from_args(args)
+    search_terms = parse_csv(getattr(args, "search_terms", None))
+
+    continues = None
+    if args.continues:
+        _state, continues_path = resolve_snapshot_path(vault, args.continues)
+        continues = _nfc(continues_path.stem)
+
+    if args.update:
+        _state, path = resolve_snapshot_path(vault, args.update, states=("active",))
+        old = snapshot_item(path, "active")
+        created_at = old["frontmatter"].get("created_at") or today
+        if continues is None:
+            continues = old["frontmatter"].get("continues")
+        basename = _nfc(path.stem)
+    else:
+        raw_slug = args.slug if args.slug else slugify(title)
+        slug = sanitize_slug(raw_slug)
+        basename = unique_snapshot_basename(vault, f"SNAP-{timestamp}-{slug}")
+        path = snapshot_state_dir(vault, "active") / f"{basename}.md"
+        created_at = today
+
+    fm = {
+        "title": title,
+        "created_at": created_at,
+        "summary": summary,
+        "tags": tags,
+        "type": "snapshot",
+    }
+    if args.update:
+        fm["updated_at"] = today
+    if search_terms:
+        fm["search_terms"] = search_terms
+    if continues:
+        fm["continues"] = continues
+
+    write_snapshot(path, fm, body)
+    rewrite_snapshot_index(vault)
+    emit_ok(args, {"id": basename, "path": str(path), "state": "active"},
+            text_lines=[f"snapshot saved: {basename}"])
+    return EXIT_OK
+
+
+def _snapshot_matches(item: dict, query: str) -> bool:
+    if not query:
+        return True
+    blob = " ".join([
+        item["id"],
+        str(item.get("title", "")),
+        str(item.get("summary", "")),
+        " ".join(str(x) for x in item.get("tags", [])),
+        " ".join(str(x) for x in item.get("search_terms", [])),
+        item.get("body", ""),
+    ]).lower()
+    return query.lower() in blob
+
+
+def cmd_snapshot_list(args) -> int:
+    vault = resolve_vault(args.vault)
+    ensure_vault(vault)
+    include_archived = args.include_archived or args.all
+    include_promoted = args.include_promoted or args.all
+    results = []
+    for state, path in iter_snapshot_paths(vault, include_archived=include_archived,
+                                           include_promoted=include_promoted):
+        item = snapshot_item(path, state)
+        if not _snapshot_matches(item, args.query or ""):
+            continue
+        results.append({
+            "id": item["id"],
+            "state": item["state"],
+            "path": item["path"],
+            "title": item["title"],
+            "summary": item["summary"],
+            "tags": item["tags"],
+            "created_at": item["created_at"],
+            "updated_at": item["updated_at"],
+            "continues": item["continues"],
+        })
+    results.sort(key=lambda item: item["id"], reverse=True)
+    if args.limit and args.limit > 0:
+        results = results[:args.limit]
+    emit_ok(args, {"mode": "snapshot-list", "results": results},
+            text_lines=[f"Snapshots ({len(results)}건):"] +
+                       [f"  - {r['id']} [{r['state']}] {r['summary']}" for r in results])
+    return EXIT_OK
+
+
+def cmd_snapshot_load(args) -> int:
+    vault = resolve_vault(args.vault)
+    ensure_vault(vault)
+    state, path = resolve_snapshot_path(vault, args.ref)
+    item = snapshot_item(path, state)
+    emit_ok(args,
+            {"mode": "snapshot-load", "id": item["id"], "state": item["state"],
+             "path": item["path"], "frontmatter": item["frontmatter"],
+             "text": item["text"]},
+            text_lines=[item["text"]])
+    return EXIT_OK
+
+
+def cmd_snapshot_archive(args) -> int:
+    vault = resolve_vault(args.vault)
+    ensure_vault(vault)
+    ensure_snapshot_tree(vault)
+    _state, src = resolve_snapshot_path(vault, args.ref, states=("active",))
+    dst = snapshot_state_dir(vault, "archived") / src.name
+    if dst.exists():
+        raise CliError(EXIT_CONFLICT, "snapshot_archive_conflict",
+                       f"archived snapshot already exists: {src.stem}")
+    shutil.move(str(src), str(dst))
+    rewrite_snapshot_index(vault)
+    emit_ok(args, {"id": _nfc(dst.stem), "path": str(dst), "state": "archived"},
+            text_lines=[f"snapshot archived: {dst.stem}"])
     return EXIT_OK
 
 
@@ -2399,6 +2734,61 @@ def build_parser() -> argparse.ArgumentParser:
                       help="comma-separated owner/repo#N refs")
     prel.add_argument("--dry-run", action="store_true")
     prel.set_defaults(func=cmd_relate)
+
+    ps = sub.add_parser("snapshot", help="manage conversation context snapshots outside the graph")
+    _sub_common(ps)
+    snap = ps.add_subparsers(dest="snapshot_cmd", required=True)
+
+    def _snapshot_common(sp):
+        _sub_common(sp)
+
+    pss = snap.add_parser("save", help="save or explicitly update a context snapshot")
+    _snapshot_common(pss)
+    pss.add_argument("--title", required=True)
+    pss.add_argument("--summary", required=True)
+    pss.add_argument("--tags", required=True, help="comma-separated tags")
+    pss.add_argument("--slug", default=None)
+    pss.add_argument("--continues", default=None,
+                     help="existing snapshot ref that this new snapshot continues")
+    pss.add_argument("--update", default=None,
+                     help="active snapshot ref to rewrite explicitly")
+    pss.add_argument("--search-terms", default=None, dest="search_terms")
+    pss.add_argument("--discussion", default="")
+    pss.add_argument("--background", default="")
+    pss.add_argument("--decided", default="")
+    pss.add_argument("--open-questions", default="", dest="open_questions")
+    pss.add_argument("--next", default="", dest="next_steps")
+    pss.add_argument("--references", default="")
+    pss.add_argument("--promotion-candidates", default="", dest="promotion_candidates")
+    pss.set_defaults(func=cmd_snapshot_save)
+
+    psl = snap.add_parser("list", help="list/search active snapshots")
+    _snapshot_common(psl)
+    psl.add_argument("query", nargs="?", default=None)
+    psl.add_argument("--include-archived", action="store_true")
+    psl.add_argument("--include-promoted", action="store_true")
+    psl.add_argument("--all", action="store_true")
+    psl.add_argument("--limit", type=int, default=20)
+    psl.set_defaults(func=cmd_snapshot_list)
+
+    psearch = snap.add_parser("search", help="search snapshots")
+    _snapshot_common(psearch)
+    psearch.add_argument("query")
+    psearch.add_argument("--include-archived", action="store_true")
+    psearch.add_argument("--include-promoted", action="store_true")
+    psearch.add_argument("--all", action="store_true")
+    psearch.add_argument("--limit", type=int, default=20)
+    psearch.set_defaults(func=cmd_snapshot_list)
+
+    psload = snap.add_parser("load", help="load a snapshot by id or slug fragment")
+    _snapshot_common(psload)
+    psload.add_argument("ref")
+    psload.set_defaults(func=cmd_snapshot_load)
+
+    psa = snap.add_parser("archive", help="move an active snapshot to snapshot/archived")
+    _snapshot_common(psa)
+    psa.add_argument("ref")
+    psa.set_defaults(func=cmd_snapshot_archive)
 
     pq = sub.add_parser("recall", help="hierarchical query (read-only)")
     _sub_common(pq)

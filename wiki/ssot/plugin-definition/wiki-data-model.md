@@ -1,9 +1,9 @@
 ---
 title: 위키 데이터 모델
 created_at: 2026-05-29
-summary: 위키 그래프의 정적 구조 정본: 5종 record + 2종 living + 1종 task(제3 범주) 타입 체계, basename 정본 ID, YAML 관계 모델(비대칭 작성). plugin-definition 영역의 sub-ssot.
+summary: 위키 그래프의 정적 구조 정본: 5종 record + 2종 living + 1종 task(제3 범주) 타입 체계, graph 밖 snapshot staging layer, basename 정본 ID, YAML 관계 모델(비대칭 작성). plugin-definition 영역의 sub-ssot.
 tags: [wiki, data-model, ssot]
-verified_at: 2026-06-03
+verified_at: 2026-06-12
 ---
 
 ## 현재 상태
@@ -13,6 +13,7 @@ verified_at: 2026-06-03
 - **Living** (제자리 갱신): `ssot`, `runbook`
 - **Record** (불변 + supersede): `context/intent`, `context/decision`, `context/rejected_decision`, `context/trial_error`, `context/observation`
 - **Task** (제3 범주 — 제자리 갱신 + 관계 보유): `task`. 결정·취지를 외부 이슈에 잇는 브릿지 노드(순수 잎). 상태는 이진(활성 / 완료=`done/` 경로 이동), 상세 진행은 연결된 작업 플러그인에 위임 ([[wiki-lifecycle]]).
+- **Snapshot** (graph 밖 staging layer): `snapshot/active`, `snapshot/archived`, `snapshot/promoted`. 아직 정식 `observation`/`decision`/`ssot`/`runbook`으로 정리하지 않은 대화 맥락 체크포인트. `TYPE_SPECS`에 들어가지 않으며 관계 그래프·recall·refresh 무결성 검사 대상이 아니다.
 
 → [[DEC-2026-05-29-105231-wiki-type-taxonomy]] / [[DEC-2026-05-29-105322-observation-record-type]] / [[DEC-2026-05-29-181259-task-third-category]]
 
@@ -20,6 +21,7 @@ verified_at: 2026-06-03
 
 - Record basename: `<TYPE>-<YYYY-MM-DD-HHMMSS>-<slug>.md` (TYPE ∈ INT/DEC/REJ/TRI/OBS)
 - Task basename: `TASK-<YYYY-MM-DD-HHMMSS>-<slug>.md` (record와 동일 채번, 경로 `wiki/task/`)
+- Snapshot basename: `SNAP-<YYYY-MM-DD-HHMMSS>-<slug>.md` (graph 밖 staging ID, 경로 상태로 active/archived/promoted 구분)
 - Living basename: `<slug>.md`, **vault 전역 유일**
 - basename 자체가 정본 ID, YAML `id` 필드 없음
 - ssot/runbook은 영역이 커지면 **nested 폴더 허용** (예: `wiki/ssot/plugin-definition/`)

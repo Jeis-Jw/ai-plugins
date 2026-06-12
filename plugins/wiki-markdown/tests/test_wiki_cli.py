@@ -2405,5 +2405,125 @@ class WikiCliTaskTests(unittest.TestCase):
             self.assertEqual(payload["error_code"], "relation_not_allowed")
 
 
+class WikiCliSnapshotTests(unittest.TestCase):
+    """Snapshot staging layer: recallable by its own CLI, outside the graph."""
+
+    def _init(self, tmp):
+        result = run_cli("init", cwd=tmp)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_snapshot_save_load_list_continue_update_and_archive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            vault = Path(tmp) / "wiki"
+            self.assertTrue((vault / "snapshot" / "active").is_dir())
+            self.assertTrue((vault / "snapshot" / "archived").is_dir())
+            self.assertTrue((vault / "snapshot" / "promoted").is_dir())
+
+            first = run_cli(
+                "snapshot", "save",
+                "--title", "Wiki Snapshot Layer",
+                "--summary", "Need a staging layer for unresolved conversation context.",
+                "--tags", "wiki,snapshot",
+                "--discussion", "We want to save context without promoting it to the canonical graph.",
+                "--background", "Observation is too heavy for raw discussion checkpoints.",
+                "--decided", "Default saves should create append-only snapshots.",
+                "--open-questions", "The final user-facing term is still open.",
+                "--next", "Implement the minimal CLI contract first.",
+                "--references", "plugins/wiki-markdown/skills/wiki/scripts/wiki_cli.py",
+                "--promotion-candidates", "A decision can be captured after real usage proves the flow.",
+                "--json",
+                cwd=tmp,
+                env={"WIKI_NOW": "2026-06-12T15:30:00"},
+            )
+            self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+            first_payload = json.loads(first.stdout)
+            first_id = "SNAP-2026-06-12-153000-wiki-snapshot-layer"
+            self.assertEqual(first_payload["id"], first_id)
+            first_path = vault / "snapshot" / "active" / f"{first_id}.md"
+            self.assertTrue(first_path.exists())
+            first_text = first_path.read_text()
+            self.assertIn("type: snapshot", first_text)
+            self.assertIn("## 현재 논의", first_text)
+            self.assertIn("Default saves should create append-only snapshots.", first_text)
+
+            listed = run_cli("snapshot", "list", "staging", "--json", cwd=tmp)
+            self.assertEqual(listed.returncode, 0, listed.stdout + listed.stderr)
+            self.assertEqual(json.loads(listed.stdout)["results"][0]["id"], first_id)
+
+            loaded = run_cli("snapshot", "load", "wiki-snapshot-layer", "--json", cwd=tmp)
+            self.assertEqual(loaded.returncode, 0, loaded.stdout + loaded.stderr)
+            self.assertEqual(json.loads(loaded.stdout)["id"], first_id)
+
+            continued = run_cli(
+                "snapshot", "save",
+                "--title", "Wiki Snapshot Layer Followup",
+                "--summary", "Follow-up after loading the first snapshot.",
+                "--tags", "wiki,snapshot",
+                "--continues", first_id,
+                "--discussion", "A loaded snapshot can seed a new append-only checkpoint.",
+                "--json",
+                cwd=tmp,
+                env={"WIKI_NOW": "2026-06-12T16:15:00"},
+            )
+            self.assertEqual(continued.returncode, 0, continued.stdout + continued.stderr)
+            continued_id = "SNAP-2026-06-12-161500-wiki-snapshot-layer-followup"
+            continued_text = (vault / "snapshot" / "active" / f"{continued_id}.md").read_text()
+            self.assertIn(f"continues: {first_id}", continued_text)
+
+            updated = run_cli(
+                "snapshot", "save",
+                "--update", first_id,
+                "--title", "Wiki Snapshot Layer",
+                "--summary", "Updated checkpoint for the same discussion.",
+                "--tags", "wiki,snapshot",
+                "--discussion", "Explicit update rewrites the same snapshot.",
+                "--json",
+                cwd=tmp,
+                env={"WIKI_NOW": "2026-06-12T17:00:00"},
+            )
+            self.assertEqual(updated.returncode, 0, updated.stdout + updated.stderr)
+            self.assertEqual(json.loads(updated.stdout)["id"], first_id)
+            updated_text = first_path.read_text()
+            self.assertIn("updated_at: 2026-06-12", updated_text)
+            self.assertIn("Updated checkpoint for the same discussion.", updated_text)
+            self.assertNotIn("Need a staging layer for unresolved conversation context.", updated_text)
+
+            archived = run_cli("snapshot", "archive", first_id, "--json", cwd=tmp)
+            self.assertEqual(archived.returncode, 0, archived.stdout + archived.stderr)
+            self.assertFalse(first_path.exists())
+            self.assertTrue((vault / "snapshot" / "archived" / f"{first_id}.md").exists())
+            active_list = run_cli("snapshot", "list", "--json", cwd=tmp)
+            self.assertNotIn(first_id, [x["id"] for x in json.loads(active_list.stdout)["results"]])
+            all_list = run_cli("snapshot", "list", "--include-archived", "--json", cwd=tmp)
+            self.assertIn(first_id, [x["id"] for x in json.loads(all_list.stdout)["results"]])
+
+    def test_snapshot_is_outside_recall_and_refresh_graph(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            vault = Path(tmp) / "wiki"
+            saved = run_cli(
+                "snapshot", "save",
+                "--title", "Graph Outside",
+                "--summary", "Snapshot docs are not canonical wiki graph docs.",
+                "--tags", "wiki,snapshot",
+                "--discussion", "Recall and refresh should ignore this staging layer.",
+                cwd=tmp,
+                env={"WIKI_NOW": "2026-06-12T15:30:00"},
+            )
+            self.assertEqual(saved.returncode, 0, saved.stdout + saved.stderr)
+
+            # Even malformed or colliding snapshot files must not affect graph checks.
+            (vault / "snapshot" / "active" / "ssot.md").write_text("not frontmatter\n")
+
+            recall = run_cli("recall", "Graph Outside", "--json", cwd=tmp)
+            self.assertEqual(recall.returncode, 0, recall.stdout + recall.stderr)
+            self.assertEqual(json.loads(recall.stdout)["results"], [])
+
+            refresh = run_cli("refresh", "--strict", "--json", cwd=tmp)
+            self.assertEqual(refresh.returncode, 0, refresh.stdout + refresh.stderr)
+            self.assertEqual(json.loads(refresh.stdout)["issues"], [])
+
+
 if __name__ == "__main__":
     unittest.main()

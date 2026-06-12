@@ -1,9 +1,9 @@
 ---
 title: 위키 라이프사이클
 created_at: 2026-05-29
-summary: Record와 Living의 라이프사이클 정본: 경로 기반 active/retired, deprecated/superseded 2값 retire 모델, supersede pair 양방향 저장, task 이진 상태(활성/done) + 정본 위임. plugin-definition 영역의 sub-ssot.
+summary: Record와 Living의 라이프사이클 정본: 경로 기반 active/retired, deprecated/superseded 2값 retire 모델, supersede pair 양방향 저장, task 이진 상태(활성/done) + snapshot staging 상태(active/archived/promoted). plugin-definition 영역의 sub-ssot.
 tags: [wiki, lifecycle, ssot]
-verified_at: 2026-05-29
+verified_at: 2026-06-12
 ---
 
 ## 현재 상태
@@ -59,6 +59,15 @@ verified_at: 2026-05-29
 
 → [[DEC-2026-05-29-181259-task-binary-state-github-sot]]
 
+### Snapshot 라이프사이클 (staging 상태, 경로 기반)
+
+- Snapshot은 정식 graph 타입이 아니라 대화 맥락 staging layer다.
+- 상태는 경로가 정본: `snapshot/active/`, `snapshot/archived/`, `snapshot/promoted/`.
+- 기본 `snapshot save`는 append-only로 새 `SNAP-...` 파일을 만든다.
+- 이전 맥락을 이어가는 저장은 `snapshot save --continues <ref>`로 새 파일을 만들고 `continues` 필드에 이전 snapshot basename을 기록한다.
+- 같은 파일을 고쳐야 할 때만 `snapshot save --update <ref>`를 명시한다. 이때 `updated_at`을 기록하고 active snapshot만 갱신한다.
+- 정식 지식화는 아직 자동 `promote`가 아니라 별도 `capture`/Edit으로 수행한다. `snapshot/promoted/`는 후속 promote 계약을 위한 상태 슬롯이다.
+
 ## 취지
 
 이 라이프사이클 모델이 추구하는 일급 원칙:
@@ -74,4 +83,3 @@ verified_at: 2026-05-29
 - [[DEC-2026-05-29-181259-task-binary-state-github-sot]] — task 이진 상태 + 정본 위임
 
 반려 대안: [[REJ-2026-05-29-105500-obs-classified-retired-type]] (분류 완료 상태를 별도 retired_type으로 만들자는 안) / [[REJ-2026-05-29-181259-wiki-holds-task-detailed-phase]] (위키가 상세 단계 보유).
-

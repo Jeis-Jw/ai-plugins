@@ -1,9 +1,9 @@
 ---
 title: 위키 인덱스와 조회
 created_at: 2026-05-29
-summary: 인덱스 파생과 조회 표면 정본: 폴더 단위 독립 인덱스, 3-stage recall + batch read, search_terms recognized optional, affects_paths + changed-path-stale, refresh --fix 화이트리스트. plugin-definition 영역의 sub-ssot.
+summary: 인덱스 파생과 조회 표면 정본: 폴더 단위 독립 인덱스, 3-stage recall + batch read, snapshot list/search/load, search_terms recognized optional, affects_paths + changed-path-stale, refresh --fix 화이트리스트. plugin-definition 영역의 sub-ssot.
 tags: [wiki, retrieval, ssot]
-verified_at: 2026-05-29
+verified_at: 2026-06-12
 ---
 
 ## 현재 상태
@@ -38,12 +38,14 @@ verified_at: 2026-05-29
 추가:
 - `--read a,b,c` batch — 입력 순서 보존
 - `--backlinks-of <basename>` — YAML relations에 대상 basename을 가진 record grep (본문 wikilink 무시)
+- Snapshot은 `recall` 대상이 아니다. 대화 맥락 체크포인트 조회는 `snapshot list/search/load`가 담당한다.
 
 ### Search 보조
 
 - `summary` + `tags` + 본문 ripgrep이 기본 검색 표면
 - `search_terms` (선택, recognized optional) — capture 기본 생성 X, refresh 누락 검사 X, **recall Stage 1 매칭 O**
 - 운영 중 검색 누락이 반복될 때 운영자가 수동 추가
+- Snapshot도 `search_terms`를 가질 수 있지만 graph `recall`에는 노출하지 않고 `snapshot list/search`의 검색 표면에만 포함한다.
 
 → [[DEC-2026-05-29-105324-search-terms-recognized-optional]]
 
@@ -82,4 +84,3 @@ verified_at: 2026-05-29
 - [[DEC-2026-05-29-105325-refresh-fix-whitelist]] — 안전한 자동수정만
 
 반려 대안: [[REJ-2026-05-29-105502-upper-index-recursive-collection]] (상위 인덱스 재귀 수집).
-
