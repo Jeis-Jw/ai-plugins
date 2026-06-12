@@ -8,7 +8,7 @@ audience: [human, agent]
 
 # 위키 플러그인 정의
 
-이 워크스페이스의 AI-Native 위키 **메커니즘 정본**은 `plugins/wiki-markdown/` (marketplace plugin `jeis-ai-plugins/wiki-markdown@0.7.0`)이다. 본 영역(`wiki/ssot/plugin-definition/`)은 그 메커니즘의 **결정 그래프 anchor**와 **영역 라우팅** 역할을 하며, 5개 sub-ssot로 응집되어 있다. 메커니즘 세부는 plugin source(`SKILL.md`, `rules/knowledge-protocol.md`, `skills/wiki/references/wiki-protocol.md`) + 본 위키의 active decisions가 정본이다.
+이 워크스페이스의 AI-Native 위키 **메커니즘 정본**은 `plugins/wiki-markdown/` (marketplace plugin `jeis-ai-plugins/wiki-markdown@0.7.1`)이다. 본 영역(`wiki/ssot/plugin-definition/`)은 그 메커니즘의 **결정 그래프 anchor**와 **영역 라우팅** 역할을 하며, 5개 sub-ssot로 응집되어 있다. 메커니즘 세부는 plugin source(`SKILL.md`, `rules/knowledge-protocol.md`, `skills/wiki/references/wiki-protocol.md`) + 본 위키의 active decisions가 정본이다.
 
 ## 일급 원칙 (intent anchor)
 
