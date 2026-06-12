@@ -2160,6 +2160,196 @@ class WikiCliTaskTests(unittest.TestCase):
             for sec in ("## 개요", "## 근거", "## 범위와 완료 기준"):
                 self.assertIn(sec, text)
 
+    def test_capture_relation_flags_accumulate_repeat_comma_mixed_and_dedup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            for idx, slug in enumerate(("intent-a", "intent-b", "intent-c")):
+                run_cli(
+                    "capture", "intent",
+                    "--slug", slug,
+                    "--title", slug,
+                    "--summary", f"{slug} summary.",
+                    "--tags", "flow",
+                    cwd=tmp,
+                    env={"WIKI_NOW": f"2026-05-29T10:01:0{idx}"},
+                )
+
+            result = run_cli(
+                "capture", "decision",
+                "--slug", "multi-intent",
+                "--title", "Multi intent",
+                "--summary", "Decision with repeated relation args.",
+                "--tags", "arch",
+                "--intents", "intent-a,intent-b",
+                "--intents", "intent-c",
+                "--intents", "intent-a",
+                cwd=tmp,
+                env={"WIKI_NOW": "2026-05-29T10:02:00"},
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            text = (
+                Path(tmp) / "wiki" / "context" / "decision" /
+                "DEC-2026-05-29-100200-multi-intent.md"
+            ).read_text()
+            self.assertIn(
+                "intents: [INT-2026-05-29-100100-intent-a, "
+                "INT-2026-05-29-100101-intent-b, "
+                "INT-2026-05-29-100102-intent-c]",
+                text,
+            )
+
+    def test_capture_all_relation_list_flags_accumulate_when_repeated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            for idx, slug in enumerate(("intent-a", "intent-b")):
+                run_cli(
+                    "capture", "intent",
+                    "--slug", slug,
+                    "--title", slug,
+                    "--summary", f"{slug} summary.",
+                    "--tags", "flow",
+                    cwd=tmp,
+                    env={"WIKI_NOW": f"2026-05-29T10:03:0{idx}"},
+                )
+            intent_a = "INT-2026-05-29-100300-intent-a"
+            intent_b = "INT-2026-05-29-100301-intent-b"
+            for idx, slug in enumerate(("rejected-a", "rejected-b")):
+                run_cli(
+                    "capture", "rejected_decision",
+                    "--slug", slug,
+                    "--title", slug,
+                    "--summary", f"{slug} summary.",
+                    "--tags", "arch",
+                    "--intents", "intent-a",
+                    cwd=tmp,
+                    env={"WIKI_NOW": f"2026-05-29T10:03:1{idx}"},
+                )
+            rejected_a = "REJ-2026-05-29-100310-rejected-a"
+            rejected_b = "REJ-2026-05-29-100311-rejected-b"
+            for slug in ("ssot-a", "ssot-b"):
+                run_cli(
+                    "capture", "ssot",
+                    "--slug", slug,
+                    "--title", slug,
+                    "--summary", f"{slug} summary.",
+                    "--tags", "state",
+                    cwd=tmp,
+                )
+            for slug in ("runbook-a", "runbook-b"):
+                run_cli(
+                    "capture", "runbook",
+                    "--slug", slug,
+                    "--title", slug,
+                    "--summary", f"{slug} summary.",
+                    "--tags", "ops",
+                    cwd=tmp,
+                )
+
+            decision = run_cli(
+                "capture", "decision",
+                "--slug", "relation-bundle",
+                "--title", "Relation bundle",
+                "--summary", "Decision with all supported repeated list args.",
+                "--tags", "arch",
+                "--intents", "intent-a",
+                "--intents", "intent-b",
+                "--rejected", "rejected-a",
+                "--rejected", "rejected-b",
+                "--ssot", "ssot-a",
+                "--ssot", "ssot-b",
+                "--tasks", "owner/repo#1",
+                "--tasks", "owner/repo#2",
+                cwd=tmp,
+                env={"WIKI_NOW": "2026-05-29T10:04:00"},
+            )
+            self.assertEqual(decision.returncode, 0, decision.stderr)
+            decision_id = "DEC-2026-05-29-100400-relation-bundle"
+            decision_text = (
+                Path(tmp) / "wiki" / "context" / "decision" / f"{decision_id}.md"
+            ).read_text()
+            self.assertIn(f"intents: [{intent_a}, {intent_b}]", decision_text)
+            self.assertIn(f"rejected_decisions: [{rejected_a}, {rejected_b}]", decision_text)
+            self.assertIn("ssot: [ssot-a, ssot-b]", decision_text)
+            self.assertIn("tasks: [owner/repo#1, owner/repo#2]", decision_text)
+
+            observation = run_cli(
+                "capture", "observation",
+                "--slug", "observation-bundle",
+                "--title", "Observation bundle",
+                "--summary", "Observation with repeated runbook and decision args.",
+                "--tags", "ops",
+                "--runbook", "runbook-a",
+                "--runbook", "runbook-b",
+                "--decisions", decision_id,
+                "--decisions", decision_id,
+                "--tasks", "owner/repo#3",
+                "--tasks", "owner/repo#4",
+                cwd=tmp,
+                env={"WIKI_NOW": "2026-05-29T10:04:01"},
+            )
+            self.assertEqual(observation.returncode, 0, observation.stderr)
+            observation_text = (
+                Path(tmp) / "wiki" / "context" / "observation" /
+                "OBS-2026-05-29-100401-observation-bundle.md"
+            ).read_text()
+            self.assertIn("runbook: [runbook-a, runbook-b]", observation_text)
+            self.assertIn(f"decisions: [{decision_id}]", observation_text)
+            self.assertIn("tasks: [owner/repo#3, owner/repo#4]", observation_text)
+
+    def test_relate_add_relation_flags_accumulate_when_repeated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            self._seed_decision(tmp)
+            run_cli(
+                "capture", "intent",
+                "--slug", "trace-cost",
+                "--title", "Trace cost",
+                "--summary", "Keep trace cost visible.",
+                "--tags", "flow",
+                cwd=tmp,
+                env={"WIKI_NOW": "2026-05-29T10:05:00"},
+            )
+            run_cli(
+                "capture", "decision",
+                "--slug", "log-cost",
+                "--title", "Log cost",
+                "--summary", "Log costs with work.",
+                "--tags", "arch",
+                "--intents", "trace-cost",
+                cwd=tmp,
+                env={"WIKI_NOW": "2026-05-29T10:05:01"},
+            )
+            run_cli(
+                "capture", "ssot",
+                "--slug", "cost-model",
+                "--title", "Cost model",
+                "--summary", "Current cost model.",
+                "--tags", "state",
+                cwd=tmp,
+            )
+            task = self._capture_task(tmp)
+            self.assertEqual(task.returncode, 0, task.stderr)
+
+            result = run_cli(
+                "relate", "pay-bff",
+                "--add-intents", "trace-cost",
+                "--add-intents", "trace-cost",
+                "--add-decisions", "log-cost",
+                "--add-ssot", "cost-model",
+                "--add-tasks", "owner/repo#43",
+                "--add-tasks", "owner/repo#44",
+                "--json",
+                cwd=tmp,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["added"]["intents"], ["INT-2026-05-29-100500-trace-cost"])
+            self.assertEqual(payload["added"]["decisions"], ["DEC-2026-05-29-100501-log-cost"])
+            self.assertEqual(payload["added"]["ssot"], ["cost-model"])
+            self.assertEqual(payload["added"]["tasks"], ["owner/repo#43", "owner/repo#44"])
+
     def test_task_is_backlink_of_decision_and_intent(self):
         # 핵심 기능: "이 결정이 낳은 작업" — task가 파생 백링크로 잡힌다.
         with tempfile.TemporaryDirectory() as tmp:

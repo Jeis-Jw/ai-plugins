@@ -867,10 +867,22 @@ def validate_task_ref(s: str) -> str:
     return normalized
 
 
-def parse_csv(s: Optional[str]) -> List[str]:
+def parse_csv(s) -> List[str]:
     if not s:
         return []
-    return [tok.strip() for tok in s.split(",") if tok.strip()]
+    raw_values = s if isinstance(s, list) else [s]
+    out: List[str] = []
+    seen = set()
+    for raw in raw_values:
+        if not raw:
+            continue
+        for tok in str(raw).split(","):
+            value = tok.strip()
+            if not value or value in seen:
+                continue
+            out.append(value)
+            seen.add(value)
+    return out
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -2686,12 +2698,17 @@ def build_parser() -> argparse.ArgumentParser:
     pc.add_argument("--summary", required=True)
     pc.add_argument("--tags", required=True, help="comma-separated tags")
     pc.add_argument("--slug", default=None)
-    pc.add_argument("--intents", default=None, help="comma-separated refs")
-    pc.add_argument("--ssot", default=None, help="comma-separated ssot refs")
-    pc.add_argument("--runbook", default=None, help="comma-separated runbook refs")
-    pc.add_argument("--rejected", default=None, help="rejected_decisions refs")
-    pc.add_argument("--decisions", default=None)
-    pc.add_argument("--tasks", default=None, help=f"{TASK_REF_FORMAT} comma list")
+    pc.add_argument("--intents", action="append", default=None,
+                    help="repeatable comma-separated refs")
+    pc.add_argument("--ssot", action="append", default=None,
+                    help="repeatable comma-separated ssot refs")
+    pc.add_argument("--runbook", action="append", default=None,
+                    help="repeatable comma-separated runbook refs")
+    pc.add_argument("--rejected", action="append", default=None,
+                    help="repeatable rejected_decisions refs")
+    pc.add_argument("--decisions", action="append", default=None)
+    pc.add_argument("--tasks", action="append", default=None,
+                    help=f"repeatable comma-separated {TASK_REF_FORMAT} refs")
     pc.add_argument("--supersedes", default=None)
     pc.add_argument("--verified-at", default=None, dest="verified_at")
     pc.add_argument("--audience", default=None)
@@ -2725,14 +2742,14 @@ def build_parser() -> argparse.ArgumentParser:
     prel = sub.add_parser("relate", help="add relations to an existing wiki document")
     _sub_common(prel)
     prel.add_argument("basename")
-    prel.add_argument("--add-intents", default=None, dest="add_intents",
-                      help="comma-separated intent refs")
-    prel.add_argument("--add-decisions", default=None, dest="add_decisions",
-                      help="comma-separated decision refs")
-    prel.add_argument("--add-ssot", default=None, dest="add_ssot",
-                      help="comma-separated ssot refs")
-    prel.add_argument("--add-tasks", default=None, dest="add_tasks",
-                      help=f"comma-separated {TASK_REF_FORMAT} refs")
+    prel.add_argument("--add-intents", action="append", default=None, dest="add_intents",
+                      help="repeatable comma-separated intent refs")
+    prel.add_argument("--add-decisions", action="append", default=None, dest="add_decisions",
+                      help="repeatable comma-separated decision refs")
+    prel.add_argument("--add-ssot", action="append", default=None, dest="add_ssot",
+                      help="repeatable comma-separated ssot refs")
+    prel.add_argument("--add-tasks", action="append", default=None, dest="add_tasks",
+                      help=f"repeatable comma-separated {TASK_REF_FORMAT} refs")
     prel.add_argument("--dry-run", action="store_true")
     prel.set_defaults(func=cmd_relate)
 

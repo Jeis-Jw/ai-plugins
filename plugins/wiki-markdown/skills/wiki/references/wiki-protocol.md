@@ -248,6 +248,7 @@ The bundled CLI (`scripts/wiki_cli.py`, stdlib only) supports nine top-level sub
 ### Fuzzy reference resolution
 
 - `capture --supersedes` and relation args (`--intents`, `--ssot`, …) accept *slug fragments* (e.g. `signup-speed` → `INT-2026-04-17-143052-signup-speed`) — fuzzy by default.
+- List-valued relation args are repeatable: `--intents a,b --intents c --intents a` is flattened and de-duplicated in first-seen order before refs are resolved. `relate --add-*` uses the same normalization.
 - `retire --superseded-by` also accepts fragments.
 - `retire <basename>` (the positional target) and `recall --read` require **exact basenames** by default for safety. Opt into fragment resolution on `recall --read` via `--fuzzy`.
 

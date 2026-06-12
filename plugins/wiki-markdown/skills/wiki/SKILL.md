@@ -157,6 +157,9 @@ Common: `--vault <path>` (default `./wiki`), `--json` (machine output). JSON suc
 - a full basename: `DEC-2026-04-17-143052-move-auth-to-a-bff`, or
 - a slug fragment: `move-auth-to-a-bff`.
 
+List-valued relation args are repeatable and can be mixed with comma lists. The CLI flattens, strips, and de-duplicates in first-seen order:
+`--intents a,b --intents c --intents a` stores `[a, b, c]`. The same rule applies to `--tasks` and `relate`'s `--add-*` relation args.
+
 The CLI resolves fragments to the canonical basename; ambiguous fragments exit `4`. Matching checks exact basename first, then slug exact, slug prefix, and slug substring, all NFC-normalized so Korean/CJK + Latin mixed slugs work. Missing refs include candidate basenames in the error message. **Storage is always the full basename.**
 
 The positional `retire <basename>` and `recall --read` default to **exact** basename matching for safety. Pass `--fuzzy` on `recall --read` to opt into fragment resolution.
