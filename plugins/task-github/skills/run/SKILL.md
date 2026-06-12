@@ -61,7 +61,9 @@ gh issue edit {N} --remove-label "in-progress" --add-label "in-review"
 
 ### Step 4. 워크트리 (소스 변경 시)
 ```bash
-git worktree add .claude/worktrees/issue-{N} -b task/issue-{N}
+touch .gitignore
+grep -qxF ".worktrees/" .gitignore || printf "\n.worktrees/\n" >> .gitignore
+git worktree add .worktrees/issue-{N} -b task/issue-{N}
 # .worktreeinclude 처리 + 잔재 점검 (git clean은 컨펌 후)
 ```
 

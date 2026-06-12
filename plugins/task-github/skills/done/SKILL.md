@@ -68,7 +68,7 @@ BLOCKING=$(gh api -H "X-GitHub-Api-Version: $API_VERSION" \
 ```
 5. 로컬 정리:
 ```bash
-git worktree remove .claude/worktrees/issue-{N} 2>/dev/null || true
+git worktree remove .worktrees/issue-{N} 2>/dev/null || true
 git checkout main && git branch -d task/issue-{N} 2>/dev/null || true
 ```
 

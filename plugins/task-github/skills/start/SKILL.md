@@ -29,10 +29,12 @@ echo "이슈 #$N"
 ```
 3. (코드 변경 시) 워크트리 생성:
 ```bash
-git worktree add .claude/worktrees/issue-$N -b task/issue-$N
+touch .gitignore
+grep -qxF ".worktrees/" .gitignore || printf "\n.worktrees/\n" >> .gitignore
+git worktree add .worktrees/issue-$N -b task/issue-$N
 # .worktreeinclude 처리
 if [ -f .worktreeinclude ]; then
-  while IFS= read -r f; do [ -n "$f" ] && [ -f "$f" ] && cp "$f" ".claude/worktrees/issue-$N/$f"; done < .worktreeinclude
+  while IFS= read -r f; do [ -n "$f" ] && [ -f "$f" ] && cp "$f" ".worktrees/issue-$N/$f"; done < .worktreeinclude
 fi
 ```
 4. 점유 (모드 A는 micro 전용이므로 `gear:micro`):
