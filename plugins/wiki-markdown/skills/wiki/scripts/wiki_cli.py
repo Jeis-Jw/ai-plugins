@@ -182,7 +182,8 @@ CONTEXT_FOLDERS: List[Tuple[str, ...]] = [
 LIVING_FOLDER_NAMES = ("ssot", "runbook")
 INDEX_HEADER = "## 노트"
 
-TASK_REF_RE = re.compile(r"^[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+#\d+$")
+TASK_REF_FORMAT = "owner/repo#N or github:owner/repo#N"
+TASK_REF_RE = re.compile(r"^(?:github:)?[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+#\d+$")
 RECORD_ID_RE = re.compile(r"^[A-Z]{3}-\d{4}-\d{2}-\d{2}-\d{6}-(.+)$")
 SNAPSHOT_ID_RE = re.compile(r"^SNAP-\d{4}-\d{2}-\d{2}-\d{6}-(.+)$")
 ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -862,7 +863,7 @@ def validate_task_ref(s: str) -> str:
     normalized = normalize_task_ref(s)
     if not TASK_REF_RE.match(normalized):
         raise CliError(EXIT_VALIDATION, "task_format",
-                       f"invalid task ref (expected owner/repo#N): {s}")
+                       f"invalid task ref (expected {TASK_REF_FORMAT}): {s}")
     return normalized
 
 
@@ -990,7 +991,7 @@ audience: [human, agent]
 - [[context/rejected_decision/rejected_decision]] — 반려된 대안 (record)
 - [[context/trial_error/trial_error]] — 시행착오 (record)
 - [[context/observation/observation]] — 관찰 (record, 분류 전 임시)
-- [[task/task]] — 작업 (제3 범주: 결정·취지 ↔ 이슈 브릿지, 활성/done)
+- [[task/task]] — 작업 (제3 범주: 작업지시서형 컨텍스트 브릿지, 활성/done)
 - [[snapshot/snapshot]] — 대화 맥락 스냅샷 (graph 밖 staging layer)
 
 ## 에이전트 탐색 힌트
@@ -1001,7 +1002,7 @@ audience: [human, agent]
 - "이건 어떻게 운영하나?" → `runbook/`
 - "이 함정 또 안 밟으려면?" → `context/trial_error/`
 - "이거 발견했는데 어디로 분류할지 모르겠다" → `context/observation/`
-- "어떤 결정으로 무슨 작업? / 이 작업의 근거?" → `task/` (결정·취지 ↔ 이슈 브릿지)
+- "어떤 결정으로 무슨 작업? / 이 작업의 근거?" → `task/` (결정·취지·SSOT를 묶은 handoff)
 - "대화 맥락을 정식 정리 전 저장/재개하고 싶다" → `snapshot save/list/load`
 - 검색: `wiki:recall <query>` (Stage 1 frontmatter scan)
 - 점검: `wiki:refresh` (무결성 리포트)
@@ -1023,7 +1024,7 @@ INDEX_FILE_DESC = {
     ("context", "observation"): ("Observations — 관찰",
                                  "발견·관찰. 분류 전 임시 record. 후속 TRI/DEC/SSOT 갱신으로 승격되며 supersede."),
     ("task",): ("Tasks — 작업",
-                "결정·취지를 외부 이슈에 잇는 작업 브릿지(제3 범주). 활성은 여기, 완료는 done/."),
+                "결정·취지·SSOT를 묶어 수행자에게 넘기는 작업지시서형 컨텍스트 브릿지(제3 범주). 활성은 여기, 완료는 done/. 외부 작업 ref는 링크로만 보관."),
 }
 
 
@@ -2194,7 +2195,7 @@ def cmd_refresh(args) -> int:
                         if not TASK_REF_RE.match(normalized_task):
                             issues.append({"check": "task-ref", "path": str(d.path),
                                            "field": "tasks", "target": t,
-                                           "message": f"{d.doc_id}.relations.tasks: '{t}' (owner/repo#N 형식 아님)"})
+                                           "message": f"{d.doc_id}.relations.tasks: '{t}' ({TASK_REF_FORMAT} 형식 아님)"})
                 continue
             for v in values:
                 tp = find_doc_anywhere(vault, v)
@@ -2690,7 +2691,7 @@ def build_parser() -> argparse.ArgumentParser:
     pc.add_argument("--runbook", default=None, help="comma-separated runbook refs")
     pc.add_argument("--rejected", default=None, help="rejected_decisions refs")
     pc.add_argument("--decisions", default=None)
-    pc.add_argument("--tasks", default=None, help="owner/repo#N comma list")
+    pc.add_argument("--tasks", default=None, help=f"{TASK_REF_FORMAT} comma list")
     pc.add_argument("--supersedes", default=None)
     pc.add_argument("--verified-at", default=None, dest="verified_at")
     pc.add_argument("--audience", default=None)
@@ -2731,7 +2732,7 @@ def build_parser() -> argparse.ArgumentParser:
     prel.add_argument("--add-ssot", default=None, dest="add_ssot",
                       help="comma-separated ssot refs")
     prel.add_argument("--add-tasks", default=None, dest="add_tasks",
-                      help="comma-separated owner/repo#N refs")
+                      help=f"comma-separated {TASK_REF_FORMAT} refs")
     prel.add_argument("--dry-run", action="store_true")
     prel.set_defaults(func=cmd_relate)
 

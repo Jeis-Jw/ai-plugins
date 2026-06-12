@@ -1,6 +1,6 @@
 # 위키 브릿지 규약 (mechanism)
 
-> 이 룰은 task-github → `wiki-markdown` 연동의 **메커니즘**(감지·호출·반응)만 정의한다.
+> 이 룰은 task-github → `wiki-markdown` 연동의 **메커니즘**(감지·호출·반응)만 정의한다. `wiki-markdown`은 task-github 없이도 온전히 동작하며, task-github는 위키가 가용할 때만 선택적으로 위키 task를 읽고 연결하는 adapter다.
 > **정책**(누가·언제·어떤 타입을 캡처/승격하는가)은 자동로드 agent-entry 파일(`CLAUDE.md` / `AGENTS.md`)의 operating policy 블록에 있다.
 > 이 분리는 위키의 4계층 원칙(plugin은 agent-neutral, 작업환경 정책은 자동로드 표면, 소비 프로젝트 wiki는 지식 저장소)을 따른다. [DESIGN.md](../DESIGN.md) §2·§6 참조.
 
@@ -34,7 +34,7 @@ wiki recall "{키워드}" --stage 1 --limit 10 --json
 wiki recall --backlinks-of {DEC-...} --json        # "이 결정이 낳은 작업/지식"
 wiki recall --read {basename} --json
 
-# 작업 브릿지 노드
+# 작업지시서형 컨텍스트 브릿지 노드
 wiki capture task --title "..." --summary "..." --tags ... \
   --decisions {DEC-...} --intents {INT-...} --tasks owner/repo#{N}
 wiki complete {TASK-...}      # 활성 → wiki/task/done/  (루트 이슈 close 시)
@@ -49,7 +49,7 @@ wiki capture observation --title "..." --summary "..." --tags ... --tasks owner/
 wiki refresh --check changed-path-stale --changed-path "{변경파일 csv}" --json
 wiki refresh --strict --json
 ```
-> 위 블록은 **개념 예시**다(`...` 자리표시자 포함). 실제 호출 시 `--title`/`--summary`/`--tags`는 항상 채운다 — 위키 `capture`는 이 셋이 없으면 exit 2다. `--tasks`는 업무 **루트 이슈** 번호([§4](#4-task-노드--업무이슈-11-다리)).
+> 위 블록은 **개념 예시**다(`...` 자리표시자 포함). 실제 호출 시 `--title`/`--summary`/`--tags`는 항상 채운다 — 위키 `capture`는 이 셋이 없으면 exit 2다. `--tasks`는 외부 작업 ref이며 task-github에서는 업무 **루트 이슈** 번호 또는 관련 PR 번호를 기록한다([§4](#4-task-노드--업무이슈pr-참조-다리)).
 
 ---
 
@@ -65,30 +65,31 @@ wiki refresh --strict --json
 | `trial_error` | 시행착오(교훈 필수) | ✅ |
 | `observation` | 분류 전 발견 | ✅ |
 | `ssot` / `runbook` | 현재상태/절차(living) | ✗ (관계 금지) |
-| **`task`** | **작업 브릿지 노드** | ✅ |
+| **`task`** | **작업지시서형 컨텍스트 브릿지 노드** | ✅ |
 
-> **불변식(타입별 관계 제약)**: `--tasks`(외부 이슈 `owner/repo#N` 역링크)는 **decision / trial_error / observation / task** 에만 허용. `intent`/`rejected_decision`/`ssot`/`runbook`에 `--tasks`를 주면 exit 2(스키마 위반). 에픽↔intent는 단방향이며, 역추적은 그 intent를 가리키는 decision/task를 경유한다.
+> **불변식(타입별 관계 제약)**: `--tasks`(외부 작업 ref: `owner/repo#N`, `github:owner/repo#N` — GitHub은 이슈·PR이 번호공간을 공유하므로 PR도 동일 `#N`)는 **decision / trial_error / observation / task** 에만 허용. `intent`/`rejected_decision`/`ssot`/`runbook`에 `--tasks`를 주면 exit 2(스키마 위반). 위키는 이 값을 링크로만 보관하고, GitHub 의미 해석·상태 동기화는 task-github가 맡는다. 에픽↔intent는 단방향이며, 역추적은 그 intent를 가리키는 decision/task를 경유한다.
 
 ---
 
-## 4. task 노드 — 업무↔이슈 1:1 다리
+## 4. task 노드 — 업무↔이슈/PR 참조 다리
 
-**업무 1개 = 위키 task 노드 1개 + GitHub 루트 이슈 1개.** task 노드는 업무 단위이며 **리프마다 만들지 않는다.**
+**task-github로 정의한 업무 1개 = 위키 task 노드 1개 + GitHub 루트 이슈 1개.** task 노드는 업무 단위이며 **리프마다 만들지 않는다.** 단, 위키 task 자체는 GitHub 없이도 생성·수행·완료할 수 있다. task-github는 위키 task를 source/context로 읽어 GitHub 실행 단위를 만들고, 연계된 경우 양쪽 링크를 유지한다.
 단위별 상세 설계는 서브이슈 본문 또는 그 단위 실행 중 캡처되는 `decision`/`observation`에 둔다. brainstorm 산출물을 리프 task 노드로 옮기지 않는다.
 
 ```
-   intent ◄── decision ◄── task 노드 ──relations.tasks──► GitHub 루트 이슈
-  (취지)     (결정·근거)   (업무 요약)   ◄──"## Wiki Context"──  (업무 상세)
+   intent ◄── decision ◄── task 노드 ──relations.tasks──► GitHub 루트 이슈 / PR
+  (취지)     (결정·근거)   (handoff)    ◄──"## Wiki Context"──  (업무 상세)
                               │
                           상태: 활성(wiki/task/) / 완료(wiki/task/done/)
 ```
 
-- **task 노드 → 이슈**: `relations.tasks: [owner/repo#<루트이슈>]` (task는 record 성질이라 이 역링크를 **가질 수 있다** — 이것이 task 노드를 신설한 이유).
+- **task 노드 → 외부 작업 기록**: `relations.tasks: [owner/repo#<루트이슈>]` (PR을 가리킬 땐 동일 `#` 번호공간, 필요 시 `github:owner/repo#<PR>`) (task는 record 성질이라 외부 작업 ref를 **가질 수 있다** — 이것이 task 노드를 신설한 이유).
 - **task 노드 → 결정/취지**: `--decisions` / `--intents` (이 업무가 어떤 결정·취지에서 나왔나).
 - **이슈 → task 노드**: 루트 이슈 본문 `## Wiki Context`에 task 노드 basename을 **메인**, 결정/취지를 **보조**로.
+- **PR → task 노드**: PR 본문/설명에 루트 이슈와 동일한 Wiki Context 또는 루트 이슈 링크를 둔다. 위키에서 PR로 탐색해야 할 경우 `relations.tasks`에 PR ref를 추가한다.
 - **리프/서브이슈 → 상세 설계**: 서브이슈 본문이 정본이다. 이미 리프 task 노드를 만들었다면 내용을 서브이슈로 이전하고 task 노드는 deprecated로 retire한다.
 - **역방향 조회(결정→작업)**: `recall --backlinks-of {DEC}`로 "이 결정이 낳은 작업"을 조회(완료된 task도 기본 포함 — done은 유효한 terminal 상태).
-- **task 노드 ID 조회(이슈→task)**: **루트 이슈 본문 `## Wiki Context`가 정본 경로다.** `recall --backlinks-of {owner/repo#N}`은 **쓰지 않는다** — 위키는 외부 이슈 ref(`owner/repo#N`)를 역링크 대상으로 찾지 못한다(`tasks`는 형식만 검증되는 외부 참조).
+- **task 노드 ID 조회(이슈/PR→task)**: **루트 이슈 본문 `## Wiki Context`가 정본 경로다.** `recall --backlinks-of {owner/repo#N}`은 **쓰지 않는다** — 위키는 외부 작업 ref를 wiki basename 역링크 대상으로 찾지 않는다(`tasks`는 형식만 검증되는 외부 참조).
 
 루트 이슈 `## Wiki Context` 포맷(정확한 규약은 자동로드 operating policy):
 ```markdown
@@ -124,8 +125,8 @@ TASK=$(gh issue view "$ROOT" --json body --jq '.body' \
 
 | 모드 | 정본 | task-github의 동기화 |
 |------|------|---------------------|
-| 독립 (위키만) | 위키 | (이슈 없음 — 동기화 대상 없음) |
-| 연동 (task-github) | **GitHub 루트 이슈** | 이슈 close 시 `complete`(→`done/`), 재오픈 시 `reopen`. 밖에서 닫힌 경우 reconcile |
+| 독립 (위키만) | 위키 | 세션에서 작업 후 `complete`/`reopen` |
+| 연동 (task-github) | **GitHub 루트 이슈/PR 흐름** | 루트 이슈 close 시 `complete`(→`done/`), 재오픈 시 `reopen`. 밖에서 닫힌 경우 reconcile |
 
 - 위키가 추적하는 건 **이진(활성/done)** 뿐. 상세 phase(in-progress/in-review/changes-requested)는 위키가 복제하지 않고 이슈에 위임 → 복제 안 하니 드리프트 없음.
 - **reconcile**: out-of-band(밖에서 닫힌 이슈)는 task-github가 `gh`로 읽어 위키 task 상태를 정렬한다. **위키 CLI는 `gh`를 모른다** — reconcile 주체는 task-github.

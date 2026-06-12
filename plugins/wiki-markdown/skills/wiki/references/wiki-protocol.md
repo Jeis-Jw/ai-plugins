@@ -4,7 +4,7 @@ Single-file reference for the wiki plugin. Condenses the implementation contract
 
 ## Purpose
 
-The wiki is the project's knowledge source of truth for AI agents. It stores current design state, operational procedures, durable intents, decisions, rejected alternatives, lessons, observations, and task bridge nodes so an agent can read minimal valid context before acting.
+The wiki is the project's knowledge source of truth for AI agents. It stores current design state, operational procedures, durable intents, decisions, rejected alternatives, lessons, observations, and task handoff nodes so an agent can read minimal valid context before acting.
 
 The vault also includes a lightweight `snapshot` staging layer for unresolved conversation context. Snapshots are searchable/loadable by `snapshot` commands, but they are deliberately outside the canonical graph until a user or agent explicitly captures the distilled knowledge into a graph type.
 
@@ -28,10 +28,10 @@ The vault also includes a lightweight `snapshot` staging layer for unresolved co
 | `rejected_decision` | `context/rejected_decision/` | record rejected alternative | `REJ-YYYY-MM-DD-HHMMSS-<slug>` |
 | `trial_error` | `context/trial_error/` | record trap or lesson | `TRI-YYYY-MM-DD-HHMMSS-<slug>` |
 | `observation` | `context/observation/` | record observation not yet classifiable | `OBS-YYYY-MM-DD-HHMMSS-<slug>` |
-| `task` | `task/` | **third category** — work bridge to an external issue | `TASK-YYYY-MM-DD-HHMMSS-<slug>` |
+| `task` | `task/` | **third category** — task handoff/context bridge, optionally linked to external work | `TASK-YYYY-MM-DD-HHMMSS-<slug>` |
 | `snapshot` | `snapshot/active` etc. | staging checkpoint outside the graph | `SNAP-YYYY-MM-DD-HHMMSS-<slug>` |
 
-Living notes are updated in place. Records are immutable in meaning and are retired or superseded. **`task` is a third category**: its body is updated in place (living-like) and it carries relations (record-like), but its lifecycle is binary by path — active `task/` vs done `task/done/` (and `task/retired/` for an invalid task). Move it with `complete` / `reopen` (not supersede). A pure leaf: it points outward and nothing points back at it (reverse is derived backlinks).
+Living notes are updated in place. Records are immutable in meaning and are retired or superseded. **`task` is a third category**: its body is updated in place (living-like) and it carries relations (record-like), but its lifecycle is binary by path — active `task/` vs done `task/done/` (and `task/retired/` for an invalid task). Move it with `complete` / `reopen` (not supersede). A pure leaf: it points outward and nothing points back at it (reverse is derived backlinks). It works without any external task plugin; when an external work system is used, `relations.tasks` stores links to that system and the external plugin owns interpretation/synchronization.
 
 **`snapshot` is not a graph type.** It has its own path lifecycle (`active` / `archived` / `promoted`) and CLI. It is excluded from graph `recall`, relation resolution, `refresh --strict`, and duplicate-basename checks. Default saves are append-only; `--continues <ref>` links a new checkpoint to a prior one, while `--update <ref>` explicitly rewrites an active snapshot.
 
@@ -99,7 +99,7 @@ Canonical relations are YAML plain IDs in frontmatter — *not* body wikilinks.
 | `task` | `intents`, `decisions`, `ssot`, `tasks` |
 | `ssot`, `runbook` | (none — `relations` key forbidden) |
 
-Each sub-key takes an inline list. Wiki refs are **always full basenames**; `tasks` alone takes external IDs (`owner/repo#N`).
+Each sub-key takes an inline list. Wiki refs are **always full basenames**; `tasks` alone takes external work refs (`owner/repo#N`, `github:owner/repo#N`). These refs are links, not runtime dependencies; wiki-markdown validates their shape but does not call or interpret external systems.
 
 ```yaml
 relations:
@@ -175,7 +175,7 @@ Section headers and order are **fixed** — `recall --stage 2` relies on them. S
 |---------|--------|
 | `## 개요` | What this work is, at a glance — the bridge summary a wiki reader sees. |
 | `## 근거` | Which decisions / intents this work flows from, and why it exists now. |
-| `## 범위와 완료 기준` | Scope boundary + what "done" means. Detailed execution lives in the linked issue. |
+| `## 범위와 완료 기준` | Scope boundary + what "done" means. Detailed execution lives in the linked external work item when one exists; otherwise the task itself is the handoff anchor. |
 
 ## Lifecycle
 
@@ -220,7 +220,7 @@ The bundled CLI (`scripts/wiki_cli.py`, stdlib only) supports nine top-level sub
 | `stale` | `verified_at` older than the per-type threshold |
 | `supersede` | Both ends of a supersede edge agree |
 | `broken-rel` | A `relations.*` ref points at nothing (or at an index file) |
-| `task-ref` | Malformed `tasks` entries (must be `owner/repo#N`; quoted human edits are accepted) |
+| `task-ref` | Malformed `tasks` entries (must be a supported external work ref such as `owner/repo#N` or `github:owner/repo#N`; quoted human edits are accepted) |
 | `orphan` | Record with neither backlinks nor outbound relations |
 | `index` | Index file missing or out-of-sync with the folder |
 | `retired-in-index` | Index still lists a retired record |
@@ -275,7 +275,7 @@ Capture rejects (exit `2`):
 The CLI implements a **restricted YAML subset** sufficient for frontmatter — not a general YAML parser. Deviations from full YAML:
 
 - **Quoted strings are not unwrapped.** `summary: "value with # hash"` is stored as the literal string including the quotes.
-- **Inline `#` comments are stripped.** A space before `#` ends the value. `summary: issue #42` would truncate at the space; for an intentional `#`, attach it without a leading space (e.g. `owner/repo#42` works inside an inline list).
+- **Inline `#` comments are stripped.** A space before `#` ends the value. `summary: issue #42` would truncate at the space; for an intentional issue ref, attach it without a leading space (e.g. `owner/repo#42` works inside an inline list).
 - **Block-style lists are accepted on read** (so hand-edited or externally-tooled frontmatter round-trips), but the CLI always *writes* lists inline.
 
 For vaults with non-trivial YAML needs, run `refresh --check schema` regularly to catch silent parser disagreements.

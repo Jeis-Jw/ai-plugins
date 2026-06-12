@@ -60,7 +60,7 @@ audience: [human, agent]
 
 ## 노트
 
-- [[wiki-data-model]] — 위키 그래프의 정적 구조 정본: 5종 record + 2종 living + 1종 task(제3 범주) 타입 체계, graph 밖 snapshot staging layer, basename 정본 ID, YAML 관계 모델(비대칭 작성). plugin-definition 영역의 sub-ssot.
+- [[wiki-data-model]] — 위키 그래프의 정적 구조 정본: 5종 record + 2종 living + 1종 task(작업지시서형 제3 범주) 타입 체계, graph 밖 snapshot staging layer, basename 정본 ID, YAML 관계 모델(비대칭 작성). plugin-definition 영역의 sub-ssot.
 - [[wiki-external-tools-policy]] — 외부 도구(Obsidian 등)와의 경계 정본: AI 검색 정본은 filesystem 단일(ripgrep+YAML), wikilink는 사람용 장식, .obsidian/ gitignore. plugin-definition 영역의 sub-ssot.
 - [[wiki-four-layer-separation]] — mechanism/policy statement/policy rationale/knowledge 4계층 분리 정본: plugin은 agent-neutral mechanism, 작업환경 policy statement는 CLAUDE.md/AGENTS.md 자동로드 표면, policy rationale은 프로젝트가 정한 이력 위치, wiki vault는 knowledge 저장소. plugin-definition 영역의 sub-ssot.
 - [[wiki-lifecycle]] — Record와 Living의 라이프사이클 정본: 경로 기반 active/retired, deprecated/superseded 2값 retire 모델, supersede pair 양방향 저장, task 이진 상태(활성/done) + snapshot staging 상태(active/archived/promoted). plugin-definition 영역의 sub-ssot.

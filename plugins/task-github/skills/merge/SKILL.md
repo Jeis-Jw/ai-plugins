@@ -86,13 +86,13 @@ STATE=$(gh issue view "$ROOT" --json state --jq .state)
 # (c) 닫혔으면, 루트 이슈 본문 ## Wiki Context에서 연결 task 노드 ID를 읽어 완료 전이
 if [ "$STATE" = "CLOSED" ]; then
   # task 노드 ID의 정본 경로는 루트 이슈 본문의 ## Wiki Context (define이 기록).
-  # (wiki recall --backlinks-of 는 외부 이슈 ref를 역링크로 찾지 못한다 — 본문 파싱이 정본.)
+  # (wiki recall --backlinks-of 는 외부 작업 ref를 역링크로 찾지 못한다 — 본문 파싱이 정본.)
   TASK=$(gh issue view "$ROOT" --json body \
     --jq '.body' | grep -oE 'TASK-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}-[A-Za-z0-9-]+' | head -1)
   [ -n "$TASK" ] && wiki complete "$TASK"     # 활성 → wiki/task/done/
 fi
 ```
-GitHub 이슈가 상태 정본이고 위키 done/는 투영이다([wiki-bridge.md](../../rules/wiki-bridge.md) §5). task 노드 ID는 루트 이슈 `## Wiki Context`가 정본 — `--backlinks-of`는 외부 이슈 ref(`owner/repo#N`)를 역링크 대상으로 찾지 못하므로 쓰지 않는다([wiki-bridge.md](../../rules/wiki-bridge.md) §4).
+GitHub 이슈/PR 흐름이 상태 정본이고 위키 done/는 투영이다([wiki-bridge.md](../../rules/wiki-bridge.md) §5). task 노드 ID는 루트 이슈 `## Wiki Context`가 정본 — `--backlinks-of`는 외부 작업 ref(`owner/repo#N`)를 역링크 대상으로 찾지 못하므로 쓰지 않는다([wiki-bridge.md](../../rules/wiki-bridge.md) §4).
 2. **영향 record 갱신 안내** — done의 drift 리포트에 걸렸던 ssot/runbook은 `verified_at` 갱신 또는 supersede **안내**(자동 변경 안 함).
 
 ### Step 7. Knowledge Capture Audit

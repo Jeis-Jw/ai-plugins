@@ -1,7 +1,7 @@
 ---
 title: 위키 데이터 모델
 created_at: 2026-05-29
-summary: 위키 그래프의 정적 구조 정본: 5종 record + 2종 living + 1종 task(제3 범주) 타입 체계, graph 밖 snapshot staging layer, basename 정본 ID, YAML 관계 모델(비대칭 작성). plugin-definition 영역의 sub-ssot.
+summary: 위키 그래프의 정적 구조 정본: 5종 record + 2종 living + 1종 task(작업지시서형 제3 범주) 타입 체계, graph 밖 snapshot staging layer, basename 정본 ID, YAML 관계 모델(비대칭 작성). plugin-definition 영역의 sub-ssot.
 tags: [wiki, data-model, ssot]
 verified_at: 2026-06-12
 ---
@@ -12,7 +12,7 @@ verified_at: 2026-06-12
 
 - **Living** (제자리 갱신): `ssot`, `runbook`
 - **Record** (불변 + supersede): `context/intent`, `context/decision`, `context/rejected_decision`, `context/trial_error`, `context/observation`
-- **Task** (제3 범주 — 제자리 갱신 + 관계 보유): `task`. 결정·취지를 외부 이슈에 잇는 브릿지 노드(순수 잎). 상태는 이진(활성 / 완료=`done/` 경로 이동), 상세 진행은 연결된 작업 플러그인에 위임 ([[wiki-lifecycle]]).
+- **Task** (작업지시서형 제3 범주 — 제자리 갱신 + 관계 보유): `task`. 결정·취지·SSOT를 묶어 수행자에게 넘기는 handoff/context 브릿지 노드(순수 잎). 외부 작업 시스템 없이도 완결되며, 연계 작업이면 `relations.tasks`에 Issue/PR 같은 외부 실행 기록 링크를 둔다. 상태는 이진(활성 / 완료=`done/` 경로 이동), 외부 연계의 상세 진행과 동기화는 연결된 작업 플러그인에 위임 ([[wiki-lifecycle]]).
 - **Snapshot** (graph 밖 staging layer): `snapshot/active`, `snapshot/archived`, `snapshot/promoted`. 아직 정식 `observation`/`decision`/`ssot`/`runbook`으로 정리하지 않은 대화 맥락 체크포인트. `TYPE_SPECS`에 들어가지 않으며 관계 그래프·recall·refresh 무결성 검사 대상이 아니다.
 
 → [[DEC-2026-05-29-105231-wiki-type-taxonomy]] / [[DEC-2026-05-29-105322-observation-record-type]] / [[DEC-2026-05-29-181259-task-third-category]]
@@ -37,7 +37,7 @@ verified_at: 2026-06-12
   - `rejected_decision.relations`: intents(진 취지)
   - `trial_error.relations`: decisions, tasks
   - `observation.relations`: ssot, runbook, decisions, tasks
-  - `task.relations`: intents, decisions, ssot, tasks(외부 이슈) — **순수 잎**(다른 타입이 task를 가리키지 않음; 역방향은 파생 백링크)
+  - `task.relations`: intents, decisions, ssot, tasks(외부 작업 ref: Issue/PR 등) — **순수 잎**(다른 타입이 task를 가리키지 않음; 역방향은 파생 백링크)
   - `intent` / `ssot` / `runbook`: **relations 키 자체 없음** (불변식)
 - 양방향 *탐색* 보장, 양방향 *저장*은 supersede 쌍만 예외 ([[wiki-lifecycle]])
 - 관계 보강은 `capture` 또는 `relate` CLI로만 수행한다. `relate`는 task 노드의 semantic relation 보강과 record의 외부 `tasks` ref 추가만 허용한다. record의 semantic relation을 바꿀 필요가 있으면 새 record를 capture/supersede한다.

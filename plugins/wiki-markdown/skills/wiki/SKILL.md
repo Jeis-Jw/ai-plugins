@@ -110,14 +110,14 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" refresh --fix index,retired-in
 | "Found something but not sure if it's a decision, lesson, or SSOT update yet" | `observation` | Pre-classification record; gets retired as `superseded` when a successor TRI/DEC/SSOT-update is captured. |
 | "How is X currently structured / behaving" | `ssot` | Living, updated in place. |
 | "How do we run / deploy / operate X" | `runbook` | Living, procedural. |
-| "A unit of work driven by decisions, tracked against an external issue" | `task` | Third category — bridge node. Carries relations (intents/decisions/ssot/tasks); binary active/done state by path. |
+| "A unit of work driven by decisions, optionally linked to external work" | `task` | Third category — handoff/context bridge node. Carries relations (intents/decisions/ssot/tasks); binary active/done state by path. |
 | "Save this ongoing discussion so another session can resume it" | `snapshot` CLI | Staging layer outside the canonical graph; searchable/loadable but excluded from `recall`/`refresh` graph checks until explicitly captured/promoted later. |
 
 **Living vs Record.** `ssot` and `runbook` are *living* — updated in place per topic. A second `capture` for the same slug exits `5` (conflict). `context/*` types are *immutable + superseded* — never edited; replace with a new record.
 
 **Observation vs trial_error.** A `trial_error` has an explicit lesson. An `observation` is a finding too early to classify. When the classification firms up, capture a successor (TRI/DEC/SSOT-update) and `retire` the observation as `superseded` with the successor as primary replacement.
 
-**Task (third category).** `task` is neither living nor record: its body is updated in place (living-like) and it carries relations (record-like), but its lifecycle is **binary by path** — active `task/` vs done `task/done/`. It's a *pure leaf* bridge: it points outward (`intents`/`decisions`/`ssot`/`tasks`) and nothing points back at it (reverse is derived backlinks — `recall --backlinks-of <DEC>` surfaces the tasks a decision spawned, **including completed ones by default** — done is a valid terminal state, not a retired one). Finish a task with `complete` (→ `task/done/`), undo with `reopen`. A task never supersedes; an *invalid* task is `retire --type deprecated` (which, like any retired doc, then needs `--include-retired` to appear in backlinks). `--tasks owner/repo#N` links it to its external work item (e.g. a GitHub issue); the wiki never reads that tracker.
+**Task (third category).** `task` is neither living nor record: its body is updated in place (living-like) and it carries relations (record-like), but its lifecycle is **binary by path** — active `task/` vs done `task/done/`. It's a *pure leaf* handoff/context bridge: it points outward (`intents`/`decisions`/`ssot`/`tasks`) and nothing points back at it (reverse is derived backlinks — `recall --backlinks-of <DEC>` surfaces the tasks a decision spawned, **including completed ones by default** — done is a valid terminal state, not a retired one). Finish a task with `complete` (→ `task/done/`), undo with `reopen`. A task never supersedes; an *invalid* task is `retire --type deprecated` (which, like any retired doc, then needs `--include-retired` to appear in backlinks). `--tasks` links it to external work items such as GitHub issues/PRs; the wiki validates the ref shape but never reads or synchronizes that system.
 
 **Snapshot (staging layer).** `snapshot` is not a wiki graph type. Files live under `snapshot/active`, `snapshot/archived`, or `snapshot/promoted`, use `SNAP-YYYY-MM-DD-HHMMSS-<slug>` basenames, and are managed by `snapshot save/list/search/load/archive`. Default saves are append-only; `snapshot save --continues <ref>` links a follow-up checkpoint, and `snapshot save --update <ref>` rewrites an active snapshot only when explicitly requested. Snapshot files are searchable by snapshot commands but excluded from `recall`, relation resolution, `refresh --strict`, and duplicate-basename checks.
 
@@ -161,7 +161,7 @@ The CLI resolves fragments to the canonical basename; ambiguous fragments exit `
 
 The positional `retire <basename>` and `recall --read` default to **exact** basename matching for safety. Pass `--fuzzy` on `recall --read` to opt into fragment resolution.
 
-`--tasks` entries are external task IDs (`owner/repo#N`); the wiki validates format only — it does not verify the task exists. Human-edited quoted refs such as `["owner/repo#N"]` are accepted and normalized by CLI writes.
+`--tasks` entries are external work refs (`owner/repo#N`, `github:owner/repo#N`); the wiki validates format only — it does not verify the external work item exists. GitHub shares one number space across issues and PRs, so a PR is referenced with the same `#N` form. Human-edited quoted refs such as `["owner/repo#N"]` are accepted and normalized by CLI writes.
 
 ### Refresh checks (13)
 
@@ -170,7 +170,7 @@ The positional `retire <basename>` and `recall --read` default to **exact** base
 | `stale` | living + `verified_at`-bearing `trial_error` | `verified_at` older than `--days` (default 90) |
 | `supersede` | all | supersede pair consistency in both directions |
 | `broken-rel` | all (excluding `tasks`) | `relations.*` points at no real wiki doc |
-| `task-ref` | `tasks` | `owner/repo#N` format |
+| `task-ref` | `tasks` | supported external work ref format |
 | `orphan` | active records | not referenced from anywhere |
 | `index` | index files | drift vs the derived set |
 | `retired-in-index` | index files | retired record still listed |
@@ -202,7 +202,7 @@ Unknown `--check` names or empty `--check ""` exit `2` so CI catches typos immed
 - **Use observation for pre-classification finds**: `capture observation --ssot <ssot> --affects-paths "src/<area>/**"`. When classification firms up, capture the successor and `retire --type superseded --superseded-by`.
 - **Use snapshot for discussion checkpoints**: `snapshot save` when the user says to save the current conversation context but the content is not yet ready to become an `observation`, `decision`, `ssot`, or `runbook`.
 - **Audit an intent's win/loss footprint**: `recall --backlinks-of <INT-...>` returns the decisions that won *and* the rejections, side-by-side.
-- **Trace a decision to the work it spawned**: `recall --backlinks-of <DEC-...>` surfaces the `task` nodes that point at it — "what work did this decision produce?" — and keeps showing them after they're completed (done tasks stay in default backlinks; only `retire`d docs need `--include-retired`). Capture the task with `--decisions <DEC> --tasks owner/repo#N` so the link exists.
+- **Trace a decision to the work it spawned**: `recall --backlinks-of <DEC-...>` surfaces the `task` nodes that point at it — "what work did this decision produce?" — and keeps showing them after they're completed (done tasks stay in default backlinks; only `retire`d docs need `--include-retired`). Capture the task with `--decisions <DEC>` and, when external work exists, `--tasks owner/repo#N` or `--tasks github:owner/repo#N` so the link exists.
 - **Add a missing relation without frontmatter edits**: use `relate`. Task nodes may add semantic relations (`--add-decisions`, `--add-intents`, `--add-ssot`) and external tasks. Immutable records only accept `--add-tasks`; capture a successor record for semantic changes.
 - **Run `refresh` right after `retire ... --type superseded`** to confirm both sides of the supersede edge.
 - **Manage the tag vocabulary**: drop allowed tags under an `## 어휘` section in `wiki/ssot/tag-vocabulary.md`. The `tags` check then flags vocabulary violations; absent the file, the check is skipped.
