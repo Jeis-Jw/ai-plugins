@@ -347,8 +347,8 @@ task-github로 정의한 **한 업무 = task 노드 1개 + 루트 이슈 1개.**
 |------|----------|------|-----------|
 | `setup` | init 제안 | `./wiki/` 없고 위키 플러그인 있으면 `wiki init` 제안 | — |
 | `open` | recall(읽기) | 루트 이슈의 `## Wiki Context` → task 노드 + 결정 표시. 리프면 부모 루트의 task로 거슬러 표시 | 전기어 |
-| `define` | **★task 노드 생성** | 루트 이슈 생성 시 ①관련 결정 recall ②`capture task --decisions … --intents … --tasks owner/repo#N` ③루트 이슈 본문 `## Wiki Context`에 task 노드 링크 | 전기어 |
-| `start` | recall(맥락 주입) | 리프 점유 시 부모 루트의 task 노드 + 연결 결정을 세션 컨텍스트로 주입 | normal/major |
+| `define` | **★task 노드 생성** | 시작 시 dirty-vault 경고 → ①관련 결정 recall ②`capture task --decisions … --intents … --tasks owner/repo#N` ③루트 이슈 본문 `## Wiki Context`에 task 노드 링크 ④**rationale 원자적 메인 커밋**(wiki-bridge §8) | 전기어 |
+| `start` | recall(맥락 주입) | 시작 시 dirty-vault 경고(§8) → 리프 점유 시 부모 루트의 task 노드 + 연결 결정을 세션 컨텍스트로 주입 | normal/major |
 | `plan` | recall(적극) | task 노드의 `decisions`/`intents` 따라 읽기 + 키워드 recall로 trial_error/observation 주입; "고려한 대안"=rejected 후보; ADR초안=decision 후보 | normal/major |
 | `run` | capture observation | `[관찰]` 발견 즉시 `capture observation`(자동, `--tasks` 역링크) | normal/major |
 | `verify` | **capture(핵심)** | 태그→타입 캡처 제안, observation 승격 검토, `refresh --strict` hard gate, 품질 FLAG | normal/major |

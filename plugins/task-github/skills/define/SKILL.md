@@ -20,6 +20,16 @@ $ARGUMENTS:
 
 ## 절차
 
+### 시작 전 — dirty wiki vault 점검 (위키 가용 시)
+업무 정의·캡처 전에 메인 vault에 **미커밋 rationale 레코드**가 남아 있으면 경고한다. 잔여 미커밋 레코드는 이번 define의 새 레코드와 공유 context 인덱스에서 엉켜 작업별 분리 커밋을 막는다([wiki-bridge.md](../../rules/wiki-bridge.md) §8):
+```bash
+if [ -d "./wiki" ]; then
+  DIRTY=$(git status --porcelain -- wiki/context wiki/task 2>/dev/null)
+  [ -n "$DIRTY" ] && printf '[경고] 미커밋 wiki rationale 레코드가 있습니다 — 정의 전 메인에 커밋/정리 권장(작업별 분리 커밋·dangling 방지):\n%s\n' "$DIRTY"
+fi
+```
+경고는 **차단이 아니다**(최소 적용분). 잔여 레코드가 이번 업무의 근거가 아니라면 먼저 커밋한 뒤 진행한다.
+
 ### 모드 A — 대화 맥락 등록 (루트 이슈 + task 노드)
 1. 대화 내용 정리 (루트/서브 판단)
 2. **(위키 가용 시) 관련 결정 recall** — 이 업무가 어떤 결정·취지에서 나오는지 파악:
@@ -94,7 +104,18 @@ print(b2 if '## Wiki Context' in b else b.rstrip()+'\n\n'+ctx+'\n')
 gh issue edit "$ROOT" --body "$NEW_BODY"
 ```
 > 위키 미가용이면 (a)(b) 전체를 스킵 — 이슈만 만들고 task 노드는 두지 않는다(정상). `{관련 DEC}`/`{상위 INT}`는 캡처에 쓴 것과 동일하게 채운다(없으면 보조 줄 생략).
-6. **기어 라벨 안 붙임** — 기어 판단은 `start`에서.
+6. **(위키 가용 시) rationale 원자적 커밋** — 방금 만든 task 노드 + 이번 업무의 근거 `DEC`/`REJ`/`INT`를 **메인에 바로 커밋**한다. 워크트리 생성(=`start`) 전에 vault를 깨끗이 두어 이후 작업별 커밋을 자명하게 만든다. rationale는 메인에 남고 코드 PR은 `DEC` ID로 참조한다([wiki-bridge.md](../../rules/wiki-bridge.md) §8):
+```bash
+if [ -d "./wiki" ]; then
+  git add wiki/context wiki/task
+  if ! git diff --cached --quiet -- wiki/context wiki/task; then
+    git commit -m "docs(wiki): {업무} rationale + task 노드 (#$ROOT)"
+    echo "rationale 메인 커밋 — 워크트리 생성 전 vault clean"
+  fi
+fi
+```
+> 이 커밋은 **시작 전 dirty-vault 점검으로 vault가 깨끗했음을 전제**한다. 점검이 무관한 잔여 레코드를 경고했는데 정리하지 않았다면 함께 커밋될 수 있으니 경고를 먼저 해소하라. 자동 커밋이 부담되면 이 단계를 생략하고 dirty-vault 경고만으로도 규약을 채택할 수 있다(최소 적용분).
+7. **기어 라벨 안 붙임** — 기어 판단은 `start`에서.
 
 ### 모드 B — 분해 기준 요청
 `open {N}`으로 현황 보여주고, 어떤 기준으로 분해할지 사령관에게 묻는다.
@@ -124,4 +145,5 @@ gh issue edit "$ROOT" --body "$NEW_BODY"
 - **task 노드는 업무(루트) 1:1** — 리프·서브이슈마다 만들지 않는다.
 - 단위 상세 설계는 서브이슈 본문 또는 해당 단위 실행 중 캡처되는 DEC/OBS에 둔다. 위키 리프 task 노드는 만들지 않는다. 이미 만들었다면 내용을 서브이슈로 이전한 뒤 task 노드를 `retire --type deprecated`한다.
 - task 노드 캡처는 **제안 후 확인**. 위키 미가용이면 이슈만 만들고 task 노드는 스킵(정상).
+- **rationale는 메인 직접 커밋** — task 노드 + 근거 `DEC`/`REJ`/`INT`를 define이 메인에 원자적 커밋하고, 시작 시 dirty-vault를 경고한다(차단 아님). 코드 PR은 `DEC` ID로 참조([wiki-bridge.md](../../rules/wiki-bridge.md) §8).
 - 등록 전 반드시 사령관 확인.

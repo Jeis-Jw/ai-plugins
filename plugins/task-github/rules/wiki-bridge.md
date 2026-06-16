@@ -140,8 +140,8 @@ TASK=$(gh issue view "$ROOT" --json body --jq '.body' \
 |------|----------|
 | `setup` | `./wiki/` 없고 위키 플러그인 있으면 `wiki init` 제안 |
 | `open` | 루트 이슈 `## Wiki Context` → task 노드·결정 `recall --read` 브리핑 |
-| `define` | 관련 결정 recall → `capture task`(루트 이슈와 1:1 연결) → `## Wiki Context` 기록 |
-| `start` | 부모 루트의 task 노드 + 결정/취지를 세션 컨텍스트로 주입 |
+| `define` | 시작 시 dirty-vault 경고(§8) → 관련 결정 recall → `capture task`(루트 이슈와 1:1 연결) → `## Wiki Context` 기록 → **rationale 원자적 메인 커밋**(§8) |
+| `start` | 시작 시 dirty-vault 경고(§8) → 부모 루트의 task 노드 + 결정/취지를 세션 컨텍스트로 주입 |
 | `plan` | task의 `decisions`/`intents` 읽기 + 키워드 recall로 trial_error/observation 주입 |
 | `run` | `[관찰]` 발견 시 `capture observation`(자동) |
 | `verify` | 태그→타입 캡처(제안), observation 승격 검토, `refresh --strict` hard gate, decision/task 품질 FLAG |
@@ -159,6 +159,18 @@ TASK=$(gh issue view "$ROOT" --json body --jq '.body' \
 | `task` 생성, `decision`/`intent`/`rejected`/`trial_error`, 승격 | **제안 후 확인** | 그래프 1급 노드, 되돌리기 비용 |
 
 > 구체적 임계·권한은 mechanism이 아니라 **policy**의 몫이다. 정책은 `CLAUDE.md` / `AGENTS.md` 같은 자동로드 표면에 둔다. 위키는 자동 승격을 반려했다(`REJ-…-promotion-auto-judgment`).
+
+---
+
+## 8. rationale 커밋 규약 (mechanism)
+
+결정/반려 등 **근거(rationale) 레코드는 메인 트리에 직접 커밋**한다. 코드 변경은 PR 브랜치로 가고, PR 본문·커밋·SSOT가 `DEC` ID로 참조한다. 결정과 코드가 다른 커밋·위치에 있는 것을 정상으로 수용한다(4계층 분리: rationale=`wiki/context` vs mechanism=코드).
+
+- **`define` 원자적 rationale 커밋**: `define`은 만든 task 노드 + 이번 업무의 근거 `DEC`/`REJ`/`INT`를 그 자리에서 메인에 커밋한다. 워크트리 생성(=`start`) 전에 vault가 깨끗해 작업별 커밋이 자명해진다.
+- **`define`/`start` dirty-vault 경고**: 시작 시 `git status --porcelain -- wiki/context wiki/task`로 미커밋 rationale 레코드를 감지하면 경고한다(**차단 아님**). 잔여 미커밋 레코드가 공유 context 인덱스에서 새 레코드와 엉켜 작업별 분리 커밋을 막는 것을 예방한다.
+- **최소 적용분**: 자동 커밋이 부담되면 dirty-vault 경고만으로도 규약을 채택할 수 있다(엉킴의 주원인인 잔여 레코드를 막는다).
+
+> 근거: 결정은 repo 지식으로 코드 PR보다 오래 살고, 리뷰 브랜치에 인질로 잡히거나 브랜치 폐기 시 유실되면 안 된다. 워크트리 코드 작업과 rationale 캡처가 분리되는 것은 정상이며, 추적성은 `DEC` ID 참조로 잇는다. 정책 statement는 자동로드 표면(`CLAUDE.md`/`AGENTS.md`), 정책 rationale은 이 repo `wiki/context/decision/`의 `DEC-2026-06-17-012702`.
 
 ---
 

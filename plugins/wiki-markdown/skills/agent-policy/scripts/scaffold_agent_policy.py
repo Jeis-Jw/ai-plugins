@@ -77,6 +77,13 @@ def render_policy(profile: str, tracker: str, concurrency: str) -> str:
             "decisions, rejected alternatives, trial-error records, and promotions "
             "need explicit user confirmation."
         ),
+        (
+            "- Rationale commits: capture decisions, rejected alternatives, and "
+            "other rationale records directly on main; code changes go via PR "
+            "branches that reference the DEC id. task-github define commits its "
+            "task node and rationale atomically, and define/start warn on a dirty "
+            "wiki vault."
+        ),
         END,
         "",
     ]

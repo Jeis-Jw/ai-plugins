@@ -53,6 +53,7 @@ class AgentPolicyScaffoldTests(unittest.TestCase):
                 self.assertIn("Profile: solo", text)
                 self.assertIn("Use git worktrees for concurrent tasks", text)
                 self.assertIn("task-github", text)
+                self.assertIn("Rationale commits", text)
 
     def test_scaffold_is_idempotent_and_preserves_existing_content(self):
         with tempfile.TemporaryDirectory() as tmp:

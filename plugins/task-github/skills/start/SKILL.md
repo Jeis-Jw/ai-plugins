@@ -17,6 +17,15 @@ $ARGUMENTS:
 
 ## 절차
 
+### 시작 전 — dirty wiki vault 점검 (위키 가용 시)
+워크트리 생성 전 메인 vault에 **미커밋 rationale 레코드**가 있으면 경고한다(**차단 아님**). 잔여 레코드가 워크트리 코드 작업과 공유 인덱스에서 엉키는 것을 막는다([wiki-bridge.md](../../rules/wiki-bridge.md) §8):
+```bash
+if [ -d "./wiki" ]; then
+  DIRTY=$(git status --porcelain -- wiki/context wiki/task 2>/dev/null)
+  [ -n "$DIRTY" ] && printf '[경고] 미커밋 wiki rationale 레코드가 있습니다 — 워크트리 생성 전 메인에 커밋 권장:\n%s\n' "$DIRTY"
+fi
+```
+
 ### 모드 A — 리프 이슈 생성 + 즉시 점유 (micro 단발 전용)
 
 > **이 모드는 micro 단발 작업 전용이다.** 판단이 normal/major(solo의 full)면 — 즉 업무가 결정·취지를 동반하거나 분해가 필요하면 — **`define`으로 전환**해 루트 이슈 + 위키 task 노드를 먼저 만든 뒤 그 리프를 `start {N}`(모드 B)로 점유한다. (모드 A로 바로 시작하면 task 노드 1:1 다리를 우회한다 → [wiki-bridge.md](../../rules/wiki-bridge.md) §4)
@@ -88,3 +97,4 @@ gh issue edit {N} --add-assignee @me --add-label "in-progress"
 - 열린 `blocked_by`가 있는 이슈는 작업 대상이 아니다(차단).
 - 점유 중복 방지 — 타인 점유 Issue는 사령관 확인 없이 시작 금지.
 - start는 위키를 **읽기만**(recall) — task 노드 생성은 define의 책임.
+- 시작 시 **dirty wiki vault를 경고**(차단 아님) — 미커밋 rationale 레코드가 워크트리 작업과 엉키는 것을 예방([wiki-bridge.md](../../rules/wiki-bridge.md) §8).
