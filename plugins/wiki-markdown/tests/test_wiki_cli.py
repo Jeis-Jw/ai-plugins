@@ -2350,6 +2350,144 @@ class WikiCliTaskTests(unittest.TestCase):
             self.assertEqual(payload["added"]["ssot"], ["cost-model"])
             self.assertEqual(payload["added"]["tasks"], ["owner/repo#43", "owner/repo#44"])
 
+    # ── OBS-2026-06-12-190117: multi-value flags must accumulate, never ──
+    # last-wins. Each of the 4 input forms is asserted in isolation so a
+    # regression to argparse `store` (which would silently drop all but the
+    # last value) fails loudly with a form-specific message.
+    def _seed_two_intents(self, tmp):
+        """Seed intent-a, intent-b and return their full basenames."""
+        for idx, slug in enumerate(("intent-a", "intent-b")):
+            run_cli(
+                "capture", "intent",
+                "--slug", slug,
+                "--title", slug,
+                "--summary", f"{slug} summary.",
+                "--tags", "flow",
+                cwd=tmp,
+                env={"WIKI_NOW": f"2026-05-29T11:00:0{idx}"},
+            )
+        return ("INT-2026-05-29-110000-intent-a",
+                "INT-2026-05-29-110001-intent-b")
+
+    def _capture_decision_with_intents(self, tmp, slug, *intent_args):
+        """capture a decision passing the given raw --intents args; return text."""
+        result = run_cli(
+            "capture", "decision",
+            "--slug", slug,
+            "--title", slug,
+            "--summary", f"{slug} summary.",
+            "--tags", "arch",
+            *intent_args,
+            cwd=tmp,
+            env={"WIKI_NOW": "2026-05-29T11:05:00"},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return (
+            Path(tmp) / "wiki" / "context" / "decision" /
+            f"DEC-2026-05-29-110500-{slug}.md"
+        ).read_text()
+
+    def test_capture_intents_form_repeated(self):
+        # repeated: --intents a --intents b  → [a, b]
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            a, b = self._seed_two_intents(tmp)
+            text = self._capture_decision_with_intents(
+                tmp, "form-repeated",
+                "--intents", "intent-a", "--intents", "intent-b",
+            )
+            self.assertIn(f"intents: [{a}, {b}]", text)
+
+    def test_capture_intents_form_comma(self):
+        # comma: --intents a,b  → [a, b]  (must not regress)
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            a, b = self._seed_two_intents(tmp)
+            text = self._capture_decision_with_intents(
+                tmp, "form-comma",
+                "--intents", "intent-a,intent-b",
+            )
+            self.assertIn(f"intents: [{a}, {b}]", text)
+
+    def test_capture_intents_form_mixed(self):
+        # mixed: --intents a,b --intents c  → [a, b, c]
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            a, b = self._seed_two_intents(tmp)
+            run_cli(
+                "capture", "intent", "--slug", "intent-c",
+                "--title", "intent-c", "--summary", "intent-c summary.",
+                "--tags", "flow", cwd=tmp,
+                env={"WIKI_NOW": "2026-05-29T11:00:02"},
+            )
+            c = "INT-2026-05-29-110002-intent-c"
+            text = self._capture_decision_with_intents(
+                tmp, "form-mixed",
+                "--intents", "intent-a,intent-b", "--intents", "intent-c",
+            )
+            self.assertIn(f"intents: [{a}, {b}, {c}]", text)
+
+    def test_capture_intents_form_duplicate_is_idempotent(self):
+        # duplicate: --intents a --intents a  → [a]  (order-preserving dedup)
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            a, _b = self._seed_two_intents(tmp)
+            text = self._capture_decision_with_intents(
+                tmp, "form-duplicate",
+                "--intents", "intent-a", "--intents", "intent-a",
+            )
+            self.assertIn(f"intents: [{a}]", text)
+            # the second occurrence must not leak a duplicate entry.
+            self.assertNotIn(f"intents: [{a}, {a}]", text)
+
+    def _relate_add_tasks(self, tmp, *task_args):
+        """Seed a task then relate the given raw --add-tasks args; return payload."""
+        self._seed_decision(tmp)
+        self.assertEqual(self._capture_task(tmp).returncode, 0)
+        result = run_cli(
+            "relate", "pay-bff", *task_args, "--json", cwd=tmp,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)["added"]["tasks"]
+
+    def test_relate_add_tasks_form_repeated(self):
+        # repeated: --add-tasks x --add-tasks y → [x, y]
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            added = self._relate_add_tasks(
+                tmp, "--add-tasks", "owner/repo#43", "--add-tasks", "owner/repo#44",
+            )
+            self.assertEqual(added, ["owner/repo#43", "owner/repo#44"])
+
+    def test_relate_add_tasks_form_comma(self):
+        # comma: --add-tasks x,y → [x, y]  (must not regress)
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            added = self._relate_add_tasks(
+                tmp, "--add-tasks", "owner/repo#43,owner/repo#44",
+            )
+            self.assertEqual(added, ["owner/repo#43", "owner/repo#44"])
+
+    def test_relate_add_tasks_form_mixed(self):
+        # mixed: --add-tasks x,y --add-tasks z → [x, y, z]
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            added = self._relate_add_tasks(
+                tmp,
+                "--add-tasks", "owner/repo#43,owner/repo#44",
+                "--add-tasks", "owner/repo#45",
+            )
+            self.assertEqual(added, ["owner/repo#43", "owner/repo#44", "owner/repo#45"])
+
+    def test_relate_add_tasks_form_duplicate_is_idempotent(self):
+        # duplicate: --add-tasks x --add-tasks x → [x]
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            added = self._relate_add_tasks(
+                tmp, "--add-tasks", "owner/repo#43", "--add-tasks", "owner/repo#43",
+            )
+            self.assertEqual(added, ["owner/repo#43"])
+
     def test_task_is_backlink_of_decision_and_intent(self):
         # 핵심 기능: "이 결정이 낳은 작업" — task가 파생 백링크로 잡힌다.
         with tempfile.TemporaryDirectory() as tmp:
