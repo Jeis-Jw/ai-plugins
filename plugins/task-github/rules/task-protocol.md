@@ -90,7 +90,7 @@
 
 워크트리 미커밋 변경은 **보존**(함부로 삭제 금지).
 
-**위키 호출 실패**: wiki CLI가 비0 종료해도 **작업을 막지 않는다** — 해당 캡처/전이만 스킵하고 `[관찰]` 코멘트로 사유 기록 후 사령관에 알림. 위키는 보조이지 작업의 게이트가 아니다.
+**위키 호출 실패**: 캡처/전이 같은 보조 wiki CLI 호출이 비0 종료하면 해당 동작만 스킵하고 `[관찰]` 코멘트로 사유 기록 후 사령관에 알림. 단, `refresh --strict`와 `changed-path-stale`는 [quality-gates.md](quality-gates.md) G1 hard gate라서 실패 시 `verify`/`done`/`merge`를 진행하지 않는다. 위키가 없는 워크스페이스는 위키 단계를 skip한다.
 
 **Issue dependency API 실패**: GitHub dependency를 생성/조회하지 못하면 그 dependency의 자동 강제는 적용되지 않는다. `define`은 fallback 코멘트를 남기고, `start`/`run`/`done`/`merge`는 사령관에게 수동 확인 필요성을 보고한다. 정상 조회 시 열린 `blocked_by`는 작업 차단 조건이다.
 

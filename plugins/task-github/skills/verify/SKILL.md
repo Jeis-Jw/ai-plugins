@@ -63,7 +63,19 @@ ROOT=${PARENT:-{N}}   # 이후 --tasks "$OWNER/$REPO#$ROOT"
 - **`[관찰]` 처리 — 중복 방지**: run이 작업 중 이미 자동 캡처한 observation은 **다시 만들지 않는다.** 위 표의 `[관찰]` 행은 run이 놓쳐 코멘트 태그로만 남은 관찰을 verify가 보강 캡처할 때만 적용한다.
 - **observation 승격 검토**: 기존 observation(run/verify가 만든 것) 중 분류가 확정된 것 → 후속 trial_error/decision 캡처(`--supersedes {OBS}`)로 승격 **제안**.
 - **major면 ADR 초안 confirm** (done 후 `capture decision`으로 승격).
-- **무결성 게이트**: `wiki refresh --strict --json` — 이슈 있으면 **리포트**(작업 차단 아님).
+- **무결성 hard gate** ([quality-gates.md](../../rules/quality-gates.md) G1):
+```bash
+STRICT=$(wiki refresh --strict --json) || {
+  printf '%s\n' "$STRICT"
+  exit 1
+}
+```
+`refresh --strict`가 비0 종료하거나 `issues`가 있으면 검증 판정은 `CHANGES_REQUESTED`다. 이 경우 `done`으로 넘기지 않고, 이슈 목록과 보완 방법을 검증 리포트에 기록한다.
+- **품질 flag** ([quality-gates.md](../../rules/quality-gates.md) G2/G3):
+```bash
+QUALITY=$(wiki refresh --check decision-quality,task-quality --json)
+```
+`decision-quality`/`task-quality`는 v0에서 block이 아니라 `FLAG-to-human`이다. flag가 있으면 Knowledge Capture Audit에 `proposed`로 남기고, confirm 전에 보완하거나 의도적 예외인지 사령관에게 묻는다.
 - 미가용 → Issue 코멘트 기록만 유지.
 
 이 단계는 [knowledge-capture.md](../../rules/knowledge-capture.md)의 Knowledge Capture Audit다. 후보가 없더라도 `none`과 이유를 검증 리포트에 기록한다. 후보가 있으면 `recorded` 또는 `proposed`로 남기며, 1급 노드는 사령관 확인 없이 캡처하지 않는다.
@@ -101,5 +113,6 @@ gh issue comment {N} --body "## 검증 결과
 - 산출물은 코멘트 1개·고정 형식.
 - 항목 누락 시 verify 미완료.
 - **기록이 본질이다.**
-- 1급 노드(decision/rejected/trial_error) 캡처와 승격은 **제안 후 확인**. refresh는 게이트가 아니라 리포트.
+- 1급 노드(decision/rejected/trial_error) 캡처와 승격은 **제안 후 확인**.
+- `refresh --strict`는 hard gate다. `decision-quality`/`task-quality`는 `FLAG-to-human`이며 기본 block은 아니다.
 - Knowledge Capture Audit가 없으면 verify 미완료.

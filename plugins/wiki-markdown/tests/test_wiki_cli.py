@@ -2547,5 +2547,147 @@ class WikiCliSnapshotTests(unittest.TestCase):
             self.assertEqual(json.loads(refresh.stdout)["issues"], [])
 
 
+class WikiCliQualityGateTests(unittest.TestCase):
+    def _init(self, tmp):
+        result = run_cli("init", cwd=tmp)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_refresh_decision_quality_flags_static_v0_gaps(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            dec = Path(tmp) / "wiki" / "context" / "decision" / \
+                "DEC-2026-06-12-100000-thin-choice.md"
+            dec.write_text(
+                "---\n"
+                "title: Thin choice\n"
+                "created_at: 2026-06-12\n"
+                "summary: Thin decision.\n"
+                "tags: [quality]\n"
+                "---\n"
+                "## 결정\n\nUse it.\n\n"
+                "## 취지\n\nFast.\n\n"
+                "## 배경\n\n\n"
+                "## 고려한 대안\n\n\n"
+                "## 트레이드오프\n\n\n"
+                "## 재평가 조건\n\n\n",
+                encoding="utf-8",
+            )
+
+            result = run_cli("refresh", "--check", "decision-quality", "--json", cwd=tmp)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            issues = json.loads(result.stdout)["issues"]
+            fields = {it.get("field") for it in issues if it["check"] == "decision-quality"}
+            self.assertIn("relations.intents", fields)
+            self.assertIn("## 취지", fields)
+            self.assertIn("## 배경", fields)
+            self.assertIn("## 고려한 대안", fields)
+            self.assertIn("## 트레이드오프", fields)
+            self.assertIn("## 재평가 조건", fields)
+            self.assertTrue(all(it.get("severity") == "flag" for it in issues))
+
+    def test_refresh_decision_quality_accepts_structured_decision(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            env = {"WIKI_NOW": "2026-06-12T10:00:00"}
+            run_cli(
+                "capture", "intent",
+                "--title", "Reduce Review Drag",
+                "--summary", "Reduce synchronous review cost without hiding quality gaps.",
+                "--tags", "quality",
+                cwd=tmp,
+                env=env,
+            )
+            intent_id = "INT-2026-06-12-100000-reduce-review-drag"
+            dec = Path(tmp) / "wiki" / "context" / "decision" / \
+                "DEC-2026-06-12-100500-static-gates-first.md"
+            dec.write_text(
+                "---\n"
+                "title: Static gates first\n"
+                "created_at: 2026-06-12\n"
+                "summary: Ship deterministic gate v0 before an LLM judge.\n"
+                "tags: [quality]\n"
+                "relations:\n"
+                f"  intents: [{intent_id}]\n"
+                "---\n"
+                "## 결정\n\n정적 룰 기반 decision/define gate v0를 먼저 배포한다.\n\n"
+                "## 취지\n\n동기 검토 비용을 줄이되 사람 확인 전에 구조적 결함을 먼저 걸러낸다.\n\n"
+                "## 배경\n\nLLM judge는 생성 모델과 blind spot을 공유할 수 있으므로 초기 gate로 쓰기 어렵다.\n\n"
+                "## 고려한 대안\n\n- LLM judge를 먼저 둔다: 판정 흔들림과 prompt 의존도가 커서 v0에서 제외한다.\n\n"
+                "## 트레이드오프\n\n미묘한 의미 품질은 놓칠 수 있지만 결정적이고 재현 가능한 결함 차단을 얻는다.\n\n"
+                "## 재평가 조건\n\n정적 룰이 반복적으로 false positive를 만들거나 semantic miss가 누적되면 v1 judge를 추가한다.\n",
+                encoding="utf-8",
+            )
+
+            result = run_cli("refresh", "--check", "decision-quality", "--json", cwd=tmp)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)["issues"], [])
+
+    def test_refresh_task_quality_flags_static_v0_gaps(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            task = Path(tmp) / "wiki" / "task" / \
+                "TASK-2026-06-12-101000-thin-task.md"
+            task.write_text(
+                "---\n"
+                "title: Thin task\n"
+                "created_at: 2026-06-12\n"
+                "summary: Thin task.\n"
+                "tags: [quality]\n"
+                "---\n"
+                "## 개요\n\nDo the thing.\n\n"
+                "## 근거\n\nNeeded.\n\n"
+                "## 범위와 완료 기준\n\nImplement it.\n",
+                encoding="utf-8",
+            )
+
+            result = run_cli("refresh", "--check", "task-quality", "--json", cwd=tmp)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            issues = json.loads(result.stdout)["issues"]
+            fields = {it.get("field") for it in issues if it["check"] == "task-quality"}
+            self.assertIn("relations.intents|decisions", fields)
+            self.assertIn("## 근거", fields)
+            self.assertIn("completion_criteria", fields)
+            self.assertIn("verification", fields)
+            self.assertIn("affects_paths", fields)
+            self.assertTrue(all(it.get("severity") == "flag" for it in issues))
+
+    def test_refresh_task_quality_accepts_structured_task(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            env = {"WIKI_NOW": "2026-06-12T10:00:00"}
+            run_cli(
+                "capture", "intent",
+                "--title", "Quality Gate",
+                "--summary", "Keep async work from amplifying weak definitions.",
+                "--tags", "quality",
+                cwd=tmp,
+                env=env,
+            )
+            intent_id = "INT-2026-06-12-100000-quality-gate"
+            task = Path(tmp) / "wiki" / "task" / \
+                "TASK-2026-06-12-101500-build-quality-gate.md"
+            task.write_text(
+                "---\n"
+                "title: Build quality gate\n"
+                "created_at: 2026-06-12\n"
+                "summary: Add deterministic decision and define quality checks.\n"
+                "tags: [quality]\n"
+                "relations:\n"
+                f"  intents: [{intent_id}]\n"
+                "---\n"
+                "## 개요\n\n비동기 실행 전에 weak define을 걸러내는 정적 품질 gate를 추가한다.\n\n"
+                "## 근거\n\n잘못된 define은 실행 중 드러나지 않고 PR 시점 재작업으로 증폭된다.\n\n"
+                "## 범위와 완료 기준\n\n"
+                "- 완료 기준: decision-quality와 task-quality check가 pass/fail fixture를 구분한다.\n"
+                "- 검증: python -m unittest tests.test_wiki_cli.WikiCliQualityGateTests.\n"
+                "- affects_paths: plugins/wiki-markdown/**, plugins/task-github/**.\n",
+                encoding="utf-8",
+            )
+
+            result = run_cli("refresh", "--check", "task-quality", "--json", cwd=tmp)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)["issues"], [])
+
+
 if __name__ == "__main__":
     unittest.main()
