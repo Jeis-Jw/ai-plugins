@@ -8,7 +8,9 @@ tree shape before touching GitHub.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -42,6 +44,32 @@ def _require_text(obj: dict, key: str, where: str) -> str:
     return value
 
 
+def _require_string_list(obj: dict, key: str, where: str) -> List[str]:
+    value = obj.get(key)
+    if not isinstance(value, list) or not value or not all(isinstance(v, str) and v.strip() for v in value):
+        raise IssueTreeError("quality_gate_failed", f"{where}.{key} must be a non-empty string list")
+    return [v.strip() for v in value]
+
+
+def _assert_child_quality(child: dict, where: str) -> None:
+    body = child["body"]
+    if not re.search(r"(완료\s*기준|completion\s*criteria|done\s*criteria)", body, re.I):
+        raise IssueTreeError("quality_gate_failed",
+                             f"{where}.body must include completion criteria")
+    if not re.search(r"(검증|테스트|verification|verify|test)", body, re.I):
+        raise IssueTreeError("quality_gate_failed",
+                             f"{where}.body must include verification/test criteria")
+    if not re.search(r"(affects[_ -]?paths?|touched[_ -]?paths?|영향\s*경로|경로|파일|paths?)", body, re.I):
+        raise IssueTreeError("quality_gate_failed",
+                             f"{where}.body must include affected path/file anchor")
+
+
+def _paths_overlap(left: str, right: str) -> bool:
+    if left == right:
+        return True
+    return fnmatch.fnmatch(left, right) or fnmatch.fnmatch(right, left)
+
+
 def validate_spec(spec: dict) -> dict:
     root = spec.get("root")
     if not isinstance(root, dict):
@@ -68,12 +96,15 @@ def validate_spec(spec: dict) -> dict:
         blocked_by = child.get("blocked_by", [])
         if not isinstance(blocked_by, list) or not all(isinstance(v, str) for v in blocked_by):
             raise IssueTreeError("bad_spec", f"{where}.blocked_by must be a string list")
-        child_out.append({
+        normalized_child = {
             "key": key,
             "title": _require_text(child, "title", where),
             "body": _require_text(child, "body", where),
+            "affects_paths": _require_string_list(child, "affects_paths", where),
             "blocked_by": blocked_by,
-        })
+        }
+        _assert_child_quality(normalized_child, where)
+        child_out.append(normalized_child)
 
     for child in child_out:
         for blocker in child["blocked_by"]:
@@ -83,6 +114,24 @@ def validate_spec(spec: dict) -> dict:
             if blocker == child["key"]:
                 raise IssueTreeError("self_dependency",
                                      f"{child['key']} cannot block itself")
+
+    for idx, left in enumerate(child_out):
+        for right in child_out[idx + 1:]:
+            overlaps = [
+                (lp, rp)
+                for lp in left["affects_paths"]
+                for rp in right["affects_paths"]
+                if _paths_overlap(lp, rp)
+            ]
+            if overlaps and not (
+                left["key"] in right["blocked_by"] or right["key"] in left["blocked_by"]
+            ):
+                lp, rp = overlaps[0]
+                raise IssueTreeError(
+                    "path_overlap_requires_dependency",
+                    (f"{left['key']} and {right['key']} share affected paths "
+                     f"({lp!r}, {rp!r}); declare blocked_by in one direction"),
+                )
 
     return {"root": root_out, "children": child_out}
 

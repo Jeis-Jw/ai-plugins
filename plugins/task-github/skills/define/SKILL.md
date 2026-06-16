@@ -27,6 +27,8 @@ $ARGUMENTS:
 [ -d "./wiki" ] && wiki recall "{업무 키워드}" --stage 1 --limit 10 --json
 ```
 3. 생성 구조(루트 이슈 + 연결할 결정/취지 + task 노드 요약)를 사령관에게 보여주고 **확인**
+   - 등록 전 확인안에는 [quality-gates.md](../../rules/quality-gates.md) G3 기준을 포함한다: 근거, 완료 기준, 검증, 영향 경로/파일, 관련 intent/decision.
+   - 기준이 비어 있으면 자동으로 보완하지 말고 `FLAG-to-human`으로 표시한 뒤 확인받는다.
 4. 이슈 생성 — 테스트된 배치 헬퍼 사용:
 ```bash
 python3 "${CLAUDE_SKILL_DIR}/scripts/create_issue_tree.py" \
@@ -50,19 +52,21 @@ spec 형식:
     {
       "key": "U1",
       "title": "{하위 이슈 제목}",
-      "body": "{하위 이슈 본문}",
+      "body": "{하위 이슈 본문}\n\n완료 기준: ...\n검증: ...\n영향 경로: src/area/**",
+      "affects_paths": ["src/area/**"],
       "blocked_by": []
     },
     {
       "key": "U2",
       "title": "{후속 이슈 제목}",
-      "body": "{후속 이슈 본문}",
+      "body": "{후속 이슈 본문}\n\n완료 기준: ...\n검증: ...\n영향 경로: src/area-next/**",
+      "affects_paths": ["src/area-next/**"],
       "blocked_by": ["U1"]
     }
   ]
 }
 ```
-헬퍼는 서브이슈 부모 연결을 **GraphQL `createIssue(parentIssueId)`** 로 통일한다. dependency는 REST Issue dependency API를 쓰며 `X-GitHub-Api-Version: 2026-03-10`을 고정한다. dependency API 실패 시 헬퍼가 child 이슈에 fallback 코멘트를 남긴다([dependencies.md](../../rules/dependencies.md)).
+헬퍼는 서브이슈 부모 연결을 **GraphQL `createIssue(parentIssueId)`** 로 통일한다. child마다 완료 기준, 검증 anchor, 영향 경로/파일 anchor, `affects_paths`가 필요하다. `affects_paths`가 겹치는 child는 한쪽 `blocked_by`를 선언해야 dry-run을 통과한다([quality-gates.md](../../rules/quality-gates.md) G3/G4). dependency는 REST Issue dependency API를 쓰며 `X-GitHub-Api-Version: 2026-03-10`을 고정한다. dependency API 실패 시 헬퍼가 child 이슈에 fallback 코멘트를 남긴다([dependencies.md](../../rules/dependencies.md)).
 5. **(위키 가용 시) task 노드 생성 + 연결** (제안 후 확인) — **생성한 TASK ID를 확보해 루트 이슈 본문에 실제로 기록**한다. merge/done이 이 본문의 `[[TASK-...]]`를 읽어 완료 전이하므로(읽는 쪽의 전제), 여기서 반드시 실제 ID를 박아야 한다([wiki-bridge.md](../../rules/wiki-bridge.md) §4):
 ```bash
 # (a) task 노드 생성 — --json 결과에서 실제 TASK ID 추출
@@ -100,6 +104,7 @@ gh issue edit "$ROOT" --body "$NEW_BODY"
    - 각 하위 이슈의 `blocked_by` 목록도 함께 제시한다.
    - dependency가 없으면 병렬 가능으로 표시한다.
    - 예: `#B blocked_by #A` = B는 A 완료 뒤 시작.
+   - 하위 이슈마다 완료 기준, 검증 방법, 영향 경로/파일을 포함한다. path가 겹치는데 `blocked_by`가 없으면 [quality-gates.md](../../rules/quality-gates.md) G4에 따라 사령관 확인 또는 dependency 보완으로 승급한다.
    - brainstorm으로 나온 단위별 상세 설계(데이터 모델, DDL, API, 프롬프트 계약)는 **서브이슈 본문**에 둔다. 실행 중 새로 확정되는 장기 판단만 그때 `decision`/`observation`으로 캡처한다.
 2. 사령관 확인
 3. `/tmp/task-github-issue-tree.json` spec 작성

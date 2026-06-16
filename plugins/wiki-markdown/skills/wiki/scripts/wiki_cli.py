@@ -1995,6 +1995,11 @@ ALL_REFRESH_CHECKS = [
     "changed-path-stale", "duplicate-basename", "empty-lesson",
     "schema",
 ]
+QUALITY_REFRESH_CHECKS = [
+    "decision-quality", "task-quality",
+]
+KNOWN_REFRESH_CHECKS = ALL_REFRESH_CHECKS + QUALITY_REFRESH_CHECKS
+QUALITY_MIN_CHARS = 20
 
 
 def _git_changed_paths(vault: Path) -> Optional[List[str]]:
@@ -2035,6 +2040,92 @@ def _section_body(body: str, header: str) -> str:
     return (m.group(1) if m else "").strip()
 
 
+def _substantive_text(text: str) -> str:
+    """Normalize section text for deterministic v0 quality gates."""
+    lines = []
+    for raw in text.splitlines():
+        s = raw.strip()
+        if not s or s.startswith("<!--"):
+            continue
+        s = re.sub(r"^[-*]\s+", "", s)
+        s = re.sub(r"^\d+[.)]\s+", "", s)
+        s = s.strip()
+        if not s or PLACEHOLDER_RE.match(s) or _is_placeholder_value(s):
+            continue
+        lines.append(s)
+    return " ".join(lines).strip()
+
+
+def _has_substantive_section(body: str, header: str, min_chars: int = QUALITY_MIN_CHARS) -> bool:
+    return len(_substantive_text(_section_body(body, header))) >= min_chars
+
+
+def _append_quality_issue(issues: List[dict], check: str, d: WikiDoc, field: str, message: str) -> None:
+    issues.append({
+        "check": check,
+        "severity": "flag",
+        "path": str(d.path),
+        "field": field,
+        "message": f"FLAG-to-human: {d.doc_id}: {message}",
+    })
+
+
+def _relation_values(d: WikiDoc, field: str) -> List[str]:
+    rel = d.frontmatter.get("relations")
+    if not isinstance(rel, dict):
+        return []
+    values = rel.get(field)
+    return values if isinstance(values, list) else []
+
+
+def _check_decision_quality(d: WikiDoc, issues: List[dict]) -> None:
+    if d.doc_type != "decision":
+        return
+    if not _relation_values(d, "intents"):
+        _append_quality_issue(
+            issues, "decision-quality", d, "relations.intents",
+            "결정은 취지 추적을 위해 relations.intents를 최소 1개 가져야 함",
+        )
+    for header in ("취지", "배경", "고려한 대안", "트레이드오프", "재평가 조건"):
+        if not _has_substantive_section(d.body, header):
+            _append_quality_issue(
+                issues, "decision-quality", d, f"## {header}",
+                f"## {header} 섹션이 비어 있거나 v0 기준({QUALITY_MIN_CHARS}자) 미만",
+            )
+
+
+def _check_task_quality(d: WikiDoc, issues: List[dict]) -> None:
+    if d.doc_type != "task":
+        return
+    if not (_relation_values(d, "intents") or _relation_values(d, "decisions")):
+        _append_quality_issue(
+            issues, "task-quality", d, "relations.intents|decisions",
+            "task는 근거 추적을 위해 relations.intents 또는 relations.decisions를 최소 1개 가져야 함",
+        )
+    if not _has_substantive_section(d.body, "근거"):
+        _append_quality_issue(
+            issues, "task-quality", d, "## 근거",
+            f"## 근거 섹션이 비어 있거나 v0 기준({QUALITY_MIN_CHARS}자) 미만",
+        )
+    scope = _substantive_text(_section_body(d.body, "범위와 완료 기준"))
+    lower_scope = scope.lower()
+    if not re.search(r"(완료\s*기준|completion\s*criteria|done\s*criteria)", scope, re.I):
+        _append_quality_issue(
+            issues, "task-quality", d, "completion_criteria",
+            "## 범위와 완료 기준에 완료 기준 anchor가 없음",
+        )
+    if not re.search(r"(검증|테스트|verification|verify|test)", scope, re.I):
+        _append_quality_issue(
+            issues, "task-quality", d, "verification",
+            "## 범위와 완료 기준에 검증/테스트 anchor가 없음",
+        )
+    if not re.search(r"(affects[_ -]?paths?|touched[_ -]?paths?|경로|파일|paths?)", lower_scope, re.I):
+        _append_quality_issue(
+            issues, "task-quality", d, "affects_paths",
+            "## 범위와 완료 기준에 영향 경로/파일 anchor가 없음",
+        )
+
+
 def _validate_fix_arg(raw: Optional[str]) -> List[str]:
     """Parse --fix value. None → no fix. Empty/bare → error.
     Unknown values → error. Returns the list of fix names.
@@ -2064,11 +2155,11 @@ def cmd_refresh(args) -> int:
         if not checks:
             raise CliError(EXIT_USAGE, "check_empty",
                            "--check requires a check name or 'all'")
-        unknown = [c for c in checks if c not in ALL_REFRESH_CHECKS]
+        unknown = [c for c in checks if c not in KNOWN_REFRESH_CHECKS]
         if unknown:
             raise CliError(EXIT_USAGE, "check_unknown",
                            f"unknown check(s): {','.join(unknown)} "
-                           f"(allowed: {','.join(ALL_REFRESH_CHECKS)},all)")
+                           f"(allowed: {','.join(KNOWN_REFRESH_CHECKS)},all)")
 
     fixes = _validate_fix_arg(args.fix)
 
@@ -2448,6 +2539,16 @@ def cmd_refresh(args) -> int:
                 issues.append({"check": "empty-lesson", "path": str(d.path),
                                "field": "## 교훈",
                                "message": f"{d.doc_id}: ## 교훈 비어있거나 placeholder"})
+
+    if "decision-quality" in checks:
+        for d in all_active:
+            if in_scope(d):
+                _check_decision_quality(d, issues)
+
+    if "task-quality" in checks:
+        for d in all_active:
+            if in_scope(d):
+                _check_task_quality(d, issues)
 
     if "changed-path-stale" in checks:
         changed: Optional[List[str]]

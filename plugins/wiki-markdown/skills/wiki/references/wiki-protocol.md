@@ -230,8 +230,10 @@ The bundled CLI (`scripts/wiki_cli.py`, stdlib only) supports nine top-level sub
 | `duplicate-basename` | Two files normalize to the same NFC basename |
 | `empty-lesson` | `trial_error`'s `## 교훈` section is blank/placeholder |
 | `schema` | Frontmatter integrity (forbidden fields, lifecycle position, ISO date validity, placeholder values, relation-target type mismatch) |
+| `decision-quality` | Optional FLAG-to-human for active decisions missing intent/background/alternatives/trade-off/reevaluation structure |
+| `task-quality` | Optional FLAG-to-human for active tasks missing rationale/completion/verification/affected-path anchors |
 
-`refresh --check all` runs all of the above. `--path <subdir>` scopes the scan to a subtree. `refresh --fix` rejects any token outside `{index, retired-in-index}` with exit `2` — including a bare `--fix`.
+`refresh --check all` runs the integrity checks through `schema`; quality checks are explicit opt-in so v0 flags do not become default blockers. `--path <subdir>` scopes the scan to a subtree. `refresh --fix` rejects any token outside `{index, retired-in-index}` with exit `2` — including a bare `--fix`.
 
 ### Exit codes
 

@@ -96,6 +96,7 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" retire DEC-... --type deprecat
 # 7. Integrity (report-only by default; --fix is whitelisted).
 python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" refresh --strict --json
 python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" refresh --check changed-path-stale --changed-path "src/auth/x.ts,src/payment/y.ts"
+python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" refresh --check decision-quality,task-quality --json
 python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" refresh --fix index,retired-in-index
 ```
 
@@ -166,7 +167,7 @@ The positional `retire <basename>` and `recall --read` default to **exact** base
 
 `--tasks` entries are external work refs (`owner/repo#N`, `github:owner/repo#N`); the wiki validates format only — it does not verify the external work item exists. GitHub shares one number space across issues and PRs, so a PR is referenced with the same `#N` form. Human-edited quoted refs such as `["owner/repo#N"]` are accepted and normalized by CLI writes.
 
-### Refresh checks (13)
+### Refresh checks (13 + optional quality flags)
 
 | Check | Subjects | Detects |
 |-------|----------|---------|
@@ -183,8 +184,10 @@ The positional `retire <basename>` and `recall --read` default to **exact** base
 | `duplicate-basename` | every `.md` in the vault | global basename uniqueness (NFC-aware) |
 | `empty-lesson` | `trial_error` | `## 교훈` blank or placeholder |
 | `schema` | all | frontmatter integrity — required fields, ISO date validity, placeholder values, forbidden fields (`id` / `status` / `classified_as`), `relations` key on living, lifecycle nested in `relations`, disallowed relation sub-keys, relation target-type mismatch (incl. index-pointing), `verified_at` / `affects_paths` on wrong types |
+| `decision-quality` | active `decision` | optional FLAG-to-human: missing intent link or non-substantive intent/background/alternatives/trade-off/reevaluation sections |
+| `task-quality` | active `task` | optional FLAG-to-human: missing intent/decision link, rationale, completion criteria, verification, or affected path/file anchor |
 
-Unknown `--check` names or empty `--check ""` exit `2` so CI catches typos immediately.
+`refresh --check all` runs the 13 integrity checks only. `decision-quality` and `task-quality` are explicit opt-in checks so v0 quality flags do not become default blockers. Unknown `--check` names or empty `--check ""` exit `2` so CI catches typos immediately.
 
 ### `refresh --fix` whitelist
 

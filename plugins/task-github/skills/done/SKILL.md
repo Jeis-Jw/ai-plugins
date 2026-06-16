@@ -41,12 +41,24 @@ git diff main...HEAD --name-only 2>/dev/null || git status --short
 
 ### 경로 A — 변경 있음 (PR 생성)
 1. 미커밋 변경 커밋: `{type}: {요약} (#{N}) — {Why}`
-2. 라벨 전이:
+2. **드리프트 hard gate** ([quality-gates.md](../../rules/quality-gates.md) G1) — PR 생성 전에 이번 브랜치가 낡게 만든 위키 문서 탐지:
+```bash
+if [ -d "./wiki" ]; then
+  FILES=$(git diff --name-only main...HEAD | paste -sd,)
+  DRIFT=$(wiki refresh --check changed-path-stale --changed-path "$FILES" --json)
+  printf '%s' "$DRIFT" | python3 -c 'import json,sys; sys.exit(1 if json.load(sys.stdin).get("issues") else 0)' || {
+    printf '%s\n' "$DRIFT"
+    exit 1
+  }
+fi
+```
+`changed-path-stale` 이슈가 있으면 PR을 만들지 않고 done을 중단한다. 리포트된 ssot/runbook/trial_error/observation은 `verified_at` 갱신 또는 supersede 대상이며, 자동 변경하지 않고 보완 후 다시 `done`을 실행한다.
+3. 라벨 전이:
 ```bash
 gh issue edit {N} --remove-label "in-progress" --add-label "in-review"
 ```
 **기어 라벨 유지.**
-3. Push + PR — **PR 번호를 변수로 확보**(이후 drift 검사가 `$PR`을 쓴다):
+4. Push + PR — **PR 번호를 변수로 확보**:
 ```bash
 git push -u origin task/issue-{N}
 PR=$(gh pr create --title "{type}: {요약} (#{N})" --body "Closes #{N}
@@ -59,14 +71,14 @@ PR=$(gh pr create --title "{type}: {요약} (#{N})" --body "Closes #{N}
 ..." | grep -oE '[0-9]+$')
 echo "PR #$PR"
 ```
-4. downstream 확인 — PR 머지 전까지 downstream은 아직 GitHub상 blocked 상태일 수 있다:
+5. downstream 확인 — PR 머지 전까지 downstream은 아직 GitHub상 blocked 상태일 수 있다:
 ```bash
 BLOCKING=$(gh api -H "X-GitHub-Api-Version: $API_VERSION" \
   "repos/$OWNER/$REPO/issues/{N}/dependencies/blocking" \
   --jq '[.[] | select(.state == "open") | "#\(.number) \(.title)"] | join("\n")')
 [ -n "$BLOCKING" ] && printf 'PR 머지 후 재검토할 downstream:\n%s\n' "$BLOCKING"
 ```
-5. 로컬 정리:
+6. 로컬 정리:
 ```bash
 git worktree remove .worktrees/issue-{N} 2>/dev/null || true
 git checkout main && git branch -d task/issue-{N} 2>/dev/null || true
@@ -92,14 +104,8 @@ BLOCKING=$(gh api -H "X-GitHub-Api-Version: $API_VERSION" \
 [ -d "./wiki" ] && echo "위키 가용"
 ```
 
-**경로 A에서만 (PR 생성됨, `$PR`은 위 3단계에서 확보)**:
-1. **드리프트 점검** — PR이 건드린 파일이 낡게 만든 위키 문서 탐지:
-```bash
-FILES=$(gh pr diff "$PR" --name-only | paste -sd,)
-wiki refresh --check changed-path-stale --changed-path "$FILES" --json
-```
-리포트된 ssot/runbook/trial_error/observation은 `verified_at` 갱신 또는 supersede **안내**(자동 변경 안 함).
-2. **(major) ADR 승격** — plan의 ADR 초안을 decision으로. 먼저 업무 루트 이슈를 확보([wiki-bridge.md](../../rules/wiki-bridge.md) §4 스니펫 (a))한 뒤 캡처:
+**경로 A에서만 (PR 생성됨, `$PR`은 위 4단계에서 확보)**:
+1. **(major) ADR 승격** — plan의 ADR 초안을 decision으로. 먼저 업무 루트 이슈를 확보([wiki-bridge.md](../../rules/wiki-bridge.md) §4 스니펫 (a))한 뒤 캡처:
 ```bash
 read OWNER REPO < <(gh repo view --json owner,name --jq '"\(.owner.login) \(.name)"')
 PARENT=$(gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){ repository(owner:$o,name:$r){ issue(number:$n){ parent{ number } } } }' \
@@ -140,6 +146,6 @@ fi
 - PR은 코드 변경이 있을 때만 생성.
 - 상태 라벨만 정리, `gear:*` 유지.
 - 열린 `blocked_by`가 있으면 종료 금지. 종료 후 `blocking` downstream을 안내.
-- 위키 드리프트는 **안내만**(경로 A 한정) — done이 위키를 자동 수정하지 않는다.
+- 위키 드리프트는 **hard gate**(경로 A 한정) — done이 위키를 자동 수정하지는 않지만, stale 문서가 남아 있으면 종료하지 않는다.
 - task 노드 done 전이: 경로 A는 merge에 위임, 경로 B는 **루트 이슈를 직접 close할 때만** done이 수행.
 - 최종 보고 전에 Knowledge Capture Audit 결과를 포함한다.
