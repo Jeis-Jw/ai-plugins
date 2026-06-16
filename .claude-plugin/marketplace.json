@@ -9,7 +9,7 @@
       "name": "wiki-markdown",
       "source": "./plugins/wiki-markdown",
       "description": "Markdown-backed AI-native wiki — filesystem-primary decision graph with deterministic CLI, task bridge nodes, integrity checks, and Claude/Codex agent policy scaffolding.",
-      "version": "0.7.1"
+      "version": "0.8.0"
     },
     {
       "name": "task-github",

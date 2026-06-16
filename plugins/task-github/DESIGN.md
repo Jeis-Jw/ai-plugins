@@ -568,11 +568,11 @@ is:open is:pr -label:in-review -label:in-progress             # 리뷰 가능 PR
 |------|------|
 | 메인 브랜치 | `main` |
 | 작업 브랜치 | `task/issue-{N}` |
-| 워크트리 경로 | `.claude/worktrees/issue-{N}` |
+| 워크트리 경로 | `.worktrees/issue-{N}` |
 | 커밋 형식 | `{type}: {요약} (#{N}) — {Why}` (`feat/fix/docs/refactor/test/chore`) |
 | 커밋 원칙 | 원자적(1커밋=1논리변경), WIP 금지, `#N`으로 Issue 연결 |
 
-워크트리 사용 조건: 병렬 작업 / main 오염 방지 / 다중 브랜치 전환. `.worktreeinclude`로 gitignore 파일 복사. 진입 후 잔재는 `git clean` **제안만**(자동 실행 금지).
+워크트리 사용 조건: 병렬 작업 / main 오염 방지 / 다중 브랜치 전환. 생성 전 대상 프로젝트 `.gitignore`에 `.worktrees/`가 없으면 추가한다. `.worktreeinclude`로 gitignore 파일 복사. 진입 후 잔재는 `git clean` **제안만**(자동 실행 금지).
 
 ---
 
@@ -765,7 +765,7 @@ python3 <wiki-cli> init    # ./wiki/ vault 생성 (task 타입 지원 버전 필
 - [ ] Issue dependency(REST) 동작 확인 — 안 되면 fallback 코멘트로 수동 확인
 - [ ] (위키 연계) `./wiki/` 존재 또는 `wiki init` / 위키 CLI가 **task 타입 지원** / 자동로드 operating policy block 반영
 - [ ] 메인 브랜치가 `main`이 아니면 `rules/workflow.md` 조정
-- [ ] `.claude/worktrees/`가 `.gitignore`에 포함
+- [ ] `.worktrees/`가 `.gitignore`에 포함
 
 > **v2→v3 이관 차이**: 위키 가용성 판정이 옛 하드코딩 경로(`plugins/wiki/obsidian`)에서 **프로젝트 로컬 `./wiki/` 감지**로 바뀌어, 단독 이관 환경에서도 위키만 있으면 자동 연동된다.
 

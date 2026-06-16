@@ -119,7 +119,7 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" refresh --fix index,retired-in
 
 **Task (third category).** `task` is neither living nor record: its body is updated in place (living-like) and it carries relations (record-like), but its lifecycle is **binary by path** — active `task/` vs done `task/done/`. It's a *pure leaf* handoff/context bridge: it points outward (`intents`/`decisions`/`ssot`/`tasks`) and nothing points back at it (reverse is derived backlinks — `recall --backlinks-of <DEC>` surfaces the tasks a decision spawned, **including completed ones by default** — done is a valid terminal state, not a retired one). Finish a task with `complete` (→ `task/done/`), undo with `reopen`. A task never supersedes; an *invalid* task is `retire --type deprecated` (which, like any retired doc, then needs `--include-retired` to appear in backlinks). `--tasks` links it to external work items such as GitHub issues/PRs; the wiki validates the ref shape but never reads or synchronizes that system.
 
-**Snapshot (staging layer).** `snapshot` is not a wiki graph type. Files live under `snapshot/active`, `snapshot/archived`, or `snapshot/promoted`, use `SNAP-YYYY-MM-DD-HHMMSS-<slug>` basenames, and are managed by `snapshot save/list/search/load/archive`. Default saves are append-only; `snapshot save --continues <ref>` links a follow-up checkpoint, and `snapshot save --update <ref>` rewrites an active snapshot only when explicitly requested. Snapshot files are searchable by snapshot commands but excluded from `recall`, relation resolution, `refresh --strict`, and duplicate-basename checks.
+**Snapshot (staging layer).** `snapshot` is not a wiki graph type. Files live under `snapshot/active` only, use `SNAP-<slug>` basenames, and are managed by `snapshot save/list/search/load/discard`. A save rewrites the snapshot for that slug in place (preserving `created_at`, stamping `updated_at`); a new slug starts a new file. `snapshot discard <ref>` deletes an active snapshot — git retains history, so there is no archived or promoted folder. Snapshot files are searchable by snapshot commands but excluded from `recall`, relation resolution, `refresh --strict`, and duplicate-basename checks.
 
 ## Workflow (when you encounter a decision / intent / observation)
 
@@ -142,10 +142,10 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" refresh --fix index,retired-in
 | `complete` | `<basename>` | `--dry-run` | `0` · `2` not-a-task · `3` · `4` missing / already-done |
 | `reopen` | `<basename>` | `--dry-run` | `0` · `2` not-a-task · `3` · `4` missing / not-done |
 | `relate` | `<basename>` | `--add-intents` `--add-decisions` `--add-ssot` `--add-tasks` `--dry-run` | `0` · `2` relation_not_allowed / empty · `3` · `4` missing / ambiguous / bad task format |
-| `snapshot save` | `--title` `--summary` `--tags` | `--slug` `--continues <ref>` `--update <ref>` `--search-terms` fixed section options | `0` · `2` missing/placeholder input · `3` · `4` snapshot ref missing/ambiguous · `5` basename conflict overflow |
-| `snapshot list/search` | — / `<query>` | `--include-archived` `--include-promoted` `--all` `--limit N` | `0` · `3` |
+| `snapshot save` | `--title` `--summary` `--tags` | `--slug` `--search-terms` fixed section options | `0` · `2` missing/placeholder input · `3` |
+| `snapshot list/search` | — / `<query>` | `--limit N` | `0` · `3` |
 | `snapshot load` | `<ref>` | slug fragments accepted | `0` · `3` · `4` missing/ambiguous |
-| `snapshot archive` | `<ref>` | active snapshots only | `0` · `3` · `4` missing/ambiguous · `5` destination collision |
+| `snapshot discard` | `<ref>` | active snapshots only; deletes (git retains history) | `0` · `3` · `4` missing/ambiguous |
 | `recall` | — or `<query>` | `--type` `--tag` (repeatable) `--section` `--stage` `--limit` `--backlinks-of` `--read <a,b,c>` `--fuzzy` `--include-retired` | `0` always (zero hits is success), `4` only when `--read` target is missing |
 | `refresh` | — | `--check <name,..>` (13 + `all`) `--days N` `--path <sub>` `--changed-path <p,..>` `--fix index,retired-in-index` `--strict` | `0` · `2` (unknown `--check`, `--fix` whitelist violation, bare `--fix`) · `6` (strict + ≥1 issue) |
 
@@ -156,6 +156,9 @@ Common: `--vault <path>` (default `./wiki`), `--json` (machine output). JSON suc
 `capture` relation args (`--intents`, `--ssot`, `--runbook`, …) and `--supersedes`, plus `retire --superseded-by`, accept either:
 - a full basename: `DEC-2026-04-17-143052-move-auth-to-a-bff`, or
 - a slug fragment: `move-auth-to-a-bff`.
+
+List-valued relation args are repeatable and can be mixed with comma lists. The CLI flattens, strips, and de-duplicates in first-seen order:
+`--intents a,b --intents c --intents a` stores `[a, b, c]`. The same rule applies to `--tasks` and `relate`'s `--add-*` relation args.
 
 The CLI resolves fragments to the canonical basename; ambiguous fragments exit `4`. Matching checks exact basename first, then slug exact, slug prefix, and slug substring, all NFC-normalized so Korean/CJK + Latin mixed slugs work. Missing refs include candidate basenames in the error message. **Storage is always the full basename.**
 

@@ -83,17 +83,20 @@ GitHub sub-issue는 업무 분해 구조이고, 작업 선후관계는 GitHub Is
 |------|------|
 | 메인 브랜치 | `main` |
 | 작업 브랜치 | `task/issue-{N}` |
-| 워크트리 경로 | `.claude/worktrees/issue-{N}` |
+| 워크트리 경로 | `.worktrees/issue-{N}` |
 | 커밋 형식 | `{type}: {요약} (#{N}) — {Why}` |
 | 커밋 type | `feat`/`fix`/`docs`/`refactor`/`test`/`chore` |
 | 커밋 원칙 | 원자적(1커밋=1논리변경), WIP 금지 |
 
 워크트리 사용 조건: 병렬 작업 / main 오염 방지 / 다중 브랜치 전환.
 ```bash
-git worktree add .claude/worktrees/issue-{N} -b task/issue-{N}
-git worktree remove .claude/worktrees/issue-{N} && git branch -d task/issue-{N}
+touch .gitignore
+grep -qxF ".worktrees/" .gitignore || printf "\n.worktrees/\n" >> .gitignore
+git worktree add .worktrees/issue-{N} -b task/issue-{N}
+git worktree remove .worktrees/issue-{N} && git branch -d task/issue-{N}
 ```
 - `.worktreeinclude` 파일이 있으면 gitignore된 파일(`.env` 등)을 워크트리로 복사.
+- 워크트리 생성 전 대상 프로젝트 `.gitignore`에 `.worktrees/`가 없으면 추가한다.
 - 진입 후 `git status --short`로 잔재 점검 — 있으면 `git clean -fd` **제안만**(자동 실행 금지).
 
 ---

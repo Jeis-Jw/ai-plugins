@@ -2160,6 +2160,196 @@ class WikiCliTaskTests(unittest.TestCase):
             for sec in ("## 개요", "## 근거", "## 범위와 완료 기준"):
                 self.assertIn(sec, text)
 
+    def test_capture_relation_flags_accumulate_repeat_comma_mixed_and_dedup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            for idx, slug in enumerate(("intent-a", "intent-b", "intent-c")):
+                run_cli(
+                    "capture", "intent",
+                    "--slug", slug,
+                    "--title", slug,
+                    "--summary", f"{slug} summary.",
+                    "--tags", "flow",
+                    cwd=tmp,
+                    env={"WIKI_NOW": f"2026-05-29T10:01:0{idx}"},
+                )
+
+            result = run_cli(
+                "capture", "decision",
+                "--slug", "multi-intent",
+                "--title", "Multi intent",
+                "--summary", "Decision with repeated relation args.",
+                "--tags", "arch",
+                "--intents", "intent-a,intent-b",
+                "--intents", "intent-c",
+                "--intents", "intent-a",
+                cwd=tmp,
+                env={"WIKI_NOW": "2026-05-29T10:02:00"},
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            text = (
+                Path(tmp) / "wiki" / "context" / "decision" /
+                "DEC-2026-05-29-100200-multi-intent.md"
+            ).read_text()
+            self.assertIn(
+                "intents: [INT-2026-05-29-100100-intent-a, "
+                "INT-2026-05-29-100101-intent-b, "
+                "INT-2026-05-29-100102-intent-c]",
+                text,
+            )
+
+    def test_capture_all_relation_list_flags_accumulate_when_repeated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            for idx, slug in enumerate(("intent-a", "intent-b")):
+                run_cli(
+                    "capture", "intent",
+                    "--slug", slug,
+                    "--title", slug,
+                    "--summary", f"{slug} summary.",
+                    "--tags", "flow",
+                    cwd=tmp,
+                    env={"WIKI_NOW": f"2026-05-29T10:03:0{idx}"},
+                )
+            intent_a = "INT-2026-05-29-100300-intent-a"
+            intent_b = "INT-2026-05-29-100301-intent-b"
+            for idx, slug in enumerate(("rejected-a", "rejected-b")):
+                run_cli(
+                    "capture", "rejected_decision",
+                    "--slug", slug,
+                    "--title", slug,
+                    "--summary", f"{slug} summary.",
+                    "--tags", "arch",
+                    "--intents", "intent-a",
+                    cwd=tmp,
+                    env={"WIKI_NOW": f"2026-05-29T10:03:1{idx}"},
+                )
+            rejected_a = "REJ-2026-05-29-100310-rejected-a"
+            rejected_b = "REJ-2026-05-29-100311-rejected-b"
+            for slug in ("ssot-a", "ssot-b"):
+                run_cli(
+                    "capture", "ssot",
+                    "--slug", slug,
+                    "--title", slug,
+                    "--summary", f"{slug} summary.",
+                    "--tags", "state",
+                    cwd=tmp,
+                )
+            for slug in ("runbook-a", "runbook-b"):
+                run_cli(
+                    "capture", "runbook",
+                    "--slug", slug,
+                    "--title", slug,
+                    "--summary", f"{slug} summary.",
+                    "--tags", "ops",
+                    cwd=tmp,
+                )
+
+            decision = run_cli(
+                "capture", "decision",
+                "--slug", "relation-bundle",
+                "--title", "Relation bundle",
+                "--summary", "Decision with all supported repeated list args.",
+                "--tags", "arch",
+                "--intents", "intent-a",
+                "--intents", "intent-b",
+                "--rejected", "rejected-a",
+                "--rejected", "rejected-b",
+                "--ssot", "ssot-a",
+                "--ssot", "ssot-b",
+                "--tasks", "owner/repo#1",
+                "--tasks", "owner/repo#2",
+                cwd=tmp,
+                env={"WIKI_NOW": "2026-05-29T10:04:00"},
+            )
+            self.assertEqual(decision.returncode, 0, decision.stderr)
+            decision_id = "DEC-2026-05-29-100400-relation-bundle"
+            decision_text = (
+                Path(tmp) / "wiki" / "context" / "decision" / f"{decision_id}.md"
+            ).read_text()
+            self.assertIn(f"intents: [{intent_a}, {intent_b}]", decision_text)
+            self.assertIn(f"rejected_decisions: [{rejected_a}, {rejected_b}]", decision_text)
+            self.assertIn("ssot: [ssot-a, ssot-b]", decision_text)
+            self.assertIn("tasks: [owner/repo#1, owner/repo#2]", decision_text)
+
+            observation = run_cli(
+                "capture", "observation",
+                "--slug", "observation-bundle",
+                "--title", "Observation bundle",
+                "--summary", "Observation with repeated runbook and decision args.",
+                "--tags", "ops",
+                "--runbook", "runbook-a",
+                "--runbook", "runbook-b",
+                "--decisions", decision_id,
+                "--decisions", decision_id,
+                "--tasks", "owner/repo#3",
+                "--tasks", "owner/repo#4",
+                cwd=tmp,
+                env={"WIKI_NOW": "2026-05-29T10:04:01"},
+            )
+            self.assertEqual(observation.returncode, 0, observation.stderr)
+            observation_text = (
+                Path(tmp) / "wiki" / "context" / "observation" /
+                "OBS-2026-05-29-100401-observation-bundle.md"
+            ).read_text()
+            self.assertIn("runbook: [runbook-a, runbook-b]", observation_text)
+            self.assertIn(f"decisions: [{decision_id}]", observation_text)
+            self.assertIn("tasks: [owner/repo#3, owner/repo#4]", observation_text)
+
+    def test_relate_add_relation_flags_accumulate_when_repeated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            self._seed_decision(tmp)
+            run_cli(
+                "capture", "intent",
+                "--slug", "trace-cost",
+                "--title", "Trace cost",
+                "--summary", "Keep trace cost visible.",
+                "--tags", "flow",
+                cwd=tmp,
+                env={"WIKI_NOW": "2026-05-29T10:05:00"},
+            )
+            run_cli(
+                "capture", "decision",
+                "--slug", "log-cost",
+                "--title", "Log cost",
+                "--summary", "Log costs with work.",
+                "--tags", "arch",
+                "--intents", "trace-cost",
+                cwd=tmp,
+                env={"WIKI_NOW": "2026-05-29T10:05:01"},
+            )
+            run_cli(
+                "capture", "ssot",
+                "--slug", "cost-model",
+                "--title", "Cost model",
+                "--summary", "Current cost model.",
+                "--tags", "state",
+                cwd=tmp,
+            )
+            task = self._capture_task(tmp)
+            self.assertEqual(task.returncode, 0, task.stderr)
+
+            result = run_cli(
+                "relate", "pay-bff",
+                "--add-intents", "trace-cost",
+                "--add-intents", "trace-cost",
+                "--add-decisions", "log-cost",
+                "--add-ssot", "cost-model",
+                "--add-tasks", "owner/repo#43",
+                "--add-tasks", "owner/repo#44",
+                "--json",
+                cwd=tmp,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["added"]["intents"], ["INT-2026-05-29-100500-trace-cost"])
+            self.assertEqual(payload["added"]["decisions"], ["DEC-2026-05-29-100501-log-cost"])
+            self.assertEqual(payload["added"]["ssot"], ["cost-model"])
+            self.assertEqual(payload["added"]["tasks"], ["owner/repo#43", "owner/repo#44"])
+
     def test_task_is_backlink_of_decision_and_intent(self):
         # 핵심 기능: "이 결정이 낳은 작업" — task가 파생 백링크로 잡힌다.
         with tempfile.TemporaryDirectory() as tmp:
@@ -2434,91 +2624,117 @@ class WikiCliSnapshotTests(unittest.TestCase):
         result = run_cli("init", cwd=tmp)
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_snapshot_save_load_list_continue_update_and_archive(self):
+    def test_snapshot_save_inplace_update_list_load_discard(self):
         with tempfile.TemporaryDirectory() as tmp:
             self._init(tmp)
             vault = Path(tmp) / "wiki"
+            # active-only scaffolding — no archived/promoted state folders.
             self.assertTrue((vault / "snapshot" / "active").is_dir())
-            self.assertTrue((vault / "snapshot" / "archived").is_dir())
-            self.assertTrue((vault / "snapshot" / "promoted").is_dir())
+            self.assertFalse((vault / "snapshot" / "archived").exists())
+            self.assertFalse((vault / "snapshot" / "promoted").exists())
 
             first = run_cli(
                 "snapshot", "save",
                 "--title", "Wiki Snapshot Layer",
-                "--summary", "Need a staging layer for unresolved conversation context.",
+                "--summary", "Staging layer for unresolved conversation context.",
                 "--tags", "wiki,snapshot",
-                "--discussion", "We want to save context without promoting it to the canonical graph.",
-                "--background", "Observation is too heavy for raw discussion checkpoints.",
-                "--decided", "Default saves should create append-only snapshots.",
-                "--open-questions", "The final user-facing term is still open.",
-                "--next", "Implement the minimal CLI contract first.",
-                "--references", "plugins/wiki-markdown/skills/wiki/scripts/wiki_cli.py",
-                "--promotion-candidates", "A decision can be captured after real usage proves the flow.",
+                "--slug", "wiki-snapshot-layer",
+                "--discussion", "Save context without promoting it to the canonical graph.",
+                "--decided", "Snapshots are active-only and ephemeral.",
                 "--json",
                 cwd=tmp,
                 env={"WIKI_NOW": "2026-06-12T15:30:00"},
             )
             self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
-            first_payload = json.loads(first.stdout)
-            first_id = "SNAP-2026-06-12-153000-wiki-snapshot-layer"
-            self.assertEqual(first_payload["id"], first_id)
-            first_path = vault / "snapshot" / "active" / f"{first_id}.md"
-            self.assertTrue(first_path.exists())
-            first_text = first_path.read_text()
-            self.assertIn("type: snapshot", first_text)
-            self.assertIn("## 현재 논의", first_text)
-            self.assertIn("Default saves should create append-only snapshots.", first_text)
+            snap_id = "SNAP-wiki-snapshot-layer"
+            self.assertEqual(json.loads(first.stdout)["id"], snap_id)
+            path = vault / "snapshot" / "active" / f"{snap_id}.md"
+            self.assertTrue(path.exists())
+            text = path.read_text()
+            self.assertIn("type: snapshot", text)
+            self.assertIn("## 현재 논의", text)
+            self.assertIn("created_at: 2026-06-12", text)
+            self.assertNotIn("updated_at:", text)
+            self.assertIn("Staging layer for unresolved conversation context.", text)
 
             listed = run_cli("snapshot", "list", "staging", "--json", cwd=tmp)
             self.assertEqual(listed.returncode, 0, listed.stdout + listed.stderr)
-            self.assertEqual(json.loads(listed.stdout)["results"][0]["id"], first_id)
+            self.assertEqual(json.loads(listed.stdout)["results"][0]["id"], snap_id)
 
             loaded = run_cli("snapshot", "load", "wiki-snapshot-layer", "--json", cwd=tmp)
             self.assertEqual(loaded.returncode, 0, loaded.stdout + loaded.stderr)
-            self.assertEqual(json.loads(loaded.stdout)["id"], first_id)
+            self.assertEqual(json.loads(loaded.stdout)["id"], snap_id)
 
-            continued = run_cli(
+            # Re-saving the same slug rewrites in place: created_at preserved,
+            # updated_at stamped, and NO second file accumulates.
+            again = run_cli(
                 "snapshot", "save",
-                "--title", "Wiki Snapshot Layer Followup",
-                "--summary", "Follow-up after loading the first snapshot.",
-                "--tags", "wiki,snapshot",
-                "--continues", first_id,
-                "--discussion", "A loaded snapshot can seed a new append-only checkpoint.",
-                "--json",
-                cwd=tmp,
-                env={"WIKI_NOW": "2026-06-12T16:15:00"},
-            )
-            self.assertEqual(continued.returncode, 0, continued.stdout + continued.stderr)
-            continued_id = "SNAP-2026-06-12-161500-wiki-snapshot-layer-followup"
-            continued_text = (vault / "snapshot" / "active" / f"{continued_id}.md").read_text()
-            self.assertIn(f"continues: {first_id}", continued_text)
-
-            updated = run_cli(
-                "snapshot", "save",
-                "--update", first_id,
                 "--title", "Wiki Snapshot Layer",
                 "--summary", "Updated checkpoint for the same discussion.",
                 "--tags", "wiki,snapshot",
-                "--discussion", "Explicit update rewrites the same snapshot.",
+                "--slug", "wiki-snapshot-layer",
+                "--discussion", "Re-saving the same slug rewrites in place.",
                 "--json",
                 cwd=tmp,
-                env={"WIKI_NOW": "2026-06-12T17:00:00"},
+                env={"WIKI_NOW": "2026-06-13T09:00:00"},
             )
-            self.assertEqual(updated.returncode, 0, updated.stdout + updated.stderr)
-            self.assertEqual(json.loads(updated.stdout)["id"], first_id)
-            updated_text = first_path.read_text()
-            self.assertIn("updated_at: 2026-06-12", updated_text)
-            self.assertIn("Updated checkpoint for the same discussion.", updated_text)
-            self.assertNotIn("Need a staging layer for unresolved conversation context.", updated_text)
+            self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+            self.assertEqual(json.loads(again.stdout)["id"], snap_id)
+            active_files = sorted(p.name for p in (vault / "snapshot" / "active").glob("SNAP-*.md"))
+            self.assertEqual(active_files, [f"{snap_id}.md"])
+            text2 = path.read_text()
+            self.assertIn("created_at: 2026-06-12", text2)
+            self.assertIn("updated_at: 2026-06-13", text2)
+            self.assertIn("Updated checkpoint for the same discussion.", text2)
+            self.assertNotIn("Staging layer for unresolved conversation context.", text2)
 
-            archived = run_cli("snapshot", "archive", first_id, "--json", cwd=tmp)
-            self.assertEqual(archived.returncode, 0, archived.stdout + archived.stderr)
-            self.assertFalse(first_path.exists())
-            self.assertTrue((vault / "snapshot" / "archived" / f"{first_id}.md").exists())
-            active_list = run_cli("snapshot", "list", "--json", cwd=tmp)
-            self.assertNotIn(first_id, [x["id"] for x in json.loads(active_list.stdout)["results"]])
-            all_list = run_cli("snapshot", "list", "--include-archived", "--json", cwd=tmp)
-            self.assertIn(first_id, [x["id"] for x in json.loads(all_list.stdout)["results"]])
+            # A different slug is a separate file — independent discussions coexist.
+            other = run_cli(
+                "snapshot", "save",
+                "--title", "Other Thread",
+                "--summary", "A different discussion.",
+                "--tags", "wiki,snapshot",
+                "--slug", "other-thread",
+                "--json",
+                cwd=tmp,
+                env={"WIKI_NOW": "2026-06-13T10:00:00"},
+            )
+            self.assertEqual(other.returncode, 0, other.stdout + other.stderr)
+            both = run_cli("snapshot", "list", "--json", cwd=tmp)
+            self.assertEqual({x["id"] for x in json.loads(both.stdout)["results"]},
+                             {snap_id, "SNAP-other-thread"})
+
+            # discard deletes the active file (git, not an archived/ folder, retains history).
+            discarded = run_cli("snapshot", "discard", snap_id, "--json", cwd=tmp)
+            self.assertEqual(discarded.returncode, 0, discarded.stdout + discarded.stderr)
+            self.assertEqual(json.loads(discarded.stdout)["state"], "discarded")
+            self.assertFalse(path.exists())
+            self.assertFalse((vault / "snapshot" / "archived").exists())
+            remaining = run_cli("snapshot", "list", "--json", cwd=tmp)
+            self.assertEqual({x["id"] for x in json.loads(remaining.stdout)["results"]},
+                             {"SNAP-other-thread"})
+
+    def test_snapshot_removed_flags_and_commands_are_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            run_cli(
+                "snapshot", "save", "--title", "Base", "--summary", "Base snap.",
+                "--tags", "wiki", "--slug", "base", cwd=tmp,
+                env={"WIKI_NOW": "2026-06-12T15:30:00"},
+            )
+            # The 3-state accumulation model's flags/commands are gone (breaking change).
+            for argv in (
+                ["snapshot", "save", "--title", "X", "--summary", "Y",
+                 "--tags", "wiki", "--continues", "SNAP-base"],
+                ["snapshot", "save", "--title", "X", "--summary", "Y",
+                 "--tags", "wiki", "--update", "SNAP-base"],
+                ["snapshot", "list", "--include-archived"],
+                ["snapshot", "list", "--include-promoted"],
+                ["snapshot", "list", "--all"],
+                ["snapshot", "archive", "SNAP-base"],
+            ):
+                r = run_cli(*argv, cwd=tmp)
+                self.assertEqual(r.returncode, 2, f"{argv} -> {r.returncode}\n{r.stderr}")
 
     def test_snapshot_is_outside_recall_and_refresh_graph(self):
         with tempfile.TemporaryDirectory() as tmp:
