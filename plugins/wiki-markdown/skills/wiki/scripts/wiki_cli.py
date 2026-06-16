@@ -185,7 +185,7 @@ INDEX_HEADER = "## 노트"
 TASK_REF_FORMAT = "owner/repo#N or github:owner/repo#N"
 TASK_REF_RE = re.compile(r"^(?:github:)?[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+#\d+$")
 RECORD_ID_RE = re.compile(r"^[A-Z]{3}-\d{4}-\d{2}-\d{2}-\d{6}-(.+)$")
-SNAPSHOT_ID_RE = re.compile(r"^SNAP-\d{4}-\d{2}-\d{2}-\d{6}-(.+)$")
+SNAPSHOT_ID_RE = re.compile(r"^SNAP-(.+)$")
 ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 # Placeholder pattern: angle-bracketed instruction text or pure whitespace.
@@ -195,7 +195,10 @@ PLACEHOLDER_RE = re.compile(r"^\s*(<[^>]+>\s*)+$")
 PLACEHOLDER_SCALAR_RE = re.compile(r"^\s*<[^>]+>\s*$")
 
 FIX_WHITELIST = ("index", "retired-in-index")
-SNAPSHOT_STATES = ("active", "archived", "promoted")
+# Snapshot is an active-only ephemeral staging layer: one file per slug,
+# rewritten in place; history lives in git and promoted records, not extra
+# state folders. See DEC-2026-06-17-002727.
+SNAPSHOT_STATES = ("active",)
 SNAPSHOT_SECTIONS = (
     ("discussion", "현재 논의"),
     ("background", "배경"),
@@ -1080,19 +1083,12 @@ def _snapshot_slug_part(basename: str) -> str:
     return m.group(1) if m else _nfc(basename)
 
 
-def iter_snapshot_paths(vault: Path, *, include_archived: bool = False,
-                        include_promoted: bool = False) -> Iterable[Tuple[str, Path]]:
-    states = ["active"]
-    if include_archived:
-        states.append("archived")
-    if include_promoted:
-        states.append("promoted")
-    for state in states:
-        folder = snapshot_state_dir(vault, state)
-        if not folder.is_dir():
-            continue
-        for path in sorted(folder.glob("*.md"), key=lambda p: p.name):
-            yield state, path
+def iter_snapshot_paths(vault: Path) -> Iterable[Tuple[str, Path]]:
+    folder = snapshot_state_dir(vault, "active")
+    if not folder.is_dir():
+        return
+    for path in sorted(folder.glob("*.md"), key=lambda p: p.name):
+        yield "active", path
 
 
 def iter_all_snapshot_paths(vault: Path) -> Iterable[Tuple[str, Path]]:
@@ -1117,7 +1113,6 @@ def snapshot_item(path: Path, state: str) -> dict:
         "tags": fm.get("tags", []),
         "created_at": fm.get("created_at"),
         "updated_at": fm.get("updated_at"),
-        "continues": fm.get("continues"),
         "search_terms": fm.get("search_terms", []),
         "text": text,
         "body": body,
@@ -1163,19 +1158,6 @@ def resolve_snapshot_path(vault: Path, ref: str,
     return matches[0]
 
 
-def unique_snapshot_basename(vault: Path, basename: str) -> str:
-    candidate = basename
-    idx = 1
-    while any((snapshot_state_dir(vault, state) / f"{candidate}.md").exists()
-              for state in SNAPSHOT_STATES):
-        idx += 1
-        if idx > 26:
-            raise CliError(EXIT_CONFLICT, "snapshot_basename_overflow",
-                           f"too many collisions for {basename}")
-        candidate = f"{basename}-{chr(ord('a') + idx - 1)}"
-    return candidate
-
-
 def _require_snapshot_text(name: str, value: str) -> str:
     value = _nfc(value).strip()
     if not value:
@@ -1204,13 +1186,11 @@ def rewrite_snapshot_index(vault: Path) -> bool:
     if not idx.is_file():
         return False
     lines = []
-    for state, path in iter_snapshot_paths(vault, include_archived=True, include_promoted=True):
+    for state, path in iter_snapshot_paths(vault):
         if path.name == "snapshot.md":
             continue
         item = snapshot_item(path, state)
-        summary = item["summary"]
-        state_label = state
-        lines.append(f"- [[{state}/{item['id']}]] ({state_label}) — {summary}")
+        lines.append(f"- [[active/{item['id']}]] — {item['summary']}")
     text = idx.read_text(encoding="utf-8")
     new_text = _replace_section(text, INDEX_HEADER, lines)
     if new_text != text:
@@ -1749,30 +1729,23 @@ def cmd_snapshot_save(args) -> int:
         if _is_placeholder_value(tag):
             raise CliError(EXIT_USAGE, "placeholder_input", "--tags must not contain placeholders")
 
-    current = now()
-    today = current.strftime("%Y-%m-%d")
-    timestamp = current.strftime("%Y-%m-%d-%H%M%S")
+    today = now().strftime("%Y-%m-%d")
     body = snapshot_body_from_args(args)
     search_terms = parse_csv(getattr(args, "search_terms", None))
 
-    continues = None
-    if args.continues:
-        _state, continues_path = resolve_snapshot_path(vault, args.continues)
-        continues = _nfc(continues_path.stem)
+    # One file per slug: re-saving the same slug rewrites it in place, keeping
+    # created_at and stamping updated_at. A new slug starts a fresh snapshot.
+    raw_slug = args.slug if args.slug else slugify(title)
+    slug = sanitize_slug(raw_slug)
+    basename = f"SNAP-{slug}"
+    path = snapshot_state_dir(vault, "active") / f"{basename}.md"
 
-    if args.update:
-        _state, path = resolve_snapshot_path(vault, args.update, states=("active",))
-        old = snapshot_item(path, "active")
-        created_at = old["frontmatter"].get("created_at") or today
-        if continues is None:
-            continues = old["frontmatter"].get("continues")
-        basename = _nfc(path.stem)
+    if path.exists():
+        created_at = snapshot_item(path, "active")["frontmatter"].get("created_at") or today
+        updated_at = today
     else:
-        raw_slug = args.slug if args.slug else slugify(title)
-        slug = sanitize_slug(raw_slug)
-        basename = unique_snapshot_basename(vault, f"SNAP-{timestamp}-{slug}")
-        path = snapshot_state_dir(vault, "active") / f"{basename}.md"
         created_at = today
+        updated_at = None
 
     fm = {
         "title": title,
@@ -1781,16 +1754,15 @@ def cmd_snapshot_save(args) -> int:
         "tags": tags,
         "type": "snapshot",
     }
-    if args.update:
-        fm["updated_at"] = today
+    if updated_at:
+        fm["updated_at"] = updated_at
     if search_terms:
         fm["search_terms"] = search_terms
-    if continues:
-        fm["continues"] = continues
 
     write_snapshot(path, fm, body)
     rewrite_snapshot_index(vault)
-    emit_ok(args, {"id": basename, "path": str(path), "state": "active"},
+    emit_ok(args, {"id": basename, "path": str(path), "state": "active",
+                   "updated": updated_at is not None},
             text_lines=[f"snapshot saved: {basename}"])
     return EXIT_OK
 
@@ -1812,11 +1784,8 @@ def _snapshot_matches(item: dict, query: str) -> bool:
 def cmd_snapshot_list(args) -> int:
     vault = resolve_vault(args.vault)
     ensure_vault(vault)
-    include_archived = args.include_archived or args.all
-    include_promoted = args.include_promoted or args.all
     results = []
-    for state, path in iter_snapshot_paths(vault, include_archived=include_archived,
-                                           include_promoted=include_promoted):
+    for state, path in iter_snapshot_paths(vault):
         item = snapshot_item(path, state)
         if not _snapshot_matches(item, args.query or ""):
             continue
@@ -1829,7 +1798,6 @@ def cmd_snapshot_list(args) -> int:
             "tags": item["tags"],
             "created_at": item["created_at"],
             "updated_at": item["updated_at"],
-            "continues": item["continues"],
         })
     results.sort(key=lambda item: item["id"], reverse=True)
     if args.limit and args.limit > 0:
@@ -1853,19 +1821,16 @@ def cmd_snapshot_load(args) -> int:
     return EXIT_OK
 
 
-def cmd_snapshot_archive(args) -> int:
+def cmd_snapshot_discard(args) -> int:
     vault = resolve_vault(args.vault)
     ensure_vault(vault)
     ensure_snapshot_tree(vault)
     _state, src = resolve_snapshot_path(vault, args.ref, states=("active",))
-    dst = snapshot_state_dir(vault, "archived") / src.name
-    if dst.exists():
-        raise CliError(EXIT_CONFLICT, "snapshot_archive_conflict",
-                       f"archived snapshot already exists: {src.stem}")
-    shutil.move(str(src), str(dst))
+    snap_id = _nfc(src.stem)
+    src.unlink()
     rewrite_snapshot_index(vault)
-    emit_ok(args, {"id": _nfc(dst.stem), "path": str(dst), "state": "archived"},
-            text_lines=[f"snapshot archived: {dst.stem}"])
+    emit_ok(args, {"id": snap_id, "state": "discarded"},
+            text_lines=[f"snapshot discarded: {snap_id}"])
     return EXIT_OK
 
 
@@ -2760,16 +2725,12 @@ def build_parser() -> argparse.ArgumentParser:
     def _snapshot_common(sp):
         _sub_common(sp)
 
-    pss = snap.add_parser("save", help="save or explicitly update a context snapshot")
+    pss = snap.add_parser("save", help="save a context snapshot (same slug rewrites in place)")
     _snapshot_common(pss)
     pss.add_argument("--title", required=True)
     pss.add_argument("--summary", required=True)
     pss.add_argument("--tags", required=True, help="comma-separated tags")
     pss.add_argument("--slug", default=None)
-    pss.add_argument("--continues", default=None,
-                     help="existing snapshot ref that this new snapshot continues")
-    pss.add_argument("--update", default=None,
-                     help="active snapshot ref to rewrite explicitly")
     pss.add_argument("--search-terms", default=None, dest="search_terms")
     pss.add_argument("--discussion", default="")
     pss.add_argument("--background", default="")
@@ -2783,18 +2744,12 @@ def build_parser() -> argparse.ArgumentParser:
     psl = snap.add_parser("list", help="list/search active snapshots")
     _snapshot_common(psl)
     psl.add_argument("query", nargs="?", default=None)
-    psl.add_argument("--include-archived", action="store_true")
-    psl.add_argument("--include-promoted", action="store_true")
-    psl.add_argument("--all", action="store_true")
     psl.add_argument("--limit", type=int, default=20)
     psl.set_defaults(func=cmd_snapshot_list)
 
     psearch = snap.add_parser("search", help="search snapshots")
     _snapshot_common(psearch)
     psearch.add_argument("query")
-    psearch.add_argument("--include-archived", action="store_true")
-    psearch.add_argument("--include-promoted", action="store_true")
-    psearch.add_argument("--all", action="store_true")
     psearch.add_argument("--limit", type=int, default=20)
     psearch.set_defaults(func=cmd_snapshot_list)
 
@@ -2803,10 +2758,10 @@ def build_parser() -> argparse.ArgumentParser:
     psload.add_argument("ref")
     psload.set_defaults(func=cmd_snapshot_load)
 
-    psa = snap.add_parser("archive", help="move an active snapshot to snapshot/archived")
-    _snapshot_common(psa)
-    psa.add_argument("ref")
-    psa.set_defaults(func=cmd_snapshot_archive)
+    psd = snap.add_parser("discard", help="delete an active snapshot (git retains history)")
+    _snapshot_common(psd)
+    psd.add_argument("ref")
+    psd.set_defaults(func=cmd_snapshot_discard)
 
     pq = sub.add_parser("recall", help="hierarchical query (read-only)")
     _sub_common(pq)
