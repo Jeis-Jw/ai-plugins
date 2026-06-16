@@ -24,3 +24,5 @@ audience: [human, agent]
 - [[REJ-2026-05-29-181259-task-as-living-relax-invariant]] — task를 ssot처럼 living으로 두되 관계를 갖도록 기존 불변식을 완화하는 안 — 핵심 불변식을 훼손하므로 제3 범주 신설이 더 깨끗하여 반려.
 - [[REJ-2026-05-29-181259-wiki-holds-task-detailed-phase]] — 위키 task가 todo/doing/done 상세 단계를 추적하는 안 — 연결 시 GitHub 상태와 이중 정본 동기화 문제를 낳아, 이진(완료/미완)으로 축소하고 상세는 플러그인에 위임하기로 반려.
 - [[REJ-2026-06-02-120300-parallel-sequential-라벨로-하위-작업-실행-순서-표현]] — 하위 작업의 병렬/직렬 가능성을 parallel/sequential 라벨로 표시하는 방식. 혼합 DAG를 표현하기 어렵고 GitHub Issue dependencies와 중복되므로 반려.
+- [[REJ-2026-06-12-185220-gate-mvp를-llm-judge로-먼저-구축]] — 품질 gate MVP를 의미판정 LLM-judge로 우선 구축하는 안. in-stack judge 천장·판정 불안정·prompt 의존으로 반려, 정적 룰 v0를 먼저.
+- [[REJ-2026-06-17-002650-snapshot-3상태-누적-보존-모델]] — snapshot을 active/archived/promoted 3상태로 보존하고 기본 save를 append-only로 누적하며 --continues 체인을 두는 모델. 단일 active 휘발 모델에 반려.

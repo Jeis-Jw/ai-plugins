@@ -31,3 +31,5 @@ audience: [human, agent]
 - [[DEC-2026-06-02-120400-하위-작업-실행-순서는-github-issue-dependencies를-정본으로-사용]] — sub-issue는 작업 분해 구조만 표현하고, 하위 작업의 선후관계와 blocked 상태는 GitHub Issue dependencies의 blocked_by/blocking 관계를 정본으로 사용한다.
 - [[DEC-2026-06-03-103000-운영정책-statement는-자동로드-agent-entry에-둔다]] — wiki-markdown 배포 설계에서 작업환경 운영정책 statement의 정본 위치를 소비 프로젝트 wiki/ssot/agent-operating-model.md가 아니라 CLAUDE.md/AGENTS.md 같은 자동로드 agent-entry 표면으로 재배치한다. 이 repo의 위키에는 플러그인 설계 결정만 dogfood로 남기고, 플러그인 패키지는 agent-policy 스캐폴드로 CLAUDE.md/AGENTS.md 관리 블록을 만든다.
 - [[DEC-2026-06-03-155419-define-batch-helper-and-wiki-relate]] — task-github define은 테스트된 issue-tree 헬퍼로 루트·서브이슈·dependency를 만들고, wiki-markdown은 기존 노드 관계 보강을 위해 relate와 견고한 ref/task-ref 정규화를 제공한다.
+- [[DEC-2026-06-12-185228-결정-분해-품질-gate를-플러그인에-추가-정적-룰-v0-먼저]] — task-github/wiki-markdown에 decision/define 품질 gate(G1–G4)를 추가하되 MVP는 LLM-judge가 아닌 정적 룰부터. 나쁜 define이 비동기 실행으로 증폭되는 것을 실행 전에 차단.
+- [[DEC-2026-06-17-002727-snapshot은-active-전용-휘발-staging]] — snapshot staging을 active 단일 폴더로, slug당 제자리 갱신, 종료는 삭제. 이력은 git과 record가 보유. archived/promoted/append-only/continues 제거.
