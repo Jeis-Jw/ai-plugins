@@ -13,7 +13,7 @@ verified_at: 2026-06-12
 - **Living** (제자리 갱신): `ssot`, `runbook`
 - **Record** (불변 + supersede): `context/intent`, `context/decision`, `context/rejected_decision`, `context/trial_error`, `context/observation`
 - **Task** (작업지시서형 제3 범주 — 제자리 갱신 + 관계 보유): `task`. 결정·취지·SSOT를 묶어 수행자에게 넘기는 handoff/context 브릿지 노드(순수 잎). 외부 작업 시스템 없이도 완결되며, 연계 작업이면 `relations.tasks`에 Issue/PR 같은 외부 실행 기록 링크를 둔다. 상태는 이진(활성 / 완료=`done/` 경로 이동), 외부 연계의 상세 진행과 동기화는 연결된 작업 플러그인에 위임 ([[wiki-lifecycle]]).
-- **Snapshot** (graph 밖 staging layer): `snapshot/active`. 아직 정식 `observation`/`decision`/`ssot`/`runbook`으로 정리하지 않은 대화 맥락 체크포인트. `TYPE_SPECS`에 들어가지 않으며 관계 그래프·recall·refresh 무결성 검사 대상이 아니다.
+- **Snapshot** (graph 밖 staging layer): `snapshot/`. 아직 정식 `observation`/`decision`/`ssot`/`runbook`으로 정리하지 않은 대화 맥락 체크포인트. `TYPE_SPECS`에 들어가지 않으며 관계 그래프·recall·refresh 무결성 검사 대상이 아니다.
 
 → [[DEC-2026-05-29-105231-wiki-type-taxonomy]] / [[DEC-2026-05-29-105322-observation-record-type]] / [[DEC-2026-05-29-181259-task-third-category]]
 
@@ -21,7 +21,7 @@ verified_at: 2026-06-12
 
 - Record basename: `<TYPE>-<YYYY-MM-DD-HHMMSS>-<slug>.md` (TYPE ∈ INT/DEC/REJ/TRI/OBS)
 - Task basename: `TASK-<YYYY-MM-DD-HHMMSS>-<slug>.md` (record와 동일 채번, 경로 `wiki/task/`)
-- Snapshot basename: `SNAP-<slug>.md` (graph 밖 staging ID, active 단일 상태 — 토론당 파일 하나, slug 제자리 갱신)
+- Snapshot basename: `SNAP-<slug>.md` (graph 밖 staging ID, 토론당 파일 하나, slug 제자리 갱신)
 - Living basename: `<slug>.md`, **vault 전역 유일**
 - basename 자체가 정본 ID, YAML `id` 필드 없음
 - ssot/runbook은 영역이 커지면 **nested 폴더 허용** (예: `wiki/ssot/plugin-definition/`)

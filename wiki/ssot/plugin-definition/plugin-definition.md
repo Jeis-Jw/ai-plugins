@@ -8,7 +8,7 @@ audience: [human, agent]
 
 # 위키 플러그인 정의
 
-이 워크스페이스의 AI-Native 위키 **메커니즘 정본**은 `plugins/wiki-markdown/` (marketplace plugin `jeis-ai-plugins/wiki-markdown@0.7.1`)이다. 본 영역(`wiki/ssot/plugin-definition/`)은 그 메커니즘의 **결정 그래프 anchor**와 **영역 라우팅** 역할을 하며, 5개 sub-ssot로 응집되어 있다. 메커니즘 세부는 plugin source(`SKILL.md`, `rules/knowledge-protocol.md`, `skills/wiki/references/wiki-protocol.md`) + 본 위키의 active decisions가 정본이다.
+이 워크스페이스의 AI-Native 위키 **메커니즘 정본**은 `plugins/wiki-markdown/` (marketplace plugin `jeis-ai-plugins/wiki-markdown@0.8.1`)이다. 본 영역(`wiki/ssot/plugin-definition/`)은 그 메커니즘의 **결정 그래프 anchor**와 **영역 라우팅** 역할을 하며, 5개 sub-ssot로 응집되어 있다. 메커니즘 세부는 plugin source(`SKILL.md`, `rules/knowledge-protocol.md`, `skills/wiki/references/wiki-protocol.md`) + 본 위키의 active decisions가 정본이다.
 
 ## 일급 원칙 (intent anchor)
 
@@ -63,5 +63,5 @@ audience: [human, agent]
 - [[wiki-data-model]] — 위키 그래프의 정적 구조 정본: 5종 record + 2종 living + 1종 task(작업지시서형 제3 범주) 타입 체계, graph 밖 snapshot staging layer, basename 정본 ID, YAML 관계 모델(비대칭 작성). plugin-definition 영역의 sub-ssot.
 - [[wiki-external-tools-policy]] — 외부 도구(Obsidian 등)와의 경계 정본: AI 검색 정본은 filesystem 단일(ripgrep+YAML), wikilink는 사람용 장식, .obsidian/ gitignore. plugin-definition 영역의 sub-ssot.
 - [[wiki-four-layer-separation]] — mechanism/policy statement/policy rationale/knowledge 4계층 분리 정본: plugin은 agent-neutral mechanism, 작업환경 policy statement는 CLAUDE.md/AGENTS.md 자동로드 표면, policy rationale은 프로젝트가 정한 이력 위치, wiki vault는 knowledge 저장소. plugin-definition 영역의 sub-ssot.
-- [[wiki-lifecycle]] — Record와 Living의 라이프사이클 정본: 경로 기반 active/retired, deprecated/superseded 2값 retire 모델, supersede pair 양방향 저장, task 이진 상태(활성/done) + snapshot active 전용 휘발 staging. plugin-definition 영역의 sub-ssot.
+- [[wiki-lifecycle]] — Record와 Living의 라이프사이클 정본: 경로 기반 active/retired, deprecated/superseded 2값 retire 모델, supersede pair 양방향 저장, task 이진 상태(활성/done) + snapshot 루트 전용 휘발 staging. plugin-definition 영역의 sub-ssot.
 - [[wiki-retrieval]] — 인덱스 파생과 조회 표면 정본: 폴더 단위 독립 인덱스, 3-stage recall + batch read, snapshot list/search/load, search_terms recognized optional, affects_paths + changed-path-stale, refresh --fix 화이트리스트. plugin-definition 영역의 sub-ssot.

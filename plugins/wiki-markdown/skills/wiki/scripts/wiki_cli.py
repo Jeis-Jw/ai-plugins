@@ -195,10 +195,10 @@ PLACEHOLDER_RE = re.compile(r"^\s*(<[^>]+>\s*)+$")
 PLACEHOLDER_SCALAR_RE = re.compile(r"^\s*<[^>]+>\s*$")
 
 FIX_WHITELIST = ("index", "retired-in-index")
-# Snapshot is an active-only ephemeral staging layer: one file per slug,
-# rewritten in place; history lives in git and promoted records, not extra
-# state folders. See DEC-2026-06-17-002727.
-SNAPSHOT_STATES = ("active",)
+# Snapshot is an ephemeral staging layer: one root-level file per slug,
+# rewritten in place; history lives in git and promoted records, not state
+# folders. See DEC-2026-06-18-120000.
+SNAPSHOT_STATES = ("current",)
 SNAPSHOT_SECTIONS = (
     ("discussion", "현재 논의"),
     ("background", "배경"),
@@ -1064,14 +1064,33 @@ def snapshot_root(vault: Path) -> Path:
 
 
 def snapshot_state_dir(vault: Path, state: str) -> Path:
+    if state == "current":
+        return snapshot_root(vault)
     return snapshot_root(vault) / state
 
 
 def ensure_snapshot_tree(vault: Path) -> None:
     root = snapshot_root(vault)
     root.mkdir(parents=True, exist_ok=True)
-    for state in SNAPSHOT_STATES:
-        (root / state).mkdir(parents=True, exist_ok=True)
+    legacy_active = root / "active"
+    if legacy_active.is_dir():
+        for path in sorted(legacy_active.glob("*.md"), key=lambda p: p.name):
+            dst = root / path.name
+            if dst.exists():
+                raise CliError(EXIT_CONFLICT, "snapshot_migration_conflict",
+                               f"cannot migrate legacy snapshot; destination exists: {dst.name}")
+            path.replace(dst)
+        try:
+            legacy_active.rmdir()
+        except OSError:
+            pass
+    for legacy_state in ("archived", "promoted"):
+        legacy_dir = root / legacy_state
+        if legacy_dir.is_dir():
+            try:
+                legacy_dir.rmdir()
+            except OSError:
+                pass
 
 
 def snapshot_index_path(vault: Path) -> Path:
@@ -1084,11 +1103,11 @@ def _snapshot_slug_part(basename: str) -> str:
 
 
 def iter_snapshot_paths(vault: Path) -> Iterable[Tuple[str, Path]]:
-    folder = snapshot_state_dir(vault, "active")
+    folder = snapshot_state_dir(vault, "current")
     if not folder.is_dir():
         return
-    for path in sorted(folder.glob("*.md"), key=lambda p: p.name):
-        yield "active", path
+    for path in sorted(folder.glob("SNAP-*.md"), key=lambda p: p.name):
+        yield "current", path
 
 
 def iter_all_snapshot_paths(vault: Path) -> Iterable[Tuple[str, Path]]:
@@ -1096,7 +1115,7 @@ def iter_all_snapshot_paths(vault: Path) -> Iterable[Tuple[str, Path]]:
         folder = snapshot_state_dir(vault, state)
         if not folder.is_dir():
             continue
-        for path in sorted(folder.glob("*.md"), key=lambda p: p.name):
+        for path in sorted(folder.glob("SNAP-*.md"), key=lambda p: p.name):
             yield state, path
 
 
@@ -1190,7 +1209,7 @@ def rewrite_snapshot_index(vault: Path) -> bool:
         if path.name == "snapshot.md":
             continue
         item = snapshot_item(path, state)
-        lines.append(f"- [[active/{item['id']}]] — {item['summary']}")
+        lines.append(f"- [[{item['id']}]] — {item['summary']}")
     text = idx.read_text(encoding="utf-8")
     new_text = _replace_section(text, INDEX_HEADER, lines)
     if new_text != text:
@@ -1738,10 +1757,10 @@ def cmd_snapshot_save(args) -> int:
     raw_slug = args.slug if args.slug else slugify(title)
     slug = sanitize_slug(raw_slug)
     basename = f"SNAP-{slug}"
-    path = snapshot_state_dir(vault, "active") / f"{basename}.md"
+    path = snapshot_state_dir(vault, "current") / f"{basename}.md"
 
     if path.exists():
-        created_at = snapshot_item(path, "active")["frontmatter"].get("created_at") or today
+        created_at = snapshot_item(path, "current")["frontmatter"].get("created_at") or today
         updated_at = today
     else:
         created_at = today
@@ -1761,7 +1780,7 @@ def cmd_snapshot_save(args) -> int:
 
     write_snapshot(path, fm, body)
     rewrite_snapshot_index(vault)
-    emit_ok(args, {"id": basename, "path": str(path), "state": "active",
+    emit_ok(args, {"id": basename, "path": str(path), "state": "current",
                    "updated": updated_at is not None},
             text_lines=[f"snapshot saved: {basename}"])
     return EXIT_OK
@@ -1784,6 +1803,7 @@ def _snapshot_matches(item: dict, query: str) -> bool:
 def cmd_snapshot_list(args) -> int:
     vault = resolve_vault(args.vault)
     ensure_vault(vault)
+    ensure_snapshot_tree(vault)
     results = []
     for state, path in iter_snapshot_paths(vault):
         item = snapshot_item(path, state)
@@ -1811,6 +1831,7 @@ def cmd_snapshot_list(args) -> int:
 def cmd_snapshot_load(args) -> int:
     vault = resolve_vault(args.vault)
     ensure_vault(vault)
+    ensure_snapshot_tree(vault)
     state, path = resolve_snapshot_path(vault, args.ref)
     item = snapshot_item(path, state)
     emit_ok(args,
@@ -1825,7 +1846,7 @@ def cmd_snapshot_discard(args) -> int:
     vault = resolve_vault(args.vault)
     ensure_vault(vault)
     ensure_snapshot_tree(vault)
-    _state, src = resolve_snapshot_path(vault, args.ref, states=("active",))
+    _state, src = resolve_snapshot_path(vault, args.ref, states=SNAPSHOT_STATES)
     snap_id = _nfc(src.stem)
     src.unlink()
     rewrite_snapshot_index(vault)
@@ -2842,7 +2863,7 @@ def build_parser() -> argparse.ArgumentParser:
     pss.add_argument("--promotion-candidates", default="", dest="promotion_candidates")
     pss.set_defaults(func=cmd_snapshot_save)
 
-    psl = snap.add_parser("list", help="list/search active snapshots")
+    psl = snap.add_parser("list", help="list/search current snapshots")
     _snapshot_common(psl)
     psl.add_argument("query", nargs="?", default=None)
     psl.add_argument("--limit", type=int, default=20)
@@ -2859,7 +2880,7 @@ def build_parser() -> argparse.ArgumentParser:
     psload.add_argument("ref")
     psload.set_defaults(func=cmd_snapshot_load)
 
-    psd = snap.add_parser("discard", help="delete an active snapshot (git retains history)")
+    psd = snap.add_parser("discard", help="delete a snapshot (git retains history)")
     _snapshot_common(psd)
     psd.add_argument("ref")
     psd.set_defaults(func=cmd_snapshot_discard)

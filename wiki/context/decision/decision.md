@@ -32,5 +32,5 @@ audience: [human, agent]
 - [[DEC-2026-06-03-103000-운영정책-statement는-자동로드-agent-entry에-둔다]] — wiki-markdown 배포 설계에서 작업환경 운영정책 statement의 정본 위치를 소비 프로젝트 wiki/ssot/agent-operating-model.md가 아니라 CLAUDE.md/AGENTS.md 같은 자동로드 agent-entry 표면으로 재배치한다. 이 repo의 위키에는 플러그인 설계 결정만 dogfood로 남기고, 플러그인 패키지는 agent-policy 스캐폴드로 CLAUDE.md/AGENTS.md 관리 블록을 만든다.
 - [[DEC-2026-06-03-155419-define-batch-helper-and-wiki-relate]] — task-github define은 테스트된 issue-tree 헬퍼로 루트·서브이슈·dependency를 만들고, wiki-markdown은 기존 노드 관계 보강을 위해 relate와 견고한 ref/task-ref 정규화를 제공한다.
 - [[DEC-2026-06-12-185228-결정-분해-품질-gate를-플러그인에-추가-정적-룰-v0-먼저]] — task-github/wiki-markdown에 decision/define 품질 gate(G1–G4)를 추가하되 MVP는 LLM-judge가 아닌 정적 룰부터. 나쁜 define이 비동기 실행으로 증폭되는 것을 실행 전에 차단.
-- [[DEC-2026-06-17-002727-snapshot은-active-전용-휘발-staging]] — snapshot staging을 active 단일 폴더로, slug당 제자리 갱신, 종료는 삭제. 이력은 git과 record가 보유. archived/promoted/append-only/continues 제거.
 - [[DEC-2026-06-17-012702-rationale는-메인-직접-커밋-코드-pr은-id-참조-define이-rationale-커밋과-dirty-vault-경고-담당]] — 결정/반려 등 근거 레코드는 메인 트리에 직접 커밋(코드 PR과 분리, PR은 DEC ID 참조). 엉킴 방지를 위해 define이 자기 rationale을 커밋하고 define/start가 dirty wiki vault를 경고한다.
+- [[DEC-2026-06-18-120000-snapshot은-상태-폴더-없는-휘발-staging]] — snapshot은 상태 폴더 없이 wiki/snapshot/ 루트의 SNAP-<slug>.md 파일로 관리한다. 토론당 현재 상태 하나만, 이력은 git과 record가 보유한다.
