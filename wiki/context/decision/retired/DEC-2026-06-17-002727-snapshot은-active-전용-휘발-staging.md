@@ -7,6 +7,9 @@ relations:
   intents: [INT-2026-05-29-104713-single-canonical-current-state]
   rejected_decisions: [REJ-2026-06-17-002650-snapshot-3상태-누적-보존-모델]
   ssot: [wiki-data-model, wiki-lifecycle, wiki-retrieval]
+retired_at: 2026-06-18
+retired_type: superseded
+superseded_by: DEC-2026-06-18-120000-snapshot은-상태-폴더-없는-휘발-staging
 ---
 
 ## 결정

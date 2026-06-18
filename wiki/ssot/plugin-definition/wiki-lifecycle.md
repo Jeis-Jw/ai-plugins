@@ -1,7 +1,7 @@
 ---
 title: 위키 라이프사이클
 created_at: 2026-05-29
-summary: Record와 Living의 라이프사이클 정본: 경로 기반 active/retired, deprecated/superseded 2값 retire 모델, supersede pair 양방향 저장, task 이진 상태(활성/done) + snapshot active 전용 휘발 staging. plugin-definition 영역의 sub-ssot.
+summary: Record와 Living의 라이프사이클 정본: 경로 기반 active/retired, deprecated/superseded 2값 retire 모델, supersede pair 양방향 저장, task 이진 상태(활성/done) + snapshot 루트 전용 휘발 staging. plugin-definition 영역의 sub-ssot.
 tags: [wiki, lifecycle, ssot]
 verified_at: 2026-06-12
 ---
@@ -59,15 +59,15 @@ verified_at: 2026-06-12
 
 → [[DEC-2026-05-29-181259-task-binary-state-github-sot]]
 
-### Snapshot 라이프사이클 (active 전용 휘발, 경로 기반)
+### Snapshot 라이프사이클 (루트 전용 휘발)
 
 - Snapshot은 정식 graph 타입이 아니라 대화 맥락 staging layer다.
-- 상태 폴더는 `snapshot/active/` 하나뿐 — archived/promoted 상태는 두지 않는다.
+- 상태 폴더를 두지 않는다. `snapshot/` 루트에 `SNAP-<slug>.md` 파일을 직접 둔다(`snapshot.md`는 index).
 - basename은 `SNAP-<slug>`이며 토론당 파일 하나가 정본이다.
-- 기본 `snapshot save`는 **slug 기준 제자리 갱신** — 같은 slug면 기존 active 파일을 덮어쓰고 `created_at`을 보존하며 `updated_at`을 기록한다. 새 slug면 새 파일.
-- 종료는 `snapshot discard <ref>` — active 파일을 삭제한다. vault가 git 추적 대상이라 이력은 git이 보유하므로 별도 보존 폴더를 두지 않는다.
+- 기본 `snapshot save`는 **slug 기준 제자리 갱신** — 같은 slug면 기존 snapshot 파일을 덮어쓰고 `created_at`을 보존하며 `updated_at`을 기록한다. 새 slug면 새 파일.
+- 종료는 `snapshot discard <ref>` — snapshot 파일을 삭제한다. vault가 git 추적 대상이라 이력은 git이 보유하므로 별도 보존 폴더를 두지 않는다.
 - 정식 지식화는 자동 `promote`가 아니라 별도 `capture`/Edit으로 수행한다(불변).
-- 근거: [[DEC-2026-06-17-002727-snapshot은-active-전용-휘발-staging]] — 세션 컨텍스트 메모장이므로 토론당 현재 상태 하나만, 이력은 git+record가 보유.
+- 근거: [[DEC-2026-06-18-120000-snapshot은-상태-폴더-없는-휘발-staging]] — 세션 컨텍스트 메모장이므로 토론당 현재 상태 하나만, 이력은 git+record가 보유.
 
 ## 취지
 

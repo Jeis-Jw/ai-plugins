@@ -2766,8 +2766,10 @@ class WikiCliSnapshotTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             self._init(tmp)
             vault = Path(tmp) / "wiki"
-            # active-only scaffolding — no archived/promoted state folders.
-            self.assertTrue((vault / "snapshot" / "active").is_dir())
+            # Snapshot is a current-context scratchpad, not a state-folder model.
+            self.assertTrue((vault / "snapshot").is_dir())
+            self.assertTrue((vault / "snapshot" / "snapshot.md").is_file())
+            self.assertFalse((vault / "snapshot" / "active").exists())
             self.assertFalse((vault / "snapshot" / "archived").exists())
             self.assertFalse((vault / "snapshot" / "promoted").exists())
 
@@ -2778,15 +2780,16 @@ class WikiCliSnapshotTests(unittest.TestCase):
                 "--tags", "wiki,snapshot",
                 "--slug", "wiki-snapshot-layer",
                 "--discussion", "Save context without promoting it to the canonical graph.",
-                "--decided", "Snapshots are active-only and ephemeral.",
+                "--decided", "Snapshots are current scratchpads without state folders.",
                 "--json",
                 cwd=tmp,
                 env={"WIKI_NOW": "2026-06-12T15:30:00"},
             )
             self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+            self.assertEqual(json.loads(first.stdout)["state"], "current")
             snap_id = "SNAP-wiki-snapshot-layer"
             self.assertEqual(json.loads(first.stdout)["id"], snap_id)
-            path = vault / "snapshot" / "active" / f"{snap_id}.md"
+            path = vault / "snapshot" / f"{snap_id}.md"
             self.assertTrue(path.exists())
             text = path.read_text()
             self.assertIn("type: snapshot", text)
@@ -2798,10 +2801,12 @@ class WikiCliSnapshotTests(unittest.TestCase):
             listed = run_cli("snapshot", "list", "staging", "--json", cwd=tmp)
             self.assertEqual(listed.returncode, 0, listed.stdout + listed.stderr)
             self.assertEqual(json.loads(listed.stdout)["results"][0]["id"], snap_id)
+            self.assertEqual(json.loads(listed.stdout)["results"][0]["state"], "current")
 
             loaded = run_cli("snapshot", "load", "wiki-snapshot-layer", "--json", cwd=tmp)
             self.assertEqual(loaded.returncode, 0, loaded.stdout + loaded.stderr)
             self.assertEqual(json.loads(loaded.stdout)["id"], snap_id)
+            self.assertEqual(json.loads(loaded.stdout)["state"], "current")
 
             # Re-saving the same slug rewrites in place: created_at preserved,
             # updated_at stamped, and NO second file accumulates.
@@ -2818,8 +2823,8 @@ class WikiCliSnapshotTests(unittest.TestCase):
             )
             self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
             self.assertEqual(json.loads(again.stdout)["id"], snap_id)
-            active_files = sorted(p.name for p in (vault / "snapshot" / "active").glob("SNAP-*.md"))
-            self.assertEqual(active_files, [f"{snap_id}.md"])
+            snapshot_files = sorted(p.name for p in (vault / "snapshot").glob("SNAP-*.md"))
+            self.assertEqual(snapshot_files, [f"{snap_id}.md"])
             text2 = path.read_text()
             self.assertIn("created_at: 2026-06-12", text2)
             self.assertIn("updated_at: 2026-06-13", text2)
@@ -2842,15 +2847,43 @@ class WikiCliSnapshotTests(unittest.TestCase):
             self.assertEqual({x["id"] for x in json.loads(both.stdout)["results"]},
                              {snap_id, "SNAP-other-thread"})
 
-            # discard deletes the active file (git, not an archived/ folder, retains history).
+            # discard deletes the snapshot file (git, not an archived/ folder, retains history).
             discarded = run_cli("snapshot", "discard", snap_id, "--json", cwd=tmp)
             self.assertEqual(discarded.returncode, 0, discarded.stdout + discarded.stderr)
             self.assertEqual(json.loads(discarded.stdout)["state"], "discarded")
             self.assertFalse(path.exists())
+            self.assertFalse((vault / "snapshot" / "active").exists())
             self.assertFalse((vault / "snapshot" / "archived").exists())
             remaining = run_cli("snapshot", "list", "--json", cwd=tmp)
             self.assertEqual({x["id"] for x in json.loads(remaining.stdout)["results"]},
                              {"SNAP-other-thread"})
+
+    def test_snapshot_migrates_legacy_active_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            vault = Path(tmp) / "wiki"
+            legacy = vault / "snapshot" / "active"
+            legacy.mkdir(exist_ok=True)
+            legacy_path = legacy / "SNAP-legacy-thread.md"
+            legacy_path.write_text(
+                "---\n"
+                "title: Legacy Thread\n"
+                "created_at: 2026-06-12\n"
+                "summary: Legacy active-folder snapshot.\n"
+                "tags: [wiki, snapshot]\n"
+                "type: snapshot\n"
+                "---\n"
+                "## 현재 논의\n\nMove this to the snapshot root.\n",
+                encoding="utf-8",
+            )
+
+            listed = run_cli("snapshot", "list", "legacy", "--json", cwd=tmp)
+            self.assertEqual(listed.returncode, 0, listed.stdout + listed.stderr)
+            payload = json.loads(listed.stdout)
+            self.assertEqual([x["id"] for x in payload["results"]], ["SNAP-legacy-thread"])
+            self.assertTrue((vault / "snapshot" / "SNAP-legacy-thread.md").is_file())
+            self.assertFalse(legacy_path.exists())
+            self.assertFalse(legacy.exists())
 
     def test_snapshot_removed_flags_and_commands_are_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2890,7 +2923,7 @@ class WikiCliSnapshotTests(unittest.TestCase):
             self.assertEqual(saved.returncode, 0, saved.stdout + saved.stderr)
 
             # Even malformed or colliding snapshot files must not affect graph checks.
-            (vault / "snapshot" / "active" / "ssot.md").write_text("not frontmatter\n")
+            (vault / "snapshot" / "ssot.md").write_text("not frontmatter\n")
 
             recall = run_cli("recall", "Graph Outside", "--json", cwd=tmp)
             self.assertEqual(recall.returncode, 0, recall.stdout + recall.stderr)

@@ -4,6 +4,7 @@ created_at: 2026-06-17
 summary: argparse 기본 store는 반복 다중값 플래그를 조용히 last-wins 드롭한다. 교훈: 모든 list형 관계 인자를 action=append + 콤마 split·flatten·strip·순서보존 dedup 공유 헬퍼로 통일하고, 반복·콤마·혼합·중복 4형 회귀 테스트로 고정.
 tags: [plugin, quality, cli]
 affects_paths: [plugins/wiki-markdown/skills/wiki/scripts/wiki_cli.py]
+verified_at: 2026-06-18
 supersedes: [OBS-2026-06-12-190117-wiki-cli-다중값-플래그-반복-시-조용히-마지막만-남김]
 relations:
   decisions: [DEC-2026-06-03-155419-define-batch-helper-and-wiki-relate]
@@ -31,4 +32,3 @@ relations:
 ## 현재도 유효한가
 
 유효. 수정은 `cf3cd1d`에 반영됐고, 4형 회귀 테스트가 #3(PR #7)에서 추가돼 회귀를 고정한다. 새 다중값 관계 플래그를 추가할 때 동일 패턴(append + 공유 정규화 + 4형 테스트)을 적용한다.
-

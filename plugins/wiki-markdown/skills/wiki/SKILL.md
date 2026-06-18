@@ -120,7 +120,7 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" refresh --fix index,retired-in
 
 **Task (third category).** `task` is neither living nor record: its body is updated in place (living-like) and it carries relations (record-like), but its lifecycle is **binary by path** — active `task/` vs done `task/done/`. It's a *pure leaf* handoff/context bridge: it points outward (`intents`/`decisions`/`ssot`/`tasks`) and nothing points back at it (reverse is derived backlinks — `recall --backlinks-of <DEC>` surfaces the tasks a decision spawned, **including completed ones by default** — done is a valid terminal state, not a retired one). Finish a task with `complete` (→ `task/done/`), undo with `reopen`. A task never supersedes; an *invalid* task is `retire --type deprecated` (which, like any retired doc, then needs `--include-retired` to appear in backlinks). `--tasks` links it to external work items such as GitHub issues/PRs; the wiki validates the ref shape but never reads or synchronizes that system.
 
-**Snapshot (staging layer).** `snapshot` is not a wiki graph type. Files live under `snapshot/active` only, use `SNAP-<slug>` basenames, and are managed by `snapshot save/list/search/load/discard`. A save rewrites the snapshot for that slug in place (preserving `created_at`, stamping `updated_at`); a new slug starts a new file. `snapshot discard <ref>` deletes an active snapshot — git retains history, so there is no archived or promoted folder. Snapshot files are searchable by snapshot commands but excluded from `recall`, relation resolution, `refresh --strict`, and duplicate-basename checks.
+**Snapshot (staging layer).** `snapshot` is not a wiki graph type. Files live directly under `snapshot/` beside the `snapshot.md` index, use `SNAP-<slug>` basenames, and are managed by `snapshot save/list/search/load/discard`. A save rewrites the snapshot for that slug in place (preserving `created_at`, stamping `updated_at`); a new slug starts a new file. `snapshot discard <ref>` deletes the snapshot — git retains history, so there is no active, archived, or promoted state folder. Snapshot files are searchable by snapshot commands but excluded from `recall`, relation resolution, `refresh --strict`, and duplicate-basename checks.
 
 ## Workflow (when you encounter a decision / intent / observation)
 
@@ -146,7 +146,7 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" refresh --fix index,retired-in
 | `snapshot save` | `--title` `--summary` `--tags` | `--slug` `--search-terms` fixed section options | `0` · `2` missing/placeholder input · `3` |
 | `snapshot list/search` | — / `<query>` | `--limit N` | `0` · `3` |
 | `snapshot load` | `<ref>` | slug fragments accepted | `0` · `3` · `4` missing/ambiguous |
-| `snapshot discard` | `<ref>` | active snapshots only; deletes (git retains history) | `0` · `3` · `4` missing/ambiguous |
+| `snapshot discard` | `<ref>` | deletes the snapshot (git retains history) | `0` · `3` · `4` missing/ambiguous |
 | `recall` | — or `<query>` | `--type` `--tag` (repeatable) `--section` `--stage` `--limit` `--backlinks-of` `--read <a,b,c>` `--fuzzy` `--include-retired` | `0` always (zero hits is success), `4` only when `--read` target is missing |
 | `refresh` | — | `--check <name,..>` (13 + `all`) `--days N` `--path <sub>` `--changed-path <p,..>` `--fix index,retired-in-index` `--strict` | `0` · `2` (unknown `--check`, `--fix` whitelist violation, bare `--fix`) · `6` (strict + ≥1 issue) |
 
