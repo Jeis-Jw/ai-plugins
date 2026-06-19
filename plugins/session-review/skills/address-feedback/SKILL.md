@@ -11,9 +11,10 @@ Worker 전용. reviewer의 `changes-requested` 피드백을 처리하고 다시
 ## 헬퍼 위치 (Claude Code · Codex 공통)
 
 모든 연산은 이 플러그인의 `scripts/session_review.py`(이하 `SR`) **하나로** 한다.
-Claude Code는 `SR="$CLAUDE_PLUGIN_ROOT/scripts/session_review.py"`, 그 외(Codex 등)는
-이 스킬 로드 위치의 플러그인 루트 아래 `scripts/session_review.py`(env
-`SESSION_REVIEW_CLI` override). 백엔드는 하이브리드(wiki 있으면 위임, 없으면 내장).
+해석 순서: `SR="${SESSION_REVIEW_CLI:-$CLAUDE_PLUGIN_ROOT/scripts/session_review.py}"`.
+Codex 등 `$CLAUDE_PLUGIN_ROOT`가 없으면 이 스킬 로드 위치의 플러그인 루트 아래
+`scripts/session_review.py`로 `SR`(또는 `SESSION_REVIEW_CLI`)을 지정한다. 백엔드는
+하이브리드(wiki 있으면 위임, 없으면 내장).
 
 ## 절차
 

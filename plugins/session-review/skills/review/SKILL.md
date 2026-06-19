@@ -14,10 +14,10 @@ Reviewer 전용. 작업 산출물을 검토하고 `approved` 또는
 모든 연산은 이 플러그인의 `scripts/session_review.py`(이하 `SR`) **하나로** 한다.
 wiki_cli를 직접 호출하지 않는다.
 
-- Claude Code: `SR="$CLAUDE_PLUGIN_ROOT/scripts/session_review.py"`.
-- 그 외(Codex 등): 이 스킬 로드 위치의 플러그인 루트 아래 `scripts/session_review.py`.
-  env `SESSION_REVIEW_CLI` override 가능. 스냅샷 백엔드는 하이브리드(wiki 있으면
-  위임, 없으면 내장).
+- 해석 순서: `SR="${SESSION_REVIEW_CLI:-$CLAUDE_PLUGIN_ROOT/scripts/session_review.py}"`.
+  Codex 등 `$CLAUDE_PLUGIN_ROOT`가 없으면 이 스킬 로드 위치의 플러그인 루트 아래
+  `scripts/session_review.py`로 `SR`(또는 `SESSION_REVIEW_CLI`)을 지정한다.
+- 스냅샷 백엔드는 하이브리드(wiki 있으면 위임, 없으면 내장).
 
 ## 절차
 
@@ -46,13 +46,15 @@ wiki_cli를 직접 호출하지 않는다.
      `blocking_count:<n>`. 공통으로 `next_actor:"worker"`, `active_actor:"none"`,
      `lock_since:null`.
    ```bash
-   STATUS=$(python3 "$SR" render --status-json '{...,"phase":"approved","next_actor":"worker","active_actor":"none","lock_since":null,"blocking_count":0}')
+   STATUS=$(python3 "$SR" render --fenced --status-json '{...,"phase":"approved","next_actor":"worker","active_actor":"none","lock_since":null,"blocking_count":0}')
    ```
-   - discussion에 STATUS(첫 yaml block) + 피드백 본문을 함께 써서 갱신한다:
+   - `--fenced`는 status를 ```yaml 펜스째 출력하므로 그대로 discussion에 넣는다.
+   - 피드백은 `### 리뷰 피드백 (round N)` **하위 헤딩**으로 둬서 `## 현재 논의` 안에
+     머물게 한다(sibling `## ...` 금지 — `--merge`가 discussion을 매 라운드 통째
+     교체하므로 누적되지 않는다). `--merge`라 `--title/--summary/--tags`는 생략 가능:
    ```bash
    python3 "$SR" snapshot-save --slug <snapshot> --merge \
-     --title "session-review: <ref>" --summary "Review feedback" --tags session-review,review \
-     --discussion "$(printf '```yaml\n%s\n```\n\n## 리뷰 피드백\n%s\n' "$STATUS" "$FEEDBACK")"
+     --discussion "$(printf '%s\n\n### 리뷰 피드백 (round %s)\n%s\n' "$STATUS" "$ROUND" "$FEEDBACK")"
    ```
 5. 일관성 검증 후 commit
    ```bash

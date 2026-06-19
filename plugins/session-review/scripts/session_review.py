@@ -477,8 +477,19 @@ def cmd_validate_complete(args: argparse.Namespace) -> int:
 
 def cmd_render(args: argparse.Namespace) -> int:
     status = json.loads(args.status_json)
-    print(render_status(status), end="")
+    body = render_status(status)
+    if getattr(args, "fenced", False):
+        print("```yaml\n" + body.rstrip("\n") + "\n```")
+    else:
+        print(body, end="")
     return 0
+
+
+def _parse_tags(raw: str) -> list[str]:
+    raw = raw.strip()
+    if raw.startswith("[") and raw.endswith("]"):
+        raw = raw[1:-1]
+    return [t.strip() for t in raw.split(",") if t.strip()]
 
 
 def _vault_arg(args: argparse.Namespace) -> Path:
@@ -486,11 +497,23 @@ def _vault_arg(args: argparse.Namespace) -> Path:
 
 
 def cmd_snapshot_save(args: argparse.Namespace) -> int:
-    fields = {"title": args.title, "summary": args.summary,
-              "tags": [t.strip() for t in args.tags.split(",") if t.strip()]}
+    vault = _vault_arg(args)
+    title, summary, tags = args.title, args.summary, args.tags
+    # nit #1: a --merge that only touches sections/status need not re-supply
+    # frontmatter — backfill any omitted field from the existing snapshot.
+    if title is None or summary is None or tags is None:
+        if not args.merge:
+            raise StatusError("--title/--summary/--tags are required for a new snapshot")
+        fm_text, _ = _split_frontmatter(snapshot_load(vault, args.slug)["text"])
+        title = title or _fm_scalar(fm_text, "title")
+        summary = summary or _fm_scalar(fm_text, "summary")
+        tags = tags if tags is not None else (_fm_scalar(fm_text, "tags") or "")
+        if not title or not summary or not _parse_tags(tags):
+            raise StatusError("could not backfill --title/--summary/--tags from the existing snapshot")
+    fields = {"title": title, "summary": summary, "tags": _parse_tags(tags)}
     sections = {attr: getattr(args, attr) for attr, _h in SNAPSHOT_SECTIONS
                 if getattr(args, attr) is not None}
-    path = snapshot_save(_vault_arg(args), args.slug, fields, sections, merge=args.merge)
+    path = snapshot_save(vault, args.slug, fields, sections, merge=args.merge)
     print(json.dumps({"ok": True, "path": str(path), "slug": args.slug}, ensure_ascii=False))
     return 0
 
@@ -558,16 +581,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_complete.add_argument("--user-confirmed", action="store_true")
     p_complete.set_defaults(func=cmd_validate_complete)
 
-    p_render = sub.add_parser("render", help="render a status json object as fenced-yaml body")
+    p_render = sub.add_parser("render", help="render a status json object as a yaml status block")
     p_render.add_argument("--status-json", required=True)
+    p_render.add_argument("--fenced", action="store_true",
+                          help="wrap output in a ```yaml fence (ready to embed in --discussion)")
     p_render.set_defaults(func=cmd_render)
 
     p_save = sub.add_parser("snapshot-save", help="save a handshake snapshot (wiki backend or built-in)")
     p_save.add_argument("--vault")
     p_save.add_argument("--slug", required=True)
-    p_save.add_argument("--title", required=True)
-    p_save.add_argument("--summary", required=True)
-    p_save.add_argument("--tags", required=True, help="comma-separated tags")
+    p_save.add_argument("--title", help="required for a new snapshot; reused from existing on --merge")
+    p_save.add_argument("--summary", help="required for a new snapshot; reused from existing on --merge")
+    p_save.add_argument("--tags", help="comma-separated; required for a new snapshot, reused on --merge")
     p_save.add_argument("--merge", action="store_true")
     for _attr, _h in SNAPSHOT_SECTIONS:
         p_save.add_argument(SNAPSHOT_FLAG[_attr], dest=_attr, default=None)
@@ -576,6 +601,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_load = sub.add_parser("snapshot-load", help="load a handshake snapshot")
     p_load.add_argument("--vault")
     p_load.add_argument("--slug", required=True)
+    p_load.add_argument("--json", action="store_true",
+                        help="accepted for parity; output is always JSON")
     p_load.set_defaults(func=cmd_snapshot_load)
 
     p_discard = sub.add_parser("snapshot-discard", help="discard a handshake snapshot")

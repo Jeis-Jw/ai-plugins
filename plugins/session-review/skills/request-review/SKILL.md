@@ -13,9 +13,11 @@ Worker 전용. 리뷰 루프를 시작하거나 재요청한다. 핸드셰이크
 모든 연산은 이 플러그인의 `scripts/session_review.py`(이하 `SR`) **하나로** 한다.
 wiki_cli를 직접 호출하지 않는다.
 
-- Claude Code: `SR="$CLAUDE_PLUGIN_ROOT/scripts/session_review.py"`.
-- 그 외(Codex 등): 이 스킬이 로드된 위치의 플러그인 루트 아래 `scripts/session_review.py`.
-  env `SESSION_REVIEW_CLI`로 명시 지정 가능.
+- 해석 순서: `SR="${SESSION_REVIEW_CLI:-$CLAUDE_PLUGIN_ROOT/scripts/session_review.py}"`.
+  - `SESSION_REVIEW_CLI`(명시 경로)가 있으면 그것, 없으면 Claude Code의
+    `$CLAUDE_PLUGIN_ROOT/scripts/session_review.py`.
+  - Codex 등 `$CLAUDE_PLUGIN_ROOT`가 없는 하니스: 이 스킬이 로드된 위치의 플러그인
+    루트 아래 `scripts/session_review.py` 경로로 `SR`(또는 `SESSION_REVIEW_CLI`)을 지정한다.
 - 스냅샷 백엔드는 하이브리드: wiki-markdown이 있으면 자동 위임, 없으면 내장
   fallback(동일 포맷)으로 동작. `SESSION_REVIEW_WIKI_CLI`로 위치 지정/비활성.
 

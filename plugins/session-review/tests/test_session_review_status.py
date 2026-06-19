@@ -303,6 +303,49 @@ class FacadeCliTests(unittest.TestCase):
             self.assertEqual(r.returncode, 2, r.stdout)
             self.assertIn("blocking", r.stderr)
 
+    def test_snapshot_load_accepts_json_flag(self):
+        # SKILL.md and wiki_cli muscle-memory pass --json; it must be accepted.
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = str(Path(tmp) / "wiki")
+            run_cli("snapshot-save", "--vault", vault, "--slug", "h", "--title", "T",
+                    "--summary", "s", "--tags", "x", "--discussion", "hi",
+                    env=self.BUILTIN)
+            r = run_cli("snapshot-load", "--vault", vault, "--slug", "h", "--json",
+                        env=self.BUILTIN)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("hi", json.loads(r.stdout)["text"])
+
+    def test_merge_reuses_existing_frontmatter_when_omitted(self):
+        # nit #1: a status/feedback-only --merge should not require re-passing
+        # --title/--summary/--tags.
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = str(Path(tmp) / "wiki")
+            run_cli("snapshot-save", "--vault", vault, "--slug", "h",
+                    "--title", "Original Title", "--summary", "orig", "--tags", "a,b",
+                    "--discussion", "FIRST", env=self.BUILTIN)
+            r = run_cli("snapshot-save", "--vault", vault, "--slug", "h", "--merge",
+                        "--decided", "ONLY DECIDED", env=self.BUILTIN)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            text = json.loads(run_cli("snapshot-load", "--vault", vault, "--slug", "h",
+                                      env=self.BUILTIN).stdout)["text"]
+            self.assertIn("title: Original Title", text)   # preserved
+            self.assertIn("FIRST", text)                    # discussion kept
+            self.assertIn("ONLY DECIDED", text)
+
+    def test_merge_on_missing_snapshot_without_fields_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = str(Path(tmp) / "wiki")
+            r = run_cli("snapshot-save", "--vault", vault, "--slug", "nope", "--merge",
+                        "--decided", "x", env=self.BUILTIN)
+            self.assertEqual(r.returncode, 2, r.stdout)
+
+    def test_render_fenced_wraps_in_yaml_fence(self):
+        r = run_cli("render", "--fenced", "--status-json",
+                    '{"phase":"approved","next_actor":"worker","round":1}')
+        self.assertTrue(r.stdout.startswith("```yaml\n"), r.stdout)
+        self.assertIn("phase: \"approved\"", r.stdout)
+        self.assertIn("```", r.stdout.rstrip()[-3:])
+
     def test_self_locates_regardless_of_cwd(self):
         # Run from a foreign cwd; script must still work via __file__/--vault.
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as cwd:
