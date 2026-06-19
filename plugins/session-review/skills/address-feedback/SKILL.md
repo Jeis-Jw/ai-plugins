@@ -8,30 +8,38 @@ description: Worker addresses reviewer feedback in a session-review loop, enforc
 Worker 전용. reviewer의 `changes-requested` 피드백을 처리하고 다시
 `awaiting-review`로 넘긴다.
 
+## 헬퍼 위치 (Claude Code · Codex 공통)
+
+모든 연산은 이 플러그인의 `scripts/session_review.py`(이하 `SR`) **하나로** 한다.
+Claude Code는 `SR="$CLAUDE_PLUGIN_ROOT/scripts/session_review.py"`, 그 외(Codex 등)는
+이 스킬 로드 위치의 플러그인 루트 아래 `scripts/session_review.py`(env
+`SESSION_REVIEW_CLI` override). 백엔드는 하이브리드(wiki 있으면 위임, 없으면 내장).
+
 ## 절차
 
 1. snapshot 로드
    ```bash
-   python3 plugins/wiki-markdown/skills/wiki/scripts/wiki_cli.py snapshot load <snapshot> --json
+   python3 "$SR" snapshot-load --slug <snapshot> --json
    ```
 2. status/lock gate
    ```bash
-   python3 plugins/session-review/scripts/session_review.py validate-turn \
-     --file <loaded-snapshot-path> --actor worker --phase changes-requested
+   python3 "$SR" validate-turn --slug <snapshot> --actor worker --phase changes-requested
    ```
    `phase`는 `changes-requested`여야 한다. `active_actor`가 reviewer면 중단한다.
 3. 피드백 처리
    - blocking 항목은 수용 또는 근거 있는 반박으로 처리한다.
    - nit/non-blocking은 스코프 안에서만 처리하고, 미처리 항목은 이유를 snapshot에 남긴다.
    - target이 `diff`면 리뷰브랜치에서 수정 커밋을 만든다. `document`면 해당 문서를 수정한다.
-4. status 갱신
-   - `phase: "awaiting-review"`
-   - `active_actor: "none"`
-   - `lock_since: null`
-   - `next_actor: "reviewer"`
-   - `responding_to`: 직전 `review: feedback` 커밋 SHA
-   - `round`: +1
-5. wiki snapshot save로 같은 slug를 갱신하고 commit
+4. status 갱신 — `set-status`로 status block만 제자리 교체(나머지 섹션 보존)
+   - `phase:"awaiting-review"`, `active_actor:"none"`, `lock_since:null`,
+     `next_actor:"reviewer"`, `responding_to:<직전 review:feedback SHA>`, `round`:+1,
+     `blocking_count:0`(재요청 시 리셋).
+   ```bash
+   python3 "$SR" set-status --slug <snapshot> \
+     --status-json '{"phase":"awaiting-review","active_actor":"none","lock_since":null,"next_actor":"reviewer","target_mode":"diff","target_ref":"<ref>","base_ref":"<BASE>","responding_to":"<FEEDBACK_SHA>","round":<n+1>,"flow_mode":"<self|separate>","review_strength":"<...>","blocking_count":0}'
+   ```
+   미처리 반박은 `snapshot-save --merge --decided`/`--open-questions`로 남긴다.
+5. 커밋
    ```bash
    git add <target files> wiki/snapshot
    git commit -m "review: request — feedback 반영 후 재검토 요청"
