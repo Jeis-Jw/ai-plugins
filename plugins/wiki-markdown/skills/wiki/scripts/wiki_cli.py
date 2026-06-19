@@ -54,6 +54,10 @@ class TypeSpec:
     is_record: bool
     allowed_relations: Tuple[str, ...]
     sections: Tuple[str, ...]
+    # Subset of `sections` that --lite still expects a body for; the rest are
+    # prefilled "해당 없음" and skipped by quality checks. Empty → no lite skip
+    # (every section stays core).
+    core_sections: Tuple[str, ...] = ()
     allow_verified_at: bool = False
     allow_affects_paths: bool = False
     is_time_stale: bool = False
@@ -76,6 +80,7 @@ TYPE_SPECS: "dict[str, TypeSpec]" = {
         prefix="DEC", is_record=True,
         allowed_relations=("intents", "rejected_decisions", "ssot", "tasks"),
         sections=("결정", "취지", "배경", "고려한 대안", "트레이드오프", "재평가 조건"),
+        core_sections=("결정", "취지"),
     ),
     "rejected_decision": TypeSpec(
         folder=("context", "rejected_decision"),
@@ -131,6 +136,7 @@ TYPE_SPECS: "dict[str, TypeSpec]" = {
         prefix="TASK", is_record=False,
         allowed_relations=("intents", "decisions", "ssot", "tasks"),
         sections=("개요", "근거", "범위와 완료 기준"),
+        core_sections=("근거", "범위와 완료 기준"),
         is_task=True,
     ),
 }
@@ -161,6 +167,57 @@ RELATION_TARGET_TYPES = {
     "ssot": "ssot",
     "runbook": "runbook",
 }
+
+# Section header → stable ascii flag key, for `capture --sec-<key>` inline body
+# input (1-call capture). A parallel table rather than reshaping
+# TypeSpec.sections, so existing section consumers stay untouched. Same header
+# across types maps to the same key (취지→intent everywhere); distinct headers
+# never collide. SECTION_FLAGS is derived per-type so adding a section to a
+# TypeSpec only needs a new entry here.
+HEADER_FLAG_KEYS = {
+    "취지": "intent",
+    "배경": "background",
+    "결정": "decision",
+    "고려한 대안": "alternatives",
+    "트레이드오프": "tradeoffs",
+    "재평가 조건": "reeval",
+    "대안": "alternative",
+    "반려 사유": "rejection",
+    "이 대안의 취지": "rationale",
+    "재고 조건": "reconsider",
+    "교훈": "lesson",
+    "상황": "situation",
+    "피해야 할 것": "avoid",
+    "대안 또는 우회": "workaround",
+    "현재도 유효한가": "still-valid",
+    "관찰": "observation",
+    "근거": "basis",
+    "영향": "impact",
+    "현재 처리": "handling",
+    "후속 분류 조건": "classify",
+    "현재 상태": "state",
+    "구성요소": "components",
+    "목적": "purpose",
+    "절차": "procedure",
+    "주의점": "caveats",
+    "개요": "overview",
+    "범위와 완료 기준": "scope",
+}
+# Per-type {flag_key: header}; built from each TypeSpec's section list.
+SECTION_FLAGS = {
+    t: {HEADER_FLAG_KEYS[h]: h for h in spec.sections}
+    for t, spec in TYPE_SPECS.items()
+}
+# All distinct section flag keys (sorted for deterministic --help output).
+ALL_SECTION_KEYS = sorted(set(HEADER_FLAG_KEYS.values()))
+
+
+def _section_flag_dest(key: str) -> str:
+    return "sec_" + key.replace("-", "_")
+
+
+# Prefill marker for --lite non-core sections.
+LITE_PLACEHOLDER = "해당 없음"
 
 # Fields forbidden in frontmatter (v1 §7, §17 반려).
 FORBIDDEN_FIELDS = ("id", "status", "classified_as")
@@ -379,6 +436,8 @@ def parse_frontmatter(fm_text: str) -> dict:
 
 
 def _yaml_scalar(v) -> str:
+    if isinstance(v, bool):
+        return "true" if v else "false"
     return str(v)
 
 
@@ -1195,6 +1254,22 @@ def snapshot_body_from_args(args) -> str:
     return "\n".join(blocks).rstrip() + "\n"
 
 
+def snapshot_merge_body(existing_body: str, args) -> str:
+    """--merge: rewrite only the sections whose flag was provided (not None),
+    preserving every other section's existing body. An explicit empty string
+    clears that section; an omitted flag leaves it untouched."""
+    body = existing_body
+    for attr, header in SNAPSHOT_SECTIONS:
+        value = getattr(args, attr, None)
+        if value is None:
+            continue
+        value = _nfc(value).strip()
+        body = _replace_section(body, f"## {header}", value.split("\n") if value else [])
+    if not body.endswith("\n"):
+        body += "\n"
+    return body
+
+
 def write_snapshot(path: Path, fm: dict, body: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(serialize_frontmatter(fm) + body, encoding="utf-8")
@@ -1446,13 +1521,42 @@ def cmd_capture(args) -> int:
         fm["affects_paths"] = affects_paths
     if supersedes_id:
         fm["supersedes"] = [supersedes_id]
+    if args.lite:
+        fm["lite"] = True
     if resolved:
         fm["relations"] = resolved
+
+    # Inline section bodies (--sec-<key>): 1-call capture. Only flags belonging
+    # to this type are accepted; a flag for another type's section is a
+    # deterministic usage error rather than a silently dropped value.
+    type_keys = SECTION_FLAGS[t]
+    section_bodies: dict = {}
+    for key in ALL_SECTION_KEYS:
+        val = getattr(args, _section_flag_dest(key), None)
+        if val is None:
+            continue
+        if key not in type_keys:
+            raise CliError(EXIT_USAGE, "section_flag_not_allowed",
+                           f"--sec-{key} is not a section of type '{t}' "
+                           f"(its sections: {','.join(type_keys)})")
+        section_bodies[type_keys[key]] = _nfc(val).strip()
+
+    # --lite: prefill every non-core section with an explicit "해당 없음" so the
+    # intent (deliberately skipped, not forgotten) is visible, and quality
+    # checks can recognise the doc as lite. Core sections still need real input.
+    if args.lite:
+        for sec in spec.sections:
+            if spec.core_sections and sec not in spec.core_sections \
+                    and not section_bodies.get(sec):
+                section_bodies[sec] = LITE_PLACEHOLDER
 
     body_lines = [""]
     for sec in spec.sections:
         body_lines.append(f"## {sec}")
         body_lines.append("")
+        if section_bodies.get(sec):
+            body_lines.append(section_bodies[sec])
+            body_lines.append("")
     body = "\n".join(body_lines) + "\n"
 
     target = folder / f"{bn}.md"
@@ -1749,7 +1853,6 @@ def cmd_snapshot_save(args) -> int:
             raise CliError(EXIT_USAGE, "placeholder_input", "--tags must not contain placeholders")
 
     today = now().strftime("%Y-%m-%d")
-    body = snapshot_body_from_args(args)
     search_terms = parse_csv(getattr(args, "search_terms", None))
 
     # One file per slug: re-saving the same slug rewrites it in place, keeping
@@ -1765,6 +1868,14 @@ def cmd_snapshot_save(args) -> int:
     else:
         created_at = today
         updated_at = None
+
+    # --merge updates only the provided sections of an existing snapshot; the
+    # default stays full replace so existing callers keep their semantics.
+    if getattr(args, "merge", False) and path.exists():
+        _, prev_body = split_frontmatter(path.read_text(encoding="utf-8"))
+        body = snapshot_merge_body(prev_body, args)
+    else:
+        body = snapshot_body_from_args(args)
 
     fm = {
         "title": title,
@@ -2099,6 +2210,24 @@ def _relation_values(d: WikiDoc, field: str) -> List[str]:
     return values if isinstance(values, list) else []
 
 
+def _is_lite(d: WikiDoc) -> bool:
+    # Frontmatter scalars are parsed as strings, so `lite: false` arrives as the
+    # truthy string "false"; treat only real YAML-true values as lite.
+    v = d.frontmatter.get("lite")
+    if isinstance(v, bool):
+        return v
+    return str(v).strip().lower() in ("true", "1", "yes")
+
+
+def _quality_skips_section(d: WikiDoc, header: str) -> bool:
+    """A --lite doc skips quality on its non-core sections; relations and core
+    sections are always enforced. Types without core_sections never skip."""
+    if not _is_lite(d):
+        return False
+    core = TYPE_SPECS[d.doc_type].core_sections
+    return bool(core) and header not in core
+
+
 def _check_decision_quality(d: WikiDoc, issues: List[dict]) -> None:
     if d.doc_type != "decision":
         return
@@ -2108,6 +2237,8 @@ def _check_decision_quality(d: WikiDoc, issues: List[dict]) -> None:
             "결정은 취지 추적을 위해 relations.intents를 최소 1개 가져야 함",
         )
     for header in ("취지", "배경", "고려한 대안", "트레이드오프", "재평가 조건"):
+        if _quality_skips_section(d, header):
+            continue
         if not _has_substantive_section(d.body, header):
             _append_quality_issue(
                 issues, "decision-quality", d, f"## {header}",
@@ -2302,7 +2433,13 @@ def cmd_refresh(args) -> int:
 
     if "orphan" in checks:
         incoming: dict = {}
-        for d in all_active:
+        # A done task that relations→X is a valid backlink ("what did this
+        # decision spawn?") — find_backlinks already counts done docs, so
+        # orphan must too, or a record backlinked only by a completed task
+        # would falsely read as orphan. Retired (wrong/superseded) docs stay
+        # excluded, matching the active-only intent for orphan candidates.
+        incoming_sources = all_active + [d for d in all_docs if d.done]
+        for d in incoming_sources:
             rel = d.frontmatter.get("relations")
             if not isinstance(rel, dict):
                 continue
@@ -2803,6 +2940,13 @@ def build_parser() -> argparse.ArgumentParser:
                     help="comma-separated globs (ssot/runbook/trial_error/observation only)")
     pc.add_argument("--search-terms", default=None, dest="search_terms",
                     help="comma-separated optional search keywords")
+    for _key in ALL_SECTION_KEYS:
+        pc.add_argument(f"--sec-{_key}", default=None, dest=_section_flag_dest(_key),
+                        help=f"inline body for the section mapped to '{_key}' "
+                             f"(only valid for types that have it)")
+    pc.add_argument("--lite", action="store_true",
+                    help="core sections only; prefill the rest with '해당 없음' and "
+                         "mark the doc so opt-in quality checks skip non-core sections")
     pc.add_argument("--dry-run", action="store_true")
     pc.set_defaults(func=cmd_capture)
 
@@ -2854,13 +2998,16 @@ def build_parser() -> argparse.ArgumentParser:
     pss.add_argument("--tags", required=True, help="comma-separated tags")
     pss.add_argument("--slug", default=None)
     pss.add_argument("--search-terms", default=None, dest="search_terms")
-    pss.add_argument("--discussion", default="")
-    pss.add_argument("--background", default="")
-    pss.add_argument("--decided", default="")
-    pss.add_argument("--open-questions", default="", dest="open_questions")
-    pss.add_argument("--next", default="", dest="next_steps")
-    pss.add_argument("--references", default="")
-    pss.add_argument("--promotion-candidates", default="", dest="promotion_candidates")
+    pss.add_argument("--merge", action="store_true",
+                     help="update only the provided sections, preserving the rest "
+                          "(default: replace all sections)")
+    pss.add_argument("--discussion", default=None)
+    pss.add_argument("--background", default=None)
+    pss.add_argument("--decided", default=None)
+    pss.add_argument("--open-questions", default=None, dest="open_questions")
+    pss.add_argument("--next", default=None, dest="next_steps")
+    pss.add_argument("--references", default=None)
+    pss.add_argument("--promotion-candidates", default=None, dest="promotion_candidates")
     pss.set_defaults(func=cmd_snapshot_save)
 
     psl = snap.add_parser("list", help="list/search current snapshots")

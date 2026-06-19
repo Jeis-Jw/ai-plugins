@@ -55,6 +55,16 @@ class AgentPolicyScaffoldTests(unittest.TestCase):
                 self.assertIn("task-github", text)
                 self.assertIn("Rationale commits", text)
 
+    def test_scaffold_includes_capture_threshold_and_gear_budget(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = run_policy("--target", "claude", "--json", cwd=tmp)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            text = (Path(tmp) / "CLAUDE.md").read_text()
+            self.assertIn("Capture threshold", text)
+            self.assertIn("refresh once", text)
+            self.assertIn("gear:micro", text)
+            self.assertIn("gear:major", text)
+
     def test_scaffold_is_idempotent_and_preserves_existing_content(self):
         with tempfile.TemporaryDirectory() as tmp:
             claude = Path(tmp) / "CLAUDE.md"

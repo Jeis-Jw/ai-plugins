@@ -3076,5 +3076,254 @@ class WikiCliQualityGateTests(unittest.TestCase):
             self.assertEqual(json.loads(result.stdout)["issues"], [])
 
 
+class WikiCliEfficiencyTests(unittest.TestCase):
+    """운용 효율 개선 (문서 오버헤드 감소) — orphan/snapshot/capture/lite."""
+
+    def _init(self, tmp):
+        result = run_cli("init", cwd=tmp)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def _orphan_codes(self, tmp):
+        r = run_cli("refresh", "--check", "orphan", "--json", cwd=tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return [i for i in json.loads(r.stdout)["issues"] if i["check"] == "orphan"]
+
+    # ── Item 1: orphan incoming includes done-task backlinks ──────────────
+    def test_orphan_includes_done_task_backlinks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            env = {"WIKI_NOW": "2026-06-19T12:00:00"}
+            dec = run_cli(
+                "capture", "decision",
+                "--title", "Lone Decision",
+                "--summary", "A decision with no outgoing relations.",
+                "--tags", "x",
+                "--json", cwd=tmp, env=env,
+            )
+            self.assertEqual(dec.returncode, 0, dec.stderr)
+            dec_id = json.loads(dec.stdout)["id"]
+
+            task = run_cli(
+                "capture", "task",
+                "--title", "Work On Lone",
+                "--summary", "Implements the lone decision.",
+                "--tags", "x",
+                "--decisions", dec_id,
+                "--json", cwd=tmp, env=env,
+            )
+            self.assertEqual(task.returncode, 0, task.stderr)
+            task_id = json.loads(task.stdout)["id"]
+
+            # baseline: task active → decision is backlinked → not orphan
+            self.assertEqual(self._orphan_codes(tmp), [])
+
+            done = run_cli("complete", task_id, cwd=tmp, env=env)
+            self.assertEqual(done.returncode, 0, done.stderr)
+
+            # after completion the done task's backlink must still count
+            self.assertEqual(self._orphan_codes(tmp), [])
+
+    def test_orphan_still_flags_record_with_no_backlinks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            env = {"WIKI_NOW": "2026-06-19T12:00:00"}
+            dec = run_cli(
+                "capture", "decision",
+                "--title", "Truly Lone",
+                "--summary", "No relations, no backlinks.",
+                "--tags", "x",
+                "--json", cwd=tmp, env=env,
+            )
+            self.assertEqual(dec.returncode, 0, dec.stderr)
+            codes = self._orphan_codes(tmp)
+            self.assertEqual(len(codes), 1, codes)
+            self.assertIn(json.loads(dec.stdout)["id"], codes[0]["message"])
+
+
+    # ── Item 2: snapshot save --merge (opt-in partial update) ─────────────
+    def _snap_load_text(self, tmp, slug):
+        r = run_cli("snapshot", "load", slug, "--json", cwd=tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return json.loads(r.stdout)["text"]
+
+    def test_snapshot_merge_preserves_omitted_sections(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            base = run_cli(
+                "snapshot", "save",
+                "--title", "Thread", "--summary", "s", "--tags", "x",
+                "--slug", "thread",
+                "--discussion", "ORIGINAL DISCUSSION",
+                "--decided", "ORIGINAL DECIDED",
+                cwd=tmp, env={"WIKI_NOW": "2026-06-19T12:00:00"},
+            )
+            self.assertEqual(base.returncode, 0, base.stderr)
+
+            merged = run_cli(
+                "snapshot", "save",
+                "--title", "Thread", "--summary", "s", "--tags", "x",
+                "--slug", "thread", "--merge",
+                "--decided", "UPDATED DECIDED",
+                cwd=tmp, env={"WIKI_NOW": "2026-06-19T13:00:00"},
+            )
+            self.assertEqual(merged.returncode, 0, merged.stderr)
+            text = self._snap_load_text(tmp, "thread")
+            self.assertIn("ORIGINAL DISCUSSION", text)   # omitted → preserved
+            self.assertIn("UPDATED DECIDED", text)        # provided → updated
+            self.assertNotIn("ORIGINAL DECIDED", text)
+
+    def test_snapshot_default_save_stays_replace_semantics(self):
+        # 하위호환: --merge 없으면 종전대로 전체 재작성(생략 섹션 비워짐).
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            run_cli(
+                "snapshot", "save",
+                "--title", "Thread", "--summary", "s", "--tags", "x",
+                "--slug", "thread",
+                "--discussion", "ORIGINAL DISCUSSION",
+                "--decided", "ORIGINAL DECIDED",
+                cwd=tmp, env={"WIKI_NOW": "2026-06-19T12:00:00"},
+            )
+            run_cli(
+                "snapshot", "save",
+                "--title", "Thread", "--summary", "s", "--tags", "x",
+                "--slug", "thread",
+                "--discussion", "NEW DISCUSSION",
+                cwd=tmp, env={"WIKI_NOW": "2026-06-19T13:00:00"},
+            )
+            text = self._snap_load_text(tmp, "thread")
+            self.assertIn("NEW DISCUSSION", text)
+            self.assertNotIn("ORIGINAL DECIDED", text)   # dropped under replace
+
+
+    # ── Item 3: capture section flags (1-call capture) ────────────────────
+    def test_capture_section_flags_fill_body_in_one_call(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            env = {"WIKI_NOW": "2026-06-19T12:00:00"}
+            r = run_cli(
+                "capture", "decision",
+                "--title", "Flagged Decision",
+                "--summary", "Decision captured in one call.",
+                "--tags", "x",
+                "--sec-decision", "우리는 X를 선택한다.",
+                "--sec-background", "기존 방식은 느렸다.",
+                "--json", cwd=tmp, env=env,
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+            path = Path(json.loads(r.stdout)["path"])
+            text = path.read_text()
+            self.assertIn("## 결정\n\n우리는 X를 선택한다.", text)
+            self.assertIn("## 배경\n\n기존 방식은 느렸다.", text)
+            # untouched sections keep empty headers
+            self.assertIn("## 트레이드오프", text)
+
+    def test_capture_section_flag_foreign_to_type_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            env = {"WIKI_NOW": "2026-06-19T12:00:00"}
+            # 절차 (--sec-procedure) belongs to runbook, not decision
+            r = run_cli(
+                "capture", "decision",
+                "--title", "Bad Flag",
+                "--summary", "Uses a foreign section flag.",
+                "--tags", "x",
+                "--sec-procedure", "이건 decision 섹션이 아니다.",
+                cwd=tmp, env=env,
+            )
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn("sec-procedure", r.stderr)
+
+    def test_capture_without_section_flags_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            env = {"WIKI_NOW": "2026-06-19T12:00:00"}
+            r = run_cli(
+                "capture", "intent",
+                "--title", "Plain Intent",
+                "--summary", "No section flags.",
+                "--tags", "x",
+                "--json", cwd=tmp, env=env,
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+            text = Path(json.loads(r.stdout)["path"]).read_text()
+            self.assertIn("## 취지\n\n## 배경", text)
+
+
+    # ── Item 4: --lite capture (core-only body, quality skips non-core) ───
+    def _capture_lite_decision(self, tmp, env, lite):
+        intent = run_cli(
+            "capture", "intent",
+            "--title", "Speed Intent", "--summary", "Be fast.", "--tags", "x",
+            "--json", cwd=tmp, env=env,
+        )
+        self.assertEqual(intent.returncode, 0, intent.stderr)
+        intent_id = json.loads(intent.stdout)["id"]
+        args = [
+            "capture", "decision",
+            "--title", "Lite Decision",
+            "--summary", "Captured with only core sections.",
+            "--tags", "x",
+            "--intents", intent_id,
+            "--sec-decision", "우리는 캐시를 도입한다 이번 분기 안에 반드시.",
+            "--sec-intent", "이 결정은 신규 가입 속도를 충분히 높이기 위한 것이다.",
+            "--json",
+        ]
+        if lite:
+            args.append("--lite")
+        r = run_cli(*args, cwd=tmp, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return Path(json.loads(r.stdout)["path"])
+
+    def test_lite_capture_skips_noncore_quality(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            env = {"WIKI_NOW": "2026-06-19T12:00:00"}
+            path = self._capture_lite_decision(tmp, env, lite=True)
+            text = path.read_text()
+            self.assertIn("lite: true", text)
+            self.assertIn("## 배경\n\n해당 없음", text)   # non-core prefilled
+            r = run_cli("refresh", "--check", "decision-quality", "--json", cwd=tmp)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(json.loads(r.stdout)["issues"], [])
+
+    def test_noncore_quality_still_flagged_without_lite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            env = {"WIKI_NOW": "2026-06-19T12:00:00"}
+            self._capture_lite_decision(tmp, env, lite=False)
+            r = run_cli("refresh", "--check", "decision-quality", "--json", cwd=tmp)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            codes = json.loads(r.stdout)["issues"]
+            self.assertTrue(len(codes) >= 1, codes)  # non-core sections flagged
+
+
+    def test_lite_false_frontmatter_is_not_treated_as_lite(self):
+        # A literal `lite: false` must NOT skip quality (string truthiness trap).
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            dec_dir = Path(tmp) / "wiki" / "context" / "decision"
+            (dec_dir / "DEC-2026-06-19-120000-manual.md").write_text(
+                "---\n"
+                "title: Manual Decision\n"
+                "created_at: 2026-06-19\n"
+                "summary: Manually written with lite false.\n"
+                "tags: [x]\n"
+                "lite: false\n"
+                "---\n\n"
+                "## 결정\n\n우리는 무언가를 확실하게 결정했다 이번에.\n\n"
+                "## 취지\n\n이 결정의 취지는 충분히 길게 설명되어 있다 정말로.\n\n"
+                "## 배경\n\n"
+                "## 고려한 대안\n\n"
+                "## 트레이드오프\n\n"
+                "## 재평가 조건\n\n",
+                encoding="utf-8",
+            )
+            r = run_cli("refresh", "--check", "decision-quality", "--json", cwd=tmp)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            fields = [i.get("field", "") for i in json.loads(r.stdout)["issues"]]
+            self.assertTrue(any("배경" in f for f in fields), fields)
+
+
 if __name__ == "__main__":
     unittest.main()
