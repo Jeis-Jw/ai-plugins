@@ -3298,6 +3298,87 @@ class WikiCliEfficiencyTests(unittest.TestCase):
             self.assertTrue(len(codes) >= 1, codes)  # non-core sections flagged
 
 
+    # ── PR-review follow-ups: coverage gaps + drift guard ────────────────
+    def test_section_flags_cover_every_type_section(self):
+        # Guard the HEADER_FLAG_KEYS / TYPE_SPECS.sections two-table drift: a
+        # missing key would KeyError at import and break every subcommand.
+        sys.path.insert(0, str(CLI.parent))
+        try:
+            import wiki_cli as mod
+        finally:
+            sys.path.pop(0)
+        for t, ts in mod.TYPE_SPECS.items():
+            for header in ts.sections:
+                self.assertIn(header, mod.HEADER_FLAG_KEYS, f"{t}:{header}")
+
+    def test_orphan_excludes_retired_backlinks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            env = {"WIKI_NOW": "2026-06-19T12:00:00"}
+            dec = run_cli(
+                "capture", "decision",
+                "--title", "Backlinked Decision", "--summary", "s.", "--tags", "x",
+                "--json", cwd=tmp, env=env,
+            )
+            dec_id = json.loads(dec.stdout)["id"]
+            obs = run_cli(
+                "capture", "observation",
+                "--title", "Observes Dec", "--summary", "s.", "--tags", "x",
+                "--decisions", dec_id,
+                "--json", cwd=tmp, env=env,
+            )
+            obs_id = json.loads(obs.stdout)["id"]
+            self.assertEqual(self._orphan_codes(tmp), [])  # active backlink
+
+            ret = run_cli("retire", obs_id, "--type", "deprecated", cwd=tmp, env=env)
+            self.assertEqual(ret.returncode, 0, ret.stderr)
+            # retired backlink must NOT count → decision becomes orphan
+            codes = self._orphan_codes(tmp)
+            self.assertTrue(any(dec_id in c["message"] for c in codes), codes)
+
+    def test_snapshot_merge_empty_string_clears_section(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            run_cli(
+                "snapshot", "save", "--title", "T", "--summary", "s", "--tags", "x",
+                "--slug", "thread", "--discussion", "KEEP ME", "--decided", "DROP ME",
+                cwd=tmp, env={"WIKI_NOW": "2026-06-19T12:00:00"},
+            )
+            run_cli(
+                "snapshot", "save", "--title", "T", "--summary", "s", "--tags", "x",
+                "--slug", "thread", "--merge", "--decided", "",
+                cwd=tmp, env={"WIKI_NOW": "2026-06-19T13:00:00"},
+            )
+            text = self._snap_load_text(tmp, "thread")
+            self.assertIn("KEEP ME", text)            # omitted → preserved
+            self.assertNotIn("DROP ME", text)         # explicit "" → cleared
+
+    def test_snapshot_merge_on_new_slug_creates_full_scaffold(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            r = run_cli(
+                "snapshot", "save", "--title", "Fresh", "--summary", "s", "--tags", "x",
+                "--slug", "fresh", "--merge", "--decided", "ONLY DECIDED",
+                cwd=tmp, env={"WIKI_NOW": "2026-06-19T12:00:00"},
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+            text = self._snap_load_text(tmp, "fresh")
+            self.assertIn("## 정해진 것\n\nONLY DECIDED", text)
+            self.assertIn("## 현재 논의", text)        # all headers scaffolded
+
+    def test_capture_sec_empty_string_leaves_header_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            r = run_cli(
+                "capture", "decision",
+                "--title", "Empty Sec", "--summary", "s.", "--tags", "x",
+                "--sec-decision", "",
+                "--json", cwd=tmp, env={"WIKI_NOW": "2026-06-19T12:00:00"},
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+            text = Path(json.loads(r.stdout)["path"]).read_text()
+            self.assertIn("## 결정\n\n## 취지", text)   # empty body, header kept
+
     def test_lite_false_frontmatter_is_not_treated_as_lite(self):
         # A literal `lite: false` must NOT skip quality (string truthiness trap).
         with tempfile.TemporaryDirectory() as tmp:
