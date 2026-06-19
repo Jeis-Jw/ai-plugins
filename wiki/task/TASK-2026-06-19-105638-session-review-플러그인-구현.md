@@ -6,6 +6,7 @@ tags: [session-review, implementation]
 relations:
   ssot: [session-review-plugin]
   decisions: [DEC-2026-06-18-224414-session-review를-wiki-기능-위-리뷰-루프로-설계]
+  tasks: [Jeis-Jw/ai-plugins#10]
 ---
 
 ## 개요
