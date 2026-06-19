@@ -119,7 +119,7 @@ ROOT=${PARENT:-{N}}
 **(b) 루트 이슈에서 연결 task 노드 ID 얻기** — 본문 `## Wiki Context`의 `[[TASK-...]]` 파싱:
 ```bash
 TASK=$(gh issue view "$ROOT" --json body --jq '.body' \
-  | grep -oE 'TASK-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}-[A-Za-z0-9-]+' | head -1)
+  | grep -oE 'TASK-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}-[^][:space:]).,]+' | head -1)
 ```
 캡처의 `--tasks`에는 `"$OWNER/$REPO#$ROOT"`를, `complete`/`reopen`에는 `"$TASK"`를 쓴다. 위키 미가용이거나 `## Wiki Context`가 없으면 `$TASK`는 빈 값 — 해당 위키 단계만 스킵(작업 막지 않음).
 
@@ -152,7 +152,7 @@ TASK=$(gh issue view "$ROOT" --json body --jq '.body' \
 | `verify` | 태그→타입 캡처(제안), observation 승격 검토, `refresh --level integrity --strict` hard gate + hygiene 경고, decision/task 품질 FLAG |
 | `done` | PR diff → `refresh --check changed-path-stale` hard gate; major면 ADR → `capture decision` |
 | `review` | pr-verifier에 연결 task의 `decisions` 전달(반려 대안 회귀 점검) |
-| `merge` | 머지 전 `refresh --level integrity --strict` + PR diff drift hard gate(hygiene 경고); 루트 이슈 close 시 task `complete` |
+| `merge` | 머지 전 `refresh --level integrity --strict` + PR diff drift hard gate(hygiene 경고); `closeout.py`(git/gh)가 머지·정리·루트 닫힘 감지 → 방출한 `task_to_complete`로 task `complete` |
 
 ---
 

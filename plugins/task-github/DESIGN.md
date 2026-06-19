@@ -485,7 +485,7 @@ flag는 block이 아니라 confirm 전 보완 신호다. 단, flag가 있는데 
 
 ### 7.10 `merge` — PR 머지
 - **입력**: `{PR}`. **동작**: 연결 Issue 추출→dependency 차단 재확인→PR+Issue **상태 라벨만 제거**(gear 유지)→`gh pr merge --merge --delete-branch`→downstream 안내→로컬 정리+`git checkout main`+`git pull`.
-- **위키(핵심)**: 머지 전 `refresh --level integrity --strict` + PR diff `changed-path-stale` hard gate를 통과해야 한다. 이 머지로 **루트 이슈가 close되면**(업무 완료) 연결 task 노드를 `complete`로 `done/` 전이([§6.5]). 단일 리프 업무면 그 이슈 close가 곧 업무 완료. 컨테이너 업무면 마지막 자식 close 시점.
+- **위키(핵심)**: 머지 전 `refresh --level integrity --strict` + PR diff `changed-path-stale` hard gate를 통과해야 한다. 게이트 통과 후 **`skills/merge/scripts/closeout.py`**(git/gh 전용, wiki 미호출)가 연결이슈 해석·blocker 재확인·라벨 정리·머지·브랜치 정리·downstream 안내·루트 닫힘 감지를 결정적으로 처리하고 `task_to_complete`를 방출한다(`--dry-run` 사전 검증). 이 머지로 **루트 이슈가 close되면**(업무 완료) 방출된 id로 연결 task 노드를 `complete`로 `done/` 전이([§6.5]). 단일 리프 업무면 그 이슈 close가 곧 업무 완료. 컨테이너 업무면 마지막 자식 close 시점.
 - **불변식**: `--merge` 방식. 상태 라벨 제거하되 `gear:*` 유지. Issue는 `Closes #N`으로 자동 close.
 
 ---
