@@ -92,6 +92,16 @@ def render_policy(profile: str, tracker: str, concurrency: str) -> str:
             "exists; gear:major keeps task plus DEC/SSOT."
         ),
         (
+            "- Ceremony scales to blast radius, not design-unit count: decompose "
+            "for thinking, bundle for shipping. Bundle same-gear same-theme changes "
+            "that share one rollback unit into a single PR; isolate irreversible or "
+            "high-blast-radius work and give it adversarial review. A change outside "
+            "a tracked flow still gets an effective gear by the same blast-radius "
+            "test. Never bundle to slip an unreviewed change under a sibling's "
+            "review, and don't turn each design decision into its own ship-cycle. "
+            "(Mechanism: the gear→PR/review table in the task protocol where present.)"
+        ),
+        (
             "- Rationale commits: capture decisions, rejected alternatives, and "
             "other rationale records directly on main; code changes go via PR "
             "branches that reference the DEC id. task-github define commits its "
