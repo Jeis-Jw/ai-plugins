@@ -78,7 +78,7 @@
 | **major / 비가역** | **격리 PR** | 적대적 — self-flow(+PR-gate), 필요 시 다중 라운드 |
 
 - **묶음 상한:** 한 번에 리뷰 가능한 diff + **단일 롤백 단위**까지만. 한 변경을 되돌릴 때 무관한 변경까지 되돌려야 하면 **분리**한다(롤백 입도가 진짜 제약, 테마 아님).
-- **차단 의존**의 정의는 [quality-gates.md](quality-gates.md) G4 재사용: touched/affects 경로 겹침 + 미선언 dependency, 또는 GitHub `blocked_by`. 같은 PR이면 함께 머지되므로 의존이 분리 사유가 아니다.
+- **차단 의존**의 정의: [quality-gates.md](quality-gates.md) G4의 경로 겹침(touched/affects 겹침 + 미선언 dependency) + GitHub `blocked_by`(§5). 같은 PR이면 함께 머지되므로 의존이 분리 사유가 아니다.
 - **항상 분리(묶지 않음):** 비가역(`gh pr merge`)·외부계약/마이그레이션 변경, 독립 롤백이 필요한 변경, 격리 추론이 필요한 보안·데이터성 변경.
 - **기어 혼합 시 가장 높은 기어가 지배** (§2와 동일): 같은 테마라도 micro+major를 묶어 리뷰를 낮추지 않는다.
 - **묶음은 출하 효율을 위한 것이지, 형제 PR 리뷰에 미검증 변경을 끼워 넣는 통로가 아니다.**
