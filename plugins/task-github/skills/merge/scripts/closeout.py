@@ -25,7 +25,7 @@ from typing import List, Optional
 STATE_LABELS = ("in-review", "in-progress", "changes-requested")
 # Unicode-safe: the slug may contain Korean. Stop at whitespace or bracket so a
 # trailing ``]`` / ``)`` in markdown doesn't get swallowed.
-TASK_ID_RE = re.compile(r"TASK-\d{4}-\d{2}-\d{2}-\d{6}-[^\s)\]]+")
+TASK_ID_RE = re.compile(r"TASK-\d{4}-\d{2}-\d{2}-\d{6}-[^\s)\],.]+")
 LINKED_ISSUE_RE = re.compile(r"(?i)\b(?:closes|fixes|resolves)\s+#(\d+)")
 
 
@@ -66,10 +66,6 @@ def _run(cmd: List[str], *, code: str) -> str:
 
 def gh(args: List[str], *, code: str = "gh_failed") -> str:
     return _run(["gh", *args], code=code)
-
-
-def git(args: List[str], *, code: str = "git_failed") -> str:
-    return _run(["git", *args], code=code)
 
 
 def _repo() -> tuple[str, str]:
@@ -161,19 +157,29 @@ def run_closeout(pr: int, *, dry_run: bool) -> dict:
         gh(["issue", "edit", str(issue), "--remove-label", lbl], code="label_failed")
 
     gh(["pr", "merge", str(pr), "--merge", "--delete-branch"], code="merge_failed")
-    git(["checkout", view["baseRefName"]])
-    git(["pull"])
-    # Local branch may not exist (review from a fresh clone) — ignore failure.
-    subprocess.run(["git", "branch", "-d", head], text=True,
-                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-    # After merge the container may have auto-closed; detect now.
+    # Detect the (possibly now-closed) root + task id RIGHT AFTER the
+    # irreversible merge — before any local-sync step that could fail — so a
+    # dirty worktree / pull conflict can never swallow `task_to_complete` and
+    # leave the wiki task node stranded in active/ while the root issue is closed.
     root, root_closed, task = _detect_root_task(owner, repo, issue)
-    return {
+    result = {
         "ok": True, "dry_run": False, "pr": pr, "issue": issue, "head": head,
         "merged": True, "downstream": downstream,
         "root": root, "root_closed": root_closed, "task_to_complete": task,
     }
+
+    # Local sync is best-effort: the merge already landed on the remote, so a
+    # failure here must not abort (and must not hide the result above).
+    sync_warnings = []
+    for cmd in (["git", "checkout", view["baseRefName"]], ["git", "pull"],
+                ["git", "branch", "-d", head]):
+        r = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if r.returncode != 0:
+            sync_warnings.append(f"{' '.join(cmd)}: {r.stderr.strip() or r.stdout.strip()}")
+    if sync_warnings:
+        result["sync_warnings"] = sync_warnings
+    return result
 
 
 def main(argv: Optional[List[str]] = None) -> int:

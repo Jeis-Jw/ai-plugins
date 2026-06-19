@@ -42,6 +42,12 @@ class ExtractTaskIdTests(unittest.TestCase):
         self.assertEqual(closeout.extract_task_id("[[TASK-2026-06-19-120000-abc]]"),
                          "TASK-2026-06-19-120000-abc")
 
+    def test_stops_at_trailing_punctuation(self):
+        self.assertEqual(closeout.extract_task_id("done: TASK-2026-06-19-120000-abc."),
+                         "TASK-2026-06-19-120000-abc")
+        self.assertEqual(closeout.extract_task_id("TASK-2026-06-19-120000-abc, next"),
+                         "TASK-2026-06-19-120000-abc")
+
     def test_none_when_absent(self):
         self.assertIsNone(closeout.extract_task_id("no task here"))
 
