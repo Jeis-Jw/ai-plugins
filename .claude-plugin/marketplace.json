@@ -16,6 +16,12 @@
       "source": "./plugins/task-github",
       "description": "GitHub 기반 자율 작업 프로토콜 — Issue 추적·Plan Mode·PR 검증을 wiki-markdown task 노드로 결정 그래프와 연계. 프로파일·기어·플로우 3축 분류, 10개 스킬, PR 검증 서브에이전트.",
       "version": "0.3.1"
+    },
+    {
+      "name": "session-review",
+      "source": "./plugins/session-review",
+      "description": "wiki snapshot과 git review branch로 worker/reviewer 세션 리뷰 루프를 운영하는 플러그인.",
+      "version": "0.1.0"
     }
   ]
 }

@@ -3,7 +3,7 @@ title: session-review 플러그인
 created_at: 2026-06-18
 summary: 독립 두 세션(작업자·리뷰어)이 wiki snapshot 소통채널과 git 리뷰브랜치로 산출물을 리뷰 루프로 수렴시키는 플러그인 설계 정본
 tags: [session-review, review, design]
-verified_at: 2026-06-18
+verified_at: 2026-06-19
 affects_paths: [plugins/session-review/**]
 ---
 

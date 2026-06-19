@@ -1,0 +1,23 @@
+{
+  "name": "session-review",
+  "version": "0.1.0",
+  "description": "Wiki snapshot and git review-branch protocol for worker/reviewer session review loops.",
+  "author": {
+    "name": "Jinwuk-Lee",
+    "url": "https://github.com/Jeis-Jw"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Session Review",
+    "shortDescription": "Coordinate worker/reviewer review loops through wiki snapshots and git branches.",
+    "longDescription": "Runs an internal session-review protocol where a worker and reviewer converge code or document work using a wiki snapshot handshake, a review branch, parseable status blocks, lock enforcement, and an explicit user-confirmed completion gate.",
+    "developerName": "Jinwuk-Lee",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write", "Validation", "Workflow"],
+    "defaultPrompt": [
+      "Use $request-review to start a review loop.",
+      "Use $review to inspect the requested review branch.",
+      "Use $complete after reviewer approval and user confirmation."
+    ]
+  }
+}
