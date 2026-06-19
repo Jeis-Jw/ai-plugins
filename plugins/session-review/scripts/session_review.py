@@ -348,6 +348,37 @@ def _render_snapshot_body(section_values: dict[str, str]) -> str:
     return "\n".join(blocks).rstrip() + "\n"
 
 
+def _replace_h2_section(text: str, header: str, body_lines: list[str]) -> str:
+    """Replace the body under an H2 header (creates it if missing). Mirrors
+    wiki_cli's section replacer so the built-in index matches its format."""
+    lines = text.split("\n")
+    start = next((i for i, ln in enumerate(lines) if ln.rstrip() == header), None)
+    block = [""] + (["\n".join(body_lines), ""] if body_lines else [])
+    if start is None:
+        if lines and lines[-1] != "":
+            lines.append("")
+        return "\n".join(lines + [header] + block)
+    end = next((j for j in range(start + 1, len(lines)) if lines[j].startswith("## ")),
+               len(lines))
+    return "\n".join(lines[: start + 1] + block + lines[end:])
+
+
+def _rewrite_builtin_snapshot_index(vault: Path) -> None:
+    """Keep wiki/snapshot/snapshot.md in sync — but only if it already exists
+    (created by wiki init). Matches wiki_cli, which also no-ops without it."""
+    idx = vault / SNAPSHOT_DIRNAME / "snapshot.md"
+    if not idx.is_file():
+        return
+    lines = []
+    for path in sorted((vault / SNAPSHOT_DIRNAME).glob("SNAP-*.md")):
+        fm_text, _ = _split_frontmatter(path.read_text(encoding="utf-8"))
+        lines.append(f"- [[{path.stem}]] — {_fm_scalar(fm_text, 'summary') or ''}")
+    text = idx.read_text(encoding="utf-8")
+    new_text = _replace_h2_section(text, "## 노트", lines)
+    if new_text != text:
+        idx.write_text(new_text, encoding="utf-8")
+
+
 def builtin_snapshot_save(vault: Path, slug: str, fields: dict[str, Any],
                           section_values: dict[str, str], merge: bool = False) -> Path:
     path = vault / SNAPSHOT_DIRNAME / f"SNAP-{slug}.md"
@@ -371,6 +402,7 @@ def builtin_snapshot_save(vault: Path, slug: str, fields: dict[str, Any],
     body = _render_snapshot_body(merged)
     fm_text = _render_snapshot_frontmatter(fields, created_at, updated_at)
     path.write_text(fm_text + body, encoding="utf-8")
+    _rewrite_builtin_snapshot_index(vault)
     return path
 
 
@@ -386,6 +418,7 @@ def builtin_snapshot_discard(vault: Path, slug: str) -> bool:
     path = vault / SNAPSHOT_DIRNAME / f"SNAP-{slug}.md"
     if path.exists():
         path.unlink()
+        _rewrite_builtin_snapshot_index(vault)
         return True
     return False
 

@@ -9,7 +9,7 @@
       "name": "wiki-markdown",
       "source": "./plugins/wiki-markdown",
       "description": "Markdown-backed AI-native wiki — filesystem-primary decision graph with deterministic CLI, task bridge nodes, integrity checks, and Claude/Codex agent policy scaffolding.",
-      "version": "0.10.0"
+      "version": "0.11.0"
     },
     {
       "name": "task-github",
@@ -21,7 +21,7 @@
       "name": "session-review",
       "source": "./plugins/session-review",
       "description": "wiki snapshot 핸드셰이크(없으면 내장 fallback)와 git review branch로 worker/reviewer 세션 리뷰 루프를 운영. 단일 CLI facade, set-status, 하니스 무관 경로(Claude+Codex).",
-      "version": "0.2.0"
+      "version": "0.2.1"
     }
   ]
 }

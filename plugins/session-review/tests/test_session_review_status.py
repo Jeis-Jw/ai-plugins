@@ -175,6 +175,30 @@ class BuiltinSnapshotTests(unittest.TestCase):
             self.assertTrue(session_review.builtin_snapshot_discard(vault, "thread"))
             self.assertFalse(path.exists())
 
+    def test_builtin_maintains_existing_snapshot_index(self):
+        # B3a: mirror wiki_cli — update snapshot.md index iff it already exists.
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp) / "wiki"
+            snapdir = vault / "snapshot"
+            snapdir.mkdir(parents=True)
+            (snapdir / "snapshot.md").write_text("# snapshots\n\n## 노트\n\n", encoding="utf-8")
+            session_review.builtin_snapshot_save(
+                vault, "h", {"title": "T", "summary": "SUMMARY", "tags": ["x"]},
+                {"discussion": "d"}, merge=False)
+            idx = (snapdir / "snapshot.md").read_text()
+            self.assertIn("[[SNAP-h]]", idx)
+            self.assertIn("SUMMARY", idx)
+            session_review.builtin_snapshot_discard(vault, "h")
+            self.assertNotIn("SNAP-h", (snapdir / "snapshot.md").read_text())
+
+    def test_builtin_without_index_does_not_create_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp) / "wiki"
+            session_review.builtin_snapshot_save(
+                vault, "h", {"title": "T", "summary": "s", "tags": ["x"]},
+                {"discussion": "d"}, merge=False)
+            self.assertFalse((vault / "snapshot" / "snapshot.md").exists())
+
     def test_merge_preserves_omitted_sections(self):
         with tempfile.TemporaryDirectory() as tmp:
             vault = Path(tmp) / "wiki"

@@ -3298,6 +3298,45 @@ class WikiCliEfficiencyTests(unittest.TestCase):
             self.assertTrue(len(codes) >= 1, codes)  # non-core sections flagged
 
 
+    # ── B2: refresh check tiers (integrity-hard vs hygiene-warn) ──────────
+    def _lone_dec(self, tmp, env):
+        run_cli("capture", "decision", "--title", "Lone", "--summary", "no rel.",
+                "--tags", "x", cwd=tmp, env=env)
+
+    def test_refresh_level_filters_to_tier(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            env = {"WIKI_NOW": "2026-06-19T12:00:00"}
+            self._lone_dec(tmp, env)  # orphan = hygiene-tier issue
+            all_codes = {i["check"] for i in json.loads(
+                run_cli("refresh", "--json", cwd=tmp).stdout)["issues"]}
+            self.assertIn("orphan", all_codes)
+            integ = json.loads(run_cli("refresh", "--level", "integrity",
+                                       "--json", cwd=tmp).stdout)["issues"]
+            self.assertEqual([i for i in integ if i["check"] == "orphan"], [])
+            hyg = {i["check"] for i in json.loads(run_cli(
+                "refresh", "--level", "hygiene", "--json", cwd=tmp).stdout)["issues"]}
+            self.assertIn("orphan", hyg)
+
+    def test_refresh_issues_carry_tier(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            env = {"WIKI_NOW": "2026-06-19T12:00:00"}
+            self._lone_dec(tmp, env)
+            issues = json.loads(run_cli("refresh", "--json", cwd=tmp).stdout)["issues"]
+            orphan = next(i for i in issues if i["check"] == "orphan")
+            self.assertEqual(orphan["tier"], "hygiene")
+
+    def test_strict_with_integrity_level_ignores_hygiene_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            env = {"WIKI_NOW": "2026-06-19T12:00:00"}
+            self._lone_dec(tmp, env)  # only a hygiene issue exists
+            self.assertEqual(
+                run_cli("refresh", "--strict", cwd=tmp).returncode, 6)
+            self.assertEqual(
+                run_cli("refresh", "--level", "integrity", "--strict", cwd=tmp).returncode, 0)
+
     # ── PR-review follow-ups: coverage gaps + drift guard ────────────────
     def test_section_flags_cover_every_type_section(self):
         # Guard the HEADER_FLAG_KEYS / TYPE_SPECS.sections two-table drift: a

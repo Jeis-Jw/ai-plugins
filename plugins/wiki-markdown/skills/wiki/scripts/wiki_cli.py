@@ -987,6 +987,16 @@ def _replace_section(text: str, header: str, new_body_lines: List[str]) -> str:
     return "\n".join(lines[: start + 1] + new_section + lines[end:])
 
 
+def apply_section_updates(text: str, updates: "dict[str, str]") -> str:
+    """Fill/replace section bodies by plain H2 header name. Single source for
+    section-body writes — used by capture (--sec inline) and snapshot --merge.
+    An empty value leaves the header with no body."""
+    for header, value in updates.items():
+        value = value or ""
+        text = _replace_section(text, f"## {header}", value.split("\n") if value else [])
+    return text
+
+
 def rewrite_index(vault: Path, parts: Tuple[str, ...]) -> bool:
     """Rewrite a single folder's index. Returns True if file content changed.
     Locates the existing index via find_index_file so NFD-stored indexes
@@ -1258,13 +1268,10 @@ def snapshot_merge_body(existing_body: str, args) -> str:
     """--merge: rewrite only the sections whose flag was provided (not None),
     preserving every other section's existing body. An explicit empty string
     clears that section; an omitted flag leaves it untouched."""
-    body = existing_body
-    for attr, header in SNAPSHOT_SECTIONS:
-        value = getattr(args, attr, None)
-        if value is None:
-            continue
-        value = _nfc(value).strip()
-        body = _replace_section(body, f"## {header}", value.split("\n") if value else [])
+    updates = {header: _nfc(getattr(args, attr)).strip()
+               for attr, header in SNAPSHOT_SECTIONS
+               if getattr(args, attr, None) is not None}
+    body = apply_section_updates(existing_body, updates)
     if not body.endswith("\n"):
         body += "\n"
     return body
@@ -1550,14 +1557,15 @@ def cmd_capture(args) -> int:
                     and not section_bodies.get(sec):
                 section_bodies[sec] = LITE_PLACEHOLDER
 
-    body_lines = [""]
+    scaffold_lines = [""]
     for sec in spec.sections:
-        body_lines.append(f"## {sec}")
-        body_lines.append("")
-        if section_bodies.get(sec):
-            body_lines.append(section_bodies[sec])
-            body_lines.append("")
-    body = "\n".join(body_lines) + "\n"
+        scaffold_lines += [f"## {sec}", ""]
+    body = apply_section_updates(
+        "\n".join(scaffold_lines) + "\n",
+        {sec: val for sec, val in section_bodies.items() if val},
+    )
+    if not body.endswith("\n"):
+        body += "\n"
 
     target = folder / f"{bn}.md"
     write_doc(target, fm, body, dry_run=args.dry_run)
@@ -2133,6 +2141,22 @@ QUALITY_REFRESH_CHECKS = [
 KNOWN_REFRESH_CHECKS = ALL_REFRESH_CHECKS + QUALITY_REFRESH_CHECKS
 QUALITY_MIN_CHARS = 20
 
+# Check severity tiers (§ refresh): integrity-hard = the graph/data is
+# structurally broken or invalid (a merge/done gate should BLOCK on these);
+# hygiene-warn = advisory cleanliness (regenerable or stylistic — warn, don't
+# block). `refresh --level` filters to a tier; every issue is tagged `tier`.
+INTEGRITY_CHECKS = (
+    "schema", "broken-rel", "task-ref", "duplicate-basename",
+    "supersede", "active-ref-retired",
+)
+HYGIENE_CHECKS = (
+    "stale", "orphan", "index", "retired-in-index", "tags",
+    "changed-path-stale", "empty-lesson", "decision-quality", "task-quality",
+)
+CHECK_TIER = {**{c: "integrity" for c in INTEGRITY_CHECKS},
+              **{c: "hygiene" for c in HYGIENE_CHECKS}}
+REFRESH_LEVELS = ("all", "integrity", "hygiene")
+
 
 def _git_changed_paths(vault: Path) -> Optional[List[str]]:
     """Return a list of git-tracked changed paths, or None if unavailable.
@@ -2312,6 +2336,16 @@ def cmd_refresh(args) -> int:
             raise CliError(EXIT_USAGE, "check_unknown",
                            f"unknown check(s): {','.join(unknown)} "
                            f"(allowed: {','.join(KNOWN_REFRESH_CHECKS)},all)")
+
+    # --level filters the selected checks to a severity tier. Default 'all'
+    # keeps prior behaviour; gates use `--level integrity --strict` to hard-fail
+    # only on structural breakage.
+    level = getattr(args, "level", None) or "all"
+    if level not in REFRESH_LEVELS:
+        raise CliError(EXIT_USAGE, "bad_level",
+                       f"--level must be one of {','.join(REFRESH_LEVELS)}; got {level}")
+    if level != "all":
+        checks = [c for c in checks if CHECK_TIER.get(c) == level]
 
     fixes = _validate_fix_arg(args.fix)
 
@@ -2853,6 +2887,11 @@ def cmd_refresh(args) -> int:
         if addressed:
             issues = [it for it in issues if it["check"] not in addressed]
 
+    # Tag every issue with its severity tier so consumers can distinguish
+    # integrity-hard from hygiene-warn even in a full (--level all) run.
+    for it in issues:
+        it["tier"] = CHECK_TIER.get(it.get("check"), "hygiene")
+
     # Output (always emit {issues:[...]})
     payload = {"issues": issues}
     if fixes:
@@ -3051,6 +3090,8 @@ def build_parser() -> argparse.ArgumentParser:
     pf = sub.add_parser("refresh", help="integrity report (read-only by default)")
     _sub_common(pf)
     pf.add_argument("--check", default="all")
+    pf.add_argument("--level", default="all", choices=REFRESH_LEVELS,
+                    help="filter checks to a severity tier (integrity-hard vs hygiene-warn)")
     pf.add_argument("--days", type=int, default=90)
     pf.add_argument("--path", default=None)
     pf.add_argument("--changed-path", default=None, dest="changed_path",
