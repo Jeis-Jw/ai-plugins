@@ -3298,6 +3298,18 @@ class WikiCliEfficiencyTests(unittest.TestCase):
             self.assertTrue(len(codes) >= 1, codes)  # non-core sections flagged
 
 
+    def test_capture_body_has_single_trailing_newline(self):
+        # B1 follow-up: filled last section must not leave a stray blank line.
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            env = {"WIKI_NOW": "2026-06-19T12:00:00"}
+            r = run_cli("capture", "decision", "--title", "Trail", "--summary", "s.",
+                        "--tags", "x", "--sec-reeval", "마지막 섹션 본문 채움.",
+                        "--json", cwd=tmp, env=env)
+            text = Path(json.loads(r.stdout)["path"]).read_text()
+            self.assertTrue(text.endswith("채움.\n"), repr(text[-20:]))
+            self.assertFalse(text.endswith("\n\n"))
+
     # ── B2: refresh check tiers (integrity-hard vs hygiene-warn) ──────────
     def _lone_dec(self, tmp, env):
         run_cli("capture", "decision", "--title", "Lone", "--summary", "no rel.",

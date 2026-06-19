@@ -1564,8 +1564,10 @@ def cmd_capture(args) -> int:
         "\n".join(scaffold_lines) + "\n",
         {sec: val for sec, val in section_bodies.items() if val},
     )
-    if not body.endswith("\n"):
-        body += "\n"
+    # Deterministic single trailing newline regardless of whether the last
+    # section carries a body (apply_section_updates leaves one; an unfilled
+    # last header may leave two).
+    body = body.rstrip("\n") + "\n"
 
     target = folder / f"{bn}.md"
     write_doc(target, fm, body, dry_run=args.dry_run)
