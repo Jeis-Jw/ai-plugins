@@ -128,7 +128,7 @@ PARENT=$(gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){ reposito
 # {N}이 리프(부모 있음)면 업무 미완료 — task 전이 안 함. {N} 자신이 루트일 때만 전이.
 if [ -z "$PARENT" ]; then
   TASK=$(gh issue view {N} --json body --jq '.body' \
-    | grep -oE 'TASK-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}-[^[:space:]]+' | head -1)
+    | grep -oE 'TASK-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}-[^][:space:]).,]+' | head -1)
   [ -n "$TASK" ] && wiki complete "$TASK"     # 활성 → wiki/task/done/
 fi
 ```

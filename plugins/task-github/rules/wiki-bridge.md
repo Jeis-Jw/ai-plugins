@@ -119,7 +119,7 @@ ROOT=${PARENT:-{N}}
 **(b) 루트 이슈에서 연결 task 노드 ID 얻기** — 본문 `## Wiki Context`의 `[[TASK-...]]` 파싱:
 ```bash
 TASK=$(gh issue view "$ROOT" --json body --jq '.body' \
-  | grep -oE 'TASK-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}-[^[:space:]]+' | head -1)
+  | grep -oE 'TASK-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}-[^][:space:]).,]+' | head -1)
 ```
 캡처의 `--tasks`에는 `"$OWNER/$REPO#$ROOT"`를, `complete`/`reopen`에는 `"$TASK"`를 쓴다. 위키 미가용이거나 `## Wiki Context`가 없으면 `$TASK`는 빈 값 — 해당 위키 단계만 스킵(작업 막지 않음).
 
