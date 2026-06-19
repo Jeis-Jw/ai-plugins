@@ -84,6 +84,14 @@ def render_policy(profile: str, tracker: str, concurrency: str) -> str:
             "need explicit user confirmation."
         ),
         (
+            "- Capture threshold: small or one-off findings are observations or "
+            "commit messages, not decisions; reserve a DEC for choices with real "
+            "revisit/reversal cost. Run refresh once at the end of a batch, not per "
+            "node. Scale capture to the gear: gear:micro skips the wiki task node "
+            "(audit none by default); gear:normal captures only when a candidate "
+            "exists; gear:major keeps task plus DEC/SSOT."
+        ),
+        (
             "- Rationale commits: capture decisions, rejected alternatives, and "
             "other rationale records directly on main; code changes go via PR "
             "branches that reference the DEC id. task-github define commits its "
