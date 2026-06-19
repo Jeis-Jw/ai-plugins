@@ -1,0 +1,5 @@
+{
+  "name": "session-review",
+  "version": "0.1.0",
+  "description": "Wiki snapshot + git review-branch protocol for worker/reviewer session review loops with explicit user-confirmed completion."
+}

@@ -24,20 +24,33 @@ class PluginDistributionTests(unittest.TestCase):
         self.assertEqual(manifest["name"], "task-github")
         self.assertEqual(manifest["skills"], "./skills/")
 
+    def test_session_review_exposes_four_skills_and_helper_to_codex(self):
+        manifest = read_json(REPO / "plugins" / "session-review" / ".codex-plugin" / "plugin.json")
+        skills_root = REPO / "plugins" / "session-review" / manifest["skills"]
+
+        self.assertEqual(manifest["name"], "session-review")
+        self.assertEqual(manifest["skills"], "./skills/")
+        for skill_name in ("request-review", "address-feedback", "review", "complete"):
+            self.assertTrue((skills_root / skill_name / "SKILL.md").exists(), skill_name)
+        self.assertTrue((REPO / "plugins" / "session-review" / "scripts" / "session_review.py").exists())
+
     def test_claude_codex_and_marketplace_versions_are_aligned(self):
         claude_marketplace = read_json(REPO / ".claude-plugin" / "marketplace.json")
         marketplace_versions = {
             plugin["name"]: plugin["version"]
             for plugin in claude_marketplace["plugins"]
         }
+        codex_marketplace = read_json(REPO / ".agents" / "plugins" / "marketplace.json")
+        codex_marketplace_names = {plugin["name"] for plugin in codex_marketplace["plugins"]}
 
-        for name in ("wiki-markdown", "task-github"):
+        for name in ("wiki-markdown", "task-github", "session-review"):
             plugin_root = REPO / "plugins" / name
             claude = read_json(plugin_root / ".claude-plugin" / "plugin.json")
             codex = read_json(plugin_root / ".codex-plugin" / "plugin.json")
 
             self.assertEqual(claude["version"], codex["version"])
             self.assertEqual(claude["version"], marketplace_versions[name])
+            self.assertIn(name, codex_marketplace_names)
 
 
 if __name__ == "__main__":
