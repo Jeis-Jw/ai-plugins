@@ -36,3 +36,4 @@ audience: [human, agent]
 - [[DEC-2026-06-18-120000-snapshot은-상태-폴더-없는-휘발-staging]] — snapshot은 상태 폴더 없이 wiki/snapshot/ 루트의 SNAP-<slug>.md 파일로 관리한다. 토론당 현재 상태 하나만, 이력은 git과 record가 보유한다.
 - [[DEC-2026-06-18-224414-session-review를-wiki-기능-위-리뷰-루프로-설계]] — 산출물=wiki ssot, 소통=wiki snapshot, git 리뷰브랜치+squash merge로 두 독립 세션의 리뷰 루프를 구성. 별도 파일포맷·디렉터리(bespoke)는 기각.
 - [[DEC-2026-06-19-115758-위키-task-github-계획-플로우-작업정의-먼저-수행-이슈-나중]] — 작업 계획 시 wiki 작업정의 task를 먼저, 연계 GitHub 이슈를 나중에 생성·링크. 조율은 task-github가 전담하고 wiki는 순수 유지. define를 doc-first로 반전.
+- [[DEC-2026-06-19-144637-session-review-스냅샷-백엔드-하이브리드화]] — session-review가 wiki-markdown 있으면 위임, 없으면 동일 포맷 내장 writer로 fallback. 타 워크스페이스 이식성 확보.

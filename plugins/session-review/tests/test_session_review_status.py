@@ -1,3 +1,6 @@
+import json
+import os
+import tempfile
 import unittest
 
 from pathlib import Path
@@ -119,6 +122,254 @@ class SessionReviewStatusTests(unittest.TestCase):
         requested = dict(approved, phase="changes-requested")
         with self.assertRaisesRegex(session_review.StatusError, "requires phase"):
             session_review.validate_complete(requested, user_confirmed=True)
+
+
+class BackendResolverTests(unittest.TestCase):
+    def test_env_override_none_forces_builtin(self):
+        for val in ("", "none", "off"):
+            with self.subTest(val=val):
+                old = os.environ.get("SESSION_REVIEW_WIKI_CLI")
+                os.environ["SESSION_REVIEW_WIKI_CLI"] = val
+                try:
+                    self.assertIsNone(session_review.resolve_wiki_cli())
+                finally:
+                    if old is None:
+                        os.environ.pop("SESSION_REVIEW_WIKI_CLI", None)
+                    else:
+                        os.environ["SESSION_REVIEW_WIKI_CLI"] = old
+
+    def test_env_override_explicit_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = Path(tmp) / "wiki_cli.py"
+            fake.write_text("# fake\n")
+            old = os.environ.get("SESSION_REVIEW_WIKI_CLI")
+            os.environ["SESSION_REVIEW_WIKI_CLI"] = str(fake)
+            try:
+                self.assertEqual(session_review.resolve_wiki_cli(), fake)
+            finally:
+                if old is None:
+                    os.environ.pop("SESSION_REVIEW_WIKI_CLI", None)
+                else:
+                    os.environ["SESSION_REVIEW_WIKI_CLI"] = old
+
+
+class BuiltinSnapshotTests(unittest.TestCase):
+    def _save(self, vault, **kw):
+        fields = {"title": "T", "summary": "s", "tags": ["session-review"]}
+        fields.update(kw.pop("fields", {}))
+        sections = kw.pop("sections", {})
+        return session_review.builtin_snapshot_save(
+            vault, kw.pop("slug", "thread"), fields, sections, merge=kw.pop("merge", False)
+        )
+
+    def test_save_load_discard_round_trip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp) / "wiki"
+            path = self._save(vault, sections={"discussion": "HELLO STATUS"})
+            self.assertTrue(path.exists())
+            self.assertEqual(path.name, "SNAP-thread.md")
+            loaded = session_review.builtin_snapshot_load(vault, "thread")
+            self.assertIn("HELLO STATUS", loaded["text"])
+            self.assertIn("type: snapshot", loaded["text"])
+            self.assertIn("## 현재 논의", loaded["text"])
+            self.assertTrue(session_review.builtin_snapshot_discard(vault, "thread"))
+            self.assertFalse(path.exists())
+
+    def test_merge_preserves_omitted_sections(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp) / "wiki"
+            self._save(vault, sections={"discussion": "ORIG DISC", "decided": "ORIG DEC"})
+            self._save(vault, sections={"decided": "NEW DEC"}, merge=True)
+            text = session_review.builtin_snapshot_load(vault, "thread")["text"]
+            self.assertIn("ORIG DISC", text)
+            self.assertIn("NEW DEC", text)
+            self.assertNotIn("ORIG DEC", text)
+
+
+class SetAndValidateStatusTests(unittest.TestCase):
+    def setUp(self):
+        self._old = os.environ.get("SESSION_REVIEW_WIKI_CLI")
+        os.environ["SESSION_REVIEW_WIKI_CLI"] = "none"  # force built-in backend
+
+    def tearDown(self):
+        if self._old is None:
+            os.environ.pop("SESSION_REVIEW_WIKI_CLI", None)
+        else:
+            os.environ["SESSION_REVIEW_WIKI_CLI"] = self._old
+
+    def _seed(self, vault):
+        session_review.builtin_snapshot_save(
+            vault, "h", {"title": "T", "summary": "s", "tags": ["x"]},
+            {"discussion": "```yaml\n" + session_review.render_status({
+                "phase": "awaiting-review", "active_actor": "none", "lock_since": None,
+                "next_actor": "reviewer", "target_mode": "diff", "target_ref": "b",
+                "base_ref": "a", "responding_to": "a", "round": 1,
+                "flow_mode": "self", "review_strength": "normal",
+            }).rstrip() + "\n```"}, merge=False,
+        )
+
+    def test_set_status_mutates_block_via_builtin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp) / "wiki"
+            self._seed(vault)
+            session_review.set_status(vault, "h", {
+                "phase": "approved", "active_actor": "none", "lock_since": None,
+                "next_actor": "worker", "target_mode": "diff", "target_ref": "b",
+                "base_ref": "a", "responding_to": "a", "round": 1,
+                "flow_mode": "self", "review_strength": "normal", "blocking_count": 0,
+            })
+            status = session_review.extract_status(
+                session_review.builtin_snapshot_load(vault, "h")["text"])
+            self.assertEqual(status["phase"], "approved")
+            self.assertEqual(status["next_actor"], "worker")
+
+    def test_validate_status_rejects_approved_with_blocking(self):
+        bad = {"phase": "approved", "next_actor": "worker", "active_actor": "none",
+               "blocking_count": 2}
+        with self.assertRaisesRegex(session_review.StatusError, "blocking"):
+            session_review.validate_status(bad)
+
+    def test_validate_status_rejects_phase_owner_mismatch(self):
+        bad = {"phase": "approved", "next_actor": "reviewer", "active_actor": "none"}
+        with self.assertRaisesRegex(session_review.StatusError, "next_actor"):
+            session_review.validate_status(bad)
+
+    def test_validate_status_accepts_consistent_approved(self):
+        ok = {"phase": "approved", "next_actor": "worker", "active_actor": "none",
+              "blocking_count": 0}
+        session_review.validate_status(ok)
+
+
+import subprocess  # noqa: E402
+
+CLI = SCRIPT_DIR / "session_review.py"
+WIKI_CLI = (SCRIPT_DIR.parents[1] / "wiki-markdown" / "skills" / "wiki"
+            / "scripts" / "wiki_cli.py")
+
+
+def run_cli(*args, cwd=None, env=None):
+    merged = os.environ.copy()
+    merged.update(env or {})
+    return subprocess.run([sys.executable, str(CLI), *args], cwd=cwd, env=merged,
+                          text=True, capture_output=True)
+
+
+class FacadeCliTests(unittest.TestCase):
+    BUILTIN = {"SESSION_REVIEW_WIKI_CLI": "none"}
+
+    def test_builtin_end_to_end_save_load_setstatus_validate_discard(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = str(Path(tmp) / "wiki")
+            status = {"phase": "awaiting-review", "active_actor": "none",
+                      "lock_since": None, "next_actor": "reviewer",
+                      "target_mode": "diff", "target_ref": "b", "base_ref": "a",
+                      "responding_to": "a", "round": 1, "flow_mode": "self",
+                      "review_strength": "normal", "blocking_count": 0}
+            disc = "```yaml\n" + session_review.render_status(status).rstrip() + "\n```"
+            save = run_cli("snapshot-save", "--vault", vault, "--slug", "h",
+                           "--title", "T", "--summary", "s", "--tags", "x",
+                           "--discussion", disc, env=self.BUILTIN)
+            self.assertEqual(save.returncode, 0, save.stderr)
+
+            approved = dict(status, phase="approved", next_actor="worker")
+            sett = run_cli("set-status", "--vault", vault, "--slug", "h",
+                           "--status-json", json.dumps(approved), env=self.BUILTIN)
+            self.assertEqual(sett.returncode, 0, sett.stderr)
+
+            val = run_cli("validate-status", "--vault", vault, "--slug", "h",
+                          env=self.BUILTIN)
+            self.assertEqual(val.returncode, 0, val.stderr)
+
+            load = run_cli("snapshot-load", "--vault", vault, "--slug", "h",
+                           env=self.BUILTIN)
+            self.assertIn("approved", json.loads(load.stdout)["text"])
+
+            disc2 = run_cli("snapshot-discard", "--vault", vault, "--slug", "h",
+                            env=self.BUILTIN)
+            self.assertTrue(json.loads(disc2.stdout)["discarded"])
+
+    def test_set_status_rejects_inconsistent_verdict(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = str(Path(tmp) / "wiki")
+            status = {"phase": "awaiting-review", "next_actor": "reviewer",
+                      "active_actor": "none", "round": 1}
+            disc = "```yaml\n" + session_review.render_status(status).rstrip() + "\n```"
+            run_cli("snapshot-save", "--vault", vault, "--slug", "h", "--title", "T",
+                    "--summary", "s", "--tags", "x", "--discussion", disc,
+                    env=self.BUILTIN)
+            bad = dict(status, phase="approved", next_actor="worker", blocking_count=3)
+            r = run_cli("set-status", "--vault", vault, "--slug", "h",
+                        "--status-json", json.dumps(bad), env=self.BUILTIN)
+            self.assertEqual(r.returncode, 2, r.stdout)
+            self.assertIn("blocking", r.stderr)
+
+    def test_snapshot_load_accepts_json_flag(self):
+        # SKILL.md and wiki_cli muscle-memory pass --json; it must be accepted.
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = str(Path(tmp) / "wiki")
+            run_cli("snapshot-save", "--vault", vault, "--slug", "h", "--title", "T",
+                    "--summary", "s", "--tags", "x", "--discussion", "hi",
+                    env=self.BUILTIN)
+            r = run_cli("snapshot-load", "--vault", vault, "--slug", "h", "--json",
+                        env=self.BUILTIN)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("hi", json.loads(r.stdout)["text"])
+
+    def test_merge_reuses_existing_frontmatter_when_omitted(self):
+        # nit #1: a status/feedback-only --merge should not require re-passing
+        # --title/--summary/--tags.
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = str(Path(tmp) / "wiki")
+            run_cli("snapshot-save", "--vault", vault, "--slug", "h",
+                    "--title", "Original Title", "--summary", "orig", "--tags", "a,b",
+                    "--discussion", "FIRST", env=self.BUILTIN)
+            r = run_cli("snapshot-save", "--vault", vault, "--slug", "h", "--merge",
+                        "--decided", "ONLY DECIDED", env=self.BUILTIN)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            text = json.loads(run_cli("snapshot-load", "--vault", vault, "--slug", "h",
+                                      env=self.BUILTIN).stdout)["text"]
+            self.assertIn("title: Original Title", text)   # preserved
+            self.assertIn("FIRST", text)                    # discussion kept
+            self.assertIn("ONLY DECIDED", text)
+
+    def test_merge_on_missing_snapshot_without_fields_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = str(Path(tmp) / "wiki")
+            r = run_cli("snapshot-save", "--vault", vault, "--slug", "nope", "--merge",
+                        "--decided", "x", env=self.BUILTIN)
+            self.assertEqual(r.returncode, 2, r.stdout)
+
+    def test_render_fenced_wraps_in_yaml_fence(self):
+        r = run_cli("render", "--fenced", "--status-json",
+                    '{"phase":"approved","next_actor":"worker","round":1}')
+        self.assertTrue(r.stdout.startswith("```yaml\n"), r.stdout)
+        self.assertIn("phase: \"approved\"", r.stdout)
+        self.assertIn("```", r.stdout.rstrip()[-3:])
+
+    def test_self_locates_regardless_of_cwd(self):
+        # Run from a foreign cwd; script must still work via __file__/--vault.
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as cwd:
+            vault = str(Path(tmp) / "wiki")
+            r = run_cli("snapshot-save", "--vault", vault, "--slug", "h", "--title", "T",
+                        "--summary", "s", "--tags", "x", "--discussion", "hi",
+                        cwd=cwd, env=self.BUILTIN)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertTrue((Path(vault) / "snapshot" / "SNAP-h.md").exists())
+
+    @unittest.skipUnless(WIKI_CLI.exists(), "wiki_cli not present")
+    def test_builtin_file_is_readable_by_wiki_cli(self):
+        # Format parity (DEC-2026-06-18): a built-in-written snapshot must be a
+        # valid wiki snapshot the real wiki_cli can load.
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp) / "wiki"
+            session_review.builtin_snapshot_save(
+                vault, "h", {"title": "T", "summary": "s", "tags": ["x"]},
+                {"discussion": "PARITY CHECK"}, merge=False)
+            r = subprocess.run(
+                [sys.executable, str(WIKI_CLI), "snapshot", "load", "h",
+                 "--vault", str(vault), "--json"], text=True, capture_output=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("PARITY CHECK", json.loads(r.stdout)["text"])
 
 
 if __name__ == "__main__":
