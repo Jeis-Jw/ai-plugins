@@ -152,7 +152,7 @@ TASK=$(gh issue view "$ROOT" --json body --jq '.body' \
 | `verify` | 태그→타입 캡처(제안), observation 승격 검토, `refresh --level integrity --strict` hard gate + hygiene 경고, decision/task 품질 FLAG |
 | `done` | PR diff → `refresh --check changed-path-stale` hard gate; major면 ADR → `capture decision` |
 | `review` | pr-verifier에 연결 task의 `decisions` 전달(반려 대안 회귀 점검) |
-| `merge` | 머지 전 `refresh --level integrity --strict` + PR diff drift hard gate(hygiene 경고); 루트 이슈 close 시 task `complete` |
+| `merge` | 머지 전 `refresh --level integrity --strict` + PR diff drift hard gate(hygiene 경고); `closeout.py`(git/gh)가 머지·정리·루트 닫힘 감지 → 방출한 `task_to_complete`로 task `complete` |
 
 ---
 

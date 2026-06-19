@@ -20,39 +20,11 @@ $ARGUMENTS: {PR_NUMBER}
 gh pr view {PR} --json number,title,headRefName,baseRefName,state,labels,body
 ```
 
-### Step 2. 연결 Issue·브랜치 추출 (변수로 확보)
-```bash
-# PR 본문 Closes #N 또는 브랜치명 task/issue-{N}에서 연결 이슈 번호
-ISSUE=$(gh pr view {PR} --json body,headRefName \
-  --jq '(try (.body|capture("[Cc]loses #(?<n>[0-9]+)").n) catch empty) // (try (.headRefName|capture("issue-(?<n>[0-9]+)").n) catch empty)')
-HEADREF=$(gh pr view {PR} --json headRefName --jq .headRefName)
-echo "연결 이슈 #$ISSUE / 브랜치 $HEADREF"
-```
-> 분해된 업무라면 이 `$ISSUE`가 컨테이너의 리프일 수 있다. Step 6의 task 전이는 **업무 루트**가 닫힐 때만 하므로, 부모를 거슬러 루트를 따로 확인한다(아래).
-
-### Step 3. dependency 차단 재확인
-머지 전에 연결 이슈의 열린 blocker를 확인한다. blocker가 열려 있으면 PR을 머지하지 않는다:
-```bash
-read OWNER REPO < <(gh repo view --json owner,name --jq '"\(.owner.login) \(.name)"')
-API_VERSION="2026-03-10"
-OPEN_BLOCKERS=$(gh api -H "X-GitHub-Api-Version: $API_VERSION" \
-  "repos/$OWNER/$REPO/issues/$ISSUE/dependencies/blocked_by" \
-  --jq '[.[] | select(.state == "open") | "#\(.number) \(.title)"] | join("\n")')
-
-if [ -n "$OPEN_BLOCKERS" ]; then
-  gh issue comment "$ISSUE" --body "[중단] 열린 blocker가 있어 merge를 중단합니다.
-
-$OPEN_BLOCKERS"
-  exit 1
-fi
-```
-dependency API 조회가 실패하면 자동 머지하지 않고 사령관에게 수동 확인을 요청한다.
-
-### Step 4. (위키 가용 시) 머지 전 hard gate
+### Step 2. (위키 가용 시) 머지 전 hard gate
 ```bash
 [ -d "./wiki" ] && echo "위키 가용"
 ```
-가용 시 [quality-gates.md](../../rules/quality-gates.md) G1을 적용한다:
+가용 시 [quality-gates.md](../../rules/quality-gates.md) G1을 적용한다. **closeout 스크립트보다 먼저** 통과해야 한다(스크립트는 wiki를 모른다 — 게이트 판단은 에이전트 몫):
 ```bash
 STRICT=$(wiki refresh --level integrity --strict --json) || {
   printf '%s\n' "$STRICT"
@@ -68,53 +40,30 @@ HYG=$(wiki refresh --level hygiene --json)  # 경고 surface (비차단)
 ```
 `refresh --level integrity --strict`가 비0 종료하거나, `changed-path-stale` 이슈가 있으면 머지하지 않는다(integrity 깨짐 + 코드-문서 drift만 차단). `HYG`의 hygiene 이슈(orphan/stale/tags 등)는 머지를 막지 않고 머지 후 보고로만 남긴다. stale 문서는 `verified_at` 갱신 또는 supersede 대상이며, 자동 변경하지 않고 사령관에게 보완 경로를 보고한다.
 
-### Step 5. 라벨 정리 (상태만, gear 유지)
+### Step 3. closeout 스크립트로 머지 + 정리 (git/gh 결정적 시퀀스)
+게이트 통과 후, `closeout.py`가 연결이슈 해석·blocker 재확인·라벨 정리·머지·브랜치 정리·downstream 안내·루트 닫힘 감지를 한 번에 한다. wiki는 호출하지 않고 `task_to_complete`만 방출한다.
 ```bash
-gh pr edit {PR} --remove-label "in-review" --remove-label "in-progress" --remove-label "changes-requested" 2>/dev/null || true
-gh issue edit "$ISSUE" --remove-label "in-review" --remove-label "in-progress" --remove-label "changes-requested" 2>/dev/null || true
-```
+# 1) dry-run으로 계획 확인 (머지·변경 없음, 읽기 전용)
+python3 "${CLAUDE_SKILL_DIR}/scripts/closeout.py" --pr {PR} --dry-run --json
 
-### Step 6. 머지 + 브랜치 정리
+# 2) 확인되면 실제 실행
+RESULT=$(python3 "${CLAUDE_SKILL_DIR}/scripts/closeout.py" --pr {PR} --json) || {
+  printf '%s\n' "$RESULT"   # error_code: open_blockers / no_linked_issue / merge_failed ...
+  exit 1
+}
+printf '%s\n' "$RESULT"
+```
+`open_blockers`면 머지하지 않고 중단(에이전트가 사령관에 보고). `downstream` 배열은 머지 후 재검토 대상으로 안내한다.
+
+### Step 4. (위키 가용 시) task 노드 done 전이
+`closeout.py` 출력의 `task_to_complete`가 비어있지 않으면(= 업무 루트 이슈가 이 머지로 close됨), 그 id로 task 노드를 done 전이한다:
 ```bash
-gh pr merge {PR} --merge --delete-branch
-
-BLOCKING=$(gh api -H "X-GitHub-Api-Version: $API_VERSION" \
-  "repos/$OWNER/$REPO/issues/$ISSUE/dependencies/blocking" \
-  --jq '[.[] | select(.state == "open") | "#\(.number) \(.title)"] | join("\n")')
-[ -n "$BLOCKING" ] && printf '이 머지 후 재검토할 downstream:\n%s\n' "$BLOCKING"
-
-git branch -d "$HEADREF" 2>/dev/null || true
-git checkout main && git pull
+TASK=$(printf '%s' "$RESULT" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("task_to_complete") or "")')
+[ -n "$TASK" ] && wiki complete "$TASK"     # 활성 → wiki/task/done/
 ```
+GitHub 이슈/PR 흐름이 상태 정본이고 위키 done/는 투영이다([wiki-bridge.md](../../rules/wiki-bridge.md) §5). task 노드 ID는 루트 이슈 `## Wiki Context`가 정본이며 `closeout.py`가 루트 본문에서 추출한다(한글 슬러그 보존). 리프 머지로 루트가 아직 안 닫혔으면 `task_to_complete`는 비어 전이하지 않는다.
 
-### Step 7. (위키 가용 시) task 노드 done 전이
-```bash
-[ -d "./wiki" ] && echo "위키 가용"
-```
-가용 시:
-1. **task 노드 완료 전이** — 이 머지로 **업무 루트 이슈가 close되면** 연결 task 노드를 done으로:
-```bash
-# (a) 업무 루트 찾기: $ISSUE의 부모가 있으면 그게 루트, 없으면 $ISSUE 자신이 루트
-read OWNER REPO < <(gh repo view --json owner,name --jq '"\(.owner.login) \(.name)"')
-PARENT=$(gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){ repository(owner:$o,name:$r){ issue(number:$n){ parent{ number } } } }' \
-  -F o="$OWNER" -F r="$REPO" -F n="$ISSUE" --jq '.data.repository.issue.parent.number // empty')
-ROOT=${PARENT:-$ISSUE}
-
-# (b) 루트가 닫혔는지 확인 (컨테이너면 모든 자식 close 후 닫힘)
-STATE=$(gh issue view "$ROOT" --json state --jq .state)
-
-# (c) 닫혔으면, 루트 이슈 본문 ## Wiki Context에서 연결 task 노드 ID를 읽어 완료 전이
-if [ "$STATE" = "CLOSED" ]; then
-  # task 노드 ID의 정본 경로는 루트 이슈 본문의 ## Wiki Context (define이 기록).
-  # (wiki recall --backlinks-of 는 외부 작업 ref를 역링크로 찾지 못한다 — 본문 파싱이 정본.)
-  TASK=$(gh issue view "$ROOT" --json body \
-    --jq '.body' | grep -oE 'TASK-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}-[A-Za-z0-9-]+' | head -1)
-  [ -n "$TASK" ] && wiki complete "$TASK"     # 활성 → wiki/task/done/
-fi
-```
-GitHub 이슈/PR 흐름이 상태 정본이고 위키 done/는 투영이다([wiki-bridge.md](../../rules/wiki-bridge.md) §5). task 노드 ID는 루트 이슈 `## Wiki Context`가 정본 — `--backlinks-of`는 외부 작업 ref(`owner/repo#N`)를 역링크 대상으로 찾지 못하므로 쓰지 않는다([wiki-bridge.md](../../rules/wiki-bridge.md) §4).
-
-### Step 8. Knowledge Capture Audit
+### Step 5. Knowledge Capture Audit
 최종 보고 전에 [knowledge-capture.md](../../rules/knowledge-capture.md)에 따라 감사한다.
 - 이 머지로 완료된 업무에서 새 observation/decision/trial_error 후보가 생겼는지 확인한다.
 - `blocking` downstream 안내가 운영상 새 교훈이나 runbook 변경을 요구하면 `proposed`로 보고한다.

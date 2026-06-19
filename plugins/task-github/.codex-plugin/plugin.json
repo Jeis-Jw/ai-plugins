@@ -1,6 +1,6 @@
 {
   "name": "task-github",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "GitHub-based autonomous task protocol with wiki-markdown task-node integration.",
   "author": {
     "name": "Jinwuk-Lee",
