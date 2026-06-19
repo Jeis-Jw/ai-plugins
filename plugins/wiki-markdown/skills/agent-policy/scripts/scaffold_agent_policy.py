@@ -46,8 +46,14 @@ def concurrency_line(value: str) -> str:
 def tracker_line(value: str) -> str:
     if value == "task-github":
         return (
-            "Use task-github for tracked work: root issues own the task, "
-            "wiki task nodes bridge decisions to the issue when a wiki vault exists."
+            "Use task-github for tracked work. The wiki work-definition (task node) "
+            "is the work order/instruction, created FIRST; the GitHub root issue is "
+            "the execution view, created and linked afterward. On a plan/prepare-work "
+            "request, task-github:define detects the wiki, uses or waits for that task "
+            "node (capturing it first if absent), and confirms before creating the "
+            "linked issue. With only one plugin present, each does its own part "
+            "standalone (wiki: the work-definition doc; task-github: an issue from "
+            "session context)."
         )
     return "No external task tracker is bound; keep task state in the active conversation."
 

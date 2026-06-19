@@ -111,7 +111,7 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" refresh --fix index,retired-in
 | "Found something but not sure if it's a decision, lesson, or SSOT update yet" | `observation` | Pre-classification record; gets retired as `superseded` when a successor TRI/DEC/SSOT-update is captured. |
 | "How is X currently structured / behaving" | `ssot` | Living, updated in place. |
 | "How do we run / deploy / operate X" | `runbook` | Living, procedural. |
-| "A unit of work driven by decisions, optionally linked to external work" | `task` | Third category — handoff/context bridge node. Carries relations (intents/decisions/ssot/tasks); binary active/done state by path. |
+| "Plan / prepare a unit of work — write the work-definition handoff" | `task` | Third category — the **work-definition / handoff** bridge node written when planning work, driven by decisions and optionally linked to external work. Carries relations (intents/decisions/ssot/tasks); binary active/done state by path. |
 | "Save this ongoing discussion so another session can resume it" | `snapshot` CLI | Staging layer outside the canonical graph; searchable/loadable but excluded from `recall`/`refresh` graph checks until explicitly captured/promoted later. |
 
 **Living vs Record.** `ssot` and `runbook` are *living* — updated in place per topic. A second `capture` for the same slug exits `5` (conflict). `context/*` types are *immutable + superseded* — never edited; replace with a new record.

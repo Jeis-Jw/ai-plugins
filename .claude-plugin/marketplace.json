@@ -9,13 +9,13 @@
       "name": "wiki-markdown",
       "source": "./plugins/wiki-markdown",
       "description": "Markdown-backed AI-native wiki — filesystem-primary decision graph with deterministic CLI, task bridge nodes, integrity checks, and Claude/Codex agent policy scaffolding.",
-      "version": "0.8.1"
+      "version": "0.9.0"
     },
     {
       "name": "task-github",
       "source": "./plugins/task-github",
       "description": "GitHub 기반 자율 작업 프로토콜 — Issue 추적·Plan Mode·PR 검증을 wiki-markdown task 노드로 결정 그래프와 연계. 프로파일·기어·플로우 3축 분류, 10개 스킬, PR 검증 서브에이전트.",
-      "version": "0.3.1"
+      "version": "0.4.0"
     },
     {
       "name": "session-review",
