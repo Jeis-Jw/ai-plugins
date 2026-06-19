@@ -34,9 +34,11 @@ wiki recall "{키워드}" --stage 1 --limit 10 --json
 wiki recall --backlinks-of {DEC-...} --json        # "이 결정이 낳은 작업/지식"
 wiki recall --read {basename} --json
 
-# 작업지시서형 컨텍스트 브릿지 노드
+# 작업지시서형 컨텍스트 브릿지 노드 (작업정의 — 이슈보다 먼저 생성)
 wiki capture task --title "..." --summary "..." --tags ... \
-  --decisions {DEC-...} --intents {INT-...} --tasks owner/repo#{N}
+  --decisions {DEC-...} --intents {INT-...}
+# 이슈 생성 후 역링크 (define: 작업정의가 이슈보다 선행 → capture 시 --tasks 없이, 여기서 연결)
+wiki relate {TASK-...} --add-tasks owner/repo#{루트이슈}
 wiki complete {TASK-...}      # 활성 → wiki/task/done/  (루트 이슈 close 시)
 wiki reopen   {TASK-...}      # done → 활성              (이슈 재오픈 시)
 
@@ -75,6 +77,8 @@ wiki refresh --check decision-quality,task-quality --json
 ## 4. task 노드 — 업무↔이슈/PR 참조 다리
 
 **task-github로 정의한 업무 1개 = 위키 task 노드 1개 + GitHub 루트 이슈 1개.** task 노드는 업무 단위이며 **리프마다 만들지 않는다.** 단, 위키 task 자체는 GitHub 없이도 생성·수행·완료할 수 있다. task-github는 위키 task를 source/context로 읽어 GitHub 실행 단위를 만들고, 연계된 경우 양쪽 링크를 유지한다.
+
+> **순서: 작업정의(위키 task)가 수행(이슈)보다 먼저.** `define`은 작업정의 task 노드를 *먼저* 확보(있으면 재사용, 없으면 `capture task`, 다른 세션이 만들면 대기)한 뒤 루트 이슈를 만들고, 이슈 번호를 `relate --add-tasks`로 task 노드에 역링크한다. 위키는 작업정의 문서를 만드는 주체일 뿐 task-github를 모른다 — 감지·대기·연결의 조율은 전부 task-github 쪽이다(§1 비대칭).
 단위별 상세 설계는 서브이슈 본문 또는 그 단위 실행 중 캡처되는 `decision`/`observation`에 둔다. brainstorm 산출물을 리프 task 노드로 옮기지 않는다.
 
 ```
@@ -140,7 +144,7 @@ TASK=$(gh issue view "$ROOT" --json body --jq '.body' \
 |------|----------|
 | `setup` | `./wiki/` 없고 위키 플러그인 있으면 `wiki init` 제안 |
 | `open` | 루트 이슈 `## Wiki Context` → task 노드·결정 `recall --read` 브리핑 |
-| `define` | 시작 시 dirty-vault 경고(§8) → 관련 결정 recall → `capture task`(루트 이슈와 1:1 연결) → `## Wiki Context` 기록 → **rationale 원자적 메인 커밋**(§8) |
+| `define` | 시작 시 dirty-vault 경고(§8) → 관련 결정 recall → **작업정의 `capture task`(이슈보다 먼저; 있으면 재사용, `--tasks` 없이)** → 진행 확인 → 루트 이슈 생성 → `relate --add-tasks` 역링크 + `## Wiki Context` 기록 → **rationale 원자적 메인 커밋**(§8) |
 | `start` | 시작 시 dirty-vault 경고(§8) → 부모 루트의 task 노드 + 결정/취지를 세션 컨텍스트로 주입 |
 | `plan` | task의 `decisions`/`intents` 읽기 + 키워드 recall로 trial_error/observation 주입 |
 | `run` | `[관찰]` 발견 시 `capture observation`(자동) |

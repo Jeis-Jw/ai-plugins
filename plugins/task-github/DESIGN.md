@@ -347,7 +347,7 @@ task-github로 정의한 **한 업무 = task 노드 1개 + 루트 이슈 1개.**
 |------|----------|------|-----------|
 | `setup` | init 제안 | `./wiki/` 없고 위키 플러그인 있으면 `wiki init` 제안 | — |
 | `open` | recall(읽기) | 루트 이슈의 `## Wiki Context` → task 노드 + 결정 표시. 리프면 부모 루트의 task로 거슬러 표시 | 전기어 |
-| `define` | **★task 노드 생성** | 시작 시 dirty-vault 경고 → ①관련 결정 recall ②`capture task --decisions … --intents … --tasks owner/repo#N` ③루트 이슈 본문 `## Wiki Context`에 task 노드 링크 ④**rationale 원자적 메인 커밋**(wiki-bridge §8) | 전기어 |
+| `define` | **★작업정의 task 먼저** | 시작 시 dirty-vault 경고 → ①관련 결정 recall ②**작업정의 `capture task`(이슈보다 먼저; 있으면 재사용, `--tasks` 없이)** ③진행 확인 → 루트 이슈 생성 ④`relate --add-tasks` 역링크 + 루트 이슈 `## Wiki Context` 기록 ⑤**rationale 원자적 메인 커밋**(wiki-bridge §8) | 전기어 |
 | `start` | recall(맥락 주입) | 시작 시 dirty-vault 경고(§8) → 리프 점유 시 부모 루트의 task 노드 + 연결 결정을 세션 컨텍스트로 주입 | normal/major |
 | `plan` | recall(적극) | task 노드의 `decisions`/`intents` 따라 읽기 + 키워드 recall로 trial_error/observation 주입; "고려한 대안"=rejected 후보; ADR초안=decision 후보 | normal/major |
 | `run` | capture observation | `[관찰]` 발견 즉시 `capture observation`(자동, `--tasks` 역링크) | normal/major |
@@ -441,11 +441,11 @@ flag는 block이 아니라 confirm 전 보완 신호다. 단, flag가 있는데 
 ### 7.3 `define` — 업무 정의 (루트 이슈 + task 노드)
 - **입력 3모드**: (없음) 대화→업무 / `{N}` 분해 기준 요청 / `{N} {기준}` 분해.
 - **동작**: `skills/define/scripts/create_issue_tree.py`가 루트=`gh issue create`, 서브=GraphQL `createIssue(parentIssueId)`, 필요 시 REST Issue dependency 생성을 한 spec에서 처리한다. **등록 전 사령관 확인. 자동 분해 금지. 기어 라벨 안 붙임**(start의 책임).
-- **위키(핵심)**: 업무의 루트 이슈를 만들 때 task 노드를 함께 만들어 잇는다 —
+- **위키(핵심)**: **작업정의(task 노드)를 먼저, 수행(이슈)을 나중**에 만들어 잇는다 —
   1. 관련 결정/취지 `recall` (이 업무가 어떤 결정에서 나오는지)
-  2. 루트 이슈 생성 → 이슈 번호 확보
-  3. `capture task --title … --summary <업무 요약> --decisions <관련 DEC> --intents <상위 INT> --tasks owner/repo#<루트이슈>` (제안 후 확인)
-  4. 루트 이슈 본문 `## Wiki Context`에 task 노드(메인)+결정(보조) 링크
+  2. **작업정의 task 노드 확보 — 이슈보다 먼저**: 기존 미연결 활성 task 있으면 재사용, 없으면 `capture task --title … --summary <업무 요약> --decisions <관련 DEC> --intents <상위 INT>` (제안 후 확인; 이슈 번호 미정이라 `--tasks` 없이). 다른 세션이 만들기로 했으면 대기.
+  3. **진행 확인** → 루트 이슈 생성 → 이슈 번호 확보
+  4. `relate {TASK} --add-tasks owner/repo#<루트이슈>`로 역링크 + 루트 이슈 본문 `## Wiki Context`에 task 노드(메인)+결정(보조) 링크
   5. (이슈 상세는 task 노드 요약 + 결정 컨텍스트를 재료로 풍부하게)
 - **불변식**: task 노드는 **업무(루트) 단위 1:1**. 리프마다 만들지 않는다. brainstorm으로 나온 단위 상세설계는 서브이슈 본문 또는 해당 단위 실행 중 캡처되는 DEC/OBS에 둔다. dependency는 GitHub Issue dependencies가 정본이고, 없으면 병렬 가능으로 본다.
 
