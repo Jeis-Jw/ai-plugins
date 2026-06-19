@@ -65,6 +65,15 @@ class AgentPolicyScaffoldTests(unittest.TestCase):
             self.assertIn("gear:micro", text)
             self.assertIn("gear:major", text)
 
+    def test_scaffold_includes_ceremony_scaling(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = run_policy("--target", "claude", "--json", cwd=tmp)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            text = (Path(tmp) / "CLAUDE.md").read_text()
+            self.assertIn("Ceremony scales to blast radius", text)
+            self.assertIn("bundle for shipping", text)
+            self.assertIn("rollback unit", text)
+
     def test_scaffold_is_idempotent_and_preserves_existing_content(self):
         with tempfile.TemporaryDirectory() as tmp:
             claude = Path(tmp) / "CLAUDE.md"
