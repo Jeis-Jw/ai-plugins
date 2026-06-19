@@ -3,6 +3,9 @@ title: session-review를 wiki 기능 위 리뷰 루프로 설계
 created_at: 2026-06-18
 summary: 산출물=wiki ssot, 소통=wiki snapshot, git 리뷰브랜치+squash merge로 두 독립 세션의 리뷰 루프를 구성. 별도 파일포맷·디렉터리(bespoke)는 기각.
 tags: [session-review, design, architecture]
+relations:
+  ssot: [session-review-plugin]
+  tasks: [Jeis-Jw/ai-plugins#10]
 ---
 
 ## 결정
