@@ -50,9 +50,10 @@ if [ -d "./wiki" ]; then
     printf '%s\n' "$DRIFT"
     exit 1
   }
+  HYG=$(wiki refresh --level hygiene --json)  # 경고 surface (비차단)
 fi
 ```
-`changed-path-stale` 이슈가 있으면 PR을 만들지 않고 done을 중단한다. 리포트된 ssot/runbook/trial_error/observation은 `verified_at` 갱신 또는 supersede 대상이며, 자동 변경하지 않고 보완 후 다시 `done`을 실행한다.
+`changed-path-stale`(drift) 이슈가 있으면 PR을 만들지 않고 done을 중단한다. 리포트된 ssot/runbook/trial_error/observation은 `verified_at` 갱신 또는 supersede 대상이며, 자동 변경하지 않고 보완 후 다시 `done`을 실행한다. `HYG`의 hygiene 이슈는 done을 막지 않고 리포트로만 남긴다.
 3. 라벨 전이:
 ```bash
 gh issue edit {N} --remove-label "in-progress" --add-label "in-review"
