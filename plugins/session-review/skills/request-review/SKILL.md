@@ -57,9 +57,9 @@ $ARGUMENTS:
    - `target_mode`, `target_ref`, `base_ref`, `responding_to`, `flow_mode`,
      `review_strength`는 모두 quoted string으로 저장한다.
    - `round`만 integer다.
-   `blocking_count: 0`을 포함한다(초기엔 0). helper로 렌더링한다:
+   `blocking_count: 0`을 포함한다(초기엔 0). `--fenced`로 ```yaml 펜스째 렌더한다:
    ```bash
-   STATUS=$(python3 "$SR" render \
+   STATUS=$(python3 "$SR" render --fenced \
      --status-json '{"phase":"awaiting-review","active_actor":"none","lock_since":null,"next_actor":"reviewer","target_mode":"diff","target_ref":"task/issue-10-review","base_ref":"<BASE>","responding_to":"<BASE>","round":1,"flow_mode":"separate","review_strength":"normal","blocking_count":0}')
    ```
 4. snapshot 저장 (facade — 백엔드 자동 선택)
@@ -69,7 +69,7 @@ $ARGUMENTS:
      --title "session-review: $target_ref" \
      --summary "Review handoff for $target_ref" \
      --tags session-review,review \
-     --discussion "$(printf '```yaml\n%s\n```\n\n%s\n' "$STATUS" "$REQUEST")" \
+     --discussion "$(printf '%s\n\n%s\n' "$STATUS" "$REQUEST")" \
      --background "target_mode=$target_mode, target_ref=$target_ref, base_ref=$BASE, review_branch=$REVIEW" \
      --next "reviewer가 snapshot-load 후 review skill을 실행한다." \
      --references "$target_ref"
