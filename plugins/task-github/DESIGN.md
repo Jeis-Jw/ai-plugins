@@ -351,7 +351,7 @@ task-github로 정의한 **한 업무 = task 노드 1개 + 루트 이슈 1개.**
 | `start` | recall(맥락 주입) | 시작 시 dirty-vault 경고(§8) → 리프 점유 시 부모 루트의 task 노드 + 연결 결정을 세션 컨텍스트로 주입 | normal/major |
 | `plan` | recall(적극) | task 노드의 `decisions`/`intents` 따라 읽기 + 키워드 recall로 trial_error/observation 주입; "고려한 대안"=rejected 후보; ADR초안=decision 후보 | normal/major |
 | `run` | capture observation | `[관찰]` 발견 즉시 `capture observation`(자동, `--tasks` 역링크) | normal/major |
-| `verify` | **capture(핵심)** | 태그→타입 캡처 제안, observation 승격 검토, `refresh --strict` hard gate, 품질 FLAG | normal/major |
+| `verify` | **capture(핵심)** | 태그→타입 캡처 제안, observation 승격 검토, `refresh --level integrity --strict` hard gate, 품질 FLAG | normal/major |
 | `done` | **drift + ADR** | PR diff→`refresh --check changed-path-stale` hard gate; major면 ADR→`capture decision`(`--tasks`로 task와도 연결) | normal/major |
 | `review` | cross-link | pr-verifier가 PR↔task 노드의 연결 decision 교차 확인 | — |
 | `merge` | **task done 전이** | 머지 전 strict/drift hard gate 통과 후, 루트 이슈가 close되면(마지막 PR 머지) 연결 task 노드를 `complete`로 `done/` 전이 | — |
@@ -469,7 +469,7 @@ flag는 block이 아니라 confirm 전 보완 신호다. 단, flag가 있는데 
 ### 7.7 `verify` — 검증 리포트 생성
 - **입력**: `{N}`. **본질**: "구조화된 검증 결과 문서의 생성".
 - **동작**: ①plan의 **검증 체크리스트** 추출(없으면 `[중단]`) ②완료 조건 실질(MUST)/형식(SHOULD) 대조 ③(복잡 PR) pr-verifier ④**지식 기록 검토**(태그→타입 캡처 제안) ⑤고정 형식 리포트를 Issue 코멘트로.
-- **위키**: (a) Issue 코멘트의 `[결정]/[시행착오]/[관찰]/[사실]` 태그를 [§5.4](#54-issue-코멘트-태그-어휘-위키-71타입과-정렬) 매핑대로 캡처. 캡처하는 decision/trial_error/observation은 `--tasks`로 루트 이슈에도 연결(같은 업무로 묶임) (b) `[관찰]` observation 중 분류 확정분 **승격 제안**(+retire) (c) `refresh --strict` hard gate. (d) `decision-quality,task-quality`는 FLAG-to-human. major면 plan의 ADR 초안 confirm.
+- **위키**: (a) Issue 코멘트의 `[결정]/[시행착오]/[관찰]/[사실]` 태그를 [§5.4](#54-issue-코멘트-태그-어휘-위키-71타입과-정렬) 매핑대로 캡처. 캡처하는 decision/trial_error/observation은 `--tasks`로 루트 이슈에도 연결(같은 업무로 묶임) (b) `[관찰]` observation 중 분류 확정분 **승격 제안**(+retire) (c) `refresh --level integrity --strict` hard gate. (d) `decision-quality,task-quality`는 FLAG-to-human. major면 plan의 ADR 초안 confirm.
 - **판정**: 실질 미충족 0 → 통과(done). ≥1 → CHANGES_REQUESTED(run 복귀).
 - **불변식**: 산출물은 코멘트 1개·고정 형식. **기록이 본질.**
 
@@ -485,7 +485,7 @@ flag는 block이 아니라 confirm 전 보완 신호다. 단, flag가 있는데 
 
 ### 7.10 `merge` — PR 머지
 - **입력**: `{PR}`. **동작**: 연결 Issue 추출→dependency 차단 재확인→PR+Issue **상태 라벨만 제거**(gear 유지)→`gh pr merge --merge --delete-branch`→downstream 안내→로컬 정리+`git checkout main`+`git pull`.
-- **위키(핵심)**: 머지 전 `refresh --strict` + PR diff `changed-path-stale` hard gate를 통과해야 한다. 이 머지로 **루트 이슈가 close되면**(업무 완료) 연결 task 노드를 `complete`로 `done/` 전이([§6.5]). 단일 리프 업무면 그 이슈 close가 곧 업무 완료. 컨테이너 업무면 마지막 자식 close 시점.
+- **위키(핵심)**: 머지 전 `refresh --level integrity --strict` + PR diff `changed-path-stale` hard gate를 통과해야 한다. 이 머지로 **루트 이슈가 close되면**(업무 완료) 연결 task 노드를 `complete`로 `done/` 전이([§6.5]). 단일 리프 업무면 그 이슈 close가 곧 업무 완료. 컨테이너 업무면 마지막 자식 close 시점.
 - **불변식**: `--merge` 방식. 상태 라벨 제거하되 `gear:*` 유지. Issue는 `Closes #N`으로 자동 close.
 
 ---
@@ -668,7 +668,7 @@ is:open is:pr -label:in-review -label:in-progress             # 리뷰 가능 PR
 
 **에러 복구**: ①Issue에 `[중단]` 코멘트(지점·원인·상태) ②복구 가능→재시도 ③불가→사령관 보고, 다음 세션 `[중단]`으로 맥락 복원 ④워크트리 미커밋 변경 **보존**.
 
-**위키 호출 실패 처리**: wiki CLI가 비0 종료(exit 4 ref 오류 등)면 캡처/전이 같은 보조 동작은 스킵하고 `[관찰]` 코멘트로 사유 기록, 사령관에 알림. 단, [rules/quality-gates.md](rules/quality-gates.md) G1의 `refresh --strict`와 `changed-path-stale`는 hard gate라서 실패 시 `verify`/`done`/`merge`를 진행하지 않는다. 위키가 없는 워크스페이스는 기존처럼 위키 단계를 skip한다.
+**위키 호출 실패 처리**: wiki CLI가 비0 종료(exit 4 ref 오류 등)면 캡처/전이 같은 보조 동작은 스킵하고 `[관찰]` 코멘트로 사유 기록, 사령관에 알림. 단, [rules/quality-gates.md](rules/quality-gates.md) G1의 `refresh --level integrity --strict`와 `changed-path-stale`는 hard gate라서 실패 시 `verify`/`done`/`merge`를 진행하지 않는다. 위키가 없는 워크스페이스는 기존처럼 위키 단계를 skip한다.
 
 ---
 
@@ -715,7 +715,7 @@ is:open is:pr -label:in-review -label:in-progress             # 리뷰 가능 PR
 
 **위키 통합 불변식**
 19. **비대칭 결합** — wiki-markdown으로의 역방향 의존을 만들지 않는다(wiki는 task를 모름).
-20. **그레이스풀** — `./wiki/` 미감지 시 모든 위키 호출 스킵, 핵심 흐름 유지. 단, 위키가 감지되면 `refresh --strict`와 `changed-path-stale` hard gate는 통과해야 한다.
+20. **그레이스풀** — `./wiki/` 미감지 시 모든 위키 호출 스킵, 핵심 흐름 유지. 단, 위키가 감지되면 `refresh --level integrity --strict`와 `changed-path-stale` hard gate는 통과해야 한다.
 21. **결합 규약은 policy에** — "누가·언제·어떤 타입을" 같은 운영 규약은 task-github의 rules가 아니라 자동로드 operating policy(`CLAUDE.md` / `AGENTS.md`)에 둔다(agent-neutrality 보존).
 22. **자동 승격 금지** — observation 자동 캡처는 허용하되, 1급 노드(task/decision/intent/trial_error) 캡처와 모든 승격은 **제안 후 확인**.
 23. **지식 기록 감사 의무** — 비 trivial 작업은 종료 전 `recorded`/`proposed`/`none` 중 하나로 Knowledge Capture Audit 결과를 남긴다.

@@ -63,14 +63,15 @@ ROOT=${PARENT:-{N}}   # 이후 --tasks "$OWNER/$REPO#$ROOT"
 - **`[관찰]` 처리 — 중복 방지**: run이 작업 중 이미 자동 캡처한 observation은 **다시 만들지 않는다.** 위 표의 `[관찰]` 행은 run이 놓쳐 코멘트 태그로만 남은 관찰을 verify가 보강 캡처할 때만 적용한다.
 - **observation 승격 검토**: 기존 observation(run/verify가 만든 것) 중 분류가 확정된 것 → 후속 trial_error/decision 캡처(`--supersedes {OBS}`)로 승격 **제안**.
 - **major면 ADR 초안 confirm** (done 후 `capture decision`으로 승격).
-- **무결성 hard gate** ([quality-gates.md](../../rules/quality-gates.md) G1):
+- **무결성 hard gate** ([quality-gates.md](../../rules/quality-gates.md) G1) — integrity 등급만 차단:
 ```bash
-STRICT=$(wiki refresh --strict --json) || {
+STRICT=$(wiki refresh --level integrity --strict --json) || {
   printf '%s\n' "$STRICT"
   exit 1
 }
 ```
-`refresh --strict`가 비0 종료하거나 `issues`가 있으면 검증 판정은 `CHANGES_REQUESTED`다. 이 경우 `done`으로 넘기지 않고, 이슈 목록과 보완 방법을 검증 리포트에 기록한다.
+`refresh --level integrity --strict`가 비0 종료하거나 `issues`가 있으면 검증 판정은 `CHANGES_REQUESTED`다. 이 경우 `done`으로 넘기지 않고, 이슈 목록과 보완 방법을 검증 리포트에 기록한다.
+- **hygiene 경고 surface**(비차단): `HYG=$(wiki refresh --level hygiene --json)` 의 `issues`(orphan/stale/tags 등)는 검증 리포트에 경고로만 적고 판정에는 영향 주지 않는다(사령관이 청소 시점 판단).
 - **품질 flag** ([quality-gates.md](../../rules/quality-gates.md) G2/G3):
 ```bash
 QUALITY=$(wiki refresh --check decision-quality,task-quality --json)
@@ -114,5 +115,5 @@ gh issue comment {N} --body "## 검증 결과
 - 항목 누락 시 verify 미완료.
 - **기록이 본질이다.**
 - 1급 노드(decision/rejected/trial_error) 캡처와 승격은 **제안 후 확인**.
-- `refresh --strict`는 hard gate다. `decision-quality`/`task-quality`는 `FLAG-to-human`이며 기본 block은 아니다.
+- `refresh --level integrity --strict`는 hard gate다(integrity 등급만 차단). hygiene 등급(orphan/stale 등)과 `decision-quality`/`task-quality`는 경고/`FLAG-to-human`이며 block 아니다.
 - Knowledge Capture Audit가 없으면 verify 미완료.

@@ -42,7 +42,7 @@ task-github:review {PR} --auto-merge
 - **업무 1개 = 루트 이슈 1개 + 위키 `task` 노드 1개** (1:1 다리)
 - 작업 중 `[결정]/[시행착오]/[관찰]`을 위키 결정 그래프로 승격
 - `recall --backlinks-of {DEC}`로 "이 결정이 낳은 작업" 추적
-- `refresh --strict`와 PR diff `changed-path-stale`를 완료/머지 hard gate로 적용
+- `refresh --level integrity --strict`와 PR diff `changed-path-stale`를 완료/머지 hard gate로 적용(hygiene 등급은 경고)
 - `decision-quality`/`task-quality`로 결정·정의 구조 결함을 FLAG-to-human으로 탐지
 
 연동 메커니즘은 [rules/wiki-bridge.md](rules/wiki-bridge.md), 품질 gate는 [rules/quality-gates.md](rules/quality-gates.md), 운영 정책은 자동로드 agent-entry 파일(`CLAUDE.md` / `AGENTS.md`)에 있다. `wiki-markdown`의 `agent-policy` 스킬로 두 파일의 관리 블록을 스캐폴드할 수 있다.

@@ -49,7 +49,8 @@ wiki capture observation --title "..." --summary "..." --tags ... --tasks owner/
 
 # 드리프트 / 무결성
 wiki refresh --check changed-path-stale --changed-path "{변경파일 csv}" --json
-wiki refresh --strict --json
+wiki refresh --level integrity --strict --json   # hard gate (integrity 등급만 차단)
+wiki refresh --level hygiene --json               # 경고 surface (비차단)
 wiki refresh --check decision-quality,task-quality --json
 ```
 > 위 블록은 **개념 예시**다(`...` 자리표시자 포함). 실제 호출 시 `--title`/`--summary`/`--tags`는 항상 채운다 — 위키 `capture`는 이 셋이 없으면 exit 2다. `--tasks`는 외부 작업 ref이며 task-github에서는 업무 **루트 이슈** 번호 또는 관련 PR 번호를 기록한다([§4](#4-task-노드--업무이슈pr-참조-다리)).
@@ -148,10 +149,10 @@ TASK=$(gh issue view "$ROOT" --json body --jq '.body' \
 | `start` | 시작 시 dirty-vault 경고(§8) → 부모 루트의 task 노드 + 결정/취지를 세션 컨텍스트로 주입 |
 | `plan` | task의 `decisions`/`intents` 읽기 + 키워드 recall로 trial_error/observation 주입 |
 | `run` | `[관찰]` 발견 시 `capture observation`(자동) |
-| `verify` | 태그→타입 캡처(제안), observation 승격 검토, `refresh --strict` hard gate, decision/task 품질 FLAG |
+| `verify` | 태그→타입 캡처(제안), observation 승격 검토, `refresh --level integrity --strict` hard gate + hygiene 경고, decision/task 품질 FLAG |
 | `done` | PR diff → `refresh --check changed-path-stale` hard gate; major면 ADR → `capture decision` |
 | `review` | pr-verifier에 연결 task의 `decisions` 전달(반려 대안 회귀 점검) |
-| `merge` | 머지 전 `refresh --strict` + PR diff drift hard gate; 루트 이슈 close 시 task `complete` |
+| `merge` | 머지 전 `refresh --level integrity --strict` + PR diff drift hard gate(hygiene 경고); 루트 이슈 close 시 task `complete` |
 
 ---
 

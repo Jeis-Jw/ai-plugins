@@ -54,7 +54,7 @@ dependency API 조회가 실패하면 자동 머지하지 않고 사령관에게
 ```
 가용 시 [quality-gates.md](../../rules/quality-gates.md) G1을 적용한다:
 ```bash
-STRICT=$(wiki refresh --strict --json) || {
+STRICT=$(wiki refresh --level integrity --strict --json) || {
   printf '%s\n' "$STRICT"
   exit 1
 }
@@ -64,8 +64,9 @@ printf '%s' "$DRIFT" | python3 -c 'import json,sys; sys.exit(1 if json.load(sys.
   printf '%s\n' "$DRIFT"
   exit 1
 }
+HYG=$(wiki refresh --level hygiene --json)  # 경고 surface (비차단)
 ```
-`refresh --strict`가 비0 종료하거나, `changed-path-stale` 이슈가 있으면 머지하지 않는다. stale 문서는 `verified_at` 갱신 또는 supersede 대상이며, 자동 변경하지 않고 사령관에게 보완 경로를 보고한다.
+`refresh --level integrity --strict`가 비0 종료하거나, `changed-path-stale` 이슈가 있으면 머지하지 않는다(integrity 깨짐 + 코드-문서 drift만 차단). `HYG`의 hygiene 이슈(orphan/stale/tags 등)는 머지를 막지 않고 머지 후 보고로만 남긴다. stale 문서는 `verified_at` 갱신 또는 supersede 대상이며, 자동 변경하지 않고 사령관에게 보완 경로를 보고한다.
 
 ### Step 5. 라벨 정리 (상태만, gear 유지)
 ```bash
@@ -123,7 +124,7 @@ GitHub 이슈/PR 흐름이 상태 정본이고 위키 done/는 투영이다([wik
 - `--merge`(머지 커밋) 방식.
 - 상태 라벨 제거하되 `gear:*` 유지.
 - 열린 `blocked_by`가 있으면 머지 금지. 머지 후 `blocking` downstream을 안내.
-- 위키가 가용하면 `refresh --strict`와 PR diff `changed-path-stale`를 통과해야 머지한다.
+- 위키가 가용하면 `refresh --level integrity --strict`와 PR diff `changed-path-stale`를 통과해야 머지한다(integrity + drift만 차단; hygiene은 경고).
 - Issue는 PR의 `Closes #N`으로 자동 close.
 - task 노드 done 전이는 **루트 이슈가 실제 close될 때만**. 리프 하나 머지가 곧 업무 완료는 아니다.
 - 최종 보고 전에 Knowledge Capture Audit 결과를 포함한다.
