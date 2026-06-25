@@ -70,6 +70,7 @@ python3 "$CLI" complete TASK-...   # active → task/done/ (reopen to undo)
 python3 "$CLI" relate DEC-... --add-tasks owner/repo#18
 python3 "$CLI" recall "auth" --json                 # Stage 1: frontmatter only (~2KB guard)
 python3 "$CLI" recall "auth" --stage 2 --section 취지 # Stage 2: one section
+python3 "$CLI" recall "auth" --pack --json            # context pack: labels + section snippets, authority-ranked
 python3 "$CLI" recall --backlinks-of INT-... --json   # what a hub spawned (incl. done tasks)
 python3 "$CLI" recall --read DEC-...,INT-...           # batch read, input order preserved
 
@@ -142,14 +143,15 @@ Checks are tiered: **integrity-hard** (graph/data correctness — block) vs **hy
 | `complete`/`reopen <bn>` | task → done / back | `--dry-run` |
 | `relate <bn>` | add relations w/o editing frontmatter | `--add-intents/--add-decisions/--add-ssot/--add-tasks` |
 | `snapshot save/list/search/load/discard` | staging I/O | `save`: `--title --summary --tags` · section flags · `--merge` |
-| `recall` | read-only query | `[query]` · `--stage 1\|2\|3` · `--section` · `--type/--tag` · `--backlinks-of` · `--read a,b,c` · `--fuzzy` · `--include-retired` |
+| `recall` | read-only query | `[query]` · `--stage 1\|2\|3` · `--pack` · `--section` · `--type/--tag` · `--backlinks-of` · `--read a,b,c` · `--fuzzy` · `--include-retired` · `--days` (pack stale) |
 | `refresh` | integrity report | `--level all\|integrity\|hygiene` · `--strict` · `--check <name,..>` · `--changed-path` · `--fix index,retired-in-index` |
 
 Common: `--vault <path>` (default `./wiki`), `--json`. Success `{"ok": true, ...}`; failure `{"ok": false, "error_code": "...", "message": "..."}`. Exit codes: `0` ok · `2` arg/usage · `3` no vault · `4` ref ambiguous/missing · `5` living-slug collision · `6` strict refresh found integrity issues. (Full per-subcommand matrix → `references/`.)
 
 ## Output interpretation
 
-- `recall --json` is discriminated by `mode`: `stage1` / `stage2` / `stage3` / `read` / `backlinks`, each with a `results` list (`--read` preserves input order). Stage-1 `truncated: true` ⇒ narrow with `--type`/`--tag`.
+- `recall --json` is discriminated by `mode`: `stage1` / `stage2` / `stage3` / `read` / `backlinks` / `pack`, each with a `results` list (`--read` preserves input order). Stage-1 `truncated: true` ⇒ narrow with `--type`/`--tag`.
+- `recall --pack` (`mode: pack`, `projection: deterministic`, `ranked_by: authority`) projects matched docs into one read: frontmatter + `relations` + the type's primary section snippet + additive labels `authority`/`freshness`/`use_as`/`warnings`. **No prose inference** — it extracts only fixed fields/headers. `freshness` is relation-aware: an un-anchored record is `authority_unknown` (never a false "stale"); `anchor_changed` flags a retired/superseded anchor. Authority ranking applies inside the pack only — default `stage1`/`2`/`3` are unchanged.
 - `capture --json` → `empty_sections` = blank headers needing prose (`--lite` placeholders sit in `lite_sections`, not here); `index_paths` for `git add`.
 - `refresh` issues are `{check, tier, path, field?, target?, message}` — group by `check`, gate on `tier == "integrity"`.
 - Human output is Korean (matches section headers). Surface `--json` to other tools/skills.

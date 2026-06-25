@@ -3626,5 +3626,203 @@ class WikiCliDiscardTests(unittest.TestCase):
             self.assertTrue(p["would_block"])
 
 
+class WikiCliPackTests(unittest.TestCase):
+    """Unit C — recall --pack deterministic projection + authority labels."""
+    ENV = {"WIKI_NOW": "2026-06-25T12:00:00"}
+
+    def _init(self, tmp):
+        self.assertEqual(run_cli("init", cwd=tmp).returncode, 0)
+
+    def _cap(self, tmp, dtype, *extra, env=None):
+        r = run_cli("capture", dtype, "--json", *extra,
+                    cwd=tmp, env=env or self.ENV)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout)["id"]
+
+    def _pack(self, tmp, *extra):
+        r = run_cli("recall", "--pack", "--json", *extra, cwd=tmp, env=self.ENV)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout)
+
+    def _by_id(self, payload, doc_id):
+        for it in payload["results"]:
+            if it["id"] == doc_id:
+                return it
+        self.fail(f"{doc_id} not in pack results")
+
+    def test_pack_mode_markers_and_additive_labels(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            intent = self._cap(tmp, "intent", "--title", "Anchor Intent",
+                               "--summary", "s", "--tags", "x")
+            dec = self._cap(tmp, "decision", "--title", "Pack Decision",
+                            "--summary", "s", "--tags", "x",
+                            "--intents", intent,
+                            "--sec-decision", "이 결정의 본문은 충분히 길게 작성된다")
+            pack = self._pack(tmp, "--type", "decision")
+            self.assertEqual(pack["mode"], "pack")
+            self.assertEqual(pack["projection"], "deterministic")
+            self.assertEqual(pack["ranked_by"], "authority")
+            it = self._by_id(pack, dec)
+            # additive labels present
+            self.assertEqual(it["authority"], "active")
+            self.assertEqual(it["freshness"], "anchored")  # live intent anchor
+            self.assertEqual(it["use_as"], "decision_rationale")
+            self.assertEqual(it["warnings"], [])
+            # deterministic projection content: relations + fixed-section snippet
+            self.assertIn(intent, it["relations"]["intents"])
+            self.assertIn("결정", it["sections"])
+            self.assertIn("이 결정의 본문", it["sections"]["결정"])
+
+    def test_pack_does_not_change_default_recall(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            self._cap(tmp, "decision", "--title", "D", "--summary", "s",
+                      "--tags", "x", "--sec-decision", "본문 내용 충분")
+            r = run_cli("recall", "--json", cwd=tmp, env=self.ENV)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            payload = json.loads(r.stdout)
+            self.assertEqual(payload["mode"], "stage1")
+            # default stage1 items carry no authority projection labels
+            for it in payload["results"]:
+                self.assertNotIn("authority", it)
+                self.assertNotIn("use_as", it)
+
+    def test_pack_observation_without_anchor_is_authority_unknown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            obs = self._cap(tmp, "observation", "--title", "Lone Obs",
+                            "--summary", "s", "--tags", "x",
+                            "--sec-observation", "앵커 없는 관찰 본문 내용")
+            it = self._by_id(self._pack(tmp, "--type", "observation"), obs)
+            # constraint (f): no anchor → authority_unknown, NEVER possibly_stale
+            self.assertEqual(it["freshness"], "authority_unknown")
+            self.assertEqual(it["warnings"], [])
+            self.assertEqual(it["authority"], "unverified")
+
+    def test_pack_observation_with_live_anchor_is_anchored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            dec = self._cap(tmp, "decision", "--title", "Anchor Dec",
+                            "--summary", "s", "--tags", "x",
+                            "--sec-decision", "근거가 되는 결정 본문")
+            obs = self._cap(tmp, "observation", "--title", "Anchored Obs",
+                            "--summary", "s", "--tags", "x", "--decisions", dec,
+                            "--sec-observation", "결정에 앵커된 관찰")
+            it = self._by_id(self._pack(tmp, "--type", "observation"), obs)
+            self.assertEqual(it["freshness"], "anchored")
+            self.assertEqual(it["warnings"], [])
+
+    def test_pack_anchor_changed_when_anchor_retired(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            dec = self._cap(tmp, "decision", "--title", "Doomed Anchor",
+                            "--summary", "s", "--tags", "x",
+                            "--sec-decision", "곧 retire 될 결정")
+            obs = self._cap(tmp, "observation", "--title", "Obs On Doomed",
+                            "--summary", "s", "--tags", "x", "--decisions", dec,
+                            "--sec-observation", "retire 될 결정을 관찰")
+            self.assertEqual(
+                run_cli("retire", dec, "--type", "deprecated",
+                        cwd=tmp, env=self.ENV).returncode, 0)
+            it = self._by_id(self._pack(tmp, "--type", "observation"), obs)
+            self.assertEqual(it["freshness"], "anchor_changed")
+            self.assertTrue(any(dec in w and "retired" in w for w in it["warnings"]),
+                            it["warnings"])
+
+    def test_pack_superseded_is_stale_and_ranked_after_active(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            d1 = self._cap(tmp, "decision", "--title", "Old Dec", "--summary", "s",
+                           "--tags", "x", "--sec-decision", "구버전 결정 본문",
+                           env={"WIKI_NOW": "2026-06-25T12:00:00"})
+            d2 = self._cap(tmp, "decision", "--title", "New Dec", "--summary", "s",
+                           "--tags", "x", "--sec-decision", "신버전 결정 본문",
+                           env={"WIKI_NOW": "2026-06-25T12:01:00"})
+            self.assertEqual(
+                run_cli("retire", d1, "--type", "superseded",
+                        "--superseded-by", d2, cwd=tmp, env=self.ENV).returncode, 0)
+            pack = self._pack(tmp, "--type", "decision", "--include-retired")
+            ids = [it["id"] for it in pack["results"]]
+            # active D2 ranks before superseded D1
+            self.assertLess(ids.index(d2), ids.index(d1))
+            old = self._by_id(pack, d1)
+            self.assertEqual(old["authority"], "superseded")
+            self.assertEqual(old["freshness"], "stale")
+            self.assertTrue(any(f"superseded_by:{d2}" == w for w in old["warnings"]),
+                            old["warnings"])
+
+    def test_pack_time_stale_threshold_and_days_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            # verified 85 days before WIKI_NOW (2026-06-25): fresh @ default 90
+            tri = self._cap(tmp, "trial_error", "--title", "Lesson",
+                            "--summary", "s", "--tags", "x",
+                            "--verified-at", "2026-04-01",
+                            "--sec-lesson", "이 교훈의 본문 내용")
+            fresh = self._by_id(self._pack(tmp, "--type", "trial_error"), tri)
+            self.assertEqual(fresh["freshness"], "fresh")
+            # tighter --days 30 flips the same doc to stale + verified_at warning
+            stale = self._by_id(
+                self._pack(tmp, "--type", "trial_error", "--days", "30"), tri)
+            self.assertEqual(stale["freshness"], "stale")
+            self.assertTrue(any("verified_at" in w for w in stale["warnings"]),
+                            stale["warnings"])
+
+    def test_pack_ssot_is_canonical(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            # the seed ssot.md is the living-root index (excluded from recall);
+            # a captured ssot doc is the unit under test.
+            sid = self._cap(tmp, "ssot", "--slug", "pack-state",
+                            "--title", "Pack State", "--summary", "s",
+                            "--tags", "x", "--verified-at", "2026-06-25",
+                            "--sec-state", "현재 상태 본문 내용")
+            it = self._by_id(self._pack(tmp, "--type", "ssot"), sid)
+            self.assertEqual(it["authority"], "canonical")
+            self.assertEqual(it["use_as"], "current_state")
+            self.assertEqual(it["freshness"], "fresh")  # verified today
+
+    def test_pack_limit_respected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            for i in range(3):
+                self._cap(tmp, "decision", "--title", f"D{i}", "--summary", "s",
+                          "--tags", "x", "--sec-decision", f"결정 본문 {i} 충분히",
+                          env={"WIKI_NOW": f"2026-06-25T12:0{i}:00"})
+            pack = self._pack(tmp, "--type", "decision", "--limit", "2")
+            self.assertEqual(len(pack["results"]), 2)
+
+    def test_pack_tasks_relation_does_not_anchor(self):
+        # constraint (f): `tasks` is an external ref, never an in-graph anchor.
+        # An observation whose only relation is `tasks` stays authority_unknown.
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            obs = self._cap(tmp, "observation", "--title", "Task-Only Obs",
+                            "--summary", "s", "--tags", "x",
+                            "--tasks", "owner/repo#7",
+                            "--sec-observation", "외부 task만 가리키는 관찰")
+            it = self._by_id(self._pack(tmp, "--type", "observation"), obs)
+            self.assertEqual(it["freshness"], "authority_unknown")
+            self.assertEqual(it["warnings"], [])
+
+    def test_pack_truncates_on_byte_budget(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            # each decision carries a long (multi-byte) section so a handful
+            # overflow the ~4 KB pack budget.
+            body = "가" * 200
+            for i in range(20):
+                self._cap(tmp, "decision", "--title", f"Big{i}",
+                          "--summary", "충분히 긴 요약 " + "내용" * 20,
+                          "--tags", "x", "--sec-decision", body,
+                          env={"WIKI_NOW": f"2026-06-25T12:{i:02d}:00"})
+            pack = self._pack(tmp, "--type", "decision", "--limit", "50")
+            self.assertTrue(pack.get("truncated"), "expected budget truncation")
+            self.assertIn("hint", pack)
+            self.assertGreaterEqual(len(pack["results"]), 1)
+            self.assertLess(len(pack["results"]), 20)
+
+
 if __name__ == "__main__":
     unittest.main()

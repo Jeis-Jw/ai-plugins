@@ -2096,6 +2096,193 @@ def cmd_snapshot_discard(args) -> int:
     return EXIT_OK
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# (f.1) recall --pack — deterministic context projection (Unit C)
+# ──────────────────────────────────────────────────────────────────────────
+# `recall --pack` returns a deterministic projection of matched docs so an agent
+# can consume one pack instead of N read calls. HARD boundary (§4·§8): the pack
+# extracts ONLY from frontmatter, relations, and fixed section headers — it
+# never infers prose. Any future synthesized field must carry a low-confidence
+# name (candidate_*/source_summaries); v0 ships zero inference, marked
+# projection="deterministic". authority/freshness/use_as/warnings are additive
+# labels and the authority ranking applies INSIDE the pack only — default
+# stage1/2/3 recall stays byte-for-byte unchanged (stability, §4 constraint e).
+
+PACK_STALE_DAYS = 90
+PACK_SNIPPET_BYTES = 280
+PACK_BUDGET_BYTES = 4096
+
+# use_as: deterministic per-type consumption hint (how an agent should treat the
+# doc). Mapped from the type — not inferred from content.
+USE_AS_BY_TYPE = {
+    "intent": "intent",
+    "decision": "decision_rationale",
+    "rejected_decision": "rejected_alternative",
+    "trial_error": "lesson",
+    "observation": "unclassified_observation",
+    "ssot": "current_state",
+    "runbook": "procedure",
+    "task": "work_order",
+}
+
+# Primary fixed section per type — the one header whose body carries the doc's
+# core payload. The deterministic extraction target for the pack snippet.
+PACK_SECTION_BY_TYPE = {
+    "intent": "취지",
+    "decision": "결정",
+    "rejected_decision": "반려 사유",
+    "trial_error": "교훈",
+    "observation": "관찰",
+    "ssot": "현재 상태",
+    "runbook": "목적",
+    "task": "범위와 완료 기준",
+}
+
+# Authority tiers, most→least authoritative. The index is the pack sort key
+# (lower = surfaced first). Deterministic from lifecycle + type only.
+AUTHORITY_ORDER = ("canonical", "active", "unverified", "rejected",
+                   "superseded", "retired")
+
+# Anchor relation sub-keys: in-graph targets whose lifecycle grounds this doc's
+# authority. `tasks` is external (not a wiki record) so it never anchors.
+ANCHOR_RELATION_KEYS = ("intents", "decisions", "rejected_decisions",
+                        "ssot", "runbook")
+
+
+def _doc_anchors(d: WikiDoc) -> List[str]:
+    rel = d.frontmatter.get("relations")
+    if not isinstance(rel, dict):
+        return []
+    out: List[str] = []
+    for key in ANCHOR_RELATION_KEYS:
+        vals = rel.get(key)
+        if isinstance(vals, list):
+            out.extend(str(v) for v in vals if v)
+    return out
+
+
+def _doc_authority(d: WikiDoc) -> str:
+    # superseded_by first: a doc with a named successor reads "superseded"
+    # (follow the replacement) rather than a dead-end "retired".
+    if d.frontmatter.get("superseded_by"):
+        return "superseded"
+    if d.retired:
+        return "retired"
+    if d.doc_type in LIVING_TYPES:
+        return "canonical"
+    if d.doc_type == "observation":
+        return "unverified"
+    if d.doc_type == "rejected_decision":
+        return "rejected"
+    return "active"
+
+
+def _authority_rank(d: WikiDoc) -> int:
+    a = _doc_authority(d)
+    return AUTHORITY_ORDER.index(a) if a in AUTHORITY_ORDER else len(AUTHORITY_ORDER)
+
+
+def _anchor_state(anchor_doc: Optional[WikiDoc]) -> Optional[str]:
+    """Lifecycle of an anchor target relevant to staleness, or None if live."""
+    if anchor_doc is None:
+        return "missing"
+    if anchor_doc.frontmatter.get("superseded_by"):
+        return "superseded"
+    if anchor_doc.retired:
+        return "retired"
+    return None
+
+
+def _pack_labels(d: WikiDoc, by_id: "dict[str, WikiDoc]", today, days: int) -> dict:
+    """Additive authority labels (deterministic). Relation-aware staleness:
+    no anchor → `authority_unknown` (NEVER possibly_stale), per §4·§8 — a bare
+    date comparison on an un-anchored record is a false positive."""
+    authority = _doc_authority(d)
+    use_as = USE_AS_BY_TYPE.get(d.doc_type, d.doc_type or "unknown")
+    warnings: List[str] = []
+
+    if d.retired:
+        warnings.append("retired")
+    sby = d.frontmatter.get("superseded_by")
+    if sby:
+        warnings.append(f"superseded_by:{sby}")
+
+    if d.retired or sby:
+        freshness = "stale"
+    elif (d.doc_type in TIME_STALE_TYPES and d.frontmatter.get("verified_at")
+          and _is_valid_iso_date(d.frontmatter.get("verified_at"))):
+        va = d.frontmatter["verified_at"]
+        age = (today - datetime.strptime(va, "%Y-%m-%d").date()).days
+        if age > days:
+            freshness = "stale"
+            warnings.append(f"verified_at {va} ({age}일 경과, 기준 {days}일)")
+        else:
+            freshness = "fresh"
+    else:
+        anchors = _doc_anchors(d)
+        if not anchors:
+            # constraint (f): no anchor → cannot assess → authority_unknown,
+            # with NO fabricated stale warning.
+            freshness = "authority_unknown"
+        else:
+            changed = []
+            for aid in anchors:
+                st = _anchor_state(by_id.get(aid))
+                if st is not None:
+                    changed.append((aid, st))
+            if changed:
+                freshness = "anchor_changed"
+                for aid, st in changed:
+                    warnings.append(f"근거 앵커 {aid} {st}")
+            else:
+                freshness = "anchored"
+
+    return {"authority": authority, "freshness": freshness,
+            "use_as": use_as, "warnings": warnings}
+
+
+def _pack_sections(d: WikiDoc) -> dict:
+    header = PACK_SECTION_BY_TYPE.get(d.doc_type)
+    if not header:
+        return {}
+    snippet = _substantive_text(_section_body(d.body, header))
+    if not snippet:
+        return {}
+    if len(snippet.encode("utf-8")) > PACK_SNIPPET_BYTES:
+        # reserve room for the ellipsis so the result stays ≤ PACK_SNIPPET_BYTES.
+        keep = PACK_SNIPPET_BYTES - len("…".encode("utf-8"))
+        snippet = (snippet.encode("utf-8")[:keep]
+                   .decode("utf-8", errors="ignore") + "…")
+    return {header: snippet}
+
+
+def _pack_item(d: WikiDoc, by_id: "dict[str, WikiDoc]", today, days: int) -> dict:
+    fm = d.frontmatter
+    tags = fm.get("tags", [])
+    item: dict = {
+        "id": d.doc_id, "type": d.doc_type, "path": str(d.path),
+        "summary": fm.get("summary", ""),
+        "tags": tags if isinstance(tags, list) else [],
+    }
+    st = fm.get("search_terms")
+    if isinstance(st, list) and st:
+        item["search_terms"] = st
+    rel = fm.get("relations")
+    if isinstance(rel, dict) and rel:
+        item["relations"] = rel
+    for k in ("created_at", "verified_at"):
+        if fm.get(k):
+            item[k] = fm[k]
+    if fm.get("superseded_by"):
+        item["superseded_by"] = fm["superseded_by"]
+    item["retired"] = d.retired
+    sections = _pack_sections(d)
+    if sections:
+        item["sections"] = sections
+    item.update(_pack_labels(d, by_id, today, days))
+    return item
+
+
 def cmd_recall(args) -> int:
     vault = resolve_vault(args.vault)
     ensure_vault(vault)
@@ -2186,6 +2373,53 @@ def cmd_recall(args) -> int:
     matched.sort(key=lambda d: d.doc_id)
 
     limit = args.limit if args.limit and args.limit > 0 else 10
+
+    if getattr(args, "pack", False):
+        today = now().date()
+        # explicit None-check so `--days 0` is honored (0 is falsy).
+        days = PACK_STALE_DAYS if getattr(args, "days", None) is None else args.days
+        # Resolve anchor lifecycle across the whole graph (active + retired +
+        # done) regardless of the recall filter, so relation-aware staleness can
+        # see a superseded/retired anchor even when it is filtered out of the
+        # result set. `docs` already holds retired/done iff --include-retired.
+        anchor_by_id: "dict[str, WikiDoc]" = {d.doc_id: d for d in docs}
+        for parts in discover_index_folders(vault):
+            for p in iter_retired_docs(vault, parts):
+                dd = read_doc(vault, p)
+                anchor_by_id.setdefault(dd.doc_id, dd)
+            for p in iter_done_docs(vault, parts):
+                dd = read_doc(vault, p)
+                anchor_by_id.setdefault(dd.doc_id, dd)
+        ranked = sorted(matched, key=lambda d: (_authority_rank(d), d.doc_id))
+        pack: List[dict] = []
+        total = 0
+        truncated_at: Optional[int] = None
+        for d in ranked:
+            it = _pack_item(d, anchor_by_id, today, days)
+            # count UTF-8 bytes, not characters — the budget is in bytes and
+            # the payload is emitted with ensure_ascii=False (non-ASCII = multi-
+            # byte). Estimate only; emit_ok re-serializes the full payload.
+            chunk_bytes = len(json.dumps(it, ensure_ascii=False).encode("utf-8"))
+            if total + chunk_bytes > PACK_BUDGET_BYTES and pack:
+                truncated_at = len(pack)
+                break
+            total += chunk_bytes
+            pack.append(it)
+            if len(pack) >= limit:
+                break
+        payload = {"mode": "pack", "projection": "deterministic",
+                   "ranked_by": "authority", "results": pack}
+        if truncated_at is not None:
+            payload["truncated"] = True
+            payload["hint"] = ("pack가 예산(4KB)을 넘어 절단됨. "
+                               "--type/--tag/--limit로 좁히세요.")
+        emit_ok(args, payload,
+                text_lines=[f"Pack ({len(pack)}건, authority 정렬):"] +
+                           [f"  - {it['id']} [{it['authority']}/{it['freshness']}]"
+                            f" use_as={it['use_as']}"
+                            + (f" ⚠{len(it['warnings'])}" if it["warnings"] else "")
+                            for it in pack])
+        return EXIT_OK
 
     if args.stage == 2 and args.section:
         results = []
@@ -3211,6 +3445,12 @@ def build_parser() -> argparse.ArgumentParser:
     pq.add_argument("--tag", action="append", default=None)
     pq.add_argument("--section", default=None)
     pq.add_argument("--stage", type=int, default=1)
+    pq.add_argument("--pack", action="store_true",
+                    help="deterministic context projection: frontmatter/relations/"
+                         "fixed-section snippets + authority/freshness/use_as/warnings "
+                         "labels, authority-ranked. No prose inference.")
+    pq.add_argument("--days", type=int, default=None,
+                    help="staleness threshold in days for --pack (default 90)")
     pq.add_argument("--limit", type=int, default=10)
     pq.add_argument("--backlinks-of", default=None, dest="backlinks_of")
     pq.add_argument("--read", default=None,
