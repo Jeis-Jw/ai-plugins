@@ -108,6 +108,38 @@ wiki refresh --check decision-quality,task-quality --json
 
 ### 공통 조회 스니펫 (스킬이 재사용)
 
+실제 스킬은 아래 원리를 직접 복붙하지 않고, 가능하면 공통 resolver를 쓴다:
+
+```bash
+python3 plugins/task-github/scripts/context_bundle.py --input snapshot.json
+```
+
+입력 snapshot은 skill이 이미 읽은 GitHub issue/root/dependency JSON과, 위키가 가용할 때 `recall --read`로 얻은 task record를 담는다. 출력은 `open`/`start`/`done`/`merge`/`status`가 공유하는 context bundle이다:
+
+```json
+{
+  "issue": {"number": 42, "state": "OPEN", "labels": ["gear:normal"]},
+  "root": {"number": 10, "state": "OPEN"},
+  "wiki_task": {"id": "TASK-...", "record": null},
+  "topology": null,
+  "gate": null,
+  "parent_branch": null,
+  "default_source": "profile+gear",
+  "blockers": [],
+  "downstream": [],
+  "worktree_path": ".worktrees/issue-42",
+  "integrity": {"errors": [], "warnings": []}
+}
+```
+
+resolver는 `gh`/wiki를 직접 호출하지 않는다. task-github가 GitHub와 wiki를 읽어 넣고, resolver는 다음 정합 불변식만 판정한다:
+
+- 루트 이슈 본문 `## Wiki Context`에 정확히 하나의 `TASK-*`가 있다.
+- 위키 task record가 제공되면 `relations.tasks`가 루트 이슈 ref(`owner/repo#N` 또는 `github:owner/repo#N`)를 가리킨다.
+- 루트 이슈 closed 상태와 task done 상태가 일치한다.
+
+Execution Contract가 아직 없는 루트는 `topology`/`gate`/`parent_branch`를 `null`로 두고 `default_source: "profile+gear"`를 낸다. 이 값은 실행 설정을 다시 쓰는 것이 아니라, contract 부재 시 agent가 기존 profile+gear 규칙을 적용해야 함을 드러내는 read-model hint다.
+
 **(a) 작업 중인 `{N}`에서 업무 루트 이슈 번호 얻기** — `{N}`이 리프면 부모, 아니면 자신:
 ```bash
 read OWNER REPO < <(gh repo view --json owner,name --jq '"\(.owner.login) \(.name)"')
