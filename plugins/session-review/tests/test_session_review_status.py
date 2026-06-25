@@ -162,6 +162,11 @@ review_strength: normal
             next_actor="worker",
         )
 
+        with self.assertRaisesRegex(session_review.StatusError, "blocking_count"):
+            session_review.validate_complete(approved, user_confirmed=True)
+
+        approved["blocking_count"] = 0
+
         with self.assertRaisesRegex(session_review.StatusError, "user confirmation"):
             session_review.validate_complete(approved, user_confirmed=False)
 
@@ -175,6 +180,7 @@ review_strength: normal
         session_review.validate_complete(awaiting_user, user_confirmed=True)
 
         requested = dict(approved, phase="changes-requested")
+        requested["blocking_count"] = 1
         with self.assertRaisesRegex(session_review.StatusError, "requires phase"):
             session_review.validate_complete(requested, user_confirmed=True)
 
@@ -303,10 +309,24 @@ class SetAndValidateStatusTests(unittest.TestCase):
             self.assertEqual(status["next_actor"], "worker")
 
     def test_validate_status_rejects_approved_with_blocking(self):
+        missing = {"phase": "approved", "next_actor": "worker", "active_actor": "none"}
+        with self.assertRaisesRegex(session_review.StatusError, "blocking_count"):
+            session_review.validate_status(missing)
+
         bad = {"phase": "approved", "next_actor": "worker", "active_actor": "none",
                "blocking_count": 2}
         with self.assertRaisesRegex(session_review.StatusError, "blocking"):
             session_review.validate_status(bad)
+
+    def test_validate_status_rejects_changes_requested_without_blocking(self):
+        missing = {"phase": "changes-requested", "next_actor": "worker",
+                   "active_actor": "none"}
+        with self.assertRaisesRegex(session_review.StatusError, "blocking_count"):
+            session_review.validate_status(missing)
+
+        zero = dict(missing, blocking_count=0)
+        with self.assertRaisesRegex(session_review.StatusError, "blocking_count"):
+            session_review.validate_status(zero)
 
     def test_validate_status_rejects_phase_owner_mismatch(self):
         bad = {"phase": "approved", "next_actor": "reviewer", "active_actor": "none"}

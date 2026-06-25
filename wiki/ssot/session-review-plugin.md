@@ -72,8 +72,8 @@ affects_paths: [plugins/session-review/**]
 | from | to | trigger | required check |
 |------|----|---------|----------------|
 | (init) | `awaiting-review` | worker 첫 요청 | 리뷰브랜치 생성, base 기록, 대상 명시 |
-| `awaiting-review` | `changes-requested` | reviewer 차단이슈 | 피드백 1+ (severity 태그) |
-| `awaiting-review` | `approved` | reviewer 수렴 | blocking 0 |
+| `awaiting-review` | `changes-requested` | reviewer 차단이슈 | `blocking_count >= 1` |
+| `awaiting-review` | `approved` | reviewer 수렴 | `blocking_count == 0` |
 | `changes-requested` | `awaiting-review` | worker 재작업+재요청 | unresolved 처리 or 반박 기록 |
 | `approved` | `awaiting-user-confirmation` | worker 완료 제안 | phase=approved |
 | `awaiting-user-confirmation` | `completed` | **유저 명시 확인** | 완료 게이트 통과 |
@@ -88,6 +88,7 @@ affects_paths: [plugins/session-review/**]
 ### 완료 게이트
 `approved` ≠ `completed`. `complete`(worker)는 아래를 **모두** 만족해야 머지/정리:
 - phase ∈ {`approved`, `awaiting-user-confirmation`}
+- `blocking_count == 0`이며 누락되지 않음
 - **worker가 리뷰 내용(쟁점·해결·결론)을 사용자에게 요약 브리핑**
 - 현재 세션에 **유저 명시 확인** 존재
 - 리뷰브랜치가 작업브랜치 파생 + base 추적 가능

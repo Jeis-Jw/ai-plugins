@@ -56,9 +56,11 @@ Defaults are conservative: `target_mode: "diff"` derives `target_nature:
 posture and is represented only as `round_type: "confirm"` with a separate
 lock-check path.
 
-The status block may also carry `blocking_count` (int). `validate-status`
-enforces `phase: "approved"` ⇒ `blocking_count == 0`, making the approve
-decision machine-verifiable rather than prose-only. Approved means no blocking
-feedback, not "no further ideas"; co-design/challenge reviews may still leave
+Reviewer verdict phases must carry `blocking_count` (int). `validate-status`
+enforces `phase: "approved"` ⇒ `blocking_count == 0` and
+`phase: "changes-requested"` ⇒ `blocking_count >= 1`, making the verdict
+machine-verifiable rather than prose-only. Approved means no blocking feedback,
+not "no further ideas"; co-design/challenge reviews may still leave
 `[should-reflect-before-implementation]`, `[directional]`, `[nice-to-have]`, or
-`[nit]` items for the worker synthesis and complete path.
+`[nit]` items for the worker synthesis and complete path. `validate-complete`
+also rejects missing or nonzero `blocking_count`.

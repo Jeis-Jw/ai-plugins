@@ -289,11 +289,16 @@ def validate_lock(status: dict[str, Any], *, actor: str) -> None:
 
 def validate_complete(status: dict[str, Any], *, user_confirmed: bool) -> None:
     normalized = normalize_status(status)
+    validate_status(normalized)
     phase = normalized.get("phase")
     if phase not in COMPLETE_ALLOWED_PHASES:
         allowed = ", ".join(sorted(COMPLETE_ALLOWED_PHASES))
         raise StatusError(f"complete requires phase in {{{allowed}}}; got {phase}")
     validate_lock(normalized, actor="worker")
+    blocking = normalized.get("blocking_count")
+    if blocking is None or int(blocking) != 0:
+        raise StatusError(
+            f"complete requires blocking_count == 0, got {blocking}")
     if not user_confirmed:
         raise StatusError("complete requires explicit user confirmation")
 
@@ -324,9 +329,18 @@ def validate_status(status: dict[str, Any]) -> None:
         raise StatusError(
             f"phase '{phase}' requires next_actor '{expected}', got '{next_actor}'")
     blocking = normalized.get("blocking_count")
-    if phase == "approved" and blocking is not None and int(blocking) != 0:
-        raise StatusError(
-            f"phase 'approved' requires blocking_count == 0, got {blocking}")
+    if phase == "approved":
+        if blocking is None:
+            raise StatusError("phase 'approved' requires blocking_count == 0")
+        if int(blocking) != 0:
+            raise StatusError(
+                f"phase 'approved' requires blocking_count == 0, got {blocking}")
+    if phase == "changes-requested":
+        if blocking is None:
+            raise StatusError("phase 'changes-requested' requires blocking_count >= 1")
+        if int(blocking) < 1:
+            raise StatusError(
+                f"phase 'changes-requested' requires blocking_count >= 1, got {blocking}")
 
 
 # ──────────────────────────────────────────────────────────────────────────
