@@ -28,20 +28,38 @@ wiki_cli를 직접 호출하지 않는다.
 2. status/lock gate (slug만 주면 경로는 내부 해석)
    ```bash
    python3 "$SR" validate-turn --slug <snapshot> --actor reviewer --phase awaiting-review
+   python3 "$SR" status --slug <snapshot>
    ```
    `phase`는 `awaiting-review`여야 한다. target이 없거나 모드가 불명확하면
-   `blocked`로 넘기고 worker가 사용자에게 묻게 한다.
+   `blocked`로 넘기고 worker가 사용자에게 묻게 한다. `status` 출력의
+   `effective_review_posture`와 `confirm_lock_check`를 기준으로 리뷰 렌즈를 고른다.
 3. 대상 검토
    - `target_mode=diff`: `git diff <base_ref>..HEAD`와 관련 테스트/문서를 본다.
    - `target_mode=document`: `target_ref` 문서를 정본으로 읽고 관계 문서를 필요한 만큼 확인한다.
+   - `target_nature`는 `code|spec|direction|process|general`이다. document target에서
+     `general`이면 성격 미확정 fallback으로 보고 과도한 checklist 적용을 피한다.
+   - `round_type=confirm`이면 derived posture가 `verify`여도 별도 lock-check 경로를 따른다.
+     - 이전 round의 agreed feedback이 반영됐는지 확인한다.
+     - 남은 이견이 lock을 막는지 판단한다.
+     - 새 scope를 넓히지 않는다.
+     - `[blocking]`은 lock을 막는 미해결 쟁점에만 쓴다.
+   - confirm이 아니면 `effective_review_posture`별 checklist를 따른다.
+     - `verify`: acceptance criteria, 회귀, 증거 gap, 요구사항 누락.
+     - `challenge`: 취약한 전제, 우선순위, edge case, 반려 대안 회귀.
+     - `co-design`: 검증에 더해 대안, scope 절단, 추천 수렴안. 단 frame과 최종
+       synthesis ownership은 worker에게 남긴다.
    - `review_strength`에 따라 깊이를 조정한다.
      - `fast`: critical/sanity 중심
      - `normal`: 정확성 + 주요 설계
      - `hard`: edge, 일관성, 반려 대안 회귀까지 적대적으로 확인
 4. 피드백 작성
-   - severity는 `blocking` / `non-blocking` / `nit` 중 하나를 붙인다. `hard`여도 순수
-     스타일 nit은 nit로 둔다.
-   - **blocking 개수를 센다.** 새 STATUS를 렌더한다: blocking 0이면
+   - label은 `[blocking]`, `[should-reflect-before-implementation]`, `[directional]`,
+     `[nice-to-have]`, `[nit]` 중 하나를 붙인다.
+   - `[should-reflect-before-implementation]`은 구현 전 결정이 필요한 강한 권고지만
+     approval과 양립 가능하다. `approved`는 `blocking_count=0`이지 "의견 없음"이
+     아니다.
+   - `hard`여도 순수 스타일 문제는 `[nit]`로 둔다.
+   - **`[blocking]` 개수만 센다.** 새 STATUS를 렌더한다: blocking 0이면
      `phase:"approved"`+`blocking_count:0`, 있으면 `phase:"changes-requested"`+
      `blocking_count:<n>`. 공통으로 `next_actor:"worker"`, `active_actor:"none"`,
      `lock_since:null`.
@@ -69,3 +87,7 @@ wiki_cli를 직접 호출하지 않는다.
 - 커밋 메시지 bare `review: feedback`는 금지다. 판정과 요지를 붙인다.
 - status 정본은 snapshot status block이다. 커밋 마커는 handoff discovery용이다.
 - `phase:"approved"`는 `blocking_count:0`과만 양립한다(`validate-status`가 강제).
+- `review_posture=confirm`은 금지다. confirm은 `round_type=confirm`으로만 표현하고,
+  lock-check behavior는 derived posture와 별도로 수행한다.
+- co-design reviewer는 대안을 제안할 수 있지만, worker의 frame/synthesis ownership을
+  가져오지 않는다.

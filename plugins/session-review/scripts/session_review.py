@@ -28,11 +28,14 @@ STRING_FIELDS = (
     "active_actor",
     "next_actor",
     "target_mode",
+    "target_nature",
     "target_ref",
     "base_ref",
     "responding_to",
     "flow_mode",
     "review_strength",
+    "round_type",
+    "review_posture",
 )
 STATUS_ORDER = (
     "phase",
@@ -40,12 +43,15 @@ STATUS_ORDER = (
     "lock_since",
     "next_actor",
     "target_mode",
+    "target_nature",
     "target_ref",
     "base_ref",
     "responding_to",
     "round",
+    "round_type",
     "flow_mode",
     "review_strength",
+    "review_posture",
     "blocking_count",
 )
 PHASE_OWNER = {
@@ -58,6 +64,41 @@ PHASE_OWNER = {
 }
 COMPLETE_ALLOWED_PHASES = {"approved", "awaiting-user-confirmation"}
 INT_FIELDS = ("round", "blocking_count")
+TARGET_NATURE_VALUES = {"code", "spec", "direction", "process", "general"}
+ROUND_TYPE_VALUES = {"explore", "converge", "confirm", "review"}
+REVIEW_POSTURE_VALUES = {"verify", "challenge", "co-design"}
+DEFAULT_POSTURE_BY_TARGET_AND_ROUND = {
+    "code": {
+        "explore": "verify",
+        "converge": "verify",
+        "confirm": "verify",
+        "review": "verify",
+    },
+    "spec": {
+        "explore": "co-design",
+        "converge": "challenge",
+        "confirm": "verify",
+        "review": "challenge",
+    },
+    "direction": {
+        "explore": "co-design",
+        "converge": "challenge",
+        "confirm": "verify",
+        "review": "challenge",
+    },
+    "process": {
+        "explore": "co-design",
+        "converge": "challenge",
+        "confirm": "verify",
+        "review": "challenge",
+    },
+    "general": {
+        "explore": "challenge",
+        "converge": "challenge",
+        "confirm": "verify",
+        "review": "verify",
+    },
+}
 
 # Snapshot is the handshake medium (DEC-2026-06-18). The built-in writer below
 # reproduces the SAME file format/location wiki-markdown uses — it is a fallback
@@ -148,7 +189,52 @@ def normalize_status(status: dict[str, Any]) -> dict[str, Any]:
         if field in normalized and normalized[field] is not None \
                 and not isinstance(normalized[field], int):
             normalized[field] = int(normalized[field])
+    if normalized.get("target_nature") is None:
+        if normalized.get("target_mode") == "diff":
+            normalized["target_nature"] = "code"
+        else:
+            normalized["target_nature"] = "general"
+    if normalized.get("round_type") is None:
+        normalized["round_type"] = "review"
     return normalized
+
+
+def _validate_enum(status: dict[str, Any], field: str, allowed: set[str]) -> None:
+    value = status.get(field)
+    if value is None:
+        return
+    if value not in allowed:
+        choices = ", ".join(sorted(allowed))
+        raise StatusError(f"{field} must be one of {{{choices}}}; got {value}")
+
+
+def validate_review_posture_fields(status: dict[str, Any]) -> None:
+    normalized = normalize_status(status)
+    _validate_enum(normalized, "target_nature", TARGET_NATURE_VALUES)
+    _validate_enum(normalized, "round_type", ROUND_TYPE_VALUES)
+    _validate_enum(normalized, "review_posture", REVIEW_POSTURE_VALUES)
+
+
+def effective_review_posture(status: dict[str, Any]) -> str:
+    normalized = normalize_status(status)
+    validate_review_posture_fields(normalized)
+    override = normalized.get("review_posture")
+    if override:
+        return str(override)
+    target_nature = str(normalized["target_nature"])
+    round_type = str(normalized["round_type"])
+    return DEFAULT_POSTURE_BY_TARGET_AND_ROUND[target_nature][round_type]
+
+
+def requires_confirm_lock_check(status: dict[str, Any]) -> bool:
+    return normalize_status(status).get("round_type") == "confirm"
+
+
+def status_metadata(status: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "effective_review_posture": effective_review_posture(status),
+        "confirm_lock_check": requires_confirm_lock_check(status),
+    }
 
 
 def extract_status(snapshot_text: str) -> dict[str, Any]:
@@ -171,6 +257,7 @@ def _render_scalar(key: str, value: Any) -> str:
 
 def render_status(status: dict[str, Any]) -> str:
     normalized = normalize_status(status)
+    validate_review_posture_fields(normalized)
     keys = [key for key in STATUS_ORDER if key in normalized]
     keys.extend(key for key in normalized if key not in STATUS_ORDER)
     return "\n".join(f"{key}: {_render_scalar(key, normalized[key])}" for key in keys) + "\n"
@@ -229,6 +316,7 @@ def validate_status(status: dict[str, Any]) -> None:
     """Check the written verdict is internally consistent: next_actor matches
     the phase owner, and an `approved` phase carries no blocking findings."""
     normalized = normalize_status(status)
+    validate_review_posture_fields(normalized)
     phase = str(normalized.get("phase"))
     expected = PHASE_OWNER.get(phase)
     next_actor = normalized.get("next_actor") or expected
@@ -490,7 +578,8 @@ def _status_text(args: argparse.Namespace) -> str:
 
 
 def cmd_status(args: argparse.Namespace) -> int:
-    payload = {"ok": True, "status": extract_status(_status_text(args))}
+    status = extract_status(_status_text(args))
+    payload = {"ok": True, "status": status, **status_metadata(status)}
     print(json.dumps(payload, ensure_ascii=False))
     return 0
 

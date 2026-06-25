@@ -87,6 +87,61 @@ class SessionReviewStatusTests(unittest.TestCase):
         self.assertIn("round: 3", rendered)
         self.assertIn("lock_since: null", rendered)
 
+    def test_defaults_target_nature_round_type_and_derives_posture(self):
+        status = session_review.parse_status_block(
+            """phase: awaiting-review
+active_actor: none
+lock_since: null
+next_actor: reviewer
+target_mode: diff
+target_ref: branch-review
+base_ref: abc123
+responding_to: abc123
+round: 1
+flow_mode: separate
+review_strength: normal
+"""
+        )
+
+        self.assertEqual(status["target_nature"], "code")
+        self.assertEqual(status["round_type"], "review")
+        self.assertEqual(session_review.effective_review_posture(status), "verify")
+        self.assertFalse(session_review.requires_confirm_lock_check(status))
+
+        document = dict(status, target_mode="document")
+        document.pop("target_nature")
+        self.assertEqual(session_review.normalize_status(document)["target_nature"], "general")
+
+    def test_effective_posture_uses_table_and_optional_override(self):
+        process_explore = {"target_nature": "process", "round_type": "explore"}
+        self.assertEqual(session_review.effective_review_posture(process_explore), "co-design")
+
+        process_converge = {"target_nature": "process", "round_type": "converge"}
+        self.assertEqual(session_review.effective_review_posture(process_converge), "challenge")
+
+        confirm = {"target_nature": "process", "round_type": "confirm"}
+        self.assertEqual(session_review.effective_review_posture(confirm), "verify")
+        self.assertTrue(session_review.requires_confirm_lock_check(confirm))
+
+        override = {"target_nature": "code", "round_type": "review", "review_posture": "challenge"}
+        self.assertEqual(session_review.effective_review_posture(override), "challenge")
+
+    def test_validate_status_rejects_invalid_review_posture_fields(self):
+        with self.assertRaisesRegex(session_review.StatusError, "target_nature"):
+            session_review.validate_status({"phase": "approved", "target_nature": "memo"})
+
+        with self.assertRaisesRegex(session_review.StatusError, "round_type"):
+            session_review.validate_status({"phase": "approved", "round_type": "final"})
+
+        with self.assertRaisesRegex(session_review.StatusError, "review_posture"):
+            session_review.validate_status({"phase": "approved", "review_posture": "confirm"})
+
+    def test_render_rejects_invalid_review_posture_override(self):
+        with self.assertRaisesRegex(session_review.StatusError, "review_posture"):
+            session_review.render_status(
+                {"phase": "awaiting-review", "review_posture": "confirm"}
+            )
+
     def test_actor_gate_rejects_wrong_owner_and_existing_lock(self):
         status = session_review.extract_status(SNAPSHOT_TEXT)
 

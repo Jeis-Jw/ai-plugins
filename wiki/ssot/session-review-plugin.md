@@ -52,7 +52,20 @@ affects_paths: [plugins/session-review/**]
 ### 상태 머신
 - **phase** (수렴 상태, owner=다음 행위자): `awaiting-review`(→reviewer) / `changes-requested`(→worker) / `approved`(→worker, 유저확인 진행) / `awaiting-user-confirmation`(→user) / `completed`(terminal) / `blocked`(→user).
 - **lock** (동시성): `active_actor` = none|worker|reviewer. 턴 시작 시 획득, 핸드오프 커밋 시 해제. 타인이 active면 행위 금지.
-- **턴/상태 정본 = 스냅샷 body의 parseable status block.** wiki snapshot은 frontmatter를 기능이 고정 관리하므로 커스텀하지 않는다. 대신 스냅샷 `## 현재 논의` 섹션의 **첫 fenced ```yaml``` 블록**을 두어 기계가 읽는다(파서는 문서 전체가 아니라 이 섹션의 첫 블록만 신뢰): `phase`, `active_actor`, `lock_since`, `next_actor`, `target_mode`, `target_ref`, `base_ref`, `responding_to`, `round`, `flow_mode`, `review_strength`. **타입 규약: 식별자/ref/enum 필드(`phase`·`active_actor`·`next_actor`·`target_mode`·`target_ref`·`base_ref`·`responding_to`·`flow_mode`·`review_strength`)는 모두 quoted string으로 저장**한다(YAML 스칼라 타입 안정성). 특히 전부-숫자 커밋 SHA가 Integer로 파싱되는 걸 막도록 `base_ref`/`responding_to`는 반드시 따옴표. `round`만 정수, `lock_since`는 ISO8601 string 또는 `null`. parser는 식별자 필드를 string으로 normalize한다. 플러그인은 이 블록으로 phase/lock을 강제한다(owner 아닌 행위자·중복 active 차단).
+- **턴/상태 정본 = 스냅샷 body의 parseable status block.** wiki snapshot은 frontmatter를 기능이 고정 관리하므로 커스텀하지 않는다. 대신 스냅샷 `## 현재 논의` 섹션의 **첫 fenced ```yaml``` 블록**을 두어 기계가 읽는다(파서는 문서 전체가 아니라 이 섹션의 첫 블록만 신뢰): `phase`, `active_actor`, `lock_since`, `next_actor`, `target_mode`, `target_nature`, `target_ref`, `base_ref`, `responding_to`, `round`, `round_type`, `flow_mode`, `review_strength`, optional `review_posture`, `blocking_count`. **타입 규약: 식별자/ref/enum 필드(`phase`·`active_actor`·`next_actor`·`target_mode`·`target_nature`·`target_ref`·`base_ref`·`responding_to`·`round_type`·`flow_mode`·`review_strength`·`review_posture`)는 모두 quoted string으로 저장**한다(YAML 스칼라 타입 안정성). 특히 전부-숫자 커밋 SHA가 Integer로 파싱되는 걸 막도록 `base_ref`/`responding_to`는 반드시 따옴표. `round`와 `blocking_count`만 정수, `lock_since`는 ISO8601 string 또는 `null`. parser는 식별자 필드를 string으로 normalize한다. 플러그인은 이 블록으로 phase/lock을 강제한다(owner 아닌 행위자·중복 active 차단).
+- **리뷰 대상 성격/라운드 목적.** `target_nature`는 `code|spec|direction|process|general`, `round_type`은 `explore|converge|confirm|review`, `review_posture` override는 `verify|challenge|co-design`만 허용한다. `review_posture=confirm`은 금지다. `confirm`은 posture가 아니라 `round_type`이며 별도 lock-check behavior를 갖는다. 기본값은 보수적이다: `target_mode=diff`면 `target_nature=code`, document/unknown은 `general` fallback, `round_type` 누락은 `review`. helper는 `target_nature + round_type`에서 `effective_review_posture`를 계산한다.
+
+파생 기본값:
+
+| target_nature | explore | converge | confirm | review |
+|---|---|---|---|---|
+| `code` | `verify` | `verify` | `verify` | `verify` |
+| `spec` | `co-design` | `challenge` | `verify` | `challenge` |
+| `direction` | `co-design` | `challenge` | `verify` | `challenge` |
+| `process` | `co-design` | `challenge` | `verify` | `challenge` |
+| `general` | `challenge` | `challenge` | `verify` | `verify` |
+
+`round_type=confirm`의 `verify`는 evidence posture일 뿐이고, reviewer는 별도 confirm lock-check(이전 반영 충실도, 잔여 이견, 새 scope 금지)를 수행한다.
 - **커밋 메시지 규약 (양쪽 역할 공통)**: `review: request`/`review: feedback`는 **handoff commit discovery marker**(git log에서 핸드오프 커밋을 찾는 고정 영문 접두사)다 — 상태/락 정본은 어디까지나 body status block이고 이 접두사는 커밋 탐색용이다. 그 뒤에 **양쪽 모두 의미 있는 한 줄 요약을 붙인다** — request=무엇을 왜 봐달라는지, feedback=판정(approved/changes-requested)+요지. `review: feedback`만 같은 bare 마커는 금지. **요약 언어 = 환경 기본 언어**(이 워크스페이스=한국어, 사령관 가독성). 예: `review: feedback — approved, status block 파싱 확인, 새 blocking 없음`.
 
 전이표:
@@ -66,9 +79,10 @@ affects_paths: [plugins/session-review/**]
 | `awaiting-user-confirmation` | `completed` | **유저 명시 확인** | 완료 게이트 통과 |
 | `*` | `blocked` | 애매한 판단 차이·교착 (worker가 사용자에게 질문) | 사유 기록 |
 
-### 리뷰 대상 모드
-- `diff`: `base..HEAD` 변경이 대상, 핸드셰이크=context.
-- `document`: 지정 문서가 산출물(이 ssot가 그 예), 핸드셰이크=프로세스 채널.
+### 리뷰 대상 모드와 성격
+- `diff`: `base..HEAD` 변경이 대상, 핸드셰이크=context. 기본 `target_nature=code`.
+- `document`: 지정 문서가 산출물(이 ssot가 그 예), 핸드셰이크=프로세스 채널. request-review는 `target_nature` 명시를 요구하고, 불명확할 때만 `general` fallback을 쓴다.
+- `target_nature=general`은 편한 기본값이 아니라 성격 미확정 표시다.
 - 대상/모드 미명시면 리뷰어는 추론하지 말고 `blocked`.
 
 ### 완료 게이트
@@ -79,6 +93,7 @@ affects_paths: [plugins/session-review/**]
 - 리뷰브랜치가 작업브랜치 파생 + base 추적 가능
 - working tree clean
 - 핸드셰이크 최종 summary 존재 + 필요한 결정/관찰이 wiki로 승격(또는 "없음" 명시)
+- 최신 approved feedback과 worker synthesis에서 미해결 `[should-reflect-before-implementation]`을 final briefing과 다음 구현 단위로 이월. 이어지는 구현이 없으면 "implementation carryover 없음"을 명시.
 
 통과 시 `base..HEAD`를 squash merge → 작업브랜치, 리뷰브랜치 삭제, 핸드셰이크 snapshot **discard**. → `completed`는 장기 저장 상태가 아니라 squash 커밋·(승격된) wiki record·git history에 남는 **결과 상태**다(스냅샷 자체는 사라진다). 이 게이트는 `self`/`separate` 두 모드 공통 — self 모드도 완료는 자동화하지 않고 사용자 확인을 받는다.
 
@@ -110,8 +125,10 @@ affects_paths: [plugins/session-review/**]
 | promotion_candidates(승격 후보) | wiki decision으로 승격할 결정 |
 
 ### 역할 동작 계약
-- **worker**: 요청 초점 좁히기(대상+렌즈), 이미 기각한 대안 명시, 피드백 맹종 금지(수용=명시/이견=근거 반박), 수렴 우선(blocking만 처리·나머지 defer), 항목별 처리 추적, **커밋 메시지에 의미 있는 요약을 환경 기본 언어로** 작성, **판단·결정·완료 소통 담당**(애매한 판단 차이→사용자에게 질문, 승인 후→리뷰 내용 요약 브리핑+사용자 확인; 운영 릴레이는 별개). 시작 시 필독: 핸드셰이크 + `git log <직전 핸드오프>..HEAD` + 대상.
-- **reviewer**: severity 태그 필수(blocking/non-blocking/nit), 실행가능(모호 금지·구체 요구), 스코프 바운드(대상+진짜 차단결함만·무단 재설계 금지), 결정적 판정, **유저확정 결정 재오픈 금지**(이견은 challenge 1회), 검증 후 발언, 수렴 책임(불변식 무한확장 금지·합의된 건 좁히기), **커밋 메시지에 판정+요지를 환경 기본 언어로** 작성(bare `review: feedback` 금지), **사용자에게 판단 질문·완료 확인을 요청하지 않음**(운영 상태 보고는 허용), **`review_strength`에 맞춰 검토 깊이·blocking 기준 보정**. 시작 시 필독: 핸드셰이크 + diff/대상 + resolved 요약.
+- **worker**: 요청 초점 좁히기(대상+렌즈), 이미 기각한 대안 명시, 피드백 맹종 금지(수용=명시/이견=근거 반박), 수렴 우선(`[blocking]`만 처리·나머지 defer), `[should-reflect-before-implementation]`은 `accepted`/`deferred`/`rejected-with-rationale` 중 하나로 정리, 항목별 처리 추적, **커밋 메시지에 의미 있는 요약을 환경 기본 언어로** 작성, **판단·결정·완료 소통 담당**(애매한 판단 차이→사용자에게 질문, 승인 후→리뷰 내용 요약 브리핑+사용자 확인; 운영 릴레이는 별개). 시작 시 필독: 핸드셰이크 + `git log <직전 핸드오프>..HEAD` + 대상.
+- **reviewer**: feedback label 필수(`[blocking]`, `[should-reflect-before-implementation]`, `[directional]`, `[nice-to-have]`, `[nit]`), 실행가능(모호 금지·구체 요구), 스코프 바운드(대상+진짜 차단결함만·무단 재설계 금지), 결정적 판정, **유저확정 결정 재오픈 금지**(이견은 challenge 1회), 검증 후 발언, 수렴 책임(불변식 무한확장 금지·합의된 건 좁히기), **커밋 메시지에 판정+요지를 환경 기본 언어로** 작성(bare `review: feedback` 금지), **사용자에게 판단 질문·완료 확인을 요청하지 않음**(운영 상태 보고는 허용), **`review_strength`와 `effective_review_posture`에 맞춰 검토 깊이·blocking 기준 보정**. 시작 시 필독: 핸드셰이크 + diff/대상 + resolved 요약.
+
+`approved`는 `blocking_count=0`만 뜻한다. `co-design`/`challenge` 리뷰의 approved feedback에는 `[should-reflect-before-implementation]`, `[directional]`, `[nice-to-have]`, `[nit]`가 남을 수 있다.
 
 ### 플러그인 표면 (잠정 — 상태머신/스키마 확정 후 상세화)
 | 동사 | 역할 | 자연어 트리거(예) |

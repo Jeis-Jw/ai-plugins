@@ -9,7 +9,7 @@ confirmation.
 The machine-readable source of truth is the first fenced `yaml` block inside
 the snapshot `## 현재 논의` section. Helper code lives in
 `scripts/session_review.py`; skills call it to enforce actor ownership, locks,
-typed string fields, and the completion gate.
+typed string fields, derived review posture, and the completion gate.
 
 ## Single CLI facade
 
@@ -43,6 +43,22 @@ workspace with only `session-review` installed still works.
 
 ## Status block consistency
 
-The status block may carry `blocking_count` (int). `validate-status` enforces
-`phase: "approved"` ⇒ `blocking_count == 0`, making the approve decision
-machine-verifiable rather than prose-only.
+The status block may carry these optional review-posture fields:
+
+- `target_nature`: `code|spec|direction|process|general`
+- `round_type`: `explore|converge|confirm|review`
+- `review_posture`: optional override, `verify|challenge|co-design`
+
+Defaults are conservative: `target_mode: "diff"` derives `target_nature:
+"code"`, document/unknown targets fall back to `"general"`, and missing
+`round_type` becomes `"review"`. The helper derives
+`effective_review_posture` from `target_nature + round_type`; `confirm` is not a
+posture and is represented only as `round_type: "confirm"` with a separate
+lock-check path.
+
+The status block may also carry `blocking_count` (int). `validate-status`
+enforces `phase: "approved"` ⇒ `blocking_count == 0`, making the approve
+decision machine-verifiable rather than prose-only. Approved means no blocking
+feedback, not "no further ideas"; co-design/challenge reviews may still leave
+`[should-reflect-before-implementation]`, `[directional]`, `[nice-to-have]`, or
+`[nit]` items for the worker synthesis and complete path.

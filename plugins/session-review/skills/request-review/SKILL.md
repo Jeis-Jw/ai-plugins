@@ -27,6 +27,9 @@ wiki_cli를 직접 호출하지 않는다.
 $ARGUMENTS:
   --target-mode diff|document
   --target-ref <branch-or-file>
+  --target-nature code|spec|direction|process|general # diff 기본 code; document는 명시 요구
+  --round-type explore|converge|confirm|review        # 기본: review
+  --review-posture verify|challenge|co-design         # optional override only
   --flow-mode self|separate        # 기본: separate; 서브에이전트 가능하면 self 선택 가능
   --review-strength fast|normal|hard # 기본: normal
   --snapshot <slug>                # 기본: session-review-<target slug>
@@ -36,9 +39,17 @@ $ARGUMENTS:
 
 1. 대상 확정
    - `target_mode=diff`: 현재 작업브랜치의 `HEAD`를 `base_ref`로 기록하고
-     `<current>-review` 형태의 리뷰브랜치를 만든다.
-   - `target_mode=document`: 대상 문서 경로를 `target_ref`로 기록한다.
+     `<current>-review` 형태의 리뷰브랜치를 만든다. `target_nature` 기본값은 `code`.
+   - `target_mode=document`: 대상 문서 경로를 `target_ref`로 기록한다. 이때
+     `target_nature`를 worker/user에게 명시하게 한다. 불명확하면 `general` fallback을
+     쓰되, `general`은 편한 기본값이 아니라 성격 미확정 표시다.
    - 대상/모드가 불명확하면 추론하지 말고 중단한다.
+   - `round_type`은 라운드 목적이다: `explore`(아이디어 확장),
+     `converge`(쟁점 축소), `confirm`(lock 확인), `review`(일반 리뷰).
+   - `review_posture`는 필수가 아니다. helper가 `target_nature + round_type`으로
+     `effective_review_posture`를 계산한다. override가 필요할 때만
+     `verify|challenge|co-design` 중 하나를 쓴다. `confirm`은 posture가 아니라
+     `round_type`으로만 표현한다.
 2. 리뷰브랜치 생성
    ```bash
    git status --short
@@ -55,12 +66,17 @@ $ARGUMENTS:
    - `lock_since: null`
    - `next_actor: "reviewer"`
    - `target_mode`, `target_ref`, `base_ref`, `responding_to`, `flow_mode`,
-     `review_strength`는 모두 quoted string으로 저장한다.
+     `review_strength`, `target_nature`, `round_type`, optional `review_posture`는 모두
+     quoted string으로 저장한다.
    - `round`만 integer다.
    `blocking_count: 0`을 포함한다(초기엔 0). `--fenced`로 ```yaml 펜스째 렌더한다:
    ```bash
    STATUS=$(python3 "$SR" render --fenced \
-     --status-json '{"phase":"awaiting-review","active_actor":"none","lock_since":null,"next_actor":"reviewer","target_mode":"diff","target_ref":"task/issue-10-review","base_ref":"<BASE>","responding_to":"<BASE>","round":1,"flow_mode":"separate","review_strength":"normal","blocking_count":0}')
+     --status-json '{"phase":"awaiting-review","active_actor":"none","lock_since":null,"next_actor":"reviewer","target_mode":"diff","target_nature":"code","target_ref":"task/issue-10-review","base_ref":"<BASE>","responding_to":"<BASE>","round":1,"round_type":"review","flow_mode":"separate","review_strength":"normal","blocking_count":0}')
+   ```
+   상태를 확인하면 helper가 파생값을 함께 보여준다.
+   ```bash
+   python3 "$SR" status --slug "$SNAPSHOT"
    ```
 4. snapshot 저장 (facade — 백엔드 자동 선택)
    ```bash
@@ -74,6 +90,10 @@ $ARGUMENTS:
      --next "reviewer가 snapshot-load 후 review skill을 실행한다." \
      --references "$target_ref"
    ```
+   `effective_review_posture`가 `co-design` 또는 `challenge`인 요청에는 다음 계약을
+   요청문에 노출한다: approved는 `blocking_count=0`이지 "의견 없음"이 아니다.
+   승인 feedback에도 `[should-reflect-before-implementation]`, `[directional]`,
+   `[nice-to-have]`, `[nit]`가 남을 수 있다.
 5. 핸드오프 커밋
    ```bash
    git add wiki/snapshot
