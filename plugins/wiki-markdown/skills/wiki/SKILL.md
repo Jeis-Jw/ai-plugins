@@ -63,7 +63,7 @@ python3 "$CLI" capture observation --json --title "Webhook timeout risk" \
   --ssot webhook-architecture --affects-paths "src/webhook/**" --sec-observation "..." --sec-basis "..."
 python3 "$CLI" capture task --json --title "Move payment session to the BFF" \
   --summary "Payment side of the BFF migration." --tags payment,architecture \
-  --decisions move-auth-to-a-bff --sec-overview "..." --sec-basis "..." --sec-scope "..."
+  --decisions move-auth-to-a-bff --sec-overview "..." --sec-basis "..." --sec-scope @scope.md  # @file body
 python3 "$CLI" complete TASK-...   # active → task/done/ (reopen to undo)
 
 # 3. Relate / recall.
@@ -148,6 +148,8 @@ Checks are tiered: **integrity-hard** (graph/data correctness — block) vs **hy
 | `schema` | introspect the type model (types/sections/flags/relations) | read-only · **no vault needed** · `--json` |
 
 Need a type's sections/flags/relations? `schema --json` (or `capture <type> --dry-run --json` to also validate refs and preview the id/path — `dry_run: true`, nothing written). Don't guess or read a doc to learn the contract.
+
+Long section body? Any body flag accepts `@path` (read file) or `@-` (read STDIN) instead of an inline string — `--sec-<flag> @file.md`, and likewise `snapshot save --discussion/--references @file`. `@@` escapes a literal leading `@`. No per-section file flags.
 
 Common: `--vault <path>` (default `./wiki`), `--json`. Success `{"ok": true, ...}`; failure `{"ok": false, "error_code": "...", "message": "..."}`. Exit codes: `0` ok · `2` arg/usage · `3` no vault · `4` ref ambiguous/missing · `5` living-slug collision · `6` strict refresh found integrity issues. (Full per-subcommand matrix → `references/`.)
 

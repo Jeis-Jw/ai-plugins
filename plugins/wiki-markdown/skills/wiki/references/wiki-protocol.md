@@ -224,6 +224,17 @@ The bundled CLI (`scripts/wiki_cli.py`, stdlib only) supports ten top-level subc
 | `lite` | whether `--lite` was used |
 | `index_changed`, `index_paths` | whether / which folder indexes were rewritten this call (for `git add`) |
 
+### Body input: `@file` / `@-` (STDIN) convention
+
+Every body-bearing flag value — `capture --sec-<flag>` and `snapshot save`'s section flags (`--discussion`, `--references`, …) — accepts one convention so a long body need not be an inline shell string:
+
+- `@<path>` reads the body from that file (UTF-8);
+- `@-` reads it from STDIN (cached, so repeated `@-` in one call reuse a single read);
+- `@@…` escapes a literal leading `@` (`@@mention` → the body `@mention`);
+- any value not starting with `@` is the literal inline body, unchanged.
+
+It is deliberately one shared convention rather than a per-section `--sec-<key>-file` flag for every header (which would multiply the surface). A missing/unreadable file exits `2` (`body_file_error`); a bare `@` exits `2` (`body_file_empty`). The resolved body is then NFC-normalized and stripped exactly like an inline value.
+
 ### Machine-discoverability: `schema` and `capture --dry-run`
 
 Two introspection surfaces let an agent learn the contract without reading SKILL, guessing, or opening a doc — closing the discoverability gap a payload alone can't cover.

@@ -1,6 +1,6 @@
 {
   "name": "wiki-markdown",
-  "version": "0.17.0",
+  "version": "0.18.0",
   "description": "Markdown-backed AI-native filesystem wiki management and agent policy scaffolding for AI agents.",
   "author": {
     "name": "Jinwuk-Lee",
