@@ -1602,6 +1602,9 @@ def cmd_capture(args) -> int:
     if supersedes_id and not args.dry_run:
         _supersede_old(vault, supersedes_id, bn)
 
+    # dry-run touches nothing on disk → index_changed stays false / index_paths
+    # empty (honest "no-op" reporting; the `dry_run` flag below marks the
+    # preview). A real capture syncs indexes and reports them for `git add`.
     changed_idx: List[Tuple[str, ...]] = []
     if not args.dry_run:
         changed_idx = refresh_all_indexes(vault)
@@ -1625,9 +1628,10 @@ def cmd_capture(args) -> int:
              "lite_sections": lite_secs,
              "empty_sections": empty,
              "lite": bool(args.lite),
+             "dry_run": bool(args.dry_run),
              "index_changed": bool(changed_idx),
              "index_paths": index_paths},
-            text_lines=[f"생성: {target} (id={bn})"
+            text_lines=[f"{'예상(dry-run)' if args.dry_run else '생성'}: {target} (id={bn})"
                         + (f" supersedes={supersedes_id}" if supersedes_id else "")
                         + (f" · 미작성 섹션: {', '.join(empty)}" if empty else "")])
     return EXIT_OK
@@ -3365,6 +3369,50 @@ def cmd_refresh(args) -> int:
     return EXIT_OK
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# (g.2) schema — type-model introspection (machine-discoverability, Unit C)
+# ──────────────────────────────────────────────────────────────────────────
+def cmd_schema(args) -> int:
+    """Project the type model so an agent can introspect types/sections/flags/
+    relations without reading SKILL or guessing. Pure derivation from the
+    registry — no vault required, deterministic."""
+    types: dict = {}
+    for t, spec in TYPE_SPECS.items():
+        types[t] = {
+            "folder": "/".join(spec.folder),
+            "prefix": spec.prefix,
+            "id_form": ("timestamped" if spec.prefix else "slug"),
+            "is_record": spec.is_record,
+            "is_living": spec.is_living,
+            "is_hub": spec.is_hub,
+            "is_task": spec.is_task,
+            "sections": list(spec.sections),
+            "core_sections": list(spec.core_sections or ()),
+            "section_flags": dict(SECTION_FLAGS[t]),
+            "allowed_relations": list(spec.allowed_relations),
+            "allow_verified_at": spec.allow_verified_at,
+            "allow_affects_paths": spec.allow_affects_paths,
+        }
+    payload = {
+        "mode": "schema",
+        "types": types,
+        "relation_target_types": dict(RELATION_TARGET_TYPES),
+        "snapshot_sections": [h for _attr, h in SNAPSHOT_SECTIONS],
+        "refresh_checks": {"integrity": list(INTEGRITY_CHECKS),
+                           "hygiene": list(HYGIENE_CHECKS)},
+        "refresh_levels": list(REFRESH_LEVELS),
+    }
+    text_lines = ["타입 스키마:"]
+    for t, info in types.items():
+        idtag = f"prefix={info['prefix']}" if info["prefix"] else "slug-id"
+        text_lines.append(f"- {t} [{info['folder']}] ({idtag}) "
+                          f"sections={'/'.join(info['sections'])}")
+        if info["allowed_relations"]:
+            text_lines.append(f"    relations: {', '.join(info['allowed_relations'])}")
+    emit_ok(args, payload, text_lines=text_lines)
+    return EXIT_OK
+
+
 def _is_in(p: Path, prefix: Path) -> bool:
     try:
         p.resolve().relative_to(prefix)
@@ -3568,6 +3616,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help="whitelist: index,retired-in-index. bare --fix is rejected.")
     pf.add_argument("--strict", action="store_true")
     pf.set_defaults(func=cmd_refresh)
+
+    psch = sub.add_parser("schema",
+                          help="introspect the type model (read-only, no vault needed)")
+    _sub_common(psch)
+    psch.set_defaults(func=cmd_schema)
 
     return p
 

@@ -145,6 +145,9 @@ Checks are tiered: **integrity-hard** (graph/data correctness — block) vs **hy
 | `snapshot save/list/search/load/discard` | staging I/O | `save`: `--title --summary --tags` · section flags · `--merge` |
 | `recall` | read-only query | `[query]` · `--stage 1\|2\|3` · `--pack` · `--section` · `--type/--tag` · `--backlinks-of` · `--read a,b,c` · `--fuzzy` · `--include-retired` · `--days` (pack stale) |
 | `refresh` | integrity report | `--level all\|integrity\|hygiene` · `--strict` · `--check <name,..>` · `--changed-path` · `--fix index,retired-in-index` |
+| `schema` | introspect the type model (types/sections/flags/relations) | read-only · **no vault needed** · `--json` |
+
+Need a type's sections/flags/relations? `schema --json` (or `capture <type> --dry-run --json` to also validate refs and preview the id/path — `dry_run: true`, nothing written). Don't guess or read a doc to learn the contract.
 
 Common: `--vault <path>` (default `./wiki`), `--json`. Success `{"ok": true, ...}`; failure `{"ok": false, "error_code": "...", "message": "..."}`. Exit codes: `0` ok · `2` arg/usage · `3` no vault · `4` ref ambiguous/missing · `5` living-slug collision · `6` strict refresh found integrity issues. (Full per-subcommand matrix → `references/`.)
 
@@ -153,7 +156,8 @@ Common: `--vault <path>` (default `./wiki`), `--json`. Success `{"ok": true, ...
 - `recall --json` is discriminated by `mode`: `stage1` / `stage2` / `stage3` / `read` / `backlinks` / `pack`, each with a `results` list (`--read` preserves input order). Stage-1 `truncated: true` ⇒ narrow with `--type`/`--tag`.
 - `recall --pack` (`mode: pack`, `projection: deterministic`, `ranked_by: authority`) projects matched docs into one read: frontmatter + `relations` + the type's primary section snippet + additive labels `authority`/`freshness`/`use_as`/`warnings`. **No prose inference** — it extracts only fixed fields/headers. `freshness` is relation-aware: an un-anchored record is `authority_unknown` (never a false "stale"); `anchor_changed` flags a retired/superseded anchor. Authority ranking applies inside the pack only — default `stage1`/`2`/`3` are unchanged.
 - `snapshot load --json` carries the same additive labels (`authority: staging`, `use_as: resume_context`, `freshness`, `warnings`): a snapshot is staging, not graph truth, so `freshness` reports whether the **records it references** (in its `관련 파일/문서` section) are still current — `anchor_changed` if one was retired/superseded, `authority_unknown` when none resolve. Don't over-trust a loaded snapshot whose anchors changed.
-- `capture --json` → `empty_sections` = blank headers needing prose (`--lite` placeholders sit in `lite_sections`, not here); `index_paths` for `git add`.
+- `capture --json` → `empty_sections` = blank headers needing prose (`--lite` placeholders sit in `lite_sections`, not here); `index_paths` for `git add`; `dry_run: true` marks a `--dry-run` preview (validated, nothing written — `index_changed: false`).
+- `schema --json` → `{types: {<type>: {sections, core_sections, section_flags, allowed_relations, prefix, id_form, …}}, relation_target_types, snapshot_sections, refresh_checks: {integrity, hygiene}}`. Deterministic projection of the registry; the authoritative source for what a type accepts.
 - `refresh` issues are `{check, tier, path, field?, target?, message}` — group by `check`, gate on `tier == "integrity"`.
 - Human output is Korean (matches section headers). Surface `--json` to other tools/skills.
 
