@@ -167,7 +167,8 @@ TASK=$(gh issue view "$ROOT" --json body --jq '.body' \
 | 연동 (task-github) | **GitHub 루트 이슈/PR 흐름** | 루트 이슈 close 시 `complete`(→`done/`), 재오픈 시 `reopen`. 밖에서 닫힌 경우 reconcile |
 
 - 위키가 추적하는 건 **이진(활성/done)** 뿐. 상세 phase(in-progress/in-review/changes-requested)는 위키가 복제하지 않고 이슈에 위임 → 복제 안 하니 드리프트 없음.
-- **reconcile**: out-of-band(밖에서 닫힌 이슈)는 task-github가 `gh`로 읽어 위키 task 상태를 정렬한다. **위키 CLI는 `gh`를 모른다** — reconcile 주체는 task-github.
+- **doctor**: prereq와 link integrity를 diagnose-only로 보고한다. 기본 read-only이며 상태 변경이 없다.
+- **reconcile**: out-of-band(밖에서 닫힌 이슈)는 task-github가 `gh`로 읽어 위키 task 상태를 정렬한다. **위키 CLI는 `gh`를 모른다** — reconcile 주체는 task-github. 단, mutation은 `reconcile --apply` 같은 명시 경로에서만 수행한다. `open`/`merge`가 opportunistic mismatch를 발견해도 먼저 dry-run plan을 보고하고 apply gate 없이 silent mutation하지 않는다.
 
 ---
 
@@ -185,6 +186,9 @@ TASK=$(gh issue view "$ROOT" --json body --jq '.body' \
 | `done` | PR diff → `refresh --check changed-path-stale` hard gate; major면 ADR → `capture decision` |
 | `review` | pr-verifier에 연결 task의 `decisions` 전달(반려 대안 회귀 점검) |
 | `merge` | 머지 전 `refresh --level integrity --strict` + PR diff drift hard gate(hygiene 경고); `closeout.py`(git/gh)가 머지·정리·루트 닫힘 감지 → 방출한 `task_to_complete`로 task `complete` |
+| `status` / `next` | context bundle 기반으로 상태와 다음 행동 1개를 read-only로 브리핑 |
+| `doctor` | labels/gh auth/dependency API/worktree/wiki availability/linkage를 diagnose-only로 점검 |
+| `reconcile` | `--apply` 명시 시에만 `wiki relate`/`complete`/`reopen` 실행 |
 
 ---
 
