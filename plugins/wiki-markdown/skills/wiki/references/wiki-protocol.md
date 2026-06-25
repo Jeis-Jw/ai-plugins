@@ -207,6 +207,7 @@ The bundled CLI (`scripts/wiki_cli.py`, stdlib only) supports ten top-level subc
 | `snapshot` | Manage discussion checkpoints outside the canonical graph. Subcommands: `save`, `list`, `search`, `load`, `discard`. |
 | `recall` | Read-only query — Stage 1 (summary scan), Stage 2 (`--section <name>`), Stage 3 (full doc), `--pack` (deterministic projection with authority labels), batch `--read a,b,c` (preserves input order), derived backlinks via `--backlinks-of` (done tasks included by default). |
 | `refresh` | Integrity report. Read-only by default; `--level all\|integrity\|hygiene` filters checks to a severity tier; `--strict` exits `6` on issues (under `--level integrity`, only integrity-tier issues); `--fix` accepts only `index` and `retired-in-index` (the safe, purely-derived fixes). |
+| `schema` | Introspect the type model (read-only, **no vault required**) — a deterministic projection of the registry an agent can read instead of guessing or opening a doc. |
 
 ### Capture: 1-call body and JSON payload
 
@@ -222,6 +223,14 @@ The bundled CLI (`scripts/wiki_cli.py`, stdlib only) supports ten top-level subc
 | `filled_sections`, `lite_sections`, `empty_sections` | authored prose · `--lite` `해당 없음` prefill · still blank. Pick the next edit from `empty_sections`; a `--lite` placeholder lands in `lite_sections`, never `filled_sections`. |
 | `lite` | whether `--lite` was used |
 | `index_changed`, `index_paths` | whether / which folder indexes were rewritten this call (for `git add`) |
+
+### Machine-discoverability: `schema` and `capture --dry-run`
+
+Two introspection surfaces let an agent learn the contract without reading SKILL, guessing, or opening a doc — closing the discoverability gap a payload alone can't cover.
+
+`schema --json` projects the registry: `types` (each with `folder`, `prefix`, `id_form` = `timestamped`|`slug`, `is_record`/`is_living`/`is_hub`/`is_task`, `sections`, `core_sections`, `section_flags` = `{flag: header}`, `allowed_relations`, `allow_verified_at`, `allow_affects_paths`), plus `relation_target_types`, `snapshot_sections`, and `refresh_checks` split into `integrity`/`hygiene` tiers. It is a pure derivation — no vault needed (works before `init`) and never drifts from what `capture` enforces (the `section_flags` it advertises are exactly the `--sec-<flag>` keys `capture` accepts).
+
+`capture <type> --dry-run --json` previews a creation **without writing**: it runs full validation (relation resolution, scope/placeholder checks) and returns the would-be `id`/`path`/`section_flags`/`empty_sections` plus `dry_run: true`. Because nothing is written, `index_changed` is `false` and `index_paths` is `[]` (honest no-op reporting) — use it to validate refs and see the resulting id/path before committing.
 
 ### Recall: `--pack` deterministic projection
 

@@ -3924,5 +3924,79 @@ class WikiCliSnapshotAuthorityTests(unittest.TestCase):
             self.assertEqual(d["warnings"], [])
 
 
+class WikiCliSchemaTests(unittest.TestCase):
+    """Unit C — machine-discoverability: `schema` + `capture --dry-run` marker."""
+
+    def test_schema_introspects_type_model_without_vault(self):
+        with tempfile.TemporaryDirectory() as tmp:  # no init — schema needs no vault
+            r = run_cli("schema", "--json", cwd=tmp)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            d = json.loads(r.stdout)
+            self.assertEqual(d["mode"], "schema")
+            self.assertEqual(set(d["types"]),
+                             {"intent", "decision", "rejected_decision",
+                              "trial_error", "observation", "ssot", "runbook", "task"})
+            dec = d["types"]["decision"]
+            self.assertEqual(dec["prefix"], "DEC")
+            self.assertEqual(dec["id_form"], "timestamped")
+            self.assertIn("결정", dec["sections"])
+            self.assertEqual(dec["section_flags"]["decision"], "결정")
+            self.assertIn("ssot", dec["allowed_relations"])
+            # living type carries slug id form
+            self.assertEqual(d["types"]["ssot"]["id_form"], "slug")
+            self.assertIsNone(d["types"]["ssot"]["prefix"])
+            # refresh tiers + snapshot sections exposed for discoverability
+            self.assertIn("schema", d["refresh_checks"]["integrity"])
+            self.assertIn("stale", d["refresh_checks"]["hygiene"])
+            self.assertIn("관련 파일/문서", d["snapshot_sections"])
+
+    def test_schema_text_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = run_cli("schema", cwd=tmp)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("타입 스키마", r.stdout)
+            self.assertIn("decision", r.stdout)
+
+    def test_schema_section_flags_match_capture(self):
+        # discoverability must not drift from reality: the flags schema advertises
+        # are exactly the flags capture accepts/echoes.
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(run_cli("init", cwd=tmp).returncode, 0)
+            schema = json.loads(run_cli("schema", "--json", cwd=tmp).stdout)
+            cap = run_cli("capture", "task", "--title", "T", "--summary", "s",
+                          "--tags", "x", "--dry-run", "--json", cwd=tmp,
+                          env={"WIKI_NOW": "2026-06-25T12:00:00"})
+            cap_payload = json.loads(cap.stdout)
+            self.assertEqual(schema["types"]["task"]["section_flags"],
+                             cap_payload["section_flags"])
+
+    def test_capture_dry_run_marks_preview_without_writing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(run_cli("init", cwd=tmp).returncode, 0)
+            r = run_cli("capture", "decision", "--slug", "preview",
+                        "--title", "Preview", "--summary", "s", "--tags", "x",
+                        "--sec-decision", "본문", "--dry-run", "--json", cwd=tmp,
+                        env={"WIKI_NOW": "2026-06-25T12:00:00"})
+            self.assertEqual(r.returncode, 0, r.stderr)
+            p = json.loads(r.stdout)
+            self.assertTrue(p["dry_run"])
+            # honest no-op reporting: nothing written, nothing indexed
+            self.assertFalse(p["index_changed"])
+            self.assertEqual(p["index_paths"], [])
+            self.assertFalse(
+                (Path(tmp) / "wiki" / "context" / "decision"
+                 / "DEC-2026-06-25-120000-preview.md").exists())
+
+    def test_capture_real_write_marks_dry_run_false(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(run_cli("init", cwd=tmp).returncode, 0)
+            r = run_cli("capture", "decision", "--slug", "real",
+                        "--title", "Real", "--summary", "s", "--tags", "x",
+                        "--sec-decision", "본문", "--json", cwd=tmp,
+                        env={"WIKI_NOW": "2026-06-25T12:00:00"})
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertFalse(json.loads(r.stdout)["dry_run"])
+
+
 if __name__ == "__main__":
     unittest.main()
