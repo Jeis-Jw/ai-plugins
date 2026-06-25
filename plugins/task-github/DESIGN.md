@@ -829,6 +829,16 @@ python3 <wiki-cli> init    # ./wiki/ vault 생성 (task 타입 지원 버전 필
 
 ## 20. 변경 이력 (v2 → v3)
 
+### 20.1 v0.8.0
+
+- context bundle resolver 추가: `open`/`start`/`done`/`merge`/`status`가 같은 issue/root/wiki TASK read-model을 공유한다.
+- root issue Execution Contract 추가: `schema_version` + stable keys를 가진 parser-safe fenced JSON block으로 integration 전략을 materialize한다.
+- `closeout.py --mode pr|local` 일반화: local mode는 temp worktree merge simulation, `required_checks`, drift/integrity evidence 통과 후에만 parent branch에 반영한다.
+- Integration Ledger 추가: stacked+local leaf closeout만 root issue comment에 append-only event를 남긴다.
+- `status`/`next`/`doctor`/`reconcile` skills 추가: read-only diagnose와 explicit `--apply` mutation을 분리한다.
+
+### 20.2 v2 → v3
+
 v3는 연계 대상을 `wiki-obsidian` → `wiki-markdown`(결정 그래프)으로 전환하며 통합을 재설계했다.
 
 1. **계층 분리 도입**: 위키↔task 결합 규약을 플러그인 mechanism이 아니라 자동로드 **policy statement**(`CLAUDE.md` / `AGENTS.md`)에 둔다(위키 4계층 분리 존중, 불변식 19).

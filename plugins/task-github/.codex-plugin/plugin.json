@@ -1,6 +1,6 @@
 {
   "name": "task-github",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "GitHub-based autonomous task protocol with wiki-markdown task-node integration.",
   "author": {
     "name": "Jinwuk-Lee",
@@ -16,8 +16,8 @@
     "capabilities": ["Read", "Write", "GitHub", "Workflow"],
     "defaultPrompt": [
       "Use $start to claim and load an issue.",
-      "Use $plan to prepare a planned task.",
-      "Use $done to finish work and prepare a PR."
+      "Use $status or $next to inspect current task state.",
+      "Use $done or $merge to close out work through PR or local mode."
     ]
   }
 }
