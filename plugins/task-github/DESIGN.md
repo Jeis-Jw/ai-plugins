@@ -116,6 +116,8 @@ plugins/task-github/
 
 root issue body에는 optional **Execution Contract** fenced block을 둔다. `schema_version: 1`과 stable keys(`wiki_task`, `topology`, `gate`, `parent_branch`, `leaf_policy`, `required_checks`, `closeout_mode`)만 해석하고 unknown key는 무시한다. contract는 root issue의 실행 방법(how)을 고정해 profile+gear 재추론 drift를 막는 장치이며, wiki TASK의 작업정의(why/what)를 대체하지 않는다. contract가 없으면 context bundle은 `topology/gate/parent_branch=null`, `default_source=profile+gear`를 출력한다.
 
+`skills/merge/scripts/closeout.py`는 `--mode pr|local`을 제공한다. PR mode는 기존 GitHub PR merge closeout이고, local mode는 temp worktree merge simulation으로 parent branch 병합 가능성을 확인한 뒤 Execution Contract의 `required_checks`, drift evidence, integrity evidence를 모두 검증해야 실제 local merge를 수행한다. `topology=stacked` + `closeout_mode=local`인 leaf closeout은 root issue comment에 Integration Ledger(`task-github-ledger`)를 append-only로 남긴다. 이 ledger도 GitHub 실행 산출물이며 wiki TASK의 대체물이 아니다.
+
 ### 매니페스트 & 마켓플레이스 등록
 
 `plugin.json`:
