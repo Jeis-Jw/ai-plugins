@@ -38,3 +38,4 @@ audience: [human, agent]
 - [[DEC-2026-06-19-115758-위키-task-github-계획-플로우-작업정의-먼저-수행-이슈-나중]] — 작업 계획 시 wiki 작업정의 task를 먼저, 연계 GitHub 이슈를 나중에 생성·링크. 조율은 task-github가 전담하고 wiki는 순수 유지. define를 doc-first로 반전.
 - [[DEC-2026-06-19-144637-session-review-스냅샷-백엔드-하이브리드화]] — session-review가 wiki-markdown 있으면 위임, 없으면 동일 포맷 내장 writer로 fallback. 타 워크스페이스 이식성 확보.
 - [[DEC-2026-06-19-190302-ceremony를-파급력-gear-에-비례시킨다]] — PR 분할·리뷰 강도를 설계결정 수가 아니라 기어·롤백 단위에 맞춘다. mechanism=task-protocol §3.1, principle=agent-policy 스캐폴드(CLAUDE/AGENTS 재렌더).
+- [[DEC-2026-06-25-182926-wiki-markdown-개선-agent-facing-표면-재설계-우선-unit-a-b-c-closeout]] — wiki 운용 마찰 본체는 신규기능이 아니라 SKILL/CLI 표면이 실체와 drift한 것 — 표면 재설계를 P0로, discard/projection/stale/closeout을 소수 추가
