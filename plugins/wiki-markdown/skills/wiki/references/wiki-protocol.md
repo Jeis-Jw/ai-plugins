@@ -233,7 +233,7 @@ Every body-bearing flag value — `capture --sec-<flag>` and `snapshot save`'s s
 - `@@…` escapes a literal leading `@` (`@@mention` → the body `@mention`);
 - any value not starting with `@` is the literal inline body, unchanged.
 
-It is deliberately one shared convention rather than a per-section `--sec-<key>-file` flag for every header (which would multiply the surface). A missing/unreadable file exits `2` (`body_file_error`); a bare `@` exits `2` (`body_file_empty`). The resolved body is then NFC-normalized and stripped exactly like an inline value.
+It is deliberately one shared convention rather than a per-section `--sec-<key>-file` flag for every header (which would multiply the surface). A missing/unreadable file exits `2` (`body_file_error`); a bare `@` exits `2` (`body_file_empty`). The resolved body is then NFC-normalized and stripped exactly like an inline value. `@-` reads STDIN eagerly, so only pass it when something is actually piped in — on an interactive terminal it will block waiting for input.
 
 ### Machine-discoverability: `schema` and `capture --dry-run`
 
