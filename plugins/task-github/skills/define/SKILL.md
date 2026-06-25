@@ -75,7 +75,16 @@ spec 형식:
 {
   "root": {
     "title": "{title}",
-    "body": "{body}\n\n## Wiki Context\n(define이 task 노드 역링크 후 채움)"
+    "body": "{body}\n\n## Wiki Context\n(define이 task 노드 역링크 후 채움)",
+    "execution_contract": {
+      "wiki_task": "{TASK-... 또는 null}",
+      "topology": "flat|stacked",
+      "gate": "pr|local-merge",
+      "parent_branch": "main 또는 task/root-{ROOT}",
+      "leaf_policy": {"risk_class": "micro|normal|major|irreversible|db|public-api|security|data-loss"},
+      "required_checks": ["python3 -m pytest plugins/task-github/tests/ -q"],
+      "closeout_mode": "pr|local"
+    }
   },
   "children": [
     {
@@ -95,6 +104,8 @@ spec 형식:
   ]
 }
 ```
+헬퍼는 `root.execution_contract`가 있으면 root issue body에 parser-safe fenced block(`task-github-execution`)으로 materialize한다. unknown key는 버리고 stable key만 남긴다. 이 contract는 **실행 방법(how)** 이며 wiki task의 작업정의(why/what)를 대체하지 않는다. 위키에는 쓰지 않는다.
+
 헬퍼는 서브이슈 부모 연결을 **GraphQL `createIssue(parentIssueId)`** 로 통일한다. child마다 완료 기준, 검증 anchor, 영향 경로/파일 anchor, `affects_paths`가 필요하다. `affects_paths`가 겹치는 child는 한쪽 `blocked_by`를 선언해야 dry-run을 통과한다([quality-gates.md](../../rules/quality-gates.md) G3/G4). dependency는 REST Issue dependency API를 쓰며 `X-GitHub-Api-Version: 2026-03-10`을 고정한다. dependency API 실패 시 헬퍼가 child 이슈에 fallback 코멘트를 남긴다([dependencies.md](../../rules/dependencies.md)).
 6. **(위키 가용 시) 이슈 ↔ 작업정의 노드 연결** — task 노드는 3에서 이미 확보됨. 이제 이슈 번호를 task 노드에 **역링크**하고, 루트 이슈 본문에 task 노드를 기록한다. merge/done이 이 본문의 `[[TASK-...]]`를 읽어 완료 전이하므로 실제 ID를 박아야 한다([wiki-bridge.md](../../rules/wiki-bridge.md) §4):
 ```bash
@@ -158,6 +169,7 @@ fi
 - 하위 작업 선후관계는 GitHub Issue dependency가 정본이다. `parallel`/`sequential` 라벨은 만들지 않는다.
 - **기어 라벨을 붙이지 않는다** — define은 구조 생성만(기어는 start의 책임).
 - **task 노드는 업무(루트) 1:1** — 리프·서브이슈마다 만들지 않는다.
+- **Execution Contract는 루트 이슈 body 전용** — `schema_version` + stable keys를 가진 fenced block으로 materialize하고, contract 부재 시 context bundle은 `topology/gate/parent_branch=null`, `default_source=profile+gear`로 보고한다.
 - 단위 상세 설계는 서브이슈 본문 또는 해당 단위 실행 중 캡처되는 DEC/OBS에 둔다. 위키 리프 task 노드는 만들지 않는다. 이미 만들었다면 내용을 서브이슈로 이전한 뒤 task 노드를 `retire --type deprecated`한다.
 - task 노드 캡처는 **제안 후 확인**. 위키 미가용이면 이슈만 만들고 task 노드는 스킵(정상).
 - **rationale는 메인 직접 커밋** — task 노드 + 근거 `DEC`/`REJ`/`INT`를 define이 메인에 원자적 커밋하고, 시작 시 dirty-vault를 경고한다(차단 아님). 코드 PR은 `DEC` ID로 참조([wiki-bridge.md](../../rules/wiki-bridge.md) §8).

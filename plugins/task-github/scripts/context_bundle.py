@@ -18,6 +18,21 @@ from typing import Any, Iterable, Mapping
 
 TASK_ID_RE = re.compile(r"TASK-\d{4}-\d{2}-\d{2}-\d{6}-[^\s)\],.]+")
 INTEGRATION_FIELDS = ("topology", "gate", "parent_branch")
+EXECUTION_CONTRACT_FENCE = "task-github-execution"
+EXECUTION_CONTRACT_SCHEMA_VERSION = 1
+EXECUTION_CONTRACT_KEYS = (
+    "wiki_task",
+    "topology",
+    "gate",
+    "parent_branch",
+    "leaf_policy",
+    "required_checks",
+    "closeout_mode",
+)
+EXECUTION_CONTRACT_RE = re.compile(
+    rf"```{EXECUTION_CONTRACT_FENCE}\s*\n(?P<body>.*?)\n```",
+    re.DOTALL,
+)
 
 
 def extract_task_ids(body: str | None) -> list[str]:
@@ -29,6 +44,45 @@ def extract_task_ids(body: str | None) -> list[str]:
             out.append(task_id)
             seen.add(task_id)
     return out
+
+
+def normalize_execution_contract(contract: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Return a parser-safe v1 execution contract with stable keys only."""
+    raw = dict(contract or {})
+    normalized: dict[str, Any] = {"schema_version": EXECUTION_CONTRACT_SCHEMA_VERSION}
+    for key in EXECUTION_CONTRACT_KEYS:
+        value = raw.get(key)
+        if key == "required_checks" and value is None:
+            value = []
+        normalized[key] = value
+    return normalized
+
+
+def render_execution_contract(contract: Mapping[str, Any]) -> str:
+    payload = normalize_execution_contract(contract)
+    body = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return f"```{EXECUTION_CONTRACT_FENCE}\n{body}\n```"
+
+
+def parse_execution_contract(body: str | None) -> dict[str, Any] | None:
+    match = EXECUTION_CONTRACT_RE.search(body or "")
+    if not match:
+        return None
+    try:
+        payload = json.loads(match.group("body"))
+    except json.JSONDecodeError:
+        return None
+    if payload.get("schema_version") != EXECUTION_CONTRACT_SCHEMA_VERSION:
+        return None
+    return normalize_execution_contract(payload)
+
+
+def materialize_execution_contract(body: str, contract: Mapping[str, Any]) -> str:
+    block = render_execution_contract(contract)
+    if EXECUTION_CONTRACT_RE.search(body or ""):
+        return EXECUTION_CONTRACT_RE.sub(block, body or "", count=1)
+    prefix = (body or "").rstrip()
+    return f"{prefix}\n\n## Execution Contract\n{block}\n" if prefix else f"## Execution Contract\n{block}\n"
 
 
 def _labels(raw: Any) -> list[str]:
@@ -199,7 +253,9 @@ def build_context_bundle(
         wiki_task_record=wiki_task_record,
     )
 
-    contract = dict(integration_contract or {})
+    contract = normalize_execution_contract(integration_contract) if integration_contract else (
+        parse_execution_contract(root_out.get("body")) if root_out else None
+    )
     bundle = {
         "ok": not errors,
         "issue": issue_out,
@@ -210,6 +266,7 @@ def build_context_bundle(
         "blockers": _normalize_dependency_items(blockers),
         "downstream": _normalize_dependency_items(downstream),
         "worktree_path": worktree_path,
+        "execution_contract": contract,
         "integrity": {"errors": errors, "warnings": warnings},
     }
     if contract:

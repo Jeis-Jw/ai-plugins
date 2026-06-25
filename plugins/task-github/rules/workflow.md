@@ -101,7 +101,32 @@ git worktree remove .worktrees/issue-{N} && git branch -d task/issue-{N}
 
 ---
 
-## 5. PR 규약
+## 5. Execution Contract (루트 이슈)
+
+integration 전략은 매번 profile+gear에서 재추론하지 않고, root issue 생성 시 body에 materialize한다. 형식은 parser-safe JSON fenced block이다:
+
+````markdown
+```task-github-execution
+{"schema_version":1,"wiki_task":"TASK-...","topology":"stacked","gate":"local-merge","parent_branch":"task/root-10","leaf_policy":{"risk_class":"normal"},"required_checks":["python3 -m pytest plugins/task-github/tests/ -q"],"closeout_mode":"local"}
+```
+````
+
+stable keys:
+- `wiki_task`
+- `topology`
+- `gate`
+- `parent_branch`
+- `leaf_policy`
+- `required_checks`
+- `closeout_mode`
+
+unknown key는 parser가 무시한다. contract가 없으면 context bundle은 `topology/gate/parent_branch=null`과 `default_source=profile+gear`를 낸다.
+
+> 경계: Execution Contract는 루트 이슈의 실행 계약(how)이다. 작업정의와 취지(why/what)는 계속 wiki TASK 노드가 맡는다. branch/worktree/PR metadata나 contract가 wiki TASK를 대체하지 않는다.
+
+---
+
+## 6. PR 규약
 
 PR 본문은 다음을 포함한다:
 ```

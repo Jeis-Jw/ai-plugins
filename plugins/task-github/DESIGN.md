@@ -114,6 +114,8 @@ plugins/task-github/
 
 공통 read-model은 `scripts/context_bundle.py`가 제공한다. 각 skill은 GitHub와 wiki를 자기 절차대로 읽은 뒤 그 JSON을 resolver에 넘긴다. resolver는 `gh`/wiki CLI를 직접 호출하지 않고, `issue/root/wiki_task/topology/gate/parent_branch/blockers/downstream/worktree_path` bundle과 링크 정합 결과만 만든다. 이 분리 때문에 task-github는 wiki가 없을 때도 동작하고, wiki는 GitHub 상태를 해석하지 않는다.
 
+root issue body에는 optional **Execution Contract** fenced block을 둔다. `schema_version: 1`과 stable keys(`wiki_task`, `topology`, `gate`, `parent_branch`, `leaf_policy`, `required_checks`, `closeout_mode`)만 해석하고 unknown key는 무시한다. contract는 root issue의 실행 방법(how)을 고정해 profile+gear 재추론 drift를 막는 장치이며, wiki TASK의 작업정의(why/what)를 대체하지 않는다. contract가 없으면 context bundle은 `topology/gate/parent_branch=null`, `default_source=profile+gear`를 출력한다.
+
 ### 매니페스트 & 마켓플레이스 등록
 
 `plugin.json`:

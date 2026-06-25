@@ -58,6 +58,12 @@ task-github:review {PR} --auto-merge
 
 세부 규약은 [rules/dependencies.md](rules/dependencies.md)에 있다.
 
+## Execution Contract
+
+root issue body에는 필요 시 `task-github-execution` fenced JSON block을 둔다. 여기에는 integration 실행 전략(`topology`, `gate`, `parent_branch`, `leaf_policy`, `required_checks`, `closeout_mode`)을 materialize한다. contract가 없으면 기존 profile+gear 기본 판단을 사용하며, context bundle은 이를 `default_source: "profile+gear"`로 드러낸다.
+
+이 contract는 GitHub root issue에만 존재하는 실행 계약이다. wiki `TASK` 노드의 작업정의·취지를 대체하지 않는다.
+
 ## Knowledge Capture Audit
 
 비 trivial 작업은 끝내기 전에 위키 기록 후보를 감사한다.
