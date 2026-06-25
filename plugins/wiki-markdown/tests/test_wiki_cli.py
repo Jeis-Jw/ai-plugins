@@ -3793,6 +3793,36 @@ class WikiCliPackTests(unittest.TestCase):
             pack = self._pack(tmp, "--type", "decision", "--limit", "2")
             self.assertEqual(len(pack["results"]), 2)
 
+    def test_pack_tasks_relation_does_not_anchor(self):
+        # constraint (f): `tasks` is an external ref, never an in-graph anchor.
+        # An observation whose only relation is `tasks` stays authority_unknown.
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            obs = self._cap(tmp, "observation", "--title", "Task-Only Obs",
+                            "--summary", "s", "--tags", "x",
+                            "--tasks", "owner/repo#7",
+                            "--sec-observation", "외부 task만 가리키는 관찰")
+            it = self._by_id(self._pack(tmp, "--type", "observation"), obs)
+            self.assertEqual(it["freshness"], "authority_unknown")
+            self.assertEqual(it["warnings"], [])
+
+    def test_pack_truncates_on_byte_budget(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            # each decision carries a long (multi-byte) section so a handful
+            # overflow the ~4 KB pack budget.
+            body = "가" * 200
+            for i in range(20):
+                self._cap(tmp, "decision", "--title", f"Big{i}",
+                          "--summary", "충분히 긴 요약 " + "내용" * 20,
+                          "--tags", "x", "--sec-decision", body,
+                          env={"WIKI_NOW": f"2026-06-25T12:{i:02d}:00"})
+            pack = self._pack(tmp, "--type", "decision", "--limit", "50")
+            self.assertTrue(pack.get("truncated"), "expected budget truncation")
+            self.assertIn("hint", pack)
+            self.assertGreaterEqual(len(pack["results"]), 1)
+            self.assertLess(len(pack["results"]), 20)
+
 
 if __name__ == "__main__":
     unittest.main()

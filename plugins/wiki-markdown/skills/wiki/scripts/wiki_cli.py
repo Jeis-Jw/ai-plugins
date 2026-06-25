@@ -2249,7 +2249,9 @@ def _pack_sections(d: WikiDoc) -> dict:
     if not snippet:
         return {}
     if len(snippet.encode("utf-8")) > PACK_SNIPPET_BYTES:
-        snippet = (snippet.encode("utf-8")[:PACK_SNIPPET_BYTES]
+        # reserve room for the ellipsis so the result stays ≤ PACK_SNIPPET_BYTES.
+        keep = PACK_SNIPPET_BYTES - len("…".encode("utf-8"))
+        snippet = (snippet.encode("utf-8")[:keep]
                    .decode("utf-8", errors="ignore") + "…")
     return {header: snippet}
 
@@ -2374,7 +2376,8 @@ def cmd_recall(args) -> int:
 
     if getattr(args, "pack", False):
         today = now().date()
-        days = args.days if getattr(args, "days", None) else PACK_STALE_DAYS
+        # explicit None-check so `--days 0` is honored (0 is falsy).
+        days = PACK_STALE_DAYS if getattr(args, "days", None) is None else args.days
         # Resolve anchor lifecycle across the whole graph (active + retired +
         # done) regardless of the recall filter, so relation-aware staleness can
         # see a superseded/retired anchor even when it is filtered out of the
@@ -2393,11 +2396,14 @@ def cmd_recall(args) -> int:
         truncated_at: Optional[int] = None
         for d in ranked:
             it = _pack_item(d, anchor_by_id, today, days)
-            chunk = json.dumps(it, ensure_ascii=False)
-            if total + len(chunk) > PACK_BUDGET_BYTES and pack:
+            # count UTF-8 bytes, not characters — the budget is in bytes and
+            # the payload is emitted with ensure_ascii=False (non-ASCII = multi-
+            # byte). Estimate only; emit_ok re-serializes the full payload.
+            chunk_bytes = len(json.dumps(it, ensure_ascii=False).encode("utf-8"))
+            if total + chunk_bytes > PACK_BUDGET_BYTES and pack:
                 truncated_at = len(pack)
                 break
-            total += len(chunk)
+            total += chunk_bytes
             pack.append(it)
             if len(pack) >= limit:
                 break
