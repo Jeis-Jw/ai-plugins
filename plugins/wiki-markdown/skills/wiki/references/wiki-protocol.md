@@ -205,11 +205,26 @@ The bundled CLI (`scripts/wiki_cli.py`, stdlib only) supports nine top-level sub
 | `relate <basename>` | Add relations to an existing document without hand-editing frontmatter. Task nodes may add `intents`/`decisions`/`ssot`/`tasks`; immutable records only accept external `tasks`. |
 | `snapshot` | Manage discussion checkpoints outside the canonical graph. Subcommands: `save`, `list`, `search`, `load`, `discard`. |
 | `recall` | Read-only query — Stage 1 (summary scan), Stage 2 (`--section <name>`), Stage 3 (full doc), batch `--read a,b,c` (preserves input order), derived backlinks via `--backlinks-of` (done tasks included by default). |
-| `refresh` | Integrity report. Read-only by default; `--strict` exits `6` on issues; `--fix` accepts only `index` and `retired-in-index` (the safe, purely-derived fixes). |
+| `refresh` | Integrity report. Read-only by default; `--level all\|integrity\|hygiene` filters checks to a severity tier; `--strict` exits `6` on issues (under `--level integrity`, only integrity-tier issues); `--fix` accepts only `index` and `retired-in-index` (the safe, purely-derived fixes). |
+
+### Capture: 1-call body and JSON payload
+
+`capture <type>` accepts `--sec-<flag>` for every section of that type, so the body is filled in the **same call** — no skeleton→Read→Edit round-trip. `--lite` fills only the type's `core_sections` and prefills the rest with `해당 없음`, marking the doc so the opt-in `decision-quality`/`task-quality` checks skip non-core sections. A `--sec-<flag>` for a section the type doesn't have exits `2`.
+
+`capture --json` returns, additively (all already computed by the write path):
+
+| Field | Meaning |
+|-------|---------|
+| `id`, `path`, `type`, `supersedes` | the created note |
+| `sections`, `core_sections` | the type's section headers; which are mandatory-substantive |
+| `section_flags` | `{flag: header}` — which `--sec-<flag>` fills which header |
+| `filled_sections`, `lite_sections`, `empty_sections` | authored prose · `--lite` `해당 없음` prefill · still blank. Pick the next edit from `empty_sections`; a `--lite` placeholder lands in `lite_sections`, never `filled_sections`. |
+| `lite` | whether `--lite` was used |
+| `index_changed`, `index_paths` | whether / which folder indexes were rewritten this call (for `git add`) |
 
 ### Snapshot contract
 
-`snapshot save` requires `--title`, `--summary`, and `--tags`. It writes fixed sections for `현재 논의`, `배경`, `정해진 것`, `아직 열린 질문`, `다음에 볼 것`, `관련 파일/문서`, and `승격 후보`. The basename is `SNAP-<slug>` (slug from `--slug` or the title). Saving the same slug again rewrites that one file in place — `created_at` is preserved and `updated_at` is stamped; a new slug starts a new `SNAP-...` file. There is no append-only accumulation.
+`snapshot save` requires `--title`, `--summary`, and `--tags`. It writes fixed sections for `현재 논의`, `배경`, `정해진 것`, `아직 열린 질문`, `다음에 볼 것`, `관련 파일/문서`, and `승격 후보`. The basename is `SNAP-<slug>` (slug from `--slug` or the title). Saving the same slug again rewrites that one file in place — `created_at` is preserved and `updated_at` is stamped; a new slug starts a new `SNAP-...` file. There is no append-only accumulation. Pass `--merge` to update only the sections you supply (the rest are preserved); without it, a save replaces all sections.
 
 `snapshot list [query]` and `snapshot search <query>` search snapshot title, summary, tags, search terms, and body across current snapshots. `snapshot load <ref>` accepts a full snapshot basename or slug fragment. `snapshot discard <ref>` deletes the snapshot; git retains the history, so there is no active, archived, or promoted folder.
 
@@ -235,6 +250,16 @@ The bundled CLI (`scripts/wiki_cli.py`, stdlib only) supports nine top-level sub
 
 `refresh --check all` runs the integrity checks through `schema`; quality checks are explicit opt-in so v0 flags do not become default blockers. `--path <subdir>` scopes the scan to a subtree. `refresh --fix` rejects any token outside `{index, retired-in-index}` with exit `2` — including a bare `--fix`.
 
+### Refresh tiers (`--level`)
+
+Each check belongs to a severity tier: **integrity** (graph/data correctness — must block) or **hygiene** (regenerable or stylistic — advise only). Every emitted issue carries a `tier` field.
+
+- `--level all` (default) runs both tiers.
+- `--level integrity --strict` exits `6` **only** when an integrity-tier issue exists (a hygiene-only vault exits `0`). This is the canonical **verify/merge hard gate**; downstream tooling (e.g. task-github) depends on it.
+- `--level hygiene` surfaces advisories (orphan / stale / tags / empty-lesson …) without blocking.
+
+`refresh --strict` checks **structural** integrity only — it does not verify semantic freshness, stale snapshots, or whether the docs match the current code.
+
 ### Exit codes
 
 | Code | Meaning |
@@ -245,7 +270,7 @@ The bundled CLI (`scripts/wiki_cli.py`, stdlib only) supports nine top-level sub
 | `3` | Vault missing |
 | `4` | Validation failure (missing or ambiguous ref, retired target, etc.) |
 | `5` | Living slug already exists |
-| `6` | `--strict` refresh found issues |
+| `6` | `--strict` refresh found issues (under `--level integrity`, only integrity-tier issues) |
 
 ### Fuzzy reference resolution
 

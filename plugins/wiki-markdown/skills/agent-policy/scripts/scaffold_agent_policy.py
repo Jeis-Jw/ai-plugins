@@ -73,6 +73,16 @@ def render_policy(profile: str, tracker: str, concurrency: str) -> str:
             "consumer project's wiki vault."
         ),
         (
+            "- Wiki vs runtime evidence: the wiki is a durable context/decision "
+            "layer, not a runtime-debug companion. For a concrete runtime bug (a "
+            "customer id, an API path, a wrong on-screen value), inspect "
+            "code/API/DB/render evidence first; consult the wiki only on a real "
+            "design ambiguity or policy conflict. Recall once at task bootstrap and "
+            "reuse it — don't re-recall settled context for a small single-file edit "
+            "or when speed is asked. Treat snapshot/observation as non-authoritative "
+            "versus the newest decision."
+        ),
+        (
             "- Design altitude: brainstorming defines decomposition and thin unit "
             "boundaries; unit-internal schema/API/DDL/prompt contracts belong in "
             "the unit issue body or in DEC/OBS captured during that unit's run. "

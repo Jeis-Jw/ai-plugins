@@ -1548,6 +1548,11 @@ def cmd_capture(args) -> int:
                            f"(its sections: {','.join(type_keys)})")
         section_bodies[type_keys[key]] = _nfc(val).strip()
 
+    # Sections the author actually supplied via --sec-* (captured before the
+    # --lite prefill) so the JSON payload never reports a '해당 없음' placeholder
+    # as authored content.
+    provided_secs = set(section_bodies)
+
     # --lite: prefill every non-core section with an explicit "해당 없음" so the
     # intent (deliberately skipped, not forgotten) is visible, and quality
     # checks can recognise the doc as lite. Core sections still need real input.
@@ -1575,13 +1580,34 @@ def cmd_capture(args) -> int:
     if supersedes_id and not args.dry_run:
         _supersede_old(vault, supersedes_id, bn)
 
+    changed_idx: List[Tuple[str, ...]] = []
     if not args.dry_run:
-        refresh_all_indexes(vault)
+        changed_idx = refresh_all_indexes(vault)
+    index_paths = [str(p) for p in (find_index_file(vault, parts)
+                                    for parts in changed_idx) if p]
+
+    # Additive agent-facing metadata — all already computed above — so a
+    # follow-up edit needs no file Read or SKILL lookup. 3-way section split so a
+    # --lite placeholder is never reported as authored content:
+    #   filled = author prose (--sec-*) · lite = '해당 없음' prefill · empty = blank.
+    filled = [s for s in spec.sections if section_bodies.get(s) and s in provided_secs]
+    lite_secs = [s for s in spec.sections if section_bodies.get(s) and s not in provided_secs]
+    empty = [s for s in spec.sections if not section_bodies.get(s)]
 
     emit_ok(args,
-            {"id": bn, "path": str(target), "type": t, "supersedes": supersedes_id},
+            {"id": bn, "path": str(target), "type": t, "supersedes": supersedes_id,
+             "sections": list(spec.sections),
+             "core_sections": list(spec.core_sections or ()),
+             "section_flags": dict(type_keys),
+             "filled_sections": filled,
+             "lite_sections": lite_secs,
+             "empty_sections": empty,
+             "lite": bool(args.lite),
+             "index_changed": bool(changed_idx),
+             "index_paths": index_paths},
             text_lines=[f"생성: {target} (id={bn})"
-                        + (f" supersedes={supersedes_id}" if supersedes_id else "")])
+                        + (f" supersedes={supersedes_id}" if supersedes_id else "")
+                        + (f" · 미작성 섹션: {', '.join(empty)}" if empty else "")])
     return EXIT_OK
 
 
