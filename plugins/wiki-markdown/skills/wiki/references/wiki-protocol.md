@@ -244,6 +244,8 @@ The bundled CLI (`scripts/wiki_cli.py`, stdlib only) supports ten top-level subc
 
 `snapshot list [query]` and `snapshot search <query>` search snapshot title, summary, tags, search terms, and body across current snapshots. `snapshot load <ref>` accepts a full snapshot basename or slug fragment. `snapshot discard <ref>` deletes the snapshot; git retains the history, so there is no active, archived, or promoted folder.
 
+**`snapshot load` authority labels (additive, relation-aware).** A snapshot is staging, not graph truth — `snapshot load` over-trust was a real failure mode (Codex #11/#17). The load payload therefore carries the same four labels as `recall --pack`: a fixed `authority: "staging"` and `use_as: "resume_context"`, plus a relation-aware `freshness` and `warnings`. Freshness is judged **only** against the records the snapshot references in its `관련 파일/문서` section (deterministically extracted; both the full basename and the slug-less timestamp shorthand resolve, the latter via a unique basename-prefix match). A retired/superseded referenced record → `anchor_changed` (+ a `근거 앵커 …` warning); all-live references → `anchored`; nothing resolved (no records cited, or only external `owner/repo#N` refs) → `authority_unknown` with **no** fabricated stale. Unresolvable record-shaped ids are surfaced as a separate `미해결 참조` warning, not as staleness. The labels are additive — the snapshot body/frontmatter are returned unchanged.
+
 ### Refresh checks (13 total)
 
 | Check | Detects |
