@@ -19,6 +19,7 @@ $ARGUMENTS: {PR_NUMBER}
 ```bash
 gh pr view {PR} --json number,title,headRefName,baseRefName,state,labels,body
 ```
+연결 이슈와 루트 이슈를 확인한 뒤 공통 context bundle을 만든다. `merge`는 이 bundle의 `blockers`/`downstream`/`wiki_task`/`integrity`를 closeout 전후 브리핑 기준으로 사용한다.
 
 ### Step 2. (위키 가용 시) 머지 전 hard gate
 ```bash
@@ -77,3 +78,4 @@ GitHub 이슈/PR 흐름이 상태 정본이고 위키 done/는 투영이다([wik
 - Issue는 PR의 `Closes #N`으로 자동 close.
 - task 노드 done 전이는 **루트 이슈가 실제 close될 때만**. 리프 하나 머지가 곧 업무 완료는 아니다.
 - 최종 보고 전에 Knowledge Capture Audit 결과를 포함한다.
+- context bundle/link integrity는 판단 입력이다. wiki 상태 변경은 closeout 결과의 `task_to_complete`를 받은 뒤 `wiki complete`로만 수행한다.

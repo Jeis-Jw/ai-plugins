@@ -93,6 +93,8 @@ plugins/task-github/
 │   ├── knowledge-capture.md #   작업 종료 전 지식 기록 감사 규약
 │   ├── wiki-bridge.md       #   ★신규: 위키 감지·task 노드 연결·호출 규약(mechanism 측). 결합 정책은 자동로드 operating policy 참조
 │   └── quality-gates.md     #   위키 무결성 hard gate + decision/task 품질 FLAG-to-human 규약
+├── scripts/
+│   └── context_bundle.py     #   open/start/done/merge/status가 공유하는 issue/root/wiki TASK read-model + 링크 정합 검사
 ├── skills/                  # 호출 단위 동작 (10종)
 │   ├── setup/SKILL.md       #   git+GitHub 초기화 (+위키 vault 부재 시 init 제안)
 │   ├── open/SKILL.md        #   Issue 읽기 전용 로드 (+연결된 task 노드/결정 표시)
@@ -109,6 +111,8 @@ plugins/task-github/
 ```
 
 **3계층 구조**(rules=헌법 / skills=함수 / agents=외부감사)는 v2와 동일. 신규는 `rules/wiki-bridge.md` 하나 — 위키 **감지·task 노드 연결·호출의 메커니즘**만 담고, *결합 정책*은 자동로드 operating policy를 가리킨다.
+
+공통 read-model은 `scripts/context_bundle.py`가 제공한다. 각 skill은 GitHub와 wiki를 자기 절차대로 읽은 뒤 그 JSON을 resolver에 넘긴다. resolver는 `gh`/wiki CLI를 직접 호출하지 않고, `issue/root/wiki_task/topology/gate/parent_branch/blockers/downstream/worktree_path` bundle과 링크 정합 결과만 만든다. 이 분리 때문에 task-github는 wiki가 없을 때도 동작하고, wiki는 GitHub 상태를 해석하지 않는다.
 
 ### 매니페스트 & 마켓플레이스 등록
 

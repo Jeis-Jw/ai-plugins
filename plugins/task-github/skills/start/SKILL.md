@@ -91,6 +91,12 @@ gh issue edit {N} --add-assignee @me --add-label "in-progress"
 - `wiki recall --read {TASK-...} --json`로 업무 정의·근거 확보 → plan/run이 재사용
 - 자세한 규약은 [wiki-bridge.md](../../rules/wiki-bridge.md).
 
+점유 직전/직후 브리핑은 공통 context bundle을 우선 사용한다:
+```bash
+python3 plugins/task-github/scripts/context_bundle.py --input snapshot.json
+```
+`blockers`/`downstream`/`wiki_task`/`worktree_path`는 이후 `plan`/`run`에 넘기는 세션 컨텍스트의 기준 shape다. `integrity.errors`가 있으면 점유 전 보고하고, 링크 복구가 필요하면 별도 reconcile 지시를 받는다.
+
 ## 불변식
 - 기어 판단·라벨 부여의 **단일 책임 지점**. (기존 gear 라벨 있으면 유지, 없으면 부여)
 - 컨테이너 이슈는 작업 대상이 아니다(차단).
@@ -98,3 +104,4 @@ gh issue edit {N} --add-assignee @me --add-label "in-progress"
 - 점유 중복 방지 — 타인 점유 Issue는 사령관 확인 없이 시작 금지.
 - start는 위키를 **읽기만**(recall) — task 노드 생성은 define의 책임.
 - 시작 시 **dirty wiki vault를 경고**(차단 아님) — 미커밋 rationale 레코드가 워크트리 작업과 엉키는 것을 예방([wiki-bridge.md](../../rules/wiki-bridge.md) §8).
+- task-github가 만든 context bundle은 wiki task를 대체하지 않는다. wiki task는 여전히 ROOT 이슈와 1:1로만 연결된다.
