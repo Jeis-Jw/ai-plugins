@@ -5,232 +5,159 @@ description: Manage an AI-native project wiki — capture intents, decisions, re
 
 # Wiki
 
-This skill drives a single Python CLI, `wiki_cli.py`, against a local vault (default `wiki/`). All invocations follow the pattern below; exit codes and JSON output are deterministic so the agent can react to results without re-parsing prose.
+Drives one stdlib Python CLI, `wiki_cli.py`, against a local vault (default `wiki/`). Exit codes and `--json` are deterministic — branch on results without re-parsing prose.
 
 ```bash
-python3 <skill-dir>/scripts/wiki_cli.py <subcommand> [args]
+python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" <subcommand> [args]
 ```
 
-`<skill-dir>` is the installed location of this skill — Claude Code exposes it as `${CLAUDE_SKILL_DIR}`; in other harnesses, substitute the absolute path.
+`${CLAUDE_SKILL_DIR}` is this skill's installed dir (substitute the absolute path in other harnesses).
+
+> **This page is the runtime cheat-sheet.** The exhaustive contract — every field, all 13 refresh checks, the full exit-code matrix, YAML subset, NFC rules — lives in [`references/wiki-protocol.md`](references/wiki-protocol.md). Load it only when you need a detail not here.
+
+Core loop: **`recall` before deciding, `capture` after deciding** (mechanism in `rules/knowledge-protocol.md`).
 
 ## When to use
 
-Invoke this skill whenever the user asks to:
+- **Record durable knowledge**: "log this decision / intent / why we rejected X / this trap"; "found something, can't classify yet" → `observation`.
+- **Document state/procedure**: current architecture → `ssot`; deploy/run procedure → `runbook`.
+- **Retrieve before acting**: "what did we decide about X?", "related intents?", "tried before?", "who superseded this?".
+- **Save/resume discussion**: "save this discussion" → `snapshot save`; "load previous context" → `snapshot load`.
+- **Integrity/drift**: "check the wiki", "stale facts?", "broken links?", "what does this code change affect?".
+- **Plan a unit of work** (work-definition/handoff bridge) → `task`.
+- **Retire/supersede**: "mark deprecated", "supersede X with Y".
 
-- **Record durable knowledge**: "log this decision", "save the intent", "note why we rejected X", "record this trap", "we found something but don't know how to classify it yet"
-- **Document state or procedure**: "write up the current auth architecture", "document the deploy procedure"
-- **Retrieve context before acting**: "what did we decide about X?", "show related intents", "anything we tried before?", "who superseded this?", "batch-read these records"
-- **Save or resume unresolved conversation context**: "save this discussion", "load the previous context", "search discussion snapshots"
-- **Run integrity / drift checks**: "check the wiki", "find stale facts", "any broken links?", "regenerate indexes", "what does this code change affect?"
-- **Initialize a vault**: "set up the wiki", "create the knowledge base"
-- **Retire or supersede**: "mark this decision deprecated", "supersede X with Y"
+## When NOT to use (negative triggers — prefer code/runtime evidence)
 
-Per the mechanism design principle in `rules/knowledge-protocol.md`, always **`recall` before deciding** and **`capture` after deciding**.
+The wiki is a **durable context/decision layer, not a runtime-debug companion**. Stay out of the way when:
+
+- The user reports a **concrete runtime bug** (a customer id, an API path, a wrong screen value) — inspect **code → API → DB → render path first**; touch the wiki only on a real design ambiguity or policy conflict.
+- The change is a **small single-file edit** and the active task/decisions are already in this session's context — don't re-`recall`.
+- This session **already recalled** the active task + decisions — reuse that, don't widen recall again unless code/DB evidence conflicts or the user asks.
+- The user asks for **speed** ("just find it", "don't explain, fix it") — runtime evidence outranks wiki lookup.
+
+`snapshot`/`observation` are **non-authoritative** (may be stale vs the newest `decision`); never treat a loaded snapshot as current truth without checking it against decisions.
 
 ## Quick start
 
 ```bash
-# 0. Initialize the vault (idempotent; includes context/observation).
-python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" init
+# 0. Init (idempotent). ($CLI is shorthand for this cheat-sheet's examples.)
+CLI="${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py"
+python3 "$CLI" init
 
-# 1. Record an intent (a hub; backlink target).
-python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" capture intent \
-  --title "Signup conversion speed" \
-  --summary "Minimize friction in the signup funnel to lift conversion." \
-  --tags growth,conversion
+# 1. Capture WITH body in ONE call — fill §8 sections inline via --sec-<flag>.
+#    (No skeleton→Read→Edit round-trip. --json returns which sections you filled
+#     vs left empty + the --sec-<flag>→header map, so no file Read is needed.)
+python3 "$CLI" capture decision --json \
+  --title "Move auth to a BFF" --summary "Session tokens owned by the BFF." \
+  --tags auth,architecture --intents signup-conversion-speed --tasks owner/repo#18 \
+  --sec-decision "We move session ownership to a BFF." \
+  --sec-intent  "Serves signup-conversion-speed by cutting client token handling." \
+  --sec-background "..." --sec-tradeoffs "..." --sec-reeval "..."
+#    --lite : fill only the core sections, prefill the rest with '해당 없음'
+#             (and mark the doc so opt-in quality checks skip non-core sections).
 
-# 2. Record a decision (winning intent + work item link).
-#    --intents accepts slug fragments; capture resolves to the full basename.
-python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" capture decision \
-  --title "Move auth to a BFF" \
-  --summary "Session tokens are owned by the BFF." \
-  --tags auth,architecture \
-  --intents signup-conversion-speed \
-  --tasks owner/repo#18
+# 2. Capture other types (relation args follow the per-type allow list).
+python3 "$CLI" capture observation --json --title "Webhook timeout risk" \
+  --summary "External webhooks may exceed the 30s budget." --tags webhook,reliability \
+  --ssot webhook-architecture --affects-paths "src/webhook/**" --sec-observation "..." --sec-basis "..."
+python3 "$CLI" capture task --json --title "Move payment session to the BFF" \
+  --summary "Payment side of the BFF migration." --tags payment,architecture \
+  --decisions move-auth-to-a-bff --sec-overview "..." --sec-basis "..." --sec-scope "..."
+python3 "$CLI" complete TASK-...   # active → task/done/ (reopen to undo)
 
-# 3. Record an observation (pre-classification; may promote later to TRI/DEC).
-python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" capture observation \
-  --title "Webhook timeout risk" \
-  --summary "External webhooks may exceed our 30s budget; currently unbounded." \
-  --tags webhook,reliability \
-  --ssot webhook-architecture \
-  --affects-paths "src/webhook/**" \
-  --tasks owner/repo#42
+# 3. Relate / recall.
+python3 "$CLI" relate DEC-... --add-tasks owner/repo#18
+python3 "$CLI" recall "auth" --json                 # Stage 1: frontmatter only (~2KB guard)
+python3 "$CLI" recall "auth" --stage 2 --section 취지 # Stage 2: one section
+python3 "$CLI" recall --backlinks-of INT-... --json   # what a hub spawned (incl. done tasks)
+python3 "$CLI" recall --read DEC-...,INT-...           # batch read, input order preserved
 
-# 3b. Record a task (bridge node: a unit of work linked to decisions + an issue).
-python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" capture task \
-  --title "Move payment session to the BFF" \
-  --summary "Payment-side of the BFF migration; driven by the move-to-BFF decision." \
-  --tags payment,architecture \
-  --decisions move-auth-to-a-bff \
-  --intents signup-conversion-speed \
-  --tasks owner/repo#42
-# Finish it (active → task/done/) when the linked issue closes; reopen to undo.
-python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" complete TASK-2026-04-17-143052-move-payment-session-to-the-bff
-python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" reopen   TASK-2026-04-17-143052-move-payment-session-to-the-bff
+# 4. Snapshot (staging, outside the graph).
+python3 "$CLI" snapshot save --title "Auth migration discussion" \
+  --summary "Checkpoint before deciding the boundary." --tags auth,discussion --discussion "..."
+python3 "$CLI" snapshot save --slug auth-migration-discussion --merge --decided "..."  # update only given sections
+python3 "$CLI" snapshot load auth-migration-discussion
 
-# Add a relation to an existing node without hand-editing frontmatter.
-python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" relate DEC-2026-04-17-143052-move-auth-to-a-bff --add-tasks owner/repo#18
-python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" relate TASK-2026-04-17-143052-move-payment-session-to-the-bff --add-decisions move-auth-to-a-bff
+# 5. Retire / supersede.
+python3 "$CLI" retire DEC-... --type superseded --superseded-by DEC-new
+python3 "$CLI" retire DEC-... --type deprecated
 
-# 4. Recall (3-stage + batch read + backlinks).
-python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" recall "auth" --json
-python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" recall "auth" --stage 2 --section 취지
-python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" recall --backlinks-of INT-2026-04-17-143052-signup-conversion-speed --json
-python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" recall --read DEC-2026-04-17-143052-move-auth-to-a-bff,INT-2026-04-17-143052-signup-conversion-speed
-
-# 5. Save/load unresolved conversation context outside the canonical graph.
-python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" snapshot save \
-  --title "Auth migration discussion" \
-  --summary "Context checkpoint before deciding the auth migration boundary." \
-  --tags auth,discussion \
-  --discussion "Current thread summary..." \
-  --open-questions "Which service owns refresh rotation?"
-python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" snapshot list auth --json
-python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" snapshot load auth-migration-discussion
-
-# 6. Retire / supersede.
-python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" retire DEC-... --type superseded --superseded-by DEC-new
-python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" retire DEC-... --type deprecated
-
-# 7. Integrity (report-only by default; --fix is whitelisted).
-python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" refresh --strict --json
-python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" refresh --check changed-path-stale --changed-path "src/auth/x.ts,src/payment/y.ts"
-python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" refresh --check decision-quality,task-quality --json
-python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" refresh --fix index,retired-in-index
+# 6. Integrity — tiered (see "refresh tiers" below).
+python3 "$CLI" refresh --level integrity --strict --json   # hard gate: exit 6 only on integrity-tier issues
+python3 "$CLI" refresh --level hygiene --json               # advisory (orphan/stale/tags …) — non-blocking
+python3 "$CLI" refresh --check changed-path-stale --changed-path "src/auth/x.ts"
+python3 "$CLI" refresh --fix index,retired-in-index        # whitelist-only auto-fix
 ```
 
 ## Type decision guide
 
-| User signal | Type | Why |
-|-------------|------|-----|
-| "The principle should outlive specific decisions" | `intent` | Root of the graph; decisions and rejections point at it. |
-| "We decided / picked / adopted" | `decision` | Carries the winning intent, trade-offs, and re-evaluation triggers. |
-| "We considered this but rejected" | `rejected_decision` | Carries the losing intent so it can be reconsidered later. |
-| "Trap / anti-pattern / lesson / avoid next time" | `trial_error` | Lesson must be explicit (the `## 교훈` is checked). |
-| "Found something but not sure if it's a decision, lesson, or SSOT update yet" | `observation` | Pre-classification record; gets retired as `superseded` when a successor TRI/DEC/SSOT-update is captured. |
-| "How is X currently structured / behaving" | `ssot` | Living, updated in place. |
-| "How do we run / deploy / operate X" | `runbook` | Living, procedural. |
-| "Plan / prepare a unit of work — write the work-definition handoff" | `task` | Third category — the **work-definition / handoff** bridge node written when planning work, driven by decisions and optionally linked to external work. Carries relations (intents/decisions/ssot/tasks); binary active/done state by path. |
-| "Save this ongoing discussion so another session can resume it" | `snapshot` CLI | Staging layer outside the canonical graph; searchable/loadable but excluded from `recall`/`refresh` graph checks until explicitly captured/promoted later. |
+| User signal | Type |
+|-------------|------|
+| "principle should outlive specific decisions" | `intent` (hub) |
+| "we decided / picked / adopted" | `decision` |
+| "considered but rejected" | `rejected_decision` |
+| "trap / anti-pattern / lesson" | `trial_error` (explicit `## 교훈`) |
+| "found something, not sure how to classify yet" | `observation` (promote later) |
+| "how X currently is / behaves" | `ssot` (living) |
+| "how we run/deploy X" | `runbook` (living) |
+| "plan a unit of work — work-definition handoff" | `task` (third category) |
+| "save this discussion to resume later" | `snapshot` CLI (staging, not a graph type) |
 
-**Living vs Record.** `ssot` and `runbook` are *living* — updated in place per topic. A second `capture` for the same slug exits `5` (conflict). `context/*` types are *immutable + superseded* — never edited; replace with a new record.
+**Living vs Record.** `ssot`/`runbook` are *living* (updated in place; a second `capture` for the same slug exits `5`). `context/*` are *immutable + superseded*. **`task` is a third category**: body updated in place, carries relations, binary state by path (`task/` ↔ `task/done/`); finish with `complete`, never supersede. **`snapshot`** is staging outside the graph — excluded from `recall`/`refresh`; managed by `snapshot save/list/search/load/discard`.
 
-**Observation vs trial_error.** A `trial_error` has an explicit lesson. An `observation` is a finding too early to classify. When the classification firms up, capture a successor (TRI/DEC/SSOT-update) and `retire` the observation as `superseded` with the successor as primary replacement.
+## 1-call capture & the JSON payload
 
-**Task (third category).** `task` is neither living nor record: its body is updated in place (living-like) and it carries relations (record-like), but its lifecycle is **binary by path** — active `task/` vs done `task/done/`. It's a *pure leaf* handoff/context bridge: it points outward (`intents`/`decisions`/`ssot`/`tasks`) and nothing points back at it (reverse is derived backlinks — `recall --backlinks-of <DEC>` surfaces the tasks a decision spawned, **including completed ones by default** — done is a valid terminal state, not a retired one). Finish a task with `complete` (→ `task/done/`), undo with `reopen`. A task never supersedes; an *invalid* task is `retire --type deprecated` (which, like any retired doc, then needs `--include-retired` to appear in backlinks). `--tasks` links it to external work items such as GitHub issues/PRs; the wiki validates the ref shape but never reads or synchronizes that system.
+`capture` accepts `--sec-<flag>` for every section of the type — fill the body in the **same call**, no skeleton→Read→Edit. `capture --json` returns (additive):
 
-**Snapshot (staging layer).** `snapshot` is not a wiki graph type. Files live directly under `snapshot/` beside the `snapshot.md` index, use `SNAP-<slug>` basenames, and are managed by `snapshot save/list/search/load/discard`. A save rewrites the snapshot for that slug in place (preserving `created_at`, stamping `updated_at`); a new slug starts a new file. `snapshot discard <ref>` deletes the snapshot — git retains history, so there is no active, archived, or promoted state folder. Snapshot files are searchable by snapshot commands but excluded from `recall`, relation resolution, `refresh --strict`, and duplicate-basename checks.
+| Field | Use |
+|-------|-----|
+| `sections` / `core_sections` | the type's headers; which are mandatory-substantive |
+| `section_flags` | `{flag: header}` — which `--sec-<flag>` fills which header |
+| `filled_sections` / `empty_sections` | what you filled vs what still needs prose (**no Read needed**) |
+| `index_changed` / `index_paths` | index files rewritten this call (for `git add`) |
 
-## Workflow (when you encounter a decision / intent / observation)
+`--lite` fills only core sections (`해당 없음` for the rest) for quick capture. Run `refresh --check decision-quality,task-quality` (opt-in) to flag thin sections later.
 
-1. **`recall` first** — "Is there existing decision / intent / rejection / trial / observation on this topic?" Always look before deciding.
-   ```bash
-   recall "<topic>" --json   # Stage 1: frontmatter only, ~2KB guard
-   ```
-2. **`capture` the skeleton** — Pick the right type. `--title --summary --tags` are required; relation args follow the per-type allow list (see "Relations" below).
-3. **Fill the §8 fixed body sections** — Restate the user's input in prose under each header. **Don't add / remove / rename section headers** — Stage-2 recall depends on this fixed structure.
-4. **Supersede if needed** — When replacing an existing record, pass `--supersedes <old>` on capture, or run `retire ... --type superseded --superseded-by ...` afterward. A successor must be an active `context/*` record.
-5. **`refresh` periodically** — After large changes or on request. In CI, pair `--check changed-path-stale` with the git diff.
+## refresh tiers (`--level`)
 
-## CLI contract (summary)
+Checks are tiered: **integrity-hard** (graph/data correctness — block) vs **hygiene-warn** (regenerable/stylistic — advise). Every issue carries a `tier`.
 
-| sub | required | key options | exit codes |
-|-----|----------|-------------|------------|
-| `init` | — | `--dry-run` | `0` ok, `1` FS error |
-| `capture` | `<type>` `--title` `--summary` `--tags` | `--slug` `--intents` `--ssot` `--runbook` `--rejected` `--decisions` `--tasks` `--supersedes` `--verified-at` `--audience` `--affects-paths` `--search-terms` `--dry-run` | `0` ok · `2` arg/scope violation (hub-with-relations, living-supersede, verified_at/affects_paths on wrong type, observation→intent relation, successor not a record, placeholder input) · `3` no vault · `4` ref ambiguous/missing/bad task format · `5` living slug global collision |
-| `retire` | `<basename>` `--type deprecated\|superseded` | `--superseded-by <ref>` (required for superseded; must be an **active context/* record**), `--dry-run` | `0` · `2` arg / successor-not-record / task-with-superseded · `3` · `4` |
-| `complete` | `<basename>` | `--dry-run` | `0` · `2` not-a-task · `3` · `4` missing / already-done |
-| `reopen` | `<basename>` | `--dry-run` | `0` · `2` not-a-task · `3` · `4` missing / not-done |
-| `relate` | `<basename>` | `--add-intents` `--add-decisions` `--add-ssot` `--add-tasks` `--dry-run` | `0` · `2` relation_not_allowed / empty · `3` · `4` missing / ambiguous / bad task format |
-| `snapshot save` | `--title` `--summary` `--tags` | `--slug` `--search-terms` fixed section options | `0` · `2` missing/placeholder input · `3` |
-| `snapshot list/search` | — / `<query>` | `--limit N` | `0` · `3` |
-| `snapshot load` | `<ref>` | slug fragments accepted | `0` · `3` · `4` missing/ambiguous |
-| `snapshot discard` | `<ref>` | deletes the snapshot (git retains history) | `0` · `3` · `4` missing/ambiguous |
-| `recall` | — or `<query>` | `--type` `--tag` (repeatable) `--section` `--stage` `--limit` `--backlinks-of` `--read <a,b,c>` `--fuzzy` `--include-retired` | `0` always (zero hits is success), `4` only when `--read` target is missing |
-| `refresh` | — | `--check <name,..>` (13 + `all`) `--days N` `--path <sub>` `--changed-path <p,..>` `--fix index,retired-in-index` `--strict` | `0` · `2` (unknown `--check`, `--fix` whitelist violation, bare `--fix`) · `6` (strict + ≥1 issue) |
+- `--level integrity --strict` → exits `6` **only** on integrity issues (hygiene-only ⇒ exit `0`). **This is the merge/verify hard gate** (task-github depends on it).
+- `--level hygiene` → surfaces advisories (orphan/stale/tags …); non-blocking.
+- `--level all` (default) keeps prior behaviour. Pair `--check changed-path-stale --changed-path <list>` with a PR diff for code↔doc drift (also a hard gate).
 
-Common: `--vault <path>` (default `./wiki`), `--json` (machine output). JSON success: `{"ok": true, ...}`. Failure: `{"ok": false, "error_code": "...", "message": "..."}`. `refresh` always returns `{"issues": [...]}` (and exits `6` under `--strict`); with `--fix` the payload adds `"fixed": [...]`.
+> `refresh --strict` validates **structural integrity only** — not semantic freshness, stale snapshots, or code/wiki consistency. A clean strict run ≠ "the wiki is up to date."
 
-### Friendly reference resolution
+## CLI cheat-sheet (one line each; full contract in `references/`)
 
-`capture` relation args (`--intents`, `--ssot`, `--runbook`, …) and `--supersedes`, plus `retire --superseded-by`, accept either:
-- a full basename: `DEC-2026-04-17-143052-move-auth-to-a-bff`, or
-- a slug fragment: `move-auth-to-a-bff`.
+| sub | gist | key flags |
+|-----|------|-----------|
+| `init` | create vault skeleton (idempotent) | `--dry-run` |
+| `capture <type>` | create note, 1-call body, sync indexes | `--title --summary --tags` · `--sec-<flag>` · `--lite` · relations (`--intents/--ssot/--decisions/--tasks/…`) · `--supersedes` · `--dry-run` |
+| `retire <bn>` | deprecate / supersede a record | `--type deprecated\|superseded` · `--superseded-by` |
+| `complete`/`reopen <bn>` | task → done / back | `--dry-run` |
+| `relate <bn>` | add relations w/o editing frontmatter | `--add-intents/--add-decisions/--add-ssot/--add-tasks` |
+| `snapshot save/list/search/load/discard` | staging I/O | `save`: `--title --summary --tags` · section flags · `--merge` |
+| `recall` | read-only query | `[query]` · `--stage 1\|2\|3` · `--section` · `--type/--tag` · `--backlinks-of` · `--read a,b,c` · `--fuzzy` · `--include-retired` |
+| `refresh` | integrity report | `--level all\|integrity\|hygiene` · `--strict` · `--check <name,..>` · `--changed-path` · `--fix index,retired-in-index` |
 
-List-valued relation args are repeatable and can be mixed with comma lists. The CLI flattens, strips, and de-duplicates in first-seen order:
-`--intents a,b --intents c --intents a` stores `[a, b, c]`. The same rule applies to `--tasks` and `relate`'s `--add-*` relation args.
+Common: `--vault <path>` (default `./wiki`), `--json`. Success `{"ok": true, ...}`; failure `{"ok": false, "error_code": "...", "message": "..."}`. Exit codes: `0` ok · `2` arg/usage · `3` no vault · `4` ref ambiguous/missing · `5` living-slug collision · `6` strict refresh found integrity issues. (Full per-subcommand matrix → `references/`.)
 
-The CLI resolves fragments to the canonical basename; ambiguous fragments exit `4`. Matching checks exact basename first, then slug exact, slug prefix, and slug substring, all NFC-normalized so Korean/CJK + Latin mixed slugs work. Missing refs include candidate basenames in the error message. **Storage is always the full basename.**
+## Output interpretation
 
-The positional `retire <basename>` and `recall --read` default to **exact** basename matching for safety. Pass `--fuzzy` on `recall --read` to opt into fragment resolution.
+- `recall --json` is discriminated by `mode`: `stage1` / `stage2` / `stage3` / `read` / `backlinks`, each with a `results` list (`--read` preserves input order). Stage-1 `truncated: true` ⇒ narrow with `--type`/`--tag`.
+- `capture --json` → use `empty_sections` to decide what to fill next; `index_paths` for `git add`.
+- `refresh` issues are `{check, tier, path, field?, target?, message}` — group by `check`, gate on `tier == "integrity"`.
+- Human output is Korean (matches section headers). Surface `--json` to other tools/skills.
 
-`--tasks` entries are external work refs (`owner/repo#N`, `github:owner/repo#N`); the wiki validates format only — it does not verify the external work item exists. GitHub shares one number space across issues and PRs, so a PR is referenced with the same `#N` form. Human-edited quoted refs such as `["owner/repo#N"]` are accepted and normalized by CLI writes.
+## Four-layer separation
 
-### Refresh checks (13 + optional quality flags)
-
-| Check | Subjects | Detects |
-|-------|----------|---------|
-| `stale` | living + `verified_at`-bearing `trial_error` | `verified_at` older than `--days` (default 90) |
-| `supersede` | all | supersede pair consistency in both directions |
-| `broken-rel` | all (excluding `tasks`) | `relations.*` points at no real wiki doc |
-| `task-ref` | `tasks` | supported external work ref format |
-| `orphan` | active records | not referenced from anywhere |
-| `index` | index files | drift vs the derived set |
-| `retired-in-index` | index files | retired record still listed |
-| `active-ref-retired` | active docs | `relations.*` points at a retired target |
-| `tags` | when vocabulary exists | tag outside `ssot/tag-vocabulary.md` (skipped if absent) |
-| `changed-path-stale` | living + `trial_error` + `observation` | `affects_paths` glob hits `--changed-path` (or `git diff`) without a `verified_at` refresh |
-| `duplicate-basename` | every `.md` in the vault | global basename uniqueness (NFC-aware) |
-| `empty-lesson` | `trial_error` | `## 교훈` blank or placeholder |
-| `schema` | all | frontmatter integrity — required fields, ISO date validity, placeholder values, forbidden fields (`id` / `status` / `classified_as`), `relations` key on living, lifecycle nested in `relations`, disallowed relation sub-keys, relation target-type mismatch (incl. index-pointing), `verified_at` / `affects_paths` on wrong types |
-| `decision-quality` | active `decision` | optional FLAG-to-human: missing intent link or non-substantive intent/background/alternatives/trade-off/reevaluation sections |
-| `task-quality` | active `task` | optional FLAG-to-human: missing intent/decision link, rationale, completion criteria, verification, or affected path/file anchor |
-
-`refresh --check all` runs the 13 integrity checks only. `decision-quality` and `task-quality` are explicit opt-in checks so v0 quality flags do not become default blockers. Unknown `--check` names or empty `--check ""` exit `2` so CI catches typos immediately.
-
-### `refresh --fix` whitelist
-
-- Allowed: `--fix index`, `--fix retired-in-index`, or a comma combination.
-- **Bare `--fix` exits `2`.** Any non-whitelisted token (e.g. `--fix broken-rel`, `--fix stale`) exits `2` — repairs that require semantic judgment are reserved for explicit `capture` / `Edit`.
-- The `fixed` array in JSON output reports every change (no silent mutation).
-
-### Slug input tips
-
-- Automatic: derived from `--title` via NFC normalization + kebab-case.
-- Manual: `--slug` must satisfy `slugify(s) == s` (Unicode alnum + `-` only, no leading / trailing / consecutive `-`, no `.`).
-- Use `--slug=<value>` for slugs that *could* start with `-` (argparse would otherwise treat them as options).
-- Korean / CJK is NFC-normalized to keep macOS NFD vs other-OS NFC from breaking resolution.
-
-## Recommended patterns
-
-- **Capture a trial_error alongside the decision** that surfaced it: `capture trial_error --decisions <DEC-...>` immediately after the decision.
-- **Use observation for pre-classification finds**: `capture observation --ssot <ssot> --affects-paths "src/<area>/**"`. When classification firms up, capture the successor and `retire --type superseded --superseded-by`.
-- **Use snapshot for discussion checkpoints**: `snapshot save` when the user says to save the current conversation context but the content is not yet ready to become an `observation`, `decision`, `ssot`, or `runbook`.
-- **Audit an intent's win/loss footprint**: `recall --backlinks-of <INT-...>` returns the decisions that won *and* the rejections, side-by-side.
-- **Trace a decision to the work it spawned**: `recall --backlinks-of <DEC-...>` surfaces the `task` nodes that point at it — "what work did this decision produce?" — and keeps showing them after they're completed (done tasks stay in default backlinks; only `retire`d docs need `--include-retired`). Capture the task with `--decisions <DEC>` and, when external work exists, `--tasks owner/repo#N` or `--tasks github:owner/repo#N` so the link exists.
-- **Add a missing relation without frontmatter edits**: use `relate`. Task nodes may add semantic relations (`--add-decisions`, `--add-intents`, `--add-ssot`) and external tasks. Immutable records only accept `--add-tasks`; capture a successor record for semantic changes.
-- **Run `refresh` right after `retire ... --type superseded`** to confirm both sides of the supersede edge.
-- **Manage the tag vocabulary**: drop allowed tags under an `## 어휘` section in `wiki/ssot/tag-vocabulary.md`. The `tags` check then flags vocabulary violations; absent the file, the check is skipped.
-- **Re-verification**: stamp living notes with `--verified-at YYYY-MM-DD`; `refresh --check stale --days 90` reports anything past the threshold.
-- **Code-change drift**: anchor relevant docs with `--affects-paths "src/<area>/**"`. Feed PR diffs (or `git diff --name-only HEAD`) to `refresh --check changed-path-stale --changed-path <list>` to surface affected docs.
-- **Batch reads**: when reading a known set, `recall --read a,b,c` preserves input order and packs into one response.
-
-## Four-layer separation (§15)
-
-This plugin is the **mechanism** layer — agent-neutral. Working-environment operating policy (who captures what, when to isolate worktrees, GitHub-Issue flow, promotion triggers, etc.) belongs in auto-loaded agent entry files such as `CLAUDE.md`, `AGENTS.md`, or `.claude/`. The optional `agent-policy` skill scaffolds those files idempotently. Accumulated product/system knowledge lives in `wiki/`; this skill does not create a consumer project's `wiki/ssot/agent-operating-model.md`.
+This plugin is the **mechanism** layer — agent-neutral. Working-environment operating policy (who captures what, worktree rules, GitHub-Issue flow, **when to prefer code over wiki**) belongs in auto-loaded entry files (`CLAUDE.md`/`AGENTS.md`); the `agent-policy` skill scaffolds them. Product/system knowledge lives in `wiki/`.
 
 ## References
 
-- `references/wiki-protocol.md` — Full schema / sections / lifecycle / CLI contract in one place.
-- `../../rules/knowledge-protocol.md` — Mechanism layer; ships with the plugin.
-- `../agent-policy/` — Optional Claude/Codex operating-policy scaffold for auto-loaded entry files.
-- `../../templates/` — Per-type body skeletons (human reference).
-
-## Output interpretation tips
-
-- `--json` payloads are safe for `json.loads` — recommended whenever another skill or chain consumes the result.
-- Human output is Korean by default (matches the section header convention). Surface JSON to users when they want a structured view.
-- `recall --json` Stage 1 returning `truncated: true` means more results were dropped; pass the hint through and ask the user for `--type` / `--tag` narrowing.
-- `refresh` issues come as `{check, path, field?, target?, message}`. Group by `check` when summarizing.
-- `recall --read a,b,c` JSON `results` preserve input order.
+- [`references/wiki-protocol.md`](references/wiki-protocol.md) — full schema / sections / lifecycle / exit codes / checks.
+- `../../rules/knowledge-protocol.md` — mechanism layer.
+- `../agent-policy/` — Claude/Codex operating-policy scaffold.
+- `../../templates/` — per-type body skeletons.
