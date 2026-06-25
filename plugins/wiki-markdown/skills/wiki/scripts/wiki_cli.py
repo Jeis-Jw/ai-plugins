@@ -1713,6 +1713,73 @@ def cmd_retire(args) -> int:
     return EXIT_OK
 
 
+def cmd_discard(args) -> int:
+    """Permanently delete a graph node — the mistake-undo analogue of
+    `snapshot discard`, and the opposite of `retire` (which keeps the file).
+    Guarded because this destroys durable knowledge:
+      - exact basename only (no fuzzy/fragment resolution),
+      - refuses by default when other docs still reference it (backlinks),
+        unless `--force`,
+      - `--dry-run` is a first-class non-destructive preview,
+      - `--json` reports the affected node, its backlinks, and touched indexes.
+    git retains history, so a discard is recoverable from version control."""
+    vault = resolve_vault(args.vault)
+    ensure_vault(vault)
+
+    bn = _nfc(args.basename)
+    # Exact basename only — a destructive op never fuzzy-resolves a fragment.
+    path = find_doc_anywhere(vault, bn)
+    if path is None:
+        raise CliError(EXIT_VALIDATION, "discard_missing",
+                       f"target not found (exact basename required): {bn}")
+    doc = read_doc(vault, path)
+
+    # Inbound references (incl. retired) — deleting a node others depend on
+    # would leave dangling relations. Refuse unless --force.
+    backlinks = sorted(_nfc(b.path.stem)
+                       for b in find_backlinks(vault, bn, include_retired=True))
+    would_block = bool(backlinks) and not args.force
+
+    affected = {
+        "id": bn,
+        "type": doc.doc_type,
+        "path": str(path),
+        "backlinks": backlinks,
+        "forced": bool(args.force),
+    }
+
+    if args.dry_run:
+        # Pure preview: never deletes, never errors — surfaces what a real run
+        # would do (and whether it would be blocked) so the caller can decide.
+        affected.update({"discarded": False, "dry_run": True,
+                         "would_block": would_block})
+        emit_ok(args, affected,
+                text_lines=[f"(dry-run) discard: {bn}"
+                            + (f" · BLOCKED by {len(backlinks)} backlink(s): "
+                               f"{', '.join(backlinks)} (needs --force)"
+                               if would_block else "")])
+        return EXIT_OK
+
+    if would_block:
+        raise CliError(EXIT_VALIDATION, "discard_has_backlinks",
+                       f"{bn} has {len(backlinks)} backlink(s); refusing to "
+                       f"discard without --force: {', '.join(backlinks)}")
+
+    path.unlink()
+    changed = refresh_all_indexes(vault)
+    affected.update({
+        "discarded": True,
+        "dry_run": False,
+        "index_paths": [str(p) for p in (find_index_file(vault, parts)
+                                         for parts in changed) if p],
+    })
+    emit_ok(args, affected,
+            text_lines=[f"discarded: {bn}"
+                        + (f" · forced over {len(backlinks)} backlink(s)"
+                           if backlinks and args.force else "")])
+    return EXIT_OK
+
+
 def _move_task(vault: Path, args, *, to_done: bool) -> int:
     """Shared mechanism for complete (active→done/) and reopen (done/→active).
 
@@ -3036,6 +3103,17 @@ def build_parser() -> argparse.ArgumentParser:
     pre.add_argument("basename")
     pre.add_argument("--dry-run", action="store_true")
     pre.set_defaults(func=cmd_reopen)
+
+    pdis = sub.add_parser("discard",
+                          help="permanently delete a graph node (mistake-undo; "
+                               "keeps git history). Use retire to deprecate/supersede.")
+    _sub_common(pdis)
+    pdis.add_argument("basename")
+    pdis.add_argument("--force", action="store_true",
+                      help="delete even if other docs still reference it (backlinks)")
+    pdis.add_argument("--dry-run", action="store_true",
+                      help="non-destructive preview (shows backlinks + would_block)")
+    pdis.set_defaults(func=cmd_discard)
 
     prel = sub.add_parser("relate", help="add relations to an existing wiki document")
     _sub_common(prel)

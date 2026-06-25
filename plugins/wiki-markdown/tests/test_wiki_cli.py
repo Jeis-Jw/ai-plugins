@@ -3521,5 +3521,84 @@ class WikiCliEfficiencyTests(unittest.TestCase):
             self.assertTrue(any("배경" in f for f in fields), fields)
 
 
+class WikiCliDiscardTests(unittest.TestCase):
+    ENV = {"WIKI_NOW": "2026-06-19T12:00:00"}
+
+    def _init(self, tmp):
+        self.assertEqual(run_cli("init", cwd=tmp).returncode, 0)
+
+    def _decision(self, tmp):
+        r = run_cli("capture", "decision", "--title", "Doomed Decision",
+                    "--summary", "s", "--tags", "x", "--sec-decision", "본문",
+                    "--json", cwd=tmp, env=self.ENV)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout)["id"]
+
+    def _link_task(self, tmp, dec):
+        r = run_cli("capture", "task", "--title", "Dependent", "--summary", "s",
+                    "--tags", "x", "--decisions", dec, "--json", cwd=tmp, env=self.ENV)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def _exists(self, tmp, bn):
+        return run_cli("recall", "--read", bn, "--json", cwd=tmp).returncode == 0
+
+    def test_discard_removes_unreferenced_node(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            dec = self._decision(tmp)
+            r = run_cli("discard", dec, "--json", cwd=tmp)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            p = json.loads(r.stdout)
+            self.assertTrue(p["discarded"])
+            self.assertEqual(p["backlinks"], [])
+            self.assertTrue(any("decision" in ip for ip in p["index_paths"]))
+            self.assertFalse(self._exists(tmp, dec))
+
+    def test_discard_requires_exact_basename(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            self._decision(tmp)
+            # a slug fragment must NOT resolve for a destructive op
+            r = run_cli("discard", "doomed-decision", "--json", cwd=tmp)
+            self.assertEqual(r.returncode, 4)
+            self.assertIn("discard_missing", r.stdout + r.stderr)
+
+    def test_discard_refuses_with_backlinks_without_force(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            dec = self._decision(tmp)
+            self._link_task(tmp, dec)
+            r = run_cli("discard", dec, "--json", cwd=tmp)
+            self.assertEqual(r.returncode, 4)
+            self.assertIn("discard_has_backlinks", r.stdout + r.stderr)
+            self.assertTrue(self._exists(tmp, dec))
+
+    def test_discard_force_overrides_backlinks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            dec = self._decision(tmp)
+            self._link_task(tmp, dec)
+            r = run_cli("discard", dec, "--force", "--json", cwd=tmp)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            p = json.loads(r.stdout)
+            self.assertTrue(p["discarded"])
+            self.assertTrue(p["forced"])
+            self.assertGreaterEqual(len(p["backlinks"]), 1)
+            self.assertFalse(self._exists(tmp, dec))
+
+    def test_discard_dry_run_previews_without_deleting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            dec = self._decision(tmp)
+            self._link_task(tmp, dec)
+            r = run_cli("discard", dec, "--dry-run", "--json", cwd=tmp)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            p = json.loads(r.stdout)
+            self.assertFalse(p["discarded"])
+            self.assertTrue(p["dry_run"])
+            self.assertTrue(p["would_block"])
+            self.assertTrue(self._exists(tmp, dec))
+
+
 if __name__ == "__main__":
     unittest.main()
