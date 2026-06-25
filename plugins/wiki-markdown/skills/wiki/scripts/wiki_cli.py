@@ -1278,10 +1278,44 @@ def _require_snapshot_text(name: str, value: str) -> str:
     return value
 
 
+def _read_stdin_cached(cache: dict) -> str:
+    if "stdin" not in cache:
+        cache["stdin"] = sys.stdin.read()
+    return cache["stdin"]
+
+
+def _resolve_body_value(val, cache: dict):
+    """`@file` / `@-` (STDIN) convention for body-bearing flag values, so a
+    long section/discussion body can come from a file or a pipe instead of an
+    inline shell string. `@@` escapes a literal leading `@`. `None` and plain
+    strings pass through unchanged. One unified convention across `capture
+    --sec-*` and snapshot sections — no per-section `--sec-<key>-file` flag
+    explosion (§4·§8). The `cache` makes repeated `@-` reuse one STDIN read."""
+    if val is None:
+        return None
+    if val == "@-":
+        return _read_stdin_cached(cache)
+    if val.startswith("@@"):
+        return val[1:]  # @@foo → literal @foo
+    if val.startswith("@"):
+        path = val[1:]
+        if not path:
+            raise CliError(EXIT_USAGE, "body_file_empty",
+                           "'@' must be followed by a file path or '-' for STDIN")
+        try:
+            return Path(path).read_text(encoding="utf-8")
+        except OSError as e:
+            raise CliError(EXIT_USAGE, "body_file_error",
+                           f"cannot read body file {path!r}: {e}")
+    return val
+
+
 def snapshot_body_from_args(args) -> str:
+    cache: dict = {}
     blocks: List[str] = []
     for attr, header in SNAPSHOT_SECTIONS:
-        value = _nfc(getattr(args, attr, None) or "").strip()
+        raw = _resolve_body_value(getattr(args, attr, None), cache)
+        value = _nfc(raw or "").strip()
         blocks.append(f"## {header}\n\n{value}\n")
     return "\n".join(blocks).rstrip() + "\n"
 
@@ -1290,7 +1324,8 @@ def snapshot_merge_body(existing_body: str, args) -> str:
     """--merge: rewrite only the sections whose flag was provided (not None),
     preserving every other section's existing body. An explicit empty string
     clears that section; an omitted flag leaves it untouched."""
-    updates = {header: _nfc(getattr(args, attr)).strip()
+    cache: dict = {}
+    updates = {header: _nfc(_resolve_body_value(getattr(args, attr), cache)).strip()
                for attr, header in SNAPSHOT_SECTIONS
                if getattr(args, attr, None) is not None}
     body = apply_section_updates(existing_body, updates)
@@ -1560,6 +1595,7 @@ def cmd_capture(args) -> int:
     # deterministic usage error rather than a silently dropped value.
     type_keys = SECTION_FLAGS[t]
     section_bodies: dict = {}
+    _body_cache: dict = {}
     for key in ALL_SECTION_KEYS:
         val = getattr(args, _section_flag_dest(key), None)
         if val is None:
@@ -1568,7 +1604,9 @@ def cmd_capture(args) -> int:
             raise CliError(EXIT_USAGE, "section_flag_not_allowed",
                            f"--sec-{key} is not a section of type '{t}' "
                            f"(its sections: {','.join(type_keys)})")
-        section_bodies[type_keys[key]] = _nfc(val).strip()
+        # `@file` / `@-` (STDIN) convention so a long section body need not be an
+        # inline shell string (§4·§8); `@@` escapes a literal leading `@`.
+        section_bodies[type_keys[key]] = _nfc(_resolve_body_value(val, _body_cache)).strip()
 
     # Sections the author actually supplied via --sec-* (captured before the
     # --lite prefill) so the JSON payload never reports a '해당 없음' placeholder

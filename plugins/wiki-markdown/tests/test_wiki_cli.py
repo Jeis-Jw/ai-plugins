@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CLI = ROOT / "skills" / "wiki" / "scripts" / "wiki_cli.py"
 
 
-def run_cli(*args, cwd=None, env=None):
+def run_cli(*args, cwd=None, env=None, input=None):
     command = [sys.executable, str(CLI), *args]
     merged_env = os.environ.copy()
     merged_env.update(env or {})
@@ -20,6 +20,7 @@ def run_cli(*args, cwd=None, env=None):
         cwd=cwd,
         env=merged_env,
         text=True,
+        input=input,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
@@ -3996,6 +3997,111 @@ class WikiCliSchemaTests(unittest.TestCase):
                         env={"WIKI_NOW": "2026-06-25T12:00:00"})
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertFalse(json.loads(r.stdout)["dry_run"])
+
+
+class WikiCliBodyFileTests(unittest.TestCase):
+    """Unit B — @file / @- (STDIN) body-input convention (capture + snapshot)."""
+    ENV = {"WIKI_NOW": "2026-06-25T12:00:00"}
+
+    def _init(self, tmp):
+        self.assertEqual(run_cli("init", cwd=tmp).returncode, 0)
+
+    def _read(self, tmp, rel):
+        return (Path(tmp) / "wiki" / rel).read_text(encoding="utf-8")
+
+    def test_capture_sec_from_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            body = Path(tmp) / "body.md"
+            body.write_text("파일에서 온 결정 본문\n둘째 줄.", encoding="utf-8")
+            r = run_cli("capture", "decision", "--slug", "ff", "--title", "ff",
+                        "--summary", "s", "--tags", "x",
+                        "--sec-decision", f"@{body}", "--json", cwd=tmp, env=self.ENV)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            doc = self._read(tmp, "context/decision/DEC-2026-06-25-120000-ff.md")
+            self.assertIn("파일에서 온 결정 본문", doc)
+            self.assertIn("둘째 줄.", doc)
+            # the section is reported as authored, not empty
+            self.assertIn("결정", json.loads(r.stdout)["filled_sections"])
+
+    def test_capture_sec_from_stdin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            r = run_cli("capture", "decision", "--slug", "ss", "--title", "ss",
+                        "--summary", "s", "--tags", "x", "--sec-decision", "@-",
+                        "--json", cwd=tmp, env=self.ENV, input="STDIN 본문 내용")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("STDIN 본문 내용",
+                          self._read(tmp, "context/decision/DEC-2026-06-25-120000-ss.md"))
+
+    def test_capture_sec_literal_at_escape(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            r = run_cli("capture", "decision", "--slug", "at", "--title", "at",
+                        "--summary", "s", "--tags", "x",
+                        "--sec-decision", "@@mention 을 그대로", "--json",
+                        cwd=tmp, env=self.ENV)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            doc = self._read(tmp, "context/decision/DEC-2026-06-25-120000-at.md")
+            self.assertIn("@mention 을 그대로", doc)
+
+    def test_capture_sec_missing_file_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            r = run_cli("capture", "decision", "--slug", "no", "--title", "no",
+                        "--summary", "s", "--tags", "x",
+                        "--sec-decision", "@/no/such/file.md", "--json",
+                        cwd=tmp, env=self.ENV)
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("body_file_error", r.stdout + r.stderr)
+
+    def test_capture_sec_bare_at_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            r = run_cli("capture", "decision", "--slug", "bare", "--title", "bare",
+                        "--summary", "s", "--tags", "x", "--sec-decision", "@",
+                        "--json", cwd=tmp, env=self.ENV)
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("body_file_empty", r.stdout + r.stderr)
+
+    def test_capture_plain_inline_value_unchanged(self):
+        # a value not starting with @ is still a literal inline body (no regress)
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            r = run_cli("capture", "decision", "--slug", "in", "--title", "in",
+                        "--summary", "s", "--tags", "x",
+                        "--sec-decision", "그냥 인라인 본문", "--json",
+                        cwd=tmp, env=self.ENV)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("그냥 인라인 본문",
+                          self._read(tmp, "context/decision/DEC-2026-06-25-120000-in.md"))
+
+    def test_snapshot_discussion_from_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            disc = Path(tmp) / "disc.md"
+            disc.write_text("파일에서 온 논의 내용", encoding="utf-8")
+            r = run_cli("snapshot", "save", "--title", "Snap", "--slug", "snp",
+                        "--summary", "s", "--tags", "x", "--discussion", f"@{disc}",
+                        "--json", cwd=tmp, env=self.ENV)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("파일에서 온 논의 내용", self._read(tmp, "snapshot/SNAP-snp.md"))
+
+    def test_snapshot_merge_section_from_stdin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            self.assertEqual(
+                run_cli("snapshot", "save", "--title", "S", "--slug", "m",
+                        "--summary", "s", "--tags", "x", "--discussion", "초기",
+                        cwd=tmp, env=self.ENV).returncode, 0)
+            r = run_cli("snapshot", "save", "--slug", "m", "--title", "S",
+                        "--summary", "s", "--tags", "x", "--merge",
+                        "--references", "@-", cwd=tmp, env=self.ENV,
+                        input="STDIN 참조 내용")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            doc = self._read(tmp, "snapshot/SNAP-m.md")
+            self.assertIn("STDIN 참조 내용", doc)
+            self.assertIn("초기", doc)  # untouched section preserved
 
 
 if __name__ == "__main__":

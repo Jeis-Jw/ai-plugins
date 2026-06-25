@@ -1,5 +1,5 @@
 {
   "name": "wiki-markdown",
-  "version": "0.17.0",
+  "version": "0.18.0",
   "description": "Markdown-backed AI-native wiki — filesystem-primary, headless. Manages context, task bridge nodes, ssot/runbook notes, integrity checks, and auto-loaded agent policy scaffolding for Claude/Codex entry files."
 }
