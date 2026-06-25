@@ -3261,6 +3261,27 @@ class WikiCliEfficiencyTests(unittest.TestCase):
             self.assertFalse(p["index_changed"])
             self.assertEqual(p["index_paths"], [])
 
+    def test_capture_lite_payload_separates_placeholder_sections(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            env = {"WIKI_NOW": "2026-06-19T12:00:00"}
+            r = run_cli(
+                "capture", "decision",
+                "--title", "Lite Decision", "--summary", "s", "--tags", "x",
+                "--sec-decision", "핵심 결정.", "--sec-intent", "핵심 취지.",
+                "--lite", "--json", cwd=tmp, env=env,
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+            p = json.loads(r.stdout)
+            self.assertTrue(p["lite"])
+            # core sections authored → filled; non-core → lite placeholder
+            self.assertEqual(set(p["filled_sections"]), {"결정", "취지"})
+            self.assertIn("배경", p["lite_sections"])
+            self.assertIn("재평가 조건", p["lite_sections"])
+            self.assertEqual(p["empty_sections"], [])
+            # a '해당 없음' placeholder is never miscounted as authored content
+            self.assertNotIn("배경", p["filled_sections"])
+
     def test_capture_section_flag_foreign_to_type_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             self._init(tmp)

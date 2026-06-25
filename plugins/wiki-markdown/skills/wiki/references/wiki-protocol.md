@@ -218,7 +218,8 @@ The bundled CLI (`scripts/wiki_cli.py`, stdlib only) supports nine top-level sub
 | `id`, `path`, `type`, `supersedes` | the created note |
 | `sections`, `core_sections` | the type's section headers; which are mandatory-substantive |
 | `section_flags` | `{flag: header}` — which `--sec-<flag>` fills which header |
-| `filled_sections`, `empty_sections` | sections given a body vs left blank — pick the next edit without a Read |
+| `filled_sections`, `lite_sections`, `empty_sections` | authored prose · `--lite` `해당 없음` prefill · still blank. Pick the next edit from `empty_sections`; a `--lite` placeholder lands in `lite_sections`, never `filled_sections`. |
+| `lite` | whether `--lite` was used |
 | `index_changed`, `index_paths` | whether / which folder indexes were rewritten this call (for `git add`) |
 
 ### Snapshot contract

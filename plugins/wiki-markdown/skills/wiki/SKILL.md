@@ -114,10 +114,10 @@ python3 "$CLI" refresh --fix index,retired-in-index        # whitelist-only auto
 |-------|-----|
 | `sections` / `core_sections` | the type's headers; which are mandatory-substantive |
 | `section_flags` | `{flag: header}` — which `--sec-<flag>` fills which header |
-| `filled_sections` / `empty_sections` | what you filled vs what still needs prose (**no Read needed**) |
-| `index_changed` / `index_paths` | index files rewritten this call (for `git add`) |
+| `filled_sections` / `lite_sections` / `empty_sections` | authored prose · `--lite` `해당 없음` prefill · still blank — pick the next edit from `empty_sections`, **no Read needed** |
+| `lite` / `index_changed` / `index_paths` | was `--lite` used · index files rewritten this call (for `git add`) |
 
-`--lite` fills only core sections (`해당 없음` for the rest) for quick capture. Run `refresh --check decision-quality,task-quality` (opt-in) to flag thin sections later.
+`--lite` fills only core sections (`해당 없음` for the rest) and sets `lite: true` so opt-in `decision-quality`/`task-quality` checks skip non-core sections; its placeholdered headers appear in `lite_sections`, never `filled_sections`. Run those checks later to flag thin sections.
 
 ## refresh tiers (`--level`)
 
@@ -147,7 +147,7 @@ Common: `--vault <path>` (default `./wiki`), `--json`. Success `{"ok": true, ...
 ## Output interpretation
 
 - `recall --json` is discriminated by `mode`: `stage1` / `stage2` / `stage3` / `read` / `backlinks`, each with a `results` list (`--read` preserves input order). Stage-1 `truncated: true` ⇒ narrow with `--type`/`--tag`.
-- `capture --json` → use `empty_sections` to decide what to fill next; `index_paths` for `git add`.
+- `capture --json` → `empty_sections` = blank headers needing prose (`--lite` placeholders sit in `lite_sections`, not here); `index_paths` for `git add`.
 - `refresh` issues are `{check, tier, path, field?, target?, message}` — group by `check`, gate on `tier == "integrity"`.
 - Human output is Korean (matches section headers). Surface `--json` to other tools/skills.
 
