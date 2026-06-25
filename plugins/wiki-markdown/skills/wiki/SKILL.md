@@ -79,9 +79,11 @@ python3 "$CLI" snapshot save --title "Auth migration discussion" \
 python3 "$CLI" snapshot save --slug auth-migration-discussion --merge --decided "..."  # update only given sections
 python3 "$CLI" snapshot load auth-migration-discussion
 
-# 5. Retire / supersede.
+# 5. Retire / supersede (keeps the file) — vs discard (mistake-undo, deletes it).
 python3 "$CLI" retire DEC-... --type superseded --superseded-by DEC-new
 python3 "$CLI" retire DEC-... --type deprecated
+python3 "$CLI" discard DEC-... --dry-run   # preview: shows backlinks + would_block
+python3 "$CLI" discard DEC-...             # delete a wrongly-created node (refuses if referenced; --force to override). git keeps history.
 
 # 6. Integrity — tiered (see "refresh tiers" below).
 python3 "$CLI" refresh --level integrity --strict --json   # hard gate: exit 6 only on integrity-tier issues
@@ -135,7 +137,8 @@ Checks are tiered: **integrity-hard** (graph/data correctness — block) vs **hy
 |-----|------|-----------|
 | `init` | create vault skeleton (idempotent) | `--dry-run` |
 | `capture <type>` | create note, 1-call body, sync indexes | `--title --summary --tags` · `--sec-<flag>` · `--lite` · relations (`--intents/--ssot/--decisions/--tasks/…`) · `--supersedes` · `--dry-run` |
-| `retire <bn>` | deprecate / supersede a record | `--type deprecated\|superseded` · `--superseded-by` |
+| `retire <bn>` | deprecate / supersede a record (keeps file) | `--type deprecated\|superseded` · `--superseded-by` |
+| `discard <bn>` | **delete** a node (mistake-undo; git keeps history) | exact basename · `--dry-run` (preview) · `--force` (over backlinks) |
 | `complete`/`reopen <bn>` | task → done / back | `--dry-run` |
 | `relate <bn>` | add relations w/o editing frontmatter | `--add-intents/--add-decisions/--add-ssot/--add-tasks` |
 | `snapshot save/list/search/load/discard` | staging I/O | `save`: `--title --summary --tags` · section flags · `--merge` |

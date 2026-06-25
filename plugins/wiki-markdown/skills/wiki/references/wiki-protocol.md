@@ -193,13 +193,14 @@ Observation uses the same two-value lifecycle. When an observation eventually po
 
 ## CLI Contract
 
-The bundled CLI (`scripts/wiki_cli.py`, stdlib only) supports nine top-level subcommands.
+The bundled CLI (`scripts/wiki_cli.py`, stdlib only) supports ten top-level subcommands.
 
 | Subcommand | Purpose |
 |------------|---------|
 | `init` | Create the vault skeleton and derived indexes (including `context/observation` and `task/` with its `done/` and `retired/`). Idempotent. |
 | `capture <type>` | Create a note, resolve friendly refs to basenames, validate task refs, enforce v1 field scopes, regenerate touched indexes. `<type>` includes `task`. |
 | `retire <basename>` | Retire (`--type deprecated`) or supersede (`--type superseded --superseded-by <ref>`) a context record; rewrite both sides of the supersede edge; regenerate indexes. A `task` may be retired `deprecated` only (use `complete` to finish it). |
+| `discard <basename>` | **Permanently delete** a graph node — the mistake-undo opposite of `retire` (which keeps the file). Exact basename only; refuses when another doc still references it — a `relations.*` backlink **or** a supersede edge (`supersedes`/`superseded_by`) — unless `--force`; `--dry-run` previews (`backlinks`, `supersede_refs`, `would_block`) without deleting; `--json` reports those plus `index_paths`. git retains history. |
 | `complete <basename>` | Move a `task` from active (`task/`) to done (`task/done/`). Task-only. Refuses to overwrite an existing destination. |
 | `reopen <basename>` | Move a done `task` back to active (`task/`). Task-only. |
 | `relate <basename>` | Add relations to an existing document without hand-editing frontmatter. Task nodes may add `intents`/`decisions`/`ssot`/`tasks`; immutable records only accept external `tasks`. |
