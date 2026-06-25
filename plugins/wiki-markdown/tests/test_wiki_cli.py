@@ -3824,5 +3824,105 @@ class WikiCliPackTests(unittest.TestCase):
             self.assertLess(len(pack["results"]), 20)
 
 
+class WikiCliSnapshotAuthorityTests(unittest.TestCase):
+    """Unit C — relation-aware authority labels on `snapshot load` (Codex #11/#17)."""
+    ENV = {"WIKI_NOW": "2026-06-25T12:00:00"}
+
+    def _init(self, tmp):
+        self.assertEqual(run_cli("init", cwd=tmp).returncode, 0)
+
+    def _decision(self, tmp, slug, when="2026-06-25T12:00:00"):
+        r = run_cli("capture", "decision", "--slug", slug, "--title", slug,
+                    "--summary", "s", "--tags", "x", "--sec-decision", "결정 본문",
+                    "--json", cwd=tmp, env={"WIKI_NOW": when})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout)["id"]
+
+    def _save_snap(self, tmp, slug, references):
+        r = run_cli("snapshot", "save", "--title", slug, "--slug", slug,
+                    "--summary", "s", "--tags", "x", "--references", references,
+                    "--json", cwd=tmp, env=self.ENV)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def _load(self, tmp, slug):
+        r = run_cli("snapshot", "load", slug, "--json", cwd=tmp, env=self.ENV)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout)
+
+    def test_load_attaches_staging_labels(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            self._save_snap(tmp, "plainsnap", "그냥 산문, 레코드 참조 없음")
+            d = self._load(tmp, "plainsnap")
+            self.assertEqual(d["authority"], "staging")
+            self.assertEqual(d["use_as"], "resume_context")
+            # no in-graph anchor → authority_unknown, NO fabricated stale (f)
+            self.assertEqual(d["freshness"], "authority_unknown")
+            self.assertEqual(d["warnings"], [])
+
+    def test_load_live_anchor_is_anchored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            dec = self._decision(tmp, "live-dec")
+            self._save_snap(tmp, "snap-live", f"이 작업은 {dec} 에 근거")
+            d = self._load(tmp, "snap-live")
+            self.assertEqual(d["freshness"], "anchored")
+            self.assertEqual(d["warnings"], [])
+
+    def test_load_short_timestamp_ref_resolves(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            self._decision(tmp, "shortform")  # DEC-2026-06-25-120000-shortform
+            # snapshot cites the slug-less timestamp shorthand
+            self._save_snap(tmp, "snap-short", "근거: DEC-2026-06-25-120000")
+            d = self._load(tmp, "snap-short")
+            self.assertEqual(d["freshness"], "anchored")  # prefix-resolved
+
+    def test_load_retired_anchor_flags_changed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            dec = self._decision(tmp, "doomed")
+            self._save_snap(tmp, "snap-doomed", f"근거 {dec}")
+            self.assertEqual(
+                run_cli("retire", dec, "--type", "deprecated",
+                        cwd=tmp, env=self.ENV).returncode, 0)
+            d = self._load(tmp, "snap-doomed")
+            self.assertEqual(d["freshness"], "anchor_changed")
+            self.assertTrue(any(dec in w and "retired" in w for w in d["warnings"]),
+                            d["warnings"])
+
+    def test_load_superseded_anchor_flags_changed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            d1 = self._decision(tmp, "old", "2026-06-25T12:00:00")
+            d2 = self._decision(tmp, "new", "2026-06-25T12:01:00")
+            self._save_snap(tmp, "snap-sup", f"근거 {d1}")
+            self.assertEqual(
+                run_cli("retire", d1, "--type", "superseded",
+                        "--superseded-by", d2, cwd=tmp, env=self.ENV).returncode, 0)
+            d = self._load(tmp, "snap-sup")
+            self.assertEqual(d["freshness"], "anchor_changed")
+            self.assertTrue(any(d1 in w and "superseded" in w for w in d["warnings"]),
+                            d["warnings"])
+
+    def test_load_missing_ref_is_unknown_not_stale(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            # a record-shaped id that resolves to nothing in this vault
+            self._save_snap(tmp, "snap-ghost", "근거 DEC-2099-01-01-000000-ghost")
+            d = self._load(tmp, "snap-ghost")
+            self.assertEqual(d["freshness"], "authority_unknown")
+            self.assertTrue(any("미해결" in w for w in d["warnings"]), d["warnings"])
+
+    def test_load_external_task_ref_does_not_false_anchor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            # external github work refs must not be parsed as in-graph anchors
+            self._save_snap(tmp, "snap-ext", "추적: owner/repo#42, github:o/r#7")
+            d = self._load(tmp, "snap-ext")
+            self.assertEqual(d["freshness"], "authority_unknown")
+            self.assertEqual(d["warnings"], [])
+
+
 if __name__ == "__main__":
     unittest.main()

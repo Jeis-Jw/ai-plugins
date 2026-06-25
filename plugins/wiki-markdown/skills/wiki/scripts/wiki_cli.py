@@ -2075,11 +2075,20 @@ def cmd_snapshot_load(args) -> int:
     ensure_snapshot_tree(vault)
     state, path = resolve_snapshot_path(vault, args.ref)
     item = snapshot_item(path, state)
-    emit_ok(args,
-            {"mode": "snapshot-load", "id": item["id"], "state": item["state"],
-             "path": item["path"], "frontmatter": item["frontmatter"],
-             "text": item["text"]},
-            text_lines=[item["text"]])
+    # Additive relation-aware authority labels (Codex #11/#17): a snapshot is
+    # staging, so surface whether the records it references are still current
+    # rather than letting `snapshot load` over-assert authority.
+    by_id = {d.doc_id: d for d in _all_graph_docs(vault)}
+    labels = _snapshot_labels(item["body"], by_id)
+    payload = {"mode": "snapshot-load", "id": item["id"], "state": item["state"],
+               "path": item["path"], "frontmatter": item["frontmatter"],
+               "text": item["text"]}
+    payload.update(labels)
+    note = (f"[{labels['authority']}/{labels['freshness']}] "
+            f"use_as={labels['use_as']}")
+    if labels["warnings"]:
+        note += " ⚠ " + "; ".join(labels["warnings"])
+    emit_ok(args, payload, text_lines=[item["text"], "", note])
     return EXIT_OK
 
 
@@ -2283,6 +2292,99 @@ def _pack_item(d: WikiDoc, by_id: "dict[str, WikiDoc]", today, days: int) -> dic
     return item
 
 
+def _all_graph_docs(vault: Path) -> List[WikiDoc]:
+    """Every in-graph doc — active + retired + done — across all folders. Used
+    to resolve anchor lifecycle (a retired/superseded target an active query
+    would otherwise never load)."""
+    out: List[WikiDoc] = []
+    for parts in discover_index_folders(vault):
+        for p in iter_active_docs(vault, parts):
+            out.append(read_doc(vault, p))
+        for p in iter_retired_docs(vault, parts):
+            out.append(read_doc(vault, p))
+        for p in iter_done_docs(vault, parts):
+            out.append(read_doc(vault, p))
+    return out
+
+
+# Referenced record ids in snapshot prose — both the full basename
+# (PREFIX-YYYY-MM-DD-HHMMSS-slug) and the slug-less timestamp shorthand authors
+# often cite. Prefixes derived from TYPE_SPECS so a new prefixed type stays in
+# sync (NB: distinct from the anchored RECORD_ID_RE above; this one is unanchored
+# for findall and the slug is optional). `\w` is Unicode-aware (한글 slugs).
+# Slug-only living docs (ssot/runbook, prefix=None) and external refs
+# (owner/repo#N) are intentionally not matched.
+_RECORD_PREFIXES = tuple(s.prefix for s in TYPE_SPECS.values() if s.prefix)
+SNAPSHOT_REF_RE = re.compile(
+    r"(?:" + "|".join(_RECORD_PREFIXES) + r")-\d{4}-\d{2}-\d{2}-\d{6}(?:-[\w-]+)?")
+
+
+def _snapshot_anchor_ids(body: str) -> List[str]:
+    """Record id tokens a snapshot anchors to — deterministically extracted from
+    its `관련 파일/문서` section (order-preserving dedup). Tokens may be full
+    basenames or the timestamp shorthand; resolution happens in _snapshot_labels."""
+    section = _section_body(body, "관련 파일/문서")
+    seen = set()
+    out: List[str] = []
+    for m in SNAPSHOT_REF_RE.findall(section):
+        if m not in seen:
+            seen.add(m)
+            out.append(m)
+    return out
+
+
+def _resolve_ref_token(token: str, by_id: "dict[str, WikiDoc]") -> Optional[WikiDoc]:
+    """Resolve a referenced id token to a doc. Exact basename wins; otherwise a
+    timestamp shorthand resolves via a UNIQUE basename-prefix match (ambiguous
+    or absent → None, so it never fabricates a stale anchor)."""
+    d = by_id.get(token)
+    if d is not None:
+        return d
+    cands = [doc for bn, doc in by_id.items() if bn.startswith(token + "-")]
+    return cands[0] if len(cands) == 1 else None
+
+
+def _snapshot_labels(body: str, by_id: "dict[str, WikiDoc]") -> dict:
+    """Relation-aware authority labels for a snapshot (Codex #11/#17): a
+    snapshot is staging, not graph truth. Freshness is judged against the
+    lifecycle of the records it references — when nothing resolves it is
+    `authority_unknown`, never a fabricated stale (§4·§8 constraint f)."""
+    tokens = _snapshot_anchor_ids(body)
+    warnings: List[str] = []
+    changed: List[Tuple[str, str]] = []
+    live_ids = set()
+    missing: List[str] = []
+    seen_resolved = set()
+    for tok in tokens:
+        d = _resolve_ref_token(tok, by_id)
+        if d is None:
+            missing.append(tok)
+            continue
+        if d.doc_id in seen_resolved:  # short + full form of the same doc
+            continue
+        seen_resolved.add(d.doc_id)
+        st = _anchor_state(d)
+        if st is not None:
+            changed.append((d.doc_id, st))
+        else:
+            live_ids.add(d.doc_id)
+    if changed:
+        freshness = "anchor_changed"
+        for rid, st in changed:
+            warnings.append(f"근거 앵커 {rid} {st}")
+    elif live_ids:
+        freshness = "anchored"
+    else:
+        # no in-graph anchor resolved (none referenced, or all external) →
+        # cannot assess; no false stale.
+        freshness = "authority_unknown"
+    if missing:
+        shown = ", ".join(missing[:3]) + (" …" if len(missing) > 3 else "")
+        warnings.append(f"미해결 참조 {len(missing)}건: {shown}")
+    return {"authority": "staging", "freshness": freshness,
+            "use_as": "resume_context", "warnings": warnings}
+
+
 def cmd_recall(args) -> int:
     vault = resolve_vault(args.vault)
     ensure_vault(vault)
@@ -2381,15 +2483,8 @@ def cmd_recall(args) -> int:
         # Resolve anchor lifecycle across the whole graph (active + retired +
         # done) regardless of the recall filter, so relation-aware staleness can
         # see a superseded/retired anchor even when it is filtered out of the
-        # result set. `docs` already holds retired/done iff --include-retired.
-        anchor_by_id: "dict[str, WikiDoc]" = {d.doc_id: d for d in docs}
-        for parts in discover_index_folders(vault):
-            for p in iter_retired_docs(vault, parts):
-                dd = read_doc(vault, p)
-                anchor_by_id.setdefault(dd.doc_id, dd)
-            for p in iter_done_docs(vault, parts):
-                dd = read_doc(vault, p)
-                anchor_by_id.setdefault(dd.doc_id, dd)
+        # result set.
+        anchor_by_id = {d.doc_id: d for d in _all_graph_docs(vault)}
         ranked = sorted(matched, key=lambda d: (_authority_rank(d), d.doc_id))
         pack: List[dict] = []
         total = 0
