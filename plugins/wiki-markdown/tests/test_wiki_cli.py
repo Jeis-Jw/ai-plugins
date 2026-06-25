@@ -4104,5 +4104,89 @@ class WikiCliBodyFileTests(unittest.TestCase):
             self.assertIn("초기", doc)  # untouched section preserved
 
 
+class WikiCliCloseoutTests(unittest.TestCase):
+    """closeout (P2) — enriched complete/reopen payload (no new command)."""
+    ENV = {"WIKI_NOW": "2026-06-25T12:00:00"}
+
+    def _seed_task(self, tmp):
+        self.assertEqual(run_cli("init", cwd=tmp).returncode, 0)
+        self.assertEqual(
+            run_cli("capture", "decision", "--slug", "d", "--title", "d",
+                    "--summary", "s", "--tags", "x", "--sec-decision", "b",
+                    cwd=tmp, env=self.ENV).returncode, 0)
+        self.assertEqual(
+            run_cli("capture", "task", "--slug", "t", "--title", "t",
+                    "--summary", "s", "--tags", "x", "--decisions", "d",
+                    "--sec-overview", "o", "--sec-basis", "b", "--sec-scope", "sc",
+                    cwd=tmp, env=self.ENV).returncode, 0)
+        return "TASK-2026-06-25-120000-t"
+
+    def _rel(self, tmp, p):
+        return p.split(str(Path(tmp) / "wiki") + "/", 1)[-1]
+
+    def test_complete_payload_reports_move_and_git_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tid = self._seed_task(tmp)
+            r = run_cli("complete", tid, "--json", cwd=tmp, env=self.ENV)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            p = json.loads(r.stdout)
+            self.assertEqual(p["state"], "done")
+            self.assertFalse(p["dry_run"])
+            self.assertEqual(self._rel(tmp, p["moved_from"]), f"task/{tid}.md")
+            self.assertEqual(self._rel(tmp, p["moved_to"]), f"task/done/{tid}.md")
+            # the task index is reported as rewritten
+            self.assertIn("task/task.md",
+                          [self._rel(tmp, x) for x in p["updated_indexes"]])
+            # suggested_git_paths = from + to + indexes, order-preserving, deduped
+            rels = [self._rel(tmp, x) for x in p["suggested_git_paths"]]
+            self.assertEqual(rels, [f"task/{tid}.md", f"task/done/{tid}.md", "task/task.md"])
+            self.assertEqual(len(rels), len(set(rels)))
+
+    def test_complete_dry_run_previews_without_moving(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tid = self._seed_task(tmp)
+            r = run_cli("complete", tid, "--dry-run", "--json", cwd=tmp, env=self.ENV)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            p = json.loads(r.stdout)
+            self.assertTrue(p["dry_run"])
+            # would-be paths previewed (source + destination both present)
+            self.assertEqual(self._rel(tmp, p["moved_to"]), f"task/done/{tid}.md")
+            rels = [self._rel(tmp, x) for x in p["suggested_git_paths"]]
+            self.assertIn(f"task/{tid}.md", rels)
+            self.assertIn(f"task/done/{tid}.md", rels)
+            # nothing actually moved
+            self.assertTrue((Path(tmp) / "wiki" / "task" / f"{tid}.md").exists())
+            self.assertFalse((Path(tmp) / "wiki" / "task" / "done" / f"{tid}.md").exists())
+
+    def test_reopen_dry_run_previews_without_moving(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tid = self._seed_task(tmp)
+            self.assertEqual(
+                run_cli("complete", tid, cwd=tmp, env=self.ENV).returncode, 0)
+            r = run_cli("reopen", tid, "--dry-run", "--json", cwd=tmp, env=self.ENV)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            p = json.loads(r.stdout)
+            self.assertTrue(p["dry_run"])
+            self.assertEqual(self._rel(tmp, p["moved_to"]), f"task/{tid}.md")
+            # still in done/ — nothing moved
+            self.assertTrue(
+                (Path(tmp) / "wiki" / "task" / "done" / f"{tid}.md").exists())
+            self.assertFalse((Path(tmp) / "wiki" / "task" / f"{tid}.md").exists())
+
+    def test_reopen_payload_reports_reverse_move(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tid = self._seed_task(tmp)
+            self.assertEqual(
+                run_cli("complete", tid, cwd=tmp, env=self.ENV).returncode, 0)
+            r = run_cli("reopen", tid, "--json", cwd=tmp, env=self.ENV)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            p = json.loads(r.stdout)
+            self.assertEqual(p["state"], "active")
+            self.assertEqual(self._rel(tmp, p["moved_from"]), f"task/done/{tid}.md")
+            self.assertEqual(self._rel(tmp, p["moved_to"]), f"task/{tid}.md")
+            self.assertIn(f"task/{tid}.md",
+                          [self._rel(tmp, x) for x in p["suggested_git_paths"]])
+
+
 if __name__ == "__main__":
     unittest.main()
