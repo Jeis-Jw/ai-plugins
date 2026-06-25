@@ -3599,6 +3599,32 @@ class WikiCliDiscardTests(unittest.TestCase):
             self.assertTrue(p["would_block"])
             self.assertTrue(self._exists(tmp, dec))
 
+    def test_discard_blocks_on_supersede_chain_edge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            d1 = run_cli("capture", "decision", "--title", "Old", "--summary", "s",
+                         "--tags", "x", "--sec-decision", "구", "--json",
+                         cwd=tmp, env=self.ENV)
+            d1id = json.loads(d1.stdout)["id"]
+            d2 = run_cli("capture", "decision", "--title", "New", "--summary", "s",
+                         "--tags", "x", "--sec-decision", "신", "--json",
+                         cwd=tmp, env=self.ENV)
+            d2id = json.loads(d2.stdout)["id"]
+            # D2 supersedes D1 (D1.superseded_by = D2, D2.supersedes = [D1])
+            self.assertEqual(
+                run_cli("retire", d1id, "--type", "superseded",
+                        "--superseded-by", d2id, cwd=tmp).returncode, 0)
+            # discarding the successor D2 must be blocked — D1.superseded_by → D2
+            r = run_cli("discard", d2id, "--json", cwd=tmp)
+            self.assertEqual(r.returncode, 4, r.stdout)
+            self.assertIn(d1id, r.stdout + r.stderr)
+            self.assertTrue(self._exists(tmp, d2id))  # not deleted
+            # dry-run surfaces the dangling edge under supersede_refs
+            p = json.loads(run_cli("discard", d2id, "--dry-run", "--json",
+                                   cwd=tmp).stdout)
+            self.assertIn(d1id, p["supersede_refs"])
+            self.assertTrue(p["would_block"])
+
 
 if __name__ == "__main__":
     unittest.main()

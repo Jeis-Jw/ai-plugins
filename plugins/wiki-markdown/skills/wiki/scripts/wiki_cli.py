@@ -1051,6 +1051,28 @@ def find_backlinks(vault: Path, target: str, include_retired: bool = False) -> L
     return matches
 
 
+def find_supersede_refs(vault: Path, target: str) -> List[str]:
+    """Basenames whose supersede *lifecycle* edge names `target` — another doc
+    has `supersedes: [target]` or `superseded_by: target`. These are real graph
+    edges that `find_backlinks` (relations-only) does not see; a destructive
+    discard must honour them too or it leaves a dangling supersede pointer.
+    Retired docs are scanned (a retired doc's `superseded_by` points at its
+    successor, so discarding the successor would dangle it)."""
+    refs: List[str] = []
+    for parts in discover_index_folders(vault):
+        ps: List[Path] = []
+        ps.extend(iter_active_docs(vault, parts))
+        ps.extend(iter_done_docs(vault, parts))
+        ps.extend(iter_retired_docs(vault, parts))
+        for p in ps:
+            d = read_doc(vault, p)
+            sup = d.frontmatter.get("supersedes")
+            sby = d.frontmatter.get("superseded_by")
+            if (isinstance(sup, list) and target in sup) or sby == target:
+                refs.append(_nfc(p.stem))
+    return sorted(set(refs))
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # (g) Subcommand handlers
 # ──────────────────────────────────────────────────────────────────────────
@@ -1734,17 +1756,21 @@ def cmd_discard(args) -> int:
                        f"target not found (exact basename required): {bn}")
     doc = read_doc(vault, path)
 
-    # Inbound references (incl. retired) — deleting a node others depend on
-    # would leave dangling relations. Refuse unless --force.
+    # Inbound references (incl. retired) that deleting this node would dangle:
+    #   relations.* backlinks  +  supersede lifecycle edges (supersedes /
+    #   superseded_by). Both block by default; --force overrides.
     backlinks = sorted(_nfc(b.path.stem)
                        for b in find_backlinks(vault, bn, include_retired=True))
-    would_block = bool(backlinks) and not args.force
+    supersede_refs = find_supersede_refs(vault, bn)
+    blockers = sorted(set(backlinks) | set(supersede_refs))
+    would_block = bool(blockers) and not args.force
 
     affected = {
         "id": bn,
         "type": doc.doc_type,
         "path": str(path),
         "backlinks": backlinks,
+        "supersede_refs": supersede_refs,
         "forced": bool(args.force),
     }
 
@@ -1755,15 +1781,16 @@ def cmd_discard(args) -> int:
                          "would_block": would_block})
         emit_ok(args, affected,
                 text_lines=[f"(dry-run) discard: {bn}"
-                            + (f" · BLOCKED by {len(backlinks)} backlink(s): "
-                               f"{', '.join(backlinks)} (needs --force)"
+                            + (f" · BLOCKED by {len(blockers)} referrer(s): "
+                               f"{', '.join(blockers)} (needs --force)"
                                if would_block else "")])
         return EXIT_OK
 
     if would_block:
         raise CliError(EXIT_VALIDATION, "discard_has_backlinks",
-                       f"{bn} has {len(backlinks)} backlink(s); refusing to "
-                       f"discard without --force: {', '.join(backlinks)}")
+                       f"{bn} is referenced by {len(blockers)} doc(s) "
+                       f"(relations or supersede edge); refusing to discard "
+                       f"without --force: {', '.join(blockers)}")
 
     path.unlink()
     changed = refresh_all_indexes(vault)
@@ -1775,8 +1802,8 @@ def cmd_discard(args) -> int:
     })
     emit_ok(args, affected,
             text_lines=[f"discarded: {bn}"
-                        + (f" · forced over {len(backlinks)} backlink(s)"
-                           if backlinks and args.force else "")])
+                        + (f" · forced over {len(blockers)} referrer(s)"
+                           if blockers and args.force else "")])
     return EXIT_OK
 
 
