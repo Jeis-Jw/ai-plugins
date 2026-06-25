@@ -201,8 +201,8 @@ The bundled CLI (`scripts/wiki_cli.py`, stdlib only) supports ten top-level subc
 | `capture <type>` | Create a note, resolve friendly refs to basenames, validate task refs, enforce v1 field scopes, regenerate touched indexes. `<type>` includes `task`. |
 | `retire <basename>` | Retire (`--type deprecated`) or supersede (`--type superseded --superseded-by <ref>`) a context record; rewrite both sides of the supersede edge; regenerate indexes. A `task` may be retired `deprecated` only (use `complete` to finish it). |
 | `discard <basename>` | **Permanently delete** a graph node — the mistake-undo opposite of `retire` (which keeps the file). Exact basename only; refuses when another doc still references it — a `relations.*` backlink **or** a supersede edge (`supersedes`/`superseded_by`) — unless `--force`; `--dry-run` previews (`backlinks`, `supersede_refs`, `would_block`) without deleting; `--json` reports those plus `index_paths`. git retains history. |
-| `complete <basename>` | Move a `task` from active (`task/`) to done (`task/done/`). Task-only. Refuses to overwrite an existing destination. |
-| `reopen <basename>` | Move a done `task` back to active (`task/`). Task-only. |
+| `complete <basename>` | Move a `task` from active (`task/`) to done (`task/done/`). Task-only. Refuses to overwrite an existing destination. The JSON payload reports the move for staging (see closeout below). |
+| `reopen <basename>` | Move a done `task` back to active (`task/`). Task-only. Same enriched payload as `complete`. |
 | `relate <basename>` | Add relations to an existing document without hand-editing frontmatter. Task nodes may add `intents`/`decisions`/`ssot`/`tasks`; immutable records only accept external `tasks`. |
 | `snapshot` | Manage discussion checkpoints outside the canonical graph. Subcommands: `save`, `list`, `search`, `load`, `discard`. |
 | `recall` | Read-only query — Stage 1 (summary scan), Stage 2 (`--section <name>`), Stage 3 (full doc), `--pack` (deterministic projection with authority labels), batch `--read a,b,c` (preserves input order), derived backlinks via `--backlinks-of` (done tasks included by default). |
@@ -265,6 +265,17 @@ Two introspection surfaces let an agent learn the contract without reading SKILL
 `snapshot list [query]` and `snapshot search <query>` search snapshot title, summary, tags, search terms, and body across current snapshots. `snapshot load <ref>` accepts a full snapshot basename or slug fragment. `snapshot discard <ref>` deletes the snapshot; git retains the history, so there is no active, archived, or promoted folder.
 
 **`snapshot load` authority labels (additive, relation-aware).** A snapshot is staging, not graph truth — `snapshot load` over-trust was a real failure mode (Codex #11/#17). The load payload therefore carries the same four labels as `recall --pack`: a fixed `authority: "staging"` and `use_as: "resume_context"`, plus a relation-aware `freshness` and `warnings`. Freshness is judged **only** against the records the snapshot references in its `관련 파일/문서` section (deterministically extracted; both the full basename and the slug-less timestamp shorthand resolve, the latter via a unique basename-prefix match). A retired/superseded referenced record → `anchor_changed` (+ a `근거 앵커 …` warning); all-live references → `anchored`; nothing resolved (no records cited, or only external `owner/repo#N` refs) → `authority_unknown` with **no** fabricated stale. Unresolvable record-shaped ids are surfaced as a separate `미해결 참조` warning, not as staleness. The labels are additive — the snapshot body/frontmatter are returned unchanged.
+
+### Closeout: `complete` / `reopen` payload
+
+There is **no `wiki closeout` command** — closing out a task is just `complete` (or `reopen` to undo), and the enrichment lives in their JSON payload so an agent can stage the lifecycle move without recomputing paths. Beyond `id`/`state`/`path`, both report:
+
+- `moved_from` / `moved_to` — the source and destination paths of the move (`task/…` ↔ `task/done/…`);
+- `updated_indexes` — the index file(s) the move rewrote;
+- `suggested_git_paths` — `moved_from` + `moved_to` + `updated_indexes`, order-preserving and deduped: `git add` exactly these to stage the move;
+- `dry_run` — `true` under `--dry-run`, which previews all of the above (including the index a real run *would* rewrite) and moves nothing.
+
+This is deliberately **wiki-local**: GitHub issue close, branch/label handling, and root-issue close detection belong to task-github's `closeout.py` (asymmetric boundary), not this CLI. A heavier post-move integrity pass is left to the agent's existing `refresh --level integrity --strict` gate rather than folded in here.
 
 ### Refresh checks (13 total)
 

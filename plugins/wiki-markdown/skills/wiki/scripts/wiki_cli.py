@@ -1885,15 +1885,38 @@ def _move_task(vault: Path, args, *, to_done: bool) -> int:
         raise CliError(EXIT_CONFLICT, f"{verb}_dest_exists",
                        f"destination already exists: {dest} — "
                        f"refusing to overwrite (basename collision)")
+    moved_from = str(d.path)
+    moved_to = str(dest)
     if not args.dry_run:
         dest_dir.mkdir(parents=True, exist_ok=True)
         shutil.move(str(d.path), str(dest))
-        refresh_all_indexes(vault)
+        changed = refresh_all_indexes(vault)
+        updated_indexes = [str(p) for p in (find_index_file(vault, parts)
+                                            for parts in changed) if p]
+    else:
+        # preview: the task folder index a real move would rewrite (flagged
+        # dry_run so the caller knows nothing was touched yet).
+        would = find_index_file(vault, TYPE_SPECS["task"].folder)
+        updated_indexes = [str(would)] if would else []
     state = "done" if to_done else "active"
+    # Paths an agent should `git add` to stage this lifecycle move: the source
+    # (now removed), the destination (now present), and any rewritten index —
+    # so closeout staging needs no path computation. Order-preserving dedup.
+    # GitHub/branch/label/root-close detection is task-github's closeout.py, not
+    # this CLI (deliberate asymmetric boundary, §4 P2).
+    suggested_git_paths: List[str] = []
+    for pth in [moved_from, moved_to, *updated_indexes]:
+        if pth not in suggested_git_paths:
+            suggested_git_paths.append(pth)
     emit_ok(args,
-            {"id": bn, "state": state, "path": str(dest)},
+            {"id": bn, "state": state, "path": moved_to,
+             "moved_from": moved_from, "moved_to": moved_to,
+             "updated_indexes": updated_indexes,
+             "suggested_git_paths": suggested_git_paths,
+             "dry_run": bool(args.dry_run)},
             text_lines=[f"{'완료' if to_done else '재개'}: {bn} → "
-                        f"task/{'done/' if to_done else ''}"])
+                        f"task/{'done/' if to_done else ''}"
+                        + (" (dry-run)" if args.dry_run else "")])
     return EXIT_OK
 
 
