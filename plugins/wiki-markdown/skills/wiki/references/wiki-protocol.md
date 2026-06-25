@@ -205,7 +205,7 @@ The bundled CLI (`scripts/wiki_cli.py`, stdlib only) supports ten top-level subc
 | `reopen <basename>` | Move a done `task` back to active (`task/`). Task-only. |
 | `relate <basename>` | Add relations to an existing document without hand-editing frontmatter. Task nodes may add `intents`/`decisions`/`ssot`/`tasks`; immutable records only accept external `tasks`. |
 | `snapshot` | Manage discussion checkpoints outside the canonical graph. Subcommands: `save`, `list`, `search`, `load`, `discard`. |
-| `recall` | Read-only query — Stage 1 (summary scan), Stage 2 (`--section <name>`), Stage 3 (full doc), batch `--read a,b,c` (preserves input order), derived backlinks via `--backlinks-of` (done tasks included by default). |
+| `recall` | Read-only query — Stage 1 (summary scan), Stage 2 (`--section <name>`), Stage 3 (full doc), `--pack` (deterministic projection with authority labels), batch `--read a,b,c` (preserves input order), derived backlinks via `--backlinks-of` (done tasks included by default). |
 | `refresh` | Integrity report. Read-only by default; `--level all\|integrity\|hygiene` filters checks to a severity tier; `--strict` exits `6` on issues (under `--level integrity`, only integrity-tier issues); `--fix` accepts only `index` and `retired-in-index` (the safe, purely-derived fixes). |
 
 ### Capture: 1-call body and JSON payload
@@ -222,6 +222,21 @@ The bundled CLI (`scripts/wiki_cli.py`, stdlib only) supports ten top-level subc
 | `filled_sections`, `lite_sections`, `empty_sections` | authored prose · `--lite` `해당 없음` prefill · still blank. Pick the next edit from `empty_sections`; a `--lite` placeholder lands in `lite_sections`, never `filled_sections`. |
 | `lite` | whether `--lite` was used |
 | `index_changed`, `index_paths` | whether / which folder indexes were rewritten this call (for `git add`) |
+
+### Recall: `--pack` deterministic projection
+
+`recall --pack` answers "give me the context for this query in one read" without N follow-up `--read` calls. It runs the same Stage-1 matching (`[query]`/`--type`/`--tag`/`--limit`), then projects each matched doc into a richer item and returns `mode: pack`, `projection: deterministic`, `ranked_by: authority`. A `~4 KB` budget truncates with `truncated: true` + a narrowing `hint`, same as Stage 1.
+
+**Determinism boundary (hard).** The pack extracts **only** from frontmatter, `relations`, and the type's one primary fixed-section header — it never infers or summarizes prose. (Any future synthesized field must carry a low-confidence name such as `candidate_*`/`source_summaries`; v0 ships none, hence `projection: deterministic`.) Per item: `summary`, `tags`, `search_terms?`, `relations?`, `created_at?`, `verified_at?`, `superseded_by?`, `retired`, a `sections` map holding the primary header → snippet (≤280 B), plus the four additive labels below.
+
+| Label | Values | Derivation (deterministic) |
+|-------|--------|----------------------------|
+| `authority` | `canonical` · `active` · `unverified` · `rejected` · `superseded` · `retired` | lifecycle + type: living (`ssot`/`runbook`) → `canonical`; `observation` → `unverified`; `rejected_decision` → `rejected`; a `superseded_by` stamp → `superseded`; in `retired/` → `retired`; else `active`. This order is the pack's ranking key. |
+| `freshness` | `fresh` · `stale` · `anchored` · `anchor_changed` · `authority_unknown` | retired/superseded → `stale`; a time-stale type (`trial_error`/`ssot`/`runbook`) with `verified_at` → `fresh`/`stale` vs `--days` (default 90); otherwise **relation-aware**. |
+| `use_as` | per-type hint (`decision_rationale`, `current_state`, `work_order`, `lesson`, …) | fixed type→hint map; how an agent should treat the doc. |
+| `warnings` | list of strings | `retired`, `superseded_by:<id>`, a `verified_at` age note, or `근거 앵커 <id> <state>` — empty when nothing applies. |
+
+**Relation-aware freshness (no false staleness).** For records that are not time-stale, freshness is judged by anchor lifecycle, not by date. A record with no in-graph anchor (`relations.intents/decisions/rejected_decisions/ssot/runbook` — `tasks` is external and never anchors) is `authority_unknown` with **no** warning — never a fabricated "stale". When it does have anchors, a retired/superseded/missing anchor yields `anchor_changed` (+ a `근거 앵커 …` warning); all-live anchors yield `anchored`. The authority ranking and these labels live **inside `--pack` only**; default `recall` Stage 1/2/3 output is byte-for-byte unchanged.
 
 ### Snapshot contract
 
