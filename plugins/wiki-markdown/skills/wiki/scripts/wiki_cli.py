@@ -1575,13 +1575,31 @@ def cmd_capture(args) -> int:
     if supersedes_id and not args.dry_run:
         _supersede_old(vault, supersedes_id, bn)
 
+    changed_idx: List[Tuple[str, ...]] = []
     if not args.dry_run:
-        refresh_all_indexes(vault)
+        changed_idx = refresh_all_indexes(vault)
+    index_paths = [str(p) for p in (find_index_file(vault, parts)
+                                    for parts in changed_idx) if p]
+
+    # Additive agent-facing metadata — all already computed above — so a
+    # follow-up edit needs no file Read or SKILL lookup to learn which sections
+    # the doc has, which the agent filled, which remain blank, the --sec-<flag>
+    # mapping to fill them, and which index files changed (for `git add`).
+    filled = [sec for sec in spec.sections if section_bodies.get(sec)]
+    empty = [sec for sec in spec.sections if not section_bodies.get(sec)]
 
     emit_ok(args,
-            {"id": bn, "path": str(target), "type": t, "supersedes": supersedes_id},
+            {"id": bn, "path": str(target), "type": t, "supersedes": supersedes_id,
+             "sections": list(spec.sections),
+             "core_sections": list(spec.core_sections or ()),
+             "section_flags": dict(type_keys),
+             "filled_sections": filled,
+             "empty_sections": empty,
+             "index_changed": bool(changed_idx),
+             "index_paths": index_paths},
             text_lines=[f"생성: {target} (id={bn})"
-                        + (f" supersedes={supersedes_id}" if supersedes_id else "")])
+                        + (f" supersedes={supersedes_id}" if supersedes_id else "")
+                        + (f" · 미작성 섹션: {', '.join(empty)}" if empty else "")])
     return EXIT_OK
 
 

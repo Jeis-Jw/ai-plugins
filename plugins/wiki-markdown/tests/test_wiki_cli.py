@@ -3218,6 +3218,49 @@ class WikiCliEfficiencyTests(unittest.TestCase):
             # untouched sections keep empty headers
             self.assertIn("## 트레이드오프", text)
 
+    def test_capture_json_payload_exposes_section_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            env = {"WIKI_NOW": "2026-06-19T12:00:00"}
+            r = run_cli(
+                "capture", "decision",
+                "--title", "Payload Decision",
+                "--summary", "Check additive capture payload.",
+                "--tags", "x",
+                "--sec-decision", "결정 본문.",
+                "--json", cwd=tmp, env=env,
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+            p = json.loads(r.stdout)
+            self.assertEqual(
+                p["sections"],
+                ["결정", "취지", "배경", "고려한 대안", "트레이드오프", "재평가 조건"],
+            )
+            self.assertEqual(p["core_sections"], ["결정", "취지"])
+            self.assertEqual(p["section_flags"]["decision"], "결정")
+            self.assertEqual(p["section_flags"]["reeval"], "재평가 조건")
+            self.assertEqual(p["filled_sections"], ["결정"])
+            self.assertIn("취지", p["empty_sections"])
+            self.assertNotIn("결정", p["empty_sections"])
+            # capture syncs indexes in the same call → reported for `git add`
+            self.assertTrue(p["index_changed"])
+            self.assertTrue(any("decision" in ip for ip in p["index_paths"]))
+
+    def test_capture_dry_run_reports_no_index_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            env = {"WIKI_NOW": "2026-06-19T12:00:00"}
+            r = run_cli(
+                "capture", "decision",
+                "--title", "Dry Decision", "--summary", "s", "--tags", "x",
+                "--sec-decision", "본문.", "--dry-run",
+                "--json", cwd=tmp, env=env,
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+            p = json.loads(r.stdout)
+            self.assertFalse(p["index_changed"])
+            self.assertEqual(p["index_paths"], [])
+
     def test_capture_section_flag_foreign_to_type_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             self._init(tmp)
