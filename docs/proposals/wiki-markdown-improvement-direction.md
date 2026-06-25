@@ -1,129 +1,154 @@
-# wiki-markdown 개선 방향 — 분석 + 결정 초안 (리뷰용)
+# wiki-markdown 개선 방향 — 분석 + 결정 (방향 확정 · locked)
 
 - **대상**: wiki-markdown 0.12.0
-- **작성자**: Claude (작성자 역할, 실측 그라운딩 기반)
-- **상태**: 초안 — session-review 수렴 대상
-- **리뷰 목적**: (1) 분석 정확성 검증, (2) 개선방향 우선순위 도전, (3) 누락된 아이디어 발굴. **구현 아님 — 방향 수렴까지.**
+- **작성자**: Claude (worker)
+- **상태**: session-review **수렴 확정** (round 1·2·3 모두 approved · blocking 0 · reviewer lock). 구현 단계 이월 노트는 §8.
+- **리뷰 목적**: 분석 정확성 + 우선순위 + 누락 아이디어 수렴. **구현 아님 — 방향 수렴 완료.**
 
 ---
 
 ## 0. 입력
 
-두 에이전트가 **실제 작업 세션**에서 wiki-markdown을 쓰며 남긴 운용 효율 피드백 2건(Claude, Codex). 원본 섹션 목록 + 우선순위는 부록 참조. 둘 다 "지식 모델은 탄탄, 마찰은 운용 표면에 몰림"으로 수렴하나, **세션 종류가 달라 서로 다른 표면을 침**:
-
-- **Claude** = 설계/캡처 세션 (snapshot save/load, capture decision/rejected/task). 마찰 = **명령 사용성**(왕복·토큰).
-- **Codex** = 디버깅/구현 세션 (런타임 버그, DB, API). 마찰 = **실시간 작업 중 과호출**(호출빈도·신뢰도).
+Claude·Codex 두 에이전트 실사용 운용 피드백 2건(원본 섹션 부록 A). 둘 다 "지식 모델 탄탄, 마찰은 운용 표면"으로 수렴하나 **세션 종류가 달라 다른 표면을 침**: Claude=설계/캡처(명령 사용성), Codex=디버깅/구현(과호출).
 
 ---
 
 ## 1. 핵심 발견 (헤드라인)
 
-1. **가장 시끄러운 요청 다수가 이미 구현돼 있고, SKILL.md에 노출만 안 됨.** capture 본문 1-step(`--sec-<key>`), `--lite` 경량 캡처, capture 인덱스 자동 동기화, recall 압축(`--stage 1`), 일관된 recall `--json` 스키마 — **전부 코드에 존재**. → 1순위 레버는 **신규 기능이 아니라 문서/표면 재설계**.
-
-2. **그래서 매뉴얼이 역설적이다**: 동시에 (a) **너무 길다**(exit-code 매트릭스·13개 refresh 체크·`--fix` whitelist를 본문에 재인라인) 그리고 (b) **불완전하다**(`--sec-*`·`--lite`·`mode` 스키마 누락). 잘못된 것을 인라인하고 고가치 ergonomic 플래그를 숨김. 두 에이전트가 서로 다른 각도에서 정확히 이 표면을 침.
-
-3. **진짜 mechanism 빈틈은 소수다**: canonical 노드 `discard` 부재, recall 구조화 context-pack 부재, snapshot/observation **stale 경고** 부재, wiki-레벨 `closeout` 부재.
-
-4. **일부 요청은 mechanism이 아니라 policy 계층 소관이다**: 과호출 억제, usage mode, negative trigger는 호출 *빈도/판단* 문제 → `CLAUDE.md`/`agent-policy`/SKILL "When NOT to use" 소관. **무상태 filesystem-primary CLI에 상태 머신(context-lock, 6개 mode)을 넣는 건 설계와 충돌하고 "ceremony∝blast-radius" 원칙에 반함.**
+1. **SKILL.md가 출시 CLI보다 뒤처져 있다 — drift 확정 3건.** `--sec-<key>`(본문 1-step), `--lite`(경량), `--level`(refresh integrity/hygiene tier) — 셋 다 CLI에 존재하나 SKILL 미문서. 특히 `--level`은 **task-github이 hard-gate로 의존**(`refresh --level integrity --strict`)하는데도 wiki SKILL은 "`--check all`=13 checks"라는 옛 표면을 설명. → 운용 마찰 본체 = **agent-facing 표면이 CLI 실체와 drift**.
+2. **매뉴얼이 역설적**: 동시에 너무 길고(매트릭스 재인라인) 불완전(고가치 플래그 누락).
+3. **진짜 mechanism 빈틈은 소수**: canonical `discard`, recall **projection**, snapshot/observation **stale 경고**, closeout(=complete/reopen payload 강화).
+4. **일부는 mechanism 아니라 policy**: 과호출·mode·negative trigger는 호출 빈도/판단 → agent-policy + SKILL gate. 무상태 CLI에 상태머신 금지.
 
 ---
 
-## 2. 피드백 × 실측 대조 (그라운딩)
+## 2. 피드백 × 실측 대조
 
-> 판정 범례: ✅구현됨(노출만 필요) · 🟡부분 · ❌빈틈(신규) · 🔁오진 · 🧭정책계층
+> ✅구현됨(노출만) · 🟡부분 · ❌빈틈 · 🔁오진 · 🧭정책
 
-| # | 피드백 항목 | 실측 (코드 근거) | 판정 | 계층 |
+| # | 항목 | 실측 | 판정 | 계층 |
 |---|---|---|---|---|
-| 1 | Claude 2.1 / Codex 6 — 매뉴얼 통째 로드·SKILL 무거움 | SKILL.md 237줄. CLI 계약표·13체크·`--fix` whitelist·slug팁을 본문에 재인라인. `references/wiki-protocol.md` 있는데 중복 | ❌ | 표면/문서 |
-| 2 | Claude 2.2 — capture 2-step(스켈레톤→수기 본문) | `--sec-<key>` 플래그가 **모든 섹션키에 존재** (`wiki_cli.py:2984`). Quick start·CLI 계약표에 **미기재** | ✅ | 문서 |
-| 3 | Claude 2.3a — capture 인덱스 자동 동기화 원함 | `cmd_capture`가 쓰기 후 `refresh_all_indexes(vault)` **자동 호출** (`:1579`) | ✅ | — |
-| 4 | Claude 2.3b — canonical 노드 discard 부재 | `snapshot discard`만 파일 삭제(`:1966`). `context/*`는 `retire`(파일 유지·`retired/`로 이동)뿐. 삭제 서브커맨드 없음 | ❌ | mechanism |
-| 5 | Claude 2.3c — 인덱스 git 노이즈(파생화 검토) | 인덱스 = 커밋 산출물, capture마다 재작성 → diff 노이즈 사실 | 🟡 | 설계결정 |
-| 6 | Claude 2.4 — `--body-file`/STDIN (셸 이스케이프) | `--*-file`/STDIN 입력 **없음**. `--sec-*`·`--discussion`도 인라인 문자열 인자 | 🟡 | mechanism |
-| 7 | Claude 2.5 — recall `--json` 스키마 불투명 | 스키마 일관·`mode`로 구분(`stage1/2/3/read/backlinks`, `:2083~2121`). SKILL에 **미문서** | ✅ | 문서 |
-| 8 | Claude 2.6 — `--lite` 경량 캡처 원함 | `--lite` 플래그 **존재** (`:2988`): 핵심 섹션만, 나머지 `해당 없음` 프리필 + quality 체크 skip 표식. **미문서** | ✅ | 문서 |
-| 9 | Codex 1 — recall 과호출 / 세션 락 | 호출빈도 제어 mechanism 없음(CLI는 빈도 제어 못 함). 에이전트 *행동* 문제 | 🧭 | 정책 |
-| 10 | Codex 2 — 디버깅 중 wiki 우선 / usage mode | 모드 없음. 호출 *판단* 문제 | 🧭 | 정책 |
-| 11 | Codex 3 — snapshot이 recall에서 truth로 혼입 | snapshot은 recall에서 **이미 제외** (`iter_every_md:777` — `snapshot/` skip). 명시적 `snapshot load` 필요. observation엔 일부 적용 가능 | 🔁 snapshot / 🟡 observation | mechanism |
-| 12 | Codex 4 — `refresh --strict` 의미검증 한계 | 구조검증 외 `stale`·`changed-path-stale`·`*-quality` 존재(opt-in). 단 **stale-snapshot 체크는 부재**(snapshot은 refresh서 제외) | 🟡 | 문서+mechanism |
-| 13 | Codex 5/F — closeout 고수준 통합 명령 | wiki엔 `complete`(task→done)만. task-github `closeout.py`가 별도로 존재 | ❌ | mechanism(경계) |
-| 14 | Codex 7 — recall 결과를 context-pack으로 | `--stage 1`(frontmatter only ~2KB) 압축 존재. **구조화 pack**(task+decisions+constraints)은 없음 | 🟡 | mechanism |
-| 15 | Codex 8 — negative trigger("언제 쓰지 마") | SKILL "When to use"는 **양성 트리거만** | 🧭 | 정책/문서 |
-| 16 | Codex D — authority ranking(타입별 신뢰도) | recall 출력에 신뢰도/freshness 라벨 없음 | ❌ 또는 🧭 | mechanism or 가이드 |
-| 17 | Codex E — stale 경고 강화 | snapshot/observation이 최신 decision보다 오래됐을 때 경고 없음 | ❌ | mechanism |
-
-**요약**: 17개 중 ✅이미구현 4 · 🟡부분 4 · ❌신규빈틈 4 · 🔁오진 1 · 🧭정책 3 · (5는 설계결정). **시끄러운 P1급 요청(capture 1-step, --lite, recall 압축)이 ✅에 몰려 있음** = 표면 문제.
+| 1 | 매뉴얼 통째·무거움 | SKILL 236줄 재인라인. **+`--level` tier(`wiki_cli:2160,3095`) 미문서·task-github 의존 = drift #3** | ❌ | 표면 |
+| 2 | capture 2-step | `--sec-<key>` 전 섹션 존재(`:2984`)·미기재 | ✅ | 문서 |
+| 3 | 인덱스 자동 동기화 | `cmd_capture`→`refresh_all_indexes`(`:1579`) | ✅ | — |
+| 4 | canonical discard 부재 | `snapshot discard`만(`:1966`). `context/*`는 `retire`뿐 | ❌ | mechanism |
+| 5 | 인덱스 git 노이즈 | 커밋 산출물, capture마다 재작성 | 🟡 | 설계 |
+| 6 | `--body-file`/STDIN | 없음. `--sec-*`도 인라인 문자열 | 🟡 | mechanism |
+| 7 | recall `--json` 불투명 | 일관·`mode` 구분. 미문서 | ✅ | 문서 |
+| 8 | `--lite` 경량 | 존재(`:2988`)·미문서 | ✅ | 문서 |
+| 9 | recall 과호출 | 빈도제어 mechanism 없음 | 🧭 | 정책 |
+| 10 | 디버깅중 wiki우선 | 모드 없음 | 🧭 | 정책 |
+| 11 | snapshot recall 혼입 | wording=오진(이미 제외 `:777`) / symptom=실재(`snapshot load` authority 과신) | 🔁/🟡 | mechanism |
+| 12 | `refresh --strict` 한계 | stale/quality opt-in 존재, stale-snapshot 부재 | 🟡 | 문서+mech |
+| 13 | closeout 명령 | `complete`만. task-github `closeout.py` 별도 | ❌ | mechanism(경계) |
+| 14 | recall context-pack | `--stage 1` 압축만, projection 없음 | 🟡 | mechanism |
+| 15 | negative trigger | 양성 트리거만 | 🧭 | 정책/문서 |
+| 16 | authority ranking | recall에 라벨 없음 | ❌/🧭 | mechanism or 가이드 |
+| 17 | stale 경고 | 없음 | ❌ | mechanism |
 
 ---
 
 ## 3. 문제 지도 — 3계층
 
-| 계층 | 정의 | 해당 항목 |
+| 계층 | 정의 | 항목 |
 |---|---|---|
-| **L1 표면/문서** (mechanism-doc) | 기능은 있는데 안 보이거나, 너무 많이 보임 | 1·2·7·8·12(한계명시)·15 |
-| **L2 mechanism 빈틈** (신규 CLI) | 실제로 없는 기능 | 4·6·13·14·16·17 |
-| **L3 정책/행동** (CLI 아님) | 호출 빈도·판단 — agent-policy/SKILL 가이드 소관 | 9·10·16(가이드안) |
+| **L1 표면/문서** | 있는데 안 보이거나 너무 보임 | 1·2·7·8·12·15 + `--level` |
+| **L2 mechanism 빈틈** | 실제 없는 기능 | 4·6·11(symptom)·13·14·16·17 |
+| **L3 정책/행동** | 호출 빈도·판단 | 9·10·15(gate) |
 
-이 구분이 핵심: **L1만으로 두 피드백의 체감 마찰 대부분이 해소**된다(신규 코드 거의 0). L2는 소수 정밀 추가. L3는 wiki CLI를 건드리지 않고 정책/가이드로.
-
----
-
-## 4. 제안 방향 + 우선순위
-
-### P0 — 표면/문서 단일 작업 (최대 ROI, 신규코드 ≈0)
-SKILL.md를 **progressive disclosure**로 재설계:
-- 본문 = **compact 런타임 cheat-sheet** (Quick start + 타입 결정표 + CLI 1줄 요약 + "When NOT to use"). 목표 ~1.5k 토큰.
-- 전체 계약(exit-code 매트릭스·13체크 상세·whitelist·slug 규칙)은 `references/wiki-protocol.md`로 이관, 필요 시 fetch.
-- **동시에 숨은 고가치 플래그를 cheat-sheet에 노출**: `--sec-<key>`(capture 1-step), `--lite`, recall `--stage`, `snapshot save --merge`, recall `--json`의 `mode` 스키마.
-- "When NOT to use" 음성 트리거 섹션 추가 (Codex 8/15).
-- `refresh --strict` 출력/문서에 **"구조 무결성만 검증, 의미 freshness 아님"** 한계 1줄 (Codex 4).
-
-근거: 두 에이전트 **공통 불만** + **이미-구현 기능 미사용**을 한 작업으로 동시 해소. 가장 싸고 가장 큼.
-
-### P1 — 소수 진짜 mechanism 빈틈
-- **canonical `discard` 서브커맨드** — `snapshot discard`와 대칭, 실수 취소용, 인덱스 자동정리 포함 (Claude 2.3b). `retire`(deprecated/superseded, 파일유지)와 의미 구분.
-- **stale 경고** — snapshot/observation이 최신 관련 decision보다 오래되면 recall/load 출력에 경고 (Codex E). authority 혼동(11·16)의 실질 해법.
-- **recall context-pack 출력 모드** — `--stage 1`을 넘어 task+decisions+constraints+next를 구조화 JSON으로 (Codex 7/14). *단 §5 긴장점 참조 — mechanism vs policy 결정 필요.*
-
-### P2 — 큰 결정/경계 합의 필요
-- **wiki `closeout` 고수준 명령** — done 이동+인덱스+downstream+targeted refresh+git-paths를 compact JSON으로 (Codex 5/F). **단 task-github `closeout.py`와 경계 합의 선행 — 중복 금지** (메모리: task-github C2가 이미 git/gh 머지 closeout 담당).
-- **audit 체크 추가** — `stale-snapshot`·`empty-observation` 등 (Codex 4 후속).
-- **인덱스 파생화 (2.3c)** — commit-artifact→read-derived. git 노이즈 제거하나 모델 변경 → **별도 DEC 필요**, 빠른 수정 아님.
-
-### 신중/기각 후보
-- **6개 stateful usage mode**(Codex A) + **context-lock CLI 상태**(Codex B/C) — 무상태·filesystem-primary 설계(Claude가 칭찬한 바로 그것)와 충돌, "ceremony∝blast-radius" 위반. **대체**: 모드는 SKILL "When to / When NOT to use" 서술 + agent-policy 가이드로, CLI 기계장치 없이.
+L1만으로 체감 마찰 대부분 해소 — **신규코드 최소, 주효과는 표면 재정렬**(capture payload만 소량 신규).
 
 ---
 
-## 5. 긴장점 / 미해결 — 리뷰 집중 요청
+## 4. 방향 + 우선순위
 
-1. **context-pack을 어느 계층에?** recall이 구조화 pack을 *출력*(mechanism)할지, 아니면 에이전트가 recall 결과를 압축(policy/행동)할지. CLI가 "작업 context"를 안다고 가정하는 게 무상태 설계와 맞나?
-2. **authority ranking — 강제 vs 가이드?** recall이 타입별 신뢰도를 *정렬/라벨*로 강제할지(16=mechanism), SKILL 서술로 둘지(16=정책). 강제 시 recall 출력 계약이 무거워짐.
-3. **closeout 경계** — wiki closeout vs task-github closeout.py. 누가 무엇을? 중복/충돌 회피선.
-4. **호출빈도는 mechanism이 도울 수 없다** — CLI는 자기가 몇 번 불리는지 모름. Codex의 P0(과호출 억제)는 본질상 100% policy/행동. 이걸 플러그인 개선으로 분류하는 게 맞나, 아니면 agent-policy 작업으로 분리하나?
-5. **`--sec-*`로 Claude 2.4가 충분한가?** 왕복은 해소되나 `--sec-*`도 인라인 문자열 → 긴/백틱/`$` 본문엔 셸 이스케이프 잔존. `--body-file`/STDIN 여전히 필요한가, 과한가?
-6. **오진(11) 처리** — snapshot이 recall서 이미 제외인데 Codex가 truth 혼입을 우려 = 에이전트가 `snapshot load` 결과를 과신했다는 *행동* 신호. mechanism 수정 불필요, 가이드 신호로만?
+### P0-선행 — bounded drift audit
+범위 **한정**: `wiki_cli --help`/parser · wiki SKILL · wiki reference · task-github rules/skills의 **command surface만** 대조. 산출 = **정본 command surface 표 + drift 목록**. (`--level` 1건 확정.) **repo-wide 문서정리로 확장 금지 — P0가 다시 ceremony 됨.**
+
+### P0 — agent-facing runtime contract 재설계 (= 구현 Unit A)
+문제는 길이만이 아니라 기본 Quick start가 `capture skeleton→read/edit`를 정답처럼 안내하는 것. 산출물:
+1. **compact SKILL** — 런타임 cheat-sheet, 전체계약 `references/`.
+2. **기본 예제 교체** — `--sec-*`/`--lite`/`--stage`/`--level` 중심.
+3. **command별 `--json` payload 예시** (capture·recall `mode`).
+4. **`capture --json` payload 확장** — `sections`/`filled_sections`/`empty_sections`/`section_flags`/`index_changed`(+optional `index_paths` touched list). **additive only — command가 이미 계산하는 파생 metadata만**(신규 introspection 명령 아님). read-back 직접 제거.
+5. **negative trigger "When NOT to use"** — SKILL 상세 + **agent-policy gate 1줄** 이중배치.
+6. **`--level` tier 문서화** (drift 수정).
+
+**완료기준 — baseline 가설표(지금 남김) + 실측은 구현단계** (추정치):
+
+| 시나리오 | before cmd/read/edit | after | 절감 |
+|---|---|---|---|
+| capture 3건(dec/rej/task) | 3 / 3 / 3 | 3 / 0 / 0 | `--sec-*`로 read·edit 제거 |
+| snapshot save→load 재개 | 2 / 0~1 / 0 | 2 / 0 / 0 | ~동일(이미 1-step) |
+| active task closeout | 2~3 / 1~2 / 0 | 1~2 / 0 / 0 | complete payload로 read 제거 |
+| SKILL 1회 로드 | ~6k tok(40~50% 사용) | ~1.5k cheat-sheet | 상시 ~3k↓ |
+
+표 숫자는 `expected baseline`(추정) — 구현 후 실제 count·JSON bytes로 채움. `snapshot save→load`은 절감 아닌 **control row**; `active task closeout` 절감은 payload가 `suggested_git_paths`/`updated_indexes` 제공 시만 성립. 실측(토큰·JSON bytes)은 구현 뒤. **debug-no-wiki는 CLI benchmark 아니라 policy acceptance** — negative trigger가 agent-policy에 들어갔는지 + SKILL When-NOT-to-use와 같은 문구로 정렬됐는지로 판정(harness trace 없는 자동검증은 과함).
+
+### P1 — 구현 Unit B (write UX) + Unit C (read/authority UX)
+**Unit B (write UX):**
+- **canonical `discard`** — 가드: exact basename only · backlinks/relations 있으면 기본 거부 · `--dry-run` first-class · `--force` 명시 · affected JSON. `retire`와 의미경계 명문화.
+- **`--body-file`/STDIN** — `@file` 값 convention 또는 단일 입력. 섹션별 `--sec-<key>-file`로 넓히지 말 것.
+
+**Unit C (read/authority UX):**
+- **recall projection** — stateless `recall --pack --json`. **deterministic 경계 명시**: frontmatter·relations·fixed-section snippet·task body 정해진 header에서만 추출, **prose 추론 금지**. 추론 필요분은 `candidate_*`/`source_summaries` 같은 낮은확신 이름. lock 아님.
+- **authority/stale 라벨 (additive)** — `authority`/`freshness`/`use_as`/`warnings` 필드를 `snapshot load`·`recall --pack`·observation 결과에 부착. **강한 ranking/sorting은 `--pack` 내부에서만**, 기본 stage1 recall은 최소변경(안정성).
+- **stale 경고는 relation-aware** — 단순 날짜비교 금지(오탐). observation은 `relations.decisions/ssot/tasks` 축으로, snapshot은 `references`/`search_terms` 있을 때만 관련 decision과 비교. anchor 없으면 `possibly_stale` 아니라 `authority_unknown`.
+- machine-discoverability(`wiki schema/help --json`, `capture --dry-run --json`)도 여기 — payload로 못 덮는 introspection.
+
+### P2 — closeout (별도, Unit C에 넣지 않음)
+**새 `wiki closeout` 명령 만들지 않음.** 대신 기존 `complete`/`reopen` JSON payload 강화: `moved_from`·`moved_to`·`updated_indexes`·`suggested_git_paths`·optional `refresh_summary`. targeted refresh는 별도 또는 opt-in `--refresh`만. **GitHub/branch/label/root-close 감지는 task-github `closeout.py` 소관**(비대칭 결합). 그 외 P2: audit 체크(stale-snapshot·empty-observation), 인덱스 파생화(별도 DEC).
+
+### 기각 / 신중
+stateful usage mode(6종)·context-lock CLI 상태 — 무상태·filesystem-primary 충돌, "ceremony∝blast" 위반. 대체: 모드 = SKILL/agent-policy 서술.
+
+### 구현 단위 (gear/PR 묶음)
+- **Unit A** — surface drift/P0: `--level` 문서화, compact SKILL, examples 교체, capture payload.
+- **Unit B** — write UX: `discard` 가드, body-file/STDIN.
+- **Unit C** — read/authority UX: `recall --pack`, stale/authority 라벨.
+- **closeout** — 별도 P2 후보(task-github 경계). C에 미포함.
 
 ---
 
-## 6. 리뷰어에게 (요청 사항)
+## 5. 긴장점 — 전부 해소
 
-- **§2 판정표 오류**를 코드로 반박해 달라 (특히 ✅/🔁 판정 — 정말 노출/오진인지).
-- **§4 우선순위 재배치** 제안 — P0이 정말 최대 ROI인가? 빠진 P0 후보는?
-- **누락된 개선 아이디어** — 두 피드백/이 분석이 놓친 것.
-- **§5 긴장점**에 입장 — 특히 1·2·4(계층 귀속)와 6(오진 처리).
-- ✅"이미 구현됨" 항목이 **노출만으로 충분한지**, 아니면 UX 추가가 필요한지 (예: capture가 --sec-* 없이 불릴 때 JSON에 섹션 헤더 목록을 반환해 Read 생략 — Claude 2.2 후속).
+- ✅**1** — context-pack은 **projection(무상태)** 채택, lock 기각. deterministic 추출 경계 명시.
+- ✅**2** — authority는 **additive label**부터(authority/freshness/use_as/warnings), 기본 recall 강제 sort 안 함, 강 ranking은 `--pack` 내부만.
+- ✅**3** — closeout은 **complete/reopen payload 강화**, 새 명령 아님. targeted refresh opt-in. GitHub은 task-github.
+- ✅**4** — 호출빈도는 mechanism 불가 → agent-policy gate.
+- ✅**6** — Codex 오진(11)은 wording-오진/symptom-실재. 대응 = relation-aware stale 경고.
+
+**잔여 미해결 긴장 없음.**
 
 ---
 
-## 부록: 원본 피드백 섹션 + 우선순위 (커버리지 감사용)
+## 6. 수렴 로그
 
-### Claude 피드백 — 섹션
-- 1 잘 작동(유지): 결정그래프 / snapshot staging / friendly-ref+NFC / 결정적 CLI / refresh --fix whitelist
-- 2.1 매뉴얼 통째 로드 · 2.2 capture 2-step · 2.3 인덱스 드리프트+canonical 취소 부재 · 2.4 셸 이스케이프 · 2.5 recall --json 스키마 · 2.6 품질게이트 vs 경량
-- 우선순위: **P1** progressive disclosure / P1 capture 1-step · **P2** canonical discard+인덱스 동기화 / P2 --body-file·STDIN · **P3** recall 스키마 문서화 / P3 --lite
+- **round 1→2**: reviewer 13건 → 수용 11·부분반박 2(benchmark 범위·discoverability 분할). `--level` drift 신규 확정.
+- **round 2→3**: reviewer 9건 = 내 질문 답변 + refine, **전부 수용(반박 0)**. 반영: P0-선행 bounded scope, capture payload additive 제약, baseline 가설표 추가, authority additive label(긴장2 해소), relation-aware stale, **closeout = complete/reopen payload 강화로 재설계(긴장3 해소, 새 명령 폐기)**, deterministic projection 경계, debug-no-wiki = policy acceptance, **구현 3-unit(A/B/C) 분해**, nit(신규코드 최소).
 
-### Codex 피드백 — 섹션
-- 1 recall 과호출 · 2 디버깅 중 wiki 우선 · 3 snapshot/observation 신뢰도 · 4 refresh --strict 과대해석 · 5 closeout 무거움 · 6 SKILL 무거움 · 7 recall→context-pack · 8 negative trigger
-- 제안 A usage mode · B context-lock · C recall budget · D authority ranking · E stale warning · F closeout 통합 · G "code 먼저" guardrail
-- 우선순위: **P0** recall compact / 반복 recall 방지 / debug-mode recall 억제 · **P1** stale warning / authority ranking / closeout 통합 · **P2** refresh 한계 안내 / context-lock / skill quick·full 분리
+---
+
+## 7. round 3 리뷰 요청 (confirmation)
+
+round-2 가이드 통합 확인 위주. 잔여 이견 0이면 수렴 확정(lock).
+1. round-2 9건 통합이 **충실**한가? (특히 closeout 재설계·authority additive·projection 경계·3-unit 분해)
+2. baseline 가설표 숫자가 합리적인가?
+3. **Codex**: 이 수렴안에 남은 이견? 없으면 lock.
+
+---
+
+## 8. 구현 단계 반영 노트 (round 3 reviewer)
+
+방향 lock 후 **구현 task로 이월**할 제약 (방향 변경 아님):
+- **Unit A 범위 고정** — "surface + additive payload"만. behavior semantics 섞지 말 것(P0 비대화). 성공기준 = 기존 command 의미 불변 + hidden CLI surface 제거 + read-back 감소.
+- **baseline = expected baseline(추정)** — 구현 후 실측으로 채움. `snapshot save→load`=control row, `closeout` 절감은 payload가 git-paths/indexes 제공 시만.
+- **Unit C stale/authority = relation-aware 테스트 케이스 고정** — anchor 없는 snapshot/observation엔 `possibly_stale` 금지 → `authority_unknown`/무경고. 관련 decision 찾을 때만 stale 경고.
+- **capture payload 필드** — `index_changed: true` + optional `index_paths`(touched list)가 boolean보다 agent-friendly.
+- **body-file/STDIN = capture + snapshot 함께** — 원 pain은 `snapshot save --discussion`에도 있었음. `@file`/stdin 단일 통일, 섹션별 file flag 폭발 금지.
+- **구현 순서** — A → (B or C) → closeout. closeout-first는 task-github 경계와 재엮임.
+
+## 부록 A — 원본 피드백 섹션
+
+**Claude**: 2.1 매뉴얼 · 2.2 capture 2-step · 2.3 드리프트+취소 · 2.4 셸 · 2.5 스키마 · 2.6 경량. P1(disclosure·1-step)·P2(discard·body-file)·P3(스키마·lite).
+**Codex**: 1 과호출 · 2 디버깅 wiki · 3 snapshot 신뢰 · 4 refresh 한계 · 5 closeout · 6 SKILL · 7 context-pack · 8 negative trigger. 제안 A mode·B lock·C budget·D authority·E stale·F closeout·G code-first. P0(compact·반복방지·debug억제)·P1(stale·authority·closeout)·P2(refresh한계·lock·분리).
