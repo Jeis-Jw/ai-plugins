@@ -1,6 +1,6 @@
 {
   "name": "session-review",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Wiki snapshot and git review-branch protocol for worker/reviewer session review loops.",
   "author": {
     "name": "Jinwuk-Lee",
