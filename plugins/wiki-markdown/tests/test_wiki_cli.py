@@ -4149,12 +4149,29 @@ class WikiCliCloseoutTests(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stderr)
             p = json.loads(r.stdout)
             self.assertTrue(p["dry_run"])
-            # paths previewed
+            # would-be paths previewed (source + destination both present)
             self.assertEqual(self._rel(tmp, p["moved_to"]), f"task/done/{tid}.md")
-            self.assertTrue(p["suggested_git_paths"])
+            rels = [self._rel(tmp, x) for x in p["suggested_git_paths"]]
+            self.assertIn(f"task/{tid}.md", rels)
+            self.assertIn(f"task/done/{tid}.md", rels)
             # nothing actually moved
             self.assertTrue((Path(tmp) / "wiki" / "task" / f"{tid}.md").exists())
             self.assertFalse((Path(tmp) / "wiki" / "task" / "done" / f"{tid}.md").exists())
+
+    def test_reopen_dry_run_previews_without_moving(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tid = self._seed_task(tmp)
+            self.assertEqual(
+                run_cli("complete", tid, cwd=tmp, env=self.ENV).returncode, 0)
+            r = run_cli("reopen", tid, "--dry-run", "--json", cwd=tmp, env=self.ENV)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            p = json.loads(r.stdout)
+            self.assertTrue(p["dry_run"])
+            self.assertEqual(self._rel(tmp, p["moved_to"]), f"task/{tid}.md")
+            # still in done/ — nothing moved
+            self.assertTrue(
+                (Path(tmp) / "wiki" / "task" / "done" / f"{tid}.md").exists())
+            self.assertFalse((Path(tmp) / "wiki" / "task" / f"{tid}.md").exists())
 
     def test_reopen_payload_reports_reverse_move(self):
         with tempfile.TemporaryDirectory() as tmp:

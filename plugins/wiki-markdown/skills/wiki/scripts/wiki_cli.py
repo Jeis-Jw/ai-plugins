@@ -1899,11 +1899,13 @@ def _move_task(vault: Path, args, *, to_done: bool) -> int:
         would = find_index_file(vault, TYPE_SPECS["task"].folder)
         updated_indexes = [str(would)] if would else []
     state = "done" if to_done else "active"
-    # Paths an agent should `git add` to stage this lifecycle move: the source
-    # (now removed), the destination (now present), and any rewritten index —
-    # so closeout staging needs no path computation. Order-preserving dedup.
-    # GitHub/branch/label/root-close detection is task-github's closeout.py, not
-    # this CLI (deliberate asymmetric boundary, §4 P2).
+    # Paths an agent should `git add` to stage this lifecycle move — the source
+    # location, the destination location, and any rewritten index — so closeout
+    # staging needs no path computation. Order-preserving dedup. Under --dry-run
+    # these are the *would-be* paths (dry_run:true signals nothing moved yet, so
+    # moved_to does not exist on disk until a real run). GitHub/branch/label/
+    # root-close detection is task-github's closeout.py, not this CLI (deliberate
+    # asymmetric boundary, §4 P2).
     suggested_git_paths: List[str] = []
     for pth in [moved_from, moved_to, *updated_indexes]:
         if pth not in suggested_git_paths:
