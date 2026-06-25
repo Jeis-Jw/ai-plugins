@@ -28,6 +28,12 @@ task-github:done {N}
 
 # 8. 리뷰 → 머지 (task 노드 done 전이)
 task-github:review {PR} --auto-merge
+
+# 상태/다음 행동/진단
+task-github:status {N}
+task-github:next {N}
+task-github:doctor --json
+task-github:reconcile --apply
 ```
 
 ## 3축 분류
@@ -58,6 +64,18 @@ task-github:review {PR} --auto-merge
 
 세부 규약은 [rules/dependencies.md](rules/dependencies.md)에 있다.
 
+## Execution Contract
+
+root issue body에는 필요 시 `task-github-execution` fenced JSON block을 둔다. 여기에는 integration 실행 전략(`topology`, `gate`, `parent_branch`, `leaf_policy`, `required_checks`, `closeout_mode`)을 materialize한다. contract가 없으면 기존 profile+gear 기본 판단을 사용하며, context bundle은 이를 `default_source: "profile+gear"`로 드러낸다.
+
+이 contract는 GitHub root issue에만 존재하는 실행 계약이다. wiki `TASK` 노드의 작업정의·취지를 대체하지 않는다.
+
+## Local Closeout
+
+`merge`는 `closeout.py --mode pr|local`을 지원한다. `local`은 PR 없이 leaf branch를 parent branch에 합치되, temp worktree merge simulation + Execution Contract의 `required_checks` + drift/integrity evidence가 모두 통과해야 실제 merge한다.
+
+`topology=stacked` + `closeout_mode=local`이면 root issue에 Integration Ledger comment를 append한다. ledger는 GitHub 실행 로그이며 wiki에는 기록하지 않는다.
+
 ## Knowledge Capture Audit
 
 비 trivial 작업은 끝내기 전에 위키 기록 후보를 감사한다.
@@ -76,7 +94,11 @@ task-github:review {PR} --auto-merge
 | `rules/dependencies.md` | GitHub Issue dependencies 기반 선후관계·차단 |
 | `rules/knowledge-capture.md` | 작업 종료 전 지식 기록 감사 |
 | `rules/wiki-bridge.md` | 위키 감지·호출·task 노드 연동 (mechanism) |
-| `skills/*` (10종) | setup·open·define·start·plan·run·verify·done·review·merge |
+| `skills/*` (14종) | setup·open·define·start·plan·run·verify·done·review·merge·status·next·doctor·reconcile |
 | `agents/pr-verifier.md` | PR 독립 검증 서브에이전트 |
 
 자세한 설계·불변식·이관 가이드는 [DESIGN.md](DESIGN.md) 참조.
+
+## 변경 이력
+
+- `0.8.0`: context bundle resolver, Execution Contract, PR/local closeout, local merge simulation, Integration Ledger, status/next, doctor/reconcile 추가.

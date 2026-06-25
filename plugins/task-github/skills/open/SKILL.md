@@ -84,6 +84,13 @@ gh pr list --search "{N}" --json number,title,state,headRefName
 - 리프 이슈면: 부모 루트의 task 노드로 거슬러 표시
 - 자세한 규약은 [wiki-bridge.md](../../rules/wiki-bridge.md) §4.
 
+### Step 5.5. Context bundle 생성
+위에서 읽은 issue/root/dependency/wiki JSON을 공통 resolver에 넣어 같은 read-model로 접는다:
+```bash
+python3 plugins/task-github/scripts/context_bundle.py --input snapshot.json
+```
+`open`은 이 bundle의 `integrity.errors`를 읽기 전용으로 브리핑만 한다. 불일치를 발견해도 자동 `relate`/`complete`/`reopen`을 호출하지 않는다.
+
 ### Step 6. 브리핑 출력
 - 제목·상태·번호
 - 상태 라벨 / 기어 라벨 **분리 표시**
@@ -96,3 +103,4 @@ gh pr list --search "{N}" --json number,title,state,headRefName
 ## 불변식
 - **부작용 0.** 읽기 전용. 라벨·Assignee·상태 변경 금지. 위키도 `recall`(읽기)만.
 - `start`/`define` 진입 전 안전한 미리보기 역할.
+- Wiki Context/task 관계 불일치는 context bundle의 `integrity`로만 노출한다. 복구는 명시적 reconcile 경로에서만 한다.

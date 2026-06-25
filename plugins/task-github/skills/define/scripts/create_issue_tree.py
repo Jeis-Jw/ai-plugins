@@ -16,6 +16,11 @@ import sys
 from pathlib import Path
 from typing import Iterable, List
 
+TASK_GITHUB_DIR = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(TASK_GITHUB_DIR / "scripts"))
+
+import context_bundle  # noqa: E402
+
 
 API_VERSION = "2026-03-10"
 PARENT_METHOD = "graphql_create_issue_parentIssueId"
@@ -78,9 +83,16 @@ def validate_spec(spec: dict) -> dict:
     if not isinstance(children, list):
         raise IssueTreeError("bad_spec", "children must be a list")
 
+    root_body = _require_text(root, "body", "root")
+    execution_contract = root.get("execution_contract", spec.get("execution_contract"))
+    if execution_contract is not None:
+        if not isinstance(execution_contract, dict):
+            raise IssueTreeError("bad_spec", "root.execution_contract must be an object")
+        root_body = context_bundle.materialize_execution_contract(root_body, execution_contract)
+
     root_out = {
         "title": _require_text(root, "title", "root"),
-        "body": _require_text(root, "body", "root"),
+        "body": root_body,
     }
 
     child_out: List[dict] = []

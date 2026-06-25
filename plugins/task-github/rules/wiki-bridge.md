@@ -108,6 +108,38 @@ wiki refresh --check decision-quality,task-quality --json
 
 ### 공통 조회 스니펫 (스킬이 재사용)
 
+실제 스킬은 아래 원리를 직접 복붙하지 않고, 가능하면 공통 resolver를 쓴다:
+
+```bash
+python3 plugins/task-github/scripts/context_bundle.py --input snapshot.json
+```
+
+입력 snapshot은 skill이 이미 읽은 GitHub issue/root/dependency JSON과, 위키가 가용할 때 `recall --read`로 얻은 task record를 담는다. 출력은 `open`/`start`/`done`/`merge`/`status`가 공유하는 context bundle이다:
+
+```json
+{
+  "issue": {"number": 42, "state": "OPEN", "labels": ["gear:normal"]},
+  "root": {"number": 10, "state": "OPEN"},
+  "wiki_task": {"id": "TASK-...", "record": null},
+  "topology": null,
+  "gate": null,
+  "parent_branch": null,
+  "default_source": "profile+gear",
+  "blockers": [],
+  "downstream": [],
+  "worktree_path": ".worktrees/issue-42",
+  "integrity": {"errors": [], "warnings": []}
+}
+```
+
+resolver는 `gh`/wiki를 직접 호출하지 않는다. task-github가 GitHub와 wiki를 읽어 넣고, resolver는 다음 정합 불변식만 판정한다:
+
+- 루트 이슈 본문 `## Wiki Context`에 정확히 하나의 `TASK-*`가 있다.
+- 위키 task record가 제공되면 `relations.tasks`가 루트 이슈 ref(`owner/repo#N` 또는 `github:owner/repo#N`)를 가리킨다.
+- 루트 이슈 closed 상태와 task done 상태가 일치한다.
+
+Execution Contract가 아직 없는 루트는 `topology`/`gate`/`parent_branch`를 `null`로 두고 `default_source: "profile+gear"`를 낸다. 이 값은 실행 설정을 다시 쓰는 것이 아니라, contract 부재 시 agent가 기존 profile+gear 규칙을 적용해야 함을 드러내는 read-model hint다.
+
 **(a) 작업 중인 `{N}`에서 업무 루트 이슈 번호 얻기** — `{N}`이 리프면 부모, 아니면 자신:
 ```bash
 read OWNER REPO < <(gh repo view --json owner,name --jq '"\(.owner.login) \(.name)"')
@@ -135,7 +167,8 @@ TASK=$(gh issue view "$ROOT" --json body --jq '.body' \
 | 연동 (task-github) | **GitHub 루트 이슈/PR 흐름** | 루트 이슈 close 시 `complete`(→`done/`), 재오픈 시 `reopen`. 밖에서 닫힌 경우 reconcile |
 
 - 위키가 추적하는 건 **이진(활성/done)** 뿐. 상세 phase(in-progress/in-review/changes-requested)는 위키가 복제하지 않고 이슈에 위임 → 복제 안 하니 드리프트 없음.
-- **reconcile**: out-of-band(밖에서 닫힌 이슈)는 task-github가 `gh`로 읽어 위키 task 상태를 정렬한다. **위키 CLI는 `gh`를 모른다** — reconcile 주체는 task-github.
+- **doctor**: prereq와 link integrity를 diagnose-only로 보고한다. 기본 read-only이며 상태 변경이 없다.
+- **reconcile**: out-of-band(밖에서 닫힌 이슈)는 task-github가 `gh`로 읽어 위키 task 상태를 정렬한다. **위키 CLI는 `gh`를 모른다** — reconcile 주체는 task-github. 단, mutation은 `reconcile --apply` 같은 명시 경로에서만 수행한다. `open`/`merge`가 opportunistic mismatch를 발견해도 먼저 dry-run plan을 보고하고 apply gate 없이 silent mutation하지 않는다.
 
 ---
 
@@ -153,6 +186,9 @@ TASK=$(gh issue view "$ROOT" --json body --jq '.body' \
 | `done` | PR diff → `refresh --check changed-path-stale` hard gate; major면 ADR → `capture decision` |
 | `review` | pr-verifier에 연결 task의 `decisions` 전달(반려 대안 회귀 점검) |
 | `merge` | 머지 전 `refresh --level integrity --strict` + PR diff drift hard gate(hygiene 경고); `closeout.py`(git/gh)가 머지·정리·루트 닫힘 감지 → 방출한 `task_to_complete`로 task `complete` |
+| `status` / `next` | context bundle 기반으로 상태와 다음 행동 1개를 read-only로 브리핑 |
+| `doctor` | labels/gh auth/dependency API/worktree/wiki availability/linkage를 diagnose-only로 점검 |
+| `reconcile` | `--apply` 명시 시에만 `wiki relate`/`complete`/`reopen` 실행 |
 
 ---
 

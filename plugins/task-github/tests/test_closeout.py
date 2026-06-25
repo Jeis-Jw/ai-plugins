@@ -65,5 +65,68 @@ class LabelsToRemoveTests(unittest.TestCase):
         self.assertEqual(closeout.labels_to_remove([]), [])
 
 
+class MergeSimulationTests(unittest.TestCase):
+    def test_simulation_requires_checks_drift_and_integrity(self):
+        result = closeout.evaluate_merge_simulation(
+            required_checks=["python3 -m pytest plugins/task-github/tests/ -q"],
+            check_results=[
+                {
+                    "command": "python3 -m pytest plugins/task-github/tests/ -q",
+                    "returncode": 0,
+                }
+            ],
+            drift_report={"issues": []},
+            integrity_report={"ok": True},
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["failed"], [])
+
+    def test_simulation_blocks_missing_check_drift_and_integrity(self):
+        result = closeout.evaluate_merge_simulation(
+            required_checks=["unit"],
+            check_results=[],
+            drift_report={"issues": [{"id": "stale"}]},
+            integrity_report={"ok": False, "issues": [{"id": "broken"}]},
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(
+            [failure["code"] for failure in result["failed"]],
+            ["required_check_missing", "changed_path_stale", "integrity_failed"],
+        )
+
+
+class LeafPolicyTests(unittest.TestCase):
+    def test_major_adds_self_flow(self):
+        result = closeout.leaf_policy_requirements({"risk_class": "major"})
+
+        self.assertEqual(result["risk_class"], "major")
+        self.assertIn("self-flow", result["required_gates"])
+
+    def test_hard_risks_force_pr_or_hard_self_flow(self):
+        for risk in ["irreversible", "db", "public-api", "security", "data-loss"]:
+            with self.subTest(risk=risk):
+                result = closeout.leaf_policy_requirements({"risk_class": risk})
+                self.assertIn("pr-or-hard-self-flow", result["required_gates"])
+
+
+class IntegrationLedgerTests(unittest.TestCase):
+    def test_render_and_parse_ledger_event(self):
+        comment = closeout.render_integration_ledger_comment({
+            "leaf": 42,
+            "sha": "abc123",
+            "checks": [{"command": "unit", "returncode": 0}],
+            "drift": {"issues": []},
+            "downstream": [{"number": 43, "title": "next"}],
+        })
+
+        events = closeout.parse_integration_ledger_events([{"body": comment}])
+
+        self.assertEqual(events[0]["schema_version"], 1)
+        self.assertEqual(events[0]["leaf"], 42)
+        self.assertEqual(events[0]["sha"], "abc123")
+
+
 if __name__ == "__main__":
     unittest.main()
