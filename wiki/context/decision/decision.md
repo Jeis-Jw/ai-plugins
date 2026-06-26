@@ -39,4 +39,4 @@ audience: [human, agent]
 - [[DEC-2026-06-19-144637-session-review-스냅샷-백엔드-하이브리드화]] — session-review가 wiki-markdown 있으면 위임, 없으면 동일 포맷 내장 writer로 fallback. 타 워크스페이스 이식성 확보.
 - [[DEC-2026-06-19-190302-ceremony를-파급력-gear-에-비례시킨다]] — PR 분할·리뷰 강도를 설계결정 수가 아니라 기어·롤백 단위에 맞춘다. mechanism=task-protocol §3.1, principle=agent-policy 스캐폴드(CLAUDE/AGENTS 재렌더).
 - [[DEC-2026-06-25-182926-wiki-markdown-개선-agent-facing-표면-재설계-우선-unit-a-b-c-closeout]] — wiki 운용 마찰 본체는 신규기능이 아니라 SKILL/CLI 표면이 실체와 drift한 것 — 표면 재설계를 P0로, discard/projection/stale/closeout을 소수 추가
-- [[DEC-2026-06-26-190009-orchestrate-v2-브랜치트리-에이전트-분해-공통플로우-재정의-task-github-yml]] — 이슈트리 자동수행 orchestrate를 공통 플로우(worktree·PR 필수) 위 브랜치트리 머지업 + 전문 에이전트 분해로 설계. 정본=PLAN.md r5.
+- [[DEC-2026-06-26-190009-orchestrate-v2-브랜치트리-에이전트-분해-공통플로우-재정의-task-github-yml]] — 이슈트리 자동수행 orchestrate를 공통 플로우(worktree·PR 필수) 위 브랜치트리 머지업 + 전문 에이전트 분해로 설계. 정본 작업정의=TASK-2026-06-26-190656 (설계 r5).
