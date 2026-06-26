@@ -59,10 +59,11 @@ fi
 gh issue edit {N} --remove-label "in-progress" --add-label "in-review"
 ```
 **기어 라벨 유지.**
-4. Push + PR — **PR 번호를 변수로 확보**:
+4. Push + PR — **PR 번호를 변수로 확보**. orchestrate에서는 PR base가 부모 브랜치다:
 ```bash
 git push -u origin task/issue-{N}
-PR=$(gh pr create --title "{type}: {요약} (#{N})" --body "Closes #{N}
+BASE_BRANCH=${BASE_BRANCH:-main}
+PR=$(gh pr create --base "$BASE_BRANCH" --title "{type}: {요약} (#{N})" --body "Closes #{N}
 
 ## 구현 결과
 ...

@@ -81,18 +81,18 @@ GitHub sub-issue는 업무 분해 구조이고, 작업 선후관계는 GitHub Is
 
 | 항목 | 규칙 |
 |------|------|
-| 메인 브랜치 | `main` |
+| 기본 브랜치 | `.task-github.yml` `base_branch` (필수, 예: `main`) |
 | 작업 브랜치 | `task/issue-{N}` |
 | 워크트리 경로 | `.worktrees/issue-{N}` |
 | 커밋 형식 | `{type}: {요약} (#{N}) — {Why}` |
 | 커밋 type | `feat`/`fix`/`docs`/`refactor`/`test`/`chore` |
 | 커밋 원칙 | 원자적(1커밋=1논리변경), WIP 금지 |
 
-워크트리 사용 조건: 병렬 작업 / main 오염 방지 / 다중 브랜치 전환.
+코드 변경 작업은 워크트리를 사용한다. orchestrate에서는 parent issue 브랜치를 base로, 루트는 `.task-github.yml base_branch`를 base로 쓴다.
 ```bash
 touch .gitignore
 grep -qxF ".worktrees/" .gitignore || printf "\n.worktrees/\n" >> .gitignore
-git worktree add .worktrees/issue-{N} -b task/issue-{N}
+git worktree add .worktrees/issue-{N} -b task/issue-{N} <base-branch>
 git worktree remove .worktrees/issue-{N} && git branch -d task/issue-{N}
 ```
 - `.worktreeinclude` 파일이 있으면 gitignore된 파일(`.env` 등)을 워크트리로 복사.
@@ -168,5 +168,12 @@ Closes #{N}
 ```
 
 ---
+
+## 8. 브랜치트리 / orchestrate
+
+- GitHub 이슈트리의 각 노드는 `task/issue-{N}` 브랜치를 가질 수 있다.
+- 자식 PR base는 부모 브랜치다. 루트 PR base는 `.task-github.yml base_branch`다.
+- non-default branch merge는 GitHub auto-close에 의존하지 않는다. merge/orchestrate가 `gh issue close`를 명시 수행한다.
+- v1 orchestrate는 reviewer/conflict 자동화를 하지 않는다. review 필요 PR은 `human_gate_review`, merge conflict는 `merge_conflict`로 STOP한다.
 
 *이 룰이 바뀌면 모든 스킬의 GitHub 조작이 바뀐다.*

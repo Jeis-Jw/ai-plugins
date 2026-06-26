@@ -36,22 +36,12 @@ fi
 N=$(gh issue create --title "{title}" --body "{body}" | grep -oE '[0-9]+$')
 echo "이슈 #$N"
 ```
-3. (코드 변경 시) 워크트리 생성:
-```bash
-touch .gitignore
-grep -qxF ".worktrees/" .gitignore || printf "\n.worktrees/\n" >> .gitignore
-git worktree add .worktrees/issue-$N -b task/issue-$N
-# .worktreeinclude 처리
-if [ -f .worktreeinclude ]; then
-  while IFS= read -r f; do [ -n "$f" ] && [ -f "$f" ] && cp "$f" ".worktrees/issue-$N/$f"; done < .worktreeinclude
-fi
-```
-4. 점유 (모드 A는 micro 전용이므로 `gear:micro`):
+3. 점유 (모드 A는 micro 전용이므로 `gear:micro`):
 ```bash
 gh issue edit $N --add-assignee @me --add-label "in-progress" --add-label "gear:micro"
 ```
 > 라벨은 항상 `gear:micro|normal|major` 중 하나 — **`gear:full`은 존재하지 않는다.** solo의 `full` 판단도 라벨은 파급력대로 normal/major를 붙인다(§task-protocol §1·§2).
-5. 다음 단계 권장 — micro이므로 `run {N}` 또는 직접 편집 후 `done {N}`. (micro 단발이라 대화 요약 코멘트·위키 task 노드 주입은 생략 — 그 맥락이 필요한 업무면 애초에 define 경로로 갔어야 한다.)
+4. 다음 단계 권장 — micro이므로 `run {N}` 또는 직접 편집 후 `done {N}`. (micro 단발이라 대화 요약 코멘트·위키 task 노드 주입은 생략 — 그 맥락이 필요한 업무면 애초에 define 경로로 갔어야 한다.)
 
 ### 모드 B — 기존 이슈 점유
 1. 이슈 현황 + 트리 관계 + dependency 확인 (open과 동일 조회)
@@ -104,4 +94,5 @@ python3 plugins/task-github/scripts/context_bundle.py --input snapshot.json
 - 점유 중복 방지 — 타인 점유 Issue는 사령관 확인 없이 시작 금지.
 - start는 위키를 **읽기만**(recall) — task 노드 생성은 define의 책임.
 - 시작 시 **dirty wiki vault를 경고**(차단 아님) — 미커밋 rationale 레코드가 워크트리 작업과 엉키는 것을 예방([wiki-bridge.md](../../rules/wiki-bridge.md) §8).
+- start는 워크트리를 만들지 않는다. 코드 작업 워크트리는 run 책임이다.
 - task-github가 만든 context bundle은 wiki task를 대체하지 않는다. wiki task는 여전히 ROOT 이슈와 1:1로만 연결된다.

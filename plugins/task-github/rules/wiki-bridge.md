@@ -186,7 +186,7 @@ TASK=$(gh issue view "$ROOT" --json body --jq '.body' \
 | `done` | PR diff → `refresh --check changed-path-stale` hard gate; major면 ADR → `capture decision` |
 | `review` | pr-verifier에 연결 task의 `decisions` 전달(반려 대안 회귀 점검) |
 | `merge` | 머지 전 `refresh --level integrity --strict` + PR diff drift hard gate(hygiene 경고); `closeout.py`(git/gh)가 머지·정리·루트 닫힘 감지 → 방출한 `task_to_complete`로 task `complete` |
-| `status` / `next` | context bundle 기반으로 상태와 다음 행동 1개를 read-only로 브리핑 |
+| `status` | context bundle 기반으로 상태와 다음 행동 1개를 read-only로 브리핑 |
 | `doctor` | labels/gh auth/dependency API/worktree/wiki availability/linkage를 diagnose-only로 점검 |
 | `reconcile` | `--apply` 명시 시에만 `wiki relate`/`complete`/`reopen` 실행 |
 

@@ -9,6 +9,7 @@ import sys
 from typing import Any
 
 import reconcile as reconcile_module
+import task_config
 
 
 def _finding(code: str, message: str, severity: str = "warning") -> dict[str, str]:
@@ -30,6 +31,10 @@ def diagnose(snapshot: dict[str, Any]) -> dict[str, Any]:
         findings.append(_finding("worktrees_not_ignored", ".worktrees/ is not ignored"))
     if prereq.get("nested_repo_guard") is False:
         findings.append(_finding("nested_repo_guard_failed", "nested repository boundary is unclear", "error"))
+
+    cfg = snapshot.get("task_config")
+    if cfg is not None:
+        findings.extend(task_config.validate_config(cfg))
 
     bundle = snapshot.get("context_bundle") or {}
     for item in (bundle.get("integrity") or {}).get("errors") or []:

@@ -78,6 +78,48 @@ class ExecutionContractTests(unittest.TestCase):
         self.assertEqual(parsed["topology"], "stacked")
         self.assertEqual(parsed["gate"], "local-merge")
 
+    def test_strict_deps_preserved_in_plan(self):
+        spec = {
+            "strict_deps": True,
+            "root": {"title": "root", "body": "root body"},
+            "children": [
+                {
+                    "key": "a",
+                    "title": "A",
+                    "body": "완료 기준\n검증\n영향 경로: a.py",
+                    "affects_paths": ["a.py"],
+                },
+                {
+                    "key": "b",
+                    "title": "B",
+                    "body": "완료 기준\n검증\n영향 경로: b.py",
+                    "affects_paths": ["b.py"],
+                    "blocked_by": ["a"],
+                },
+            ],
+        }
+
+        plan = create_issue_tree.build_plan(create_issue_tree.validate_spec(spec))
+
+        self.assertTrue(plan["strict_deps"])
+
+    def test_strict_dependency_failure_raises_instead_of_comment_fallback(self):
+        calls = []
+
+        def fake_gh(args):
+            calls.append(args)
+            if args[:2] == ["api", "-H"]:
+                return "99"
+            if args[:3] == ["api", "-X", "POST"]:
+                raise create_issue_tree.IssueTreeError("gh_failed", "dependency unavailable")
+            return ""
+
+        with self.assertRaises(create_issue_tree.IssueTreeError) as ctx:
+            create_issue_tree.add_dependency("o", "r", 2, 1, strict=True, gh_func=fake_gh)
+
+        self.assertEqual(ctx.exception.error_code, "dep_create_failed")
+        self.assertFalse(any(args[:2] == ["issue", "comment"] for args in calls))
+
 
 if __name__ == "__main__":
     unittest.main()

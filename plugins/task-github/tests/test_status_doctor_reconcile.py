@@ -85,6 +85,22 @@ class DoctorTests(unittest.TestCase):
             ["wiki", "complete", "TASK-2026-06-26-024108-task-github-개선"],
         )
 
+    def test_doctor_reports_task_config_errors(self):
+        snapshot = {
+            "task_config": {
+                "mode": "solo",
+                "orchestrate": {"review-mode": "sometimes"},
+            }
+        }
+
+        result = doctor.diagnose(snapshot)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(
+            [item["code"] for item in result["findings"]],
+            ["base_branch_required", "bad_orchestrate_review_mode"],
+        )
+
 
 class ReconcileTests(unittest.TestCase):
     def test_reconcile_plans_wiki_cli_actions_without_applying(self):

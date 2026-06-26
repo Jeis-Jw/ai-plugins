@@ -62,11 +62,11 @@ fi
 ```bash
 python3 "${CLAUDE_SKILL_DIR}/scripts/create_issue_tree.py" \
   --spec /tmp/task-github-issue-tree.json \
-  --dry-run --json
+  --dry-run --strict-deps --json
 
 RESULT=$(python3 "${CLAUDE_SKILL_DIR}/scripts/create_issue_tree.py" \
   --spec /tmp/task-github-issue-tree.json \
-  --json)
+  --strict-deps --json)
 ROOT=$(printf '%s' "$RESULT" | python3 -c "import sys,json;print(json.load(sys.stdin)['root_number'])")
 ```
 
@@ -110,7 +110,7 @@ spec 형식:
 ```
 헬퍼는 `root.execution_contract`가 있으면 root issue body에 parser-safe fenced block(`task-github-execution`)으로 materialize한다. unknown key는 버리고 stable key만 남긴다. 이 contract는 **실행 방법(how)** 이며 wiki task의 작업정의(why/what)를 대체하지 않는다. 위키에는 쓰지 않는다. `required_checks`는 shell string이 아니라 argv array만 local closeout에서 실행된다.
 
-헬퍼는 서브이슈 부모 연결을 **GraphQL `createIssue(parentIssueId)`** 로 통일한다. child마다 완료 기준, 검증 anchor, 영향 경로/파일 anchor, `affects_paths`가 필요하다. `affects_paths`가 겹치는 child는 한쪽 `blocked_by`를 선언해야 dry-run을 통과한다([quality-gates.md](../../rules/quality-gates.md) G3/G4). dependency는 REST Issue dependency API를 쓰며 `X-GitHub-Api-Version: 2026-03-10`을 고정한다. dependency API 실패 시 헬퍼가 child 이슈에 fallback 코멘트를 남긴다([dependencies.md](../../rules/dependencies.md)).
+헬퍼는 서브이슈 부모 연결을 **GraphQL `createIssue(parentIssueId)`** 로 통일한다. child마다 완료 기준, 검증 anchor, 영향 경로/파일 anchor, `affects_paths`가 필요하다. `affects_paths`가 겹치는 child는 한쪽 `blocked_by`를 선언해야 dry-run을 통과한다([quality-gates.md](../../rules/quality-gates.md) G3/G4). dependency는 REST Issue dependency API를 쓰며 `X-GitHub-Api-Version: 2026-03-10`을 고정한다. orchestrate 대상 tree는 `--strict-deps`라 dependency API 실패 시 `dep_create_failed`로 중단한다. comment fallback은 수동 define에서만 허용된다([dependencies.md](../../rules/dependencies.md)).
 6. **(위키 가용 시) 이슈 ↔ 작업정의 노드 연결** — task 노드는 3에서 이미 확보됨. 이제 이슈 번호를 task 노드에 **역링크**하고, 루트 이슈 본문에 task 노드를 기록한다. merge/done이 이 본문의 `[[TASK-...]]`를 읽어 완료 전이하므로 실제 ID를 박아야 한다([wiki-bridge.md](../../rules/wiki-bridge.md) §4):
 ```bash
 # (a) task 노드에 루트 이슈 역링크 (capture가 --tasks 없이 만들었으므로 여기서 연결)
@@ -158,7 +158,7 @@ fi
    - brainstorm으로 나온 단위별 상세 설계(데이터 모델, DDL, API, 프롬프트 계약)는 **서브이슈 본문**에 둔다. 실행 중 새로 확정되는 장기 판단만 그때 `decision`/`observation`으로 캡처한다.
 2. 사령관 확인
 3. `/tmp/task-github-issue-tree.json` spec 작성
-4. `create_issue_tree.py --dry-run --json`으로 계획 검증 후 실제 실행
+4. `create_issue_tree.py --dry-run --strict-deps --json`으로 계획 검증 후 실제 실행
 5. **task 노드는 새로 만들지 않는다** — 루트의 task 노드를 자식들이 공유. (분해는 구조 변경이지 새 업무가 아님)
 
 ### 전 모드 — Knowledge Capture Audit
@@ -174,6 +174,7 @@ fi
 - **기어 라벨을 붙이지 않는다** — define은 구조 생성만(기어는 start의 책임).
 - **task 노드는 업무(루트) 1:1** — 리프·서브이슈마다 만들지 않는다.
 - **Execution Contract는 루트 이슈 body 전용** — `schema_version` + stable keys를 가진 fenced block으로 materialize하고, contract 부재 시 context bundle은 `topology/gate/parent_branch=null`, `default_source=profile+gear`로 보고한다.
+- orchestrate 대상 tree는 dependency 생성 실패를 fallback comment로 숨기지 않고 `dep_create_failed`로 실패 처리한다.
 - 단위 상세 설계는 서브이슈 본문 또는 해당 단위 실행 중 캡처되는 DEC/OBS에 둔다. 위키 리프 task 노드는 만들지 않는다. 이미 만들었다면 내용을 서브이슈로 이전한 뒤 task 노드를 `retire --type deprecated`한다.
 - task 노드 캡처는 **제안 후 확인**. 위키 미가용이면 이슈만 만들고 task 노드는 스킵(정상).
 - **rationale는 메인 직접 커밋** — task 노드 + 근거 `DEC`/`REJ`/`INT`를 define이 메인에 원자적 커밋하고, 시작 시 dirty-vault를 경고한다(차단 아님). 코드 PR은 `DEC` ID로 참조([wiki-bridge.md](../../rules/wiki-bridge.md) §8).

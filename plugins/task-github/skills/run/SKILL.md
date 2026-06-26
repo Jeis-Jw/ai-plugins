@@ -63,7 +63,8 @@ gh issue edit {N} --remove-label "in-progress" --add-label "in-review"
 ```bash
 touch .gitignore
 grep -qxF ".worktrees/" .gitignore || printf "\n.worktrees/\n" >> .gitignore
-git worktree add .worktrees/issue-{N} -b task/issue-{N}
+BASE_BRANCH=${BASE_BRANCH:-main}  # orchestrate에서는 parent branch를 주입한다.
+git worktree add .worktrees/issue-{N} -b task/issue-{N} "$BASE_BRANCH"
 # .worktreeinclude 처리 + 잔재 점검 (git clean은 컨펌 후)
 ```
 
@@ -109,5 +110,6 @@ wiki capture observation \
 - 원자적 커밋(1커밋=1논리변경, WIP 금지).
 - 워크트리 미커밋 변경 보존.
 - 열린 `blocked_by`가 있으면 실행 금지.
+- 코드 변경 워크트리 생성은 run 책임이다(start에서 만들지 않는다).
 - observation만 자동 캡처. decision/trial_error는 verify에서 확인 후 승격.
 - Knowledge Capture Audit 결과를 남긴다.

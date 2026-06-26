@@ -14,7 +14,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Iterable, List
+from typing import Callable, Iterable, List
 
 TASK_GITHUB_DIR = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(TASK_GITHUB_DIR / "scripts"))
@@ -145,7 +145,7 @@ def validate_spec(spec: dict) -> dict:
                      f"({lp!r}, {rp!r}); declare blocked_by in one direction"),
                 )
 
-    return {"root": root_out, "children": child_out}
+    return {"root": root_out, "children": child_out, "strict_deps": bool(spec.get("strict_deps"))}
 
 
 def build_plan(spec: dict) -> dict:
@@ -160,6 +160,7 @@ def build_plan(spec: dict) -> dict:
         "root": spec["root"],
         "children": spec["children"],
         "dependencies": dependencies,
+        "strict_deps": bool(spec.get("strict_deps")),
     }
 
 
@@ -226,8 +227,8 @@ def create_child_issue(repo_id: str, parent_id: str, child: dict) -> int:
     return int(output)
 
 
-def issue_database_id(owner: str, repo: str, number: int) -> int:
-    output = gh([
+def issue_database_id(owner: str, repo: str, number: int, *, gh_func: Callable = gh) -> int:
+    output = gh_func([
         "api", "-H", f"X-GitHub-Api-Version: {API_VERSION}",
         f"repos/{owner}/{repo}/issues/{number}",
         "--jq", ".id",
@@ -235,17 +236,31 @@ def issue_database_id(owner: str, repo: str, number: int) -> int:
     return int(output)
 
 
-def add_dependency(owner: str, repo: str, child_number: int, blocker_number: int) -> None:
-    blocker_id = issue_database_id(owner, repo, blocker_number)
+def add_dependency(
+    owner: str,
+    repo: str,
+    child_number: int,
+    blocker_number: int,
+    *,
+    strict: bool = False,
+    gh_func: Callable = gh,
+) -> bool:
     try:
-        gh([
+        blocker_id = issue_database_id(owner, repo, blocker_number, gh_func=gh_func)
+        gh_func([
             "api", "-X", "POST",
             "-H", f"X-GitHub-Api-Version: {API_VERSION}",
             f"repos/{owner}/{repo}/issues/{child_number}/dependencies/blocked_by",
             "-F", f"issue_id={blocker_id}",
         ])
-    except IssueTreeError:
-        gh([
+        return True
+    except IssueTreeError as exc:
+        if strict:
+            raise IssueTreeError(
+                "dep_create_failed",
+                f"failed to create dependency #{child_number} blocked_by #{blocker_number}: {exc.message}",
+            ) from exc
+        gh_func([
             "issue", "comment", str(child_number),
             "--body", (
                 f"[관찰] dependency API 실패: 이 이슈는 #{blocker_number} 완료 뒤 "
@@ -253,10 +268,12 @@ def add_dependency(owner: str, repo: str, child_number: int, blocker_number: int
                 "수동 확인 필요."
             ),
         ])
+        return False
 
 
 def execute(spec: dict) -> dict:
     owner, repo, repo_id = repo_context()
+    strict_deps = bool(spec.get("strict_deps"))
     root_number = create_root_issue(spec["root"])
     parent_id = issue_node_id(owner, repo, root_number)
     numbers = {}
@@ -268,12 +285,15 @@ def execute(spec: dict) -> dict:
     dependencies_out = []
     for child in spec["children"]:
         for blocker in child["blocked_by"]:
-            add_dependency(owner, repo, numbers[child["key"]], numbers[blocker])
+            materialized = add_dependency(
+                owner, repo, numbers[child["key"]], numbers[blocker], strict=strict_deps,
+            )
             dependencies_out.append({
                 "child": child["key"],
                 "child_number": numbers[child["key"]],
                 "blocked_by": blocker,
                 "blocked_by_number": numbers[blocker],
+                "materialized": materialized,
             })
     return {
         "ok": True,
@@ -282,6 +302,7 @@ def execute(spec: dict) -> dict:
         "root_number": root_number,
         "children": children_out,
         "dependencies": dependencies_out,
+        "strict_deps": strict_deps,
         "parent_method": PARENT_METHOD,
         "dependency_api_version": API_VERSION,
     }
@@ -291,6 +312,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--spec", required=True, help="JSON spec path")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--strict-deps", action="store_true")
     parser.add_argument("--json", action="store_true", dest="as_json")
     return parser
 
@@ -307,6 +329,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         spec = validate_spec(read_spec(Path(args.spec)))
+        spec["strict_deps"] = bool(spec.get("strict_deps") or args.strict_deps)
         payload = build_plan(spec) if args.dry_run else execute(spec)
     except IssueTreeError as exc:
         emit({"ok": False, "error_code": exc.error_code, "message": exc.message},

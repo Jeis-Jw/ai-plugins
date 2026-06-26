@@ -95,7 +95,7 @@ plugins/task-github/
 │   └── quality-gates.md     #   위키 무결성 hard gate + decision/task 품질 FLAG-to-human 규약
 ├── scripts/
 │   ├── context_bundle.py     #   open/start/done/merge/status가 공유하는 issue/root/wiki TASK read-model + 링크 정합 검사
-│   ├── status_next.py        #   status/next read-model
+│   ├── status_next.py        #   status next_action read-model
 │   ├── doctor.py             #   diagnose-only checks
 │   └── reconcile.py          #   explicit bridge repair actions
 ├── skills/                  # 호출 단위 동작 (14종)
@@ -110,11 +110,12 @@ plugins/task-github/
 │   ├── review/SKILL.md      #   PR 검증 (+PR↔decision cross-link)
 │   ├── merge/SKILL.md       #   PR/local 머지 (+strict/drift hard gate, task 노드 done 전이)
 │   ├── status/SKILL.md      #   context bundle 기반 상태 개관 + next_action
-│   ├── next/SKILL.md        #   다음 행동 1개만 선택
+│   ├── orchestrate/SKILL.md #   이슈트리 자동 구동
 │   ├── doctor/SKILL.md      #   prereq/linkage diagnose-only
 │   └── reconcile/SKILL.md   #   explicit bridge mutation (--apply)
 └── agents/
-    └── pr-verifier.md       # PR 검증 전용 서브에이전트
+    ├── pr-verifier.md       # PR 검증 전용 서브에이전트
+    └── conflict-resolver.md # merge conflict 해소 전용 서브에이전트
 ```
 
 **3계층 구조**(rules=헌법 / skills=함수 / agents=외부감사)는 v2와 동일. 신규는 `rules/wiki-bridge.md` 하나 — 위키 **감지·task 노드 연결·호출의 메커니즘**만 담고, *결합 정책*은 자동로드 operating policy를 가리킨다.
@@ -441,7 +442,8 @@ flag는 block이 아니라 confirm 전 보완 신호다. 단, flag가 있는데 
 [실행]    plan → run → verify        (express는 run만)
 [종료]    done
 [리뷰]    review → merge             ← merge에서 task 노드 done 전이
-[개관]    status → next
+[개관]    status
+[트리]    orchestrate
 [진단]    doctor → reconcile --apply
 ```
 
@@ -468,7 +470,7 @@ flag는 block이 아니라 confirm 전 보완 신호다. 단, flag가 있는데 
 
 ### 7.4 `start` — 리프 점유 + 기어 판단
 - **입력 2모드**: `"제목" [설명]`(생성+점유, **micro 단발 전용** — normal/major 업무는 define 경유) / `{N}`(기존 점유).
-- **동작**: ①기어 판단(파급력) ②컨테이너 차단/이슈 생성 ③dependency 차단 체크(`blocked_by` 중 open 있으면 차단) ④점유 가능 판단(`in-progress`/`in-review`면 차단) ⑤`gh issue edit --add-assignee @me --add-label in-progress --add-label gear:{micro|normal|major}` ⑥(코드 변경 시) 워크트리 ⑦다음 단계 권장. (라벨은 항상 micro/normal/major — `gear:full` 없음; solo의 `full`은 플로우 단위일 뿐.)
+- **동작**: ①기어 판단(파급력) ②컨테이너 차단/이슈 생성 ③dependency 차단 체크(`blocked_by` 중 open 있으면 차단) ④점유 가능 판단(`in-progress`/`in-review`면 차단) ⑤`gh issue edit --add-assignee @me --add-label in-progress --add-label gear:{micro|normal|major}` ⑥다음 단계 권장. 워크트리는 만들지 않는다. (라벨은 항상 micro/normal/major — `gear:full` 없음; solo의 `full`은 플로우 단위일 뿐.)
 - **위키**: 모드 B에서 점유한 리프의 부모 루트에 연결된 task 노드 + 그 결정/취지를 세션 컨텍스트로 주입(재조회 최소화). 모드 A(micro 단발)는 주입 생략.
 - **불변식**: 기어 판단·라벨 부여의 **단일 책임 지점**. 컨테이너 차단. 열린 blocker가 있는 이슈 점유 금지. 점유 중복 방지.
 
@@ -479,7 +481,7 @@ flag는 block이 아니라 confirm 전 보완 신호다. 단, flag가 있는데 
 - **불변식**: 계획 전문 기록(축약 금지). 검증 체크리스트 = plan↔verify 계약. 승인 없는 plan 없음.
 
 ### 7.6 `run` — 실행
-- **입력**: `{N}`. **동작**: dependency 차단 재확인 후 계획 있으면 태스크 목록, 없으면 완료 조건 기준. 재작업 감지(`changes-requested`→`in-progress`). 워크트리·`.worktreeinclude`. **원자적 커밋**.
+- **입력**: `{N}`. **동작**: dependency 차단 재확인 후 계획 있으면 태스크 목록, 없으면 완료 조건 기준. 재작업 감지(`changes-requested`→`in-progress`). 부모/base 브랜치 기준 워크트리·`.worktreeinclude`. **원자적 커밋**.
 - **위키**: 작업 중 `[관찰]` 발견 시 `capture observation`(자동, `--tasks` 역링크 + `--affects-paths`). `[결정]/[시행착오]`는 코멘트 태그로 남기고 verify에서 승격.
 - **불변식**: 원자적 커밋(1커밋=1논리변경, WIP 금지). 워크트리 미커밋 변경 보존.
 
@@ -491,7 +493,7 @@ flag는 block이 아니라 confirm 전 보완 신호다. 단, flag가 있는데 
 - **불변식**: 산출물은 코멘트 1개·고정 형식. **기록이 본질.**
 
 ### 7.8 `done` — PR 생성 또는 close
-- **입력**: `{N}`. **2경로**: dependency 차단 재확인 후 (A) 변경 있음 → 커밋→PR 생성 전 drift hard gate→`in-progress→in-review`(gear 유지)→`git push`+`gh pr create`(본문 `Closes #N`)→downstream 안내→로컬 정리. (B) 변경 없음 → 결과 코멘트→상태 라벨 제거→`gh issue close`→downstream 안내.
+- **입력**: `{N}`. **2경로**: dependency 차단 재확인 후 (A) 변경 있음 → 커밋→PR 생성 전 drift hard gate→`in-progress→in-review`(gear 유지)→`git push`+`gh pr create --base <parent-or-base>`(본문 `Closes #N`)→downstream 안내→로컬 정리. (B) 변경 없음 → 결과 코멘트→상태 라벨 제거→`gh issue close`→downstream 안내.
 - **위키**: (a) **drift hard gate** — PR diff 파일을 `refresh --check changed-path-stale`에 던져 낡은 위키 문서가 있으면 done 중단 (b) major면 ADR 초안 → `capture decision`(`--intents` + `--tasks` + `--rejected`). (task 노드 done 전이는 merge에서 — 리프 done이 곧 업무 완료는 아니므로.)
 - **불변식**: PR은 코드 변경 시만. 상태 라벨만 정리, `gear:*` 유지.
 
@@ -510,12 +512,13 @@ flag는 block이 아니라 confirm 전 보완 신호다. 단, flag가 있는데 
 - **위키**: 읽기만. link integrity error는 표시만 하고 자동 복구하지 않는다.
 - **불변식**: read-only.
 
-### 7.12 `next` — 다음 행동 1개
-- **입력**: context bundle. **동작**: reconcile/wait/run/review/continue/start/none 중 하나만 선택한다.
-- **불변식**: 후보 목록을 늘어놓지 않고 steering을 줄이기 위해 하나만 고른다. read-only.
+### 7.12 `orchestrate` — 이슈트리 자동 구동
+- **입력**: 컨테이너 이슈 번호. **동작**: `ready_leaves.py`로 ready/stuck/review_waiting/done_parent/container_done을 산출하고, work-agent(start→run→done), configured review-tool relay, conflict-resolver, 결정론적 merge/close를 조합한다. review-tool/conflict-agent가 없으면 해당 슬롯은 STOP으로 안전하게 퇴각한다.
+- **위키**: 루트 완료 때만 task done 전이와 refresh를 수행한다. non-root 컨테이너 완료는 부모 브랜치 merge+close만 한다.
+- **불변식**: `mode: solo` 전용. GitHub=SoT, persistent spawned ledger 없음, gear label write는 start 단일 책임.
 
 ### 7.13 `doctor` — 운영 전제 진단
-- **입력**: prereq snapshot + context bundle. **동작**: labels/gh auth/dependency API/`.worktrees` ignore/`.worktreeinclude`/wiki·session-review availability/default config/nested repo guard/linkage를 진단한다.
+- **입력**: prereq snapshot + context bundle. **동작**: labels/gh auth/dependency API/`.task-github.yml`/`.worktrees` ignore/`.worktreeinclude`/wiki·session-review availability/default config/nested repo guard/linkage를 진단한다.
 - **불변식**: `doctor --json`은 diagnose-only. 상태 변경 없음.
 
 ### 7.14 `reconcile` — 명시 복구
@@ -534,6 +537,16 @@ flag는 block이 아니라 confirm 전 보완 신호다. 단, flag가 있는데 
 - **위키**: 연결 task 노드의 `decisions`를 받으면, PR 변경이 그 결정과 **모순**되는지 추가 점검(예: 이미 반려된 대안으로 회귀했는지).
 - **판정**: `APPROVED` / `CHANGES_REQUESTED` / `NEEDS_REVIEW`.
 - **불변식**: 후속 조치(머지)는 **메인 에이전트의 몫**. pr-verifier는 판정만(관심사 분리).
+
+## 8.1 에이전트 — `Conflict Resolver`
+
+`agents/conflict-resolver.md`. `orchestrate`가 `gh pr merge` 충돌을 만났을 때 호출하는
+충돌 해소 전용 에이전트다.
+
+- **입력**: issue, PR, head branch, expected base branch, validation commands, conflict summary.
+- **절차**: head branch에서 base를 반영해 충돌만 해소 → 의미적 모호성 있으면 STOP →
+  validation 실행 → push → orchestrator에 `resolved` 보고.
+- **불변식**: PR merge/issue close는 하지 않는다. 제품/설계 판단이 필요한 충돌은 자동해소하지 않는다.
 
 ---
 
@@ -821,7 +834,7 @@ python3 <wiki-cli> init    # ./wiki/ vault 생성 (task 타입 지원 버전 필
 이 설계는 **위키 CLI 선행 → task-github** 순서로 구현됐다(task-github 스킬이 위키 task 명령을 호출하므로). 아래는 그 순서이며 모두 완료된 상태다:
 
 1. ✅ **위키 CLI `task` 타입** ([§6.8]) — `capture task` / `complete` / `reopen` + refresh 스키마 + `templates/task.md` + 테스트. (위키 측 설계는 vault에 dogfood됨.)
-2. ✅ **task-github mechanism** — `plugin.json` + `rules/`(task-protocol/workflow/wiki-bridge) + `skills/`×14 + `agents/pr-verifier.md`.
+2. ✅ **task-github mechanism** — `plugin.json` + `rules/`(task-protocol/workflow/wiki-bridge) + `skills/`×14 + `agents/pr-verifier.md` + `agents/conflict-resolver.md`.
 3. ✅ **policy 반영** — [§13]을 `CLAUDE.md`/`AGENTS.md` operating policy block에 반영.
 4. ✅ **마켓플레이스 등록** — `.claude-plugin/marketplace.json`에 task-github 추가.
 
@@ -835,7 +848,7 @@ python3 <wiki-cli> init    # ./wiki/ vault 생성 (task 타입 지원 버전 필
 - root issue Execution Contract 추가: `schema_version` + stable keys를 가진 parser-safe fenced JSON block으로 integration 전략을 materialize한다.
 - `closeout.py --mode pr|local` 일반화: local mode는 temp worktree merge simulation, safe `required_checks`, drift/integrity evidence, leaf policy gate 통과 후에만 parent branch에 반영한다.
 - Integration Ledger 추가: stacked+local leaf closeout만 root issue comment에 append-only event를 남긴다.
-- `status`/`next`/`doctor`/`reconcile` skills 추가: read-only diagnose와 explicit `--apply` mutation을 분리한다.
+- `status`/`doctor`/`reconcile` skills 추가: read-only diagnose와 explicit `--apply` mutation을 분리한다.
 
 ### 20.2 v2 → v3
 

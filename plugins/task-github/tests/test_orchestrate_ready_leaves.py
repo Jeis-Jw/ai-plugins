@@ -1,0 +1,153 @@
+import sys
+import unittest
+from pathlib import Path
+
+TASK_GITHUB = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(TASK_GITHUB / "skills" / "orchestrate" / "scripts"))
+
+import ready_leaves  # noqa: E402
+
+
+def node(number, *, state="OPEN", labels=None, blockers=None, children=None):
+    children = children or []
+    return {
+        "number": number,
+        "title": f"issue {number}",
+        "state": state,
+        "labels": labels or [],
+        "open_blockers": blockers or [],
+        "subissues_summary": {
+            "total": len(children),
+            "completed": sum(1 for child in children if child.get("state") == "CLOSED"),
+        },
+        "children": children,
+    }
+
+
+class ReadyLeavesTests(unittest.TestCase):
+    def test_depth_three_ready_fixture(self):
+        tree = node(1, children=[
+            node(2, children=[
+                node(4, state="CLOSED"),
+                node(5, blockers=[{"number": 4, "title": "issue 4"}]),
+            ]),
+            node(3, children=[
+                node(6),
+                node(7),
+            ]),
+        ])
+
+        result = ready_leaves.evaluate_tree(tree)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual([item["number"] for item in result["ready"]], [6, 7])
+        self.assertEqual([item["number"] for item in result["blocked"]], [5])
+
+    def test_done_parent_and_ready_can_coexist(self):
+        tree = node(1, children=[
+            node(2, children=[node(4, state="CLOSED")]),
+            node(3),
+        ])
+
+        result = ready_leaves.evaluate_tree(tree)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual([item["number"] for item in result["done_parents"]], [2])
+        self.assertEqual([item["number"] for item in result["ready"]], [3])
+
+    def test_blocked_parent_is_not_silently_dropped(self):
+        tree = node(1, children=[
+            node(2, blockers=[{"number": 9, "title": "external"}], children=[node(4, state="CLOSED")]),
+        ])
+
+        result = ready_leaves.evaluate_tree(tree)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["stop_reason"], "no_progress")
+        self.assertEqual([item["number"] for item in result["blocked"]], [2])
+
+    def test_review_waiting_stops_with_single_channel(self):
+        result = ready_leaves.evaluate_tree(node(1, children=[node(2, labels=["in-review"])]))
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["stop_reason"], "human_gate_review")
+        self.assertEqual([item["number"] for item in result["review_waiting"]], [2])
+
+    def test_review_waiting_preempts_ready_siblings(self):
+        result = ready_leaves.evaluate_tree(node(1, children=[
+            node(2, labels=["in-review"]),
+            node(3),
+        ]))
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["stop_reason"], "human_gate_review")
+        self.assertEqual([item["number"] for item in result["ready"]], [3])
+
+    def test_stuck_distinguishes_prior_run_and_spawned_failed(self):
+        tree = node(1, children=[
+            node(2, labels=["in-progress"]),
+            node(3, labels=["in-progress"]),
+            node(4, labels=["in-progress"]),
+        ])
+
+        result = ready_leaves.evaluate_tree(tree, spawned_set={4}, failed_set={3})
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["stop_reason"], "stuck")
+        self.assertEqual(
+            [(item["number"], item["reason"]) for item in result["stuck"]],
+            [(2, "prior_run"), (3, "spawned_failed")],
+        )
+
+    def test_empty_tree_is_explicit_stop(self):
+        result = ready_leaves.evaluate_tree(node(1))
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["stop_reason"], "empty_tree")
+        self.assertEqual(result["ready"], [])
+
+    def test_dependency_cycle_stop_when_all_blockers_are_in_tree(self):
+        tree = node(1, children=[
+            node(2, blockers=[{"number": 3, "title": "issue 3"}]),
+            node(3, blockers=[{"number": 2, "title": "issue 2"}]),
+        ])
+
+        result = ready_leaves.evaluate_tree(tree)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["stop_reason"], "dep_cycle")
+
+    def test_paginates_subissues(self):
+        calls = []
+
+        def fetch_page(number, after):
+            calls.append((number, after))
+            if number != 1:
+                return {
+                    "node": node(number),
+                    "children": [],
+                    "has_next_page": False,
+                    "end_cursor": None,
+                }
+            if after is None:
+                return {
+                    "node": node(number),
+                    "children": [node(2)],
+                    "has_next_page": True,
+                    "end_cursor": "cursor-1",
+                }
+            return {
+                "node": node(number),
+                "children": [node(3)],
+                "has_next_page": False,
+                "end_cursor": None,
+            }
+
+        tree = ready_leaves.collect_tree(1, fetch_page)
+
+        self.assertEqual(calls, [(1, None), (1, "cursor-1"), (2, None), (3, None)])
+        self.assertEqual([child["number"] for child in tree["children"]], [2, 3])
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -17,7 +17,8 @@
 
 ## 1. 프로파일 (환경 분류)
 
-`CLAUDE.md`에 `프로파일: solo` 또는 `프로파일: team`으로 명시한다. **미지정 시 `solo`**.
+워크스페이스 루트 `.task-github.yml`에 `mode: solo` 또는 `mode: team`으로 명시한다.
+**미지정/파일 부재 시 setup/doctor 대상이며, orchestrate는 실행하지 않는다.**
 
 | 항목 | solo (기본) | team |
 |------|------|------|
@@ -31,6 +32,7 @@
 - solo의 `full`은 **플로우 판단 단위**일 뿐이다: "micro가 아니면 제대로 한다(planned --full)". 라벨을 붙일 땐 실제 파급력대로 `gear:normal`(서비스 내부) 또는 `gear:major`(외부 계약)를 고른다. 즉 solo는 normal/major를 **라벨로는 구분하되 플로우로는 통합**(둘 다 planned --full)한다.
 - team과의 유일한 차이: team은 normal→`plan`, major→`plan --full`로 플로우를 나누지만, solo는 full(normal·major) 모두 `plan --full`로 통합한다.
 - 프로파일은 **같은 스킬을 다르게 동작**시키는 게 아니라, 호출자(에이전트/사용자)의 **판단 강도**를 조절한다.
+- `orchestrate`는 `mode: solo` 전용이다. `team`에서는 자동 드라이브/머지 대신 사람이 `status`와 개별 스킬을 운영한다.
 
 ---
 
@@ -95,6 +97,8 @@
 | L1 전략 | `define` | 작업을 Issue 트리 + dependency + 위키 task 노드로 구조화 |
 | L2 전술 | `start`, `plan`, `verify` | 작업 점유·계획·검증 |
 | L3 실행 | `run`, `done` | 코드 변경·완료 |
+
+`orchestrate`는 별도 레이어가 아니라 L1~L3 공통 플로우를 GitHub 이슈트리 위에서 반복 구동하는 solo 전용 조율 스킬이다.
 
 ---
 

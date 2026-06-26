@@ -94,7 +94,7 @@ downstream이 실제로 ready인지 확정하려면 각 downstream의 `blocked_b
 
 ## 7. 실패 처리
 
-Issue dependency API는 권한/플랜/gh 버전에 따라 실패할 수 있다. `define`의 dependency 생성 실패는 sub-issue 생성을 되돌리지 않고 fallback 코멘트로 남긴다. `start`/`run`/`done`/`merge`의 dependency 조회 실패는 자동 진행하지 않고 사령관에게 수동 확인을 요청한다.
+Issue dependency API는 권한/플랜/gh 버전에 따라 실패할 수 있다. 수동 `define`의 dependency 생성 실패는 sub-issue 생성을 되돌리지 않고 fallback 코멘트로 남길 수 있다. orchestrate 대상 tree는 `--strict-deps`로 생성해 실패 시 `dep_create_failed`로 중단한다. `start`/`run`/`done`/`merge`의 dependency 조회 실패는 자동 진행하지 않고 사령관에게 수동 확인을 요청한다.
 
 `define` 중 dependency 생성이 실패하면 해당 하위 이슈에 fallback 코멘트를 남긴다:
 

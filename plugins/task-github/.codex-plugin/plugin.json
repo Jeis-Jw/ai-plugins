@@ -16,7 +16,8 @@
     "capabilities": ["Read", "Write", "GitHub", "Workflow"],
     "defaultPrompt": [
       "Use $start to claim and load an issue.",
-      "Use $status or $next to inspect current task state.",
+      "Use $status to inspect current task state.",
+      "Use $orchestrate to run a GitHub issue tree in solo mode.",
       "Use $done or $merge to close out work through PR or local mode."
     ]
   }

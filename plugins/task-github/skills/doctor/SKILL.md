@@ -14,12 +14,19 @@ python3 plugins/task-github/scripts/doctor.py --input /tmp/task-github-doctor.js
 진단 항목:
 - labels
 - gh auth
+- `.task-github.yml` parse/required keys (`mode`, `base_branch`, `orchestrate.review-mode`)
 - dependency API
 - `.worktrees/` ignore
 - `.worktreeinclude`
 - wiki/session-review availability
 - nested repo guard
 - context bundle link integrity
+
+config 진단은 helper를 쓴다:
+
+```bash
+python3 plugins/task-github/scripts/task_config.py validate --json
+```
 
 ## 불변식
 
