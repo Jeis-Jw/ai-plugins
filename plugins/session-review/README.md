@@ -53,8 +53,10 @@ Self review has two independent axes:
 Defaults are conservative: `self` uses `manual + audit`, and `separate` is
 always audit. `auto-rounds` may use audit or fast, but still stops before
 complete for user confirmation. `turnkey` is self-only and forces fast: no
-snapshot, review branch, or round commits; the final complete commit carries
-the self-review summary, resolved findings, and test evidence.
+snapshot, review branch, or round commits. It still requires a fresh reviewer
+subagent; fast removes recording overhead, not reviewer separation. The final
+complete commit carries the subagent verdict, resolved findings, and test
+evidence.
 
 Audit mode keeps the snapshot handshake and round commits. Its complete flow
 lands the squash merge and snapshot discard in one `review: complete` commit,
@@ -88,4 +90,4 @@ also rejects missing or nonzero `blocking_count`.
 
 `recording_mode=fast` is self-only. `self_automation=turnkey` must use fast and
 is the only profile where `validate-complete` does not require
-`--user-confirmed`.
+`--user-confirmed`. Same-agent self-checks are not session-review.

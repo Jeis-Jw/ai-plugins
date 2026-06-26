@@ -57,8 +57,8 @@ $ARGUMENTS:
    - `self_automation=auto-rounds`는 리뷰/수정 라운드만 자동 진행하고, complete는
      사용자 승인을 기다린다.
    - `self_automation=turnkey`는 complete까지 자동 진행하며 `recording_mode=fast`만 허용한다.
-   - `recording_mode=fast`는 self 전용이다. snapshot/review branch/round commit을 만들지
-     않고 현재 context에서 review → fix → re-review를 진행한다.
+   - `recording_mode=fast`는 self 전용이다. snapshot/review branch/round commit만
+     생략하고, reviewer 분리는 유지한다.
 2. 리뷰브랜치 생성
    `recording_mode=fast`면 이 단계와 4~5단계를 생략한다.
    audit mode에서는 `<current>-review` 형태의 리뷰브랜치를 만든다.
@@ -117,8 +117,9 @@ $ARGUMENTS:
 - `self`: 작업자가 핸드셰이크 저장 직후 **fresh 서브에이전트 reviewer**를 띄워
   `review` 스킬을 실행시킨다(독립 세션 릴레이 대신).
 - `self + audit`: snapshot, review branch, status block, round commit을 유지한다.
-- `self + fast`: snapshot, review branch, round commit을 생략한다. 최종 commit message에
-  self-review 요약과 resolved findings/test 요약을 남긴다.
+- `self + fast`: snapshot, review branch, round commit을 생략하지만 **fresh reviewer
+  subagent는 필수**다. same-agent self-check는 session-review가 아니다. 최종 commit
+  message에 subagent verdict, resolved findings, test 요약을 남긴다.
 
 ## 불변식
 

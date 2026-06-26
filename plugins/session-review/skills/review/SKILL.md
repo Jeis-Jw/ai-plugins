@@ -23,7 +23,8 @@ wiki_cli를 직접 호출하지 않는다.
 
 1. snapshot 로드
    `recording_mode=fast` self-review면 snapshot이 없으므로 1~2단계를 생략하고 현재
-   context의 target을 바로 검토한다.
+   worker context의 target을 fresh reviewer subagent가 바로 검토한다. 같은 agent가
+   스스로 재검토하는 것은 session-review가 아니다.
    ```bash
    python3 "$SR" snapshot-load --slug <snapshot> --json
    ```
@@ -78,7 +79,8 @@ wiki_cli를 직접 호출하지 않는다.
    ```
 5. 일관성 검증 후 commit
    `recording_mode=fast` self-review면 snapshot 저장과 commit을 생략한다. 판정,
-   blocking_count, 주요 finding은 현재 context에만 두고 worker가 바로 반영한다.
+   blocking_count, 주요 finding은 fresh reviewer subagent의 응답으로 worker에게
+   전달하고 worker가 바로 반영한다.
    ```bash
    python3 "$SR" validate-status --slug <snapshot>   # approved ⇒ blocking_count==0 강제
    git add wiki/snapshot
@@ -88,6 +90,7 @@ wiki_cli를 직접 호출하지 않는다.
 ## 불변식
 
 - 사용자에게 판단 질문이나 완료 확인을 직접 요청하지 않는다.
+- fast self-review에서도 reviewer는 fresh subagent다. same-agent self-check는 금지다.
 - 커밋 메시지 bare `review: feedback`는 금지다. 판정과 요지를 붙인다.
 - status 정본은 snapshot status block이다. 커밋 마커는 handoff discovery용이다.
 - `phase:"approved"`는 `blocking_count:0`과만 양립한다(`validate-status`가 강제).
