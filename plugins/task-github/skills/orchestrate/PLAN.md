@@ -51,7 +51,7 @@ tick0 ready = {1-1, 2-1-1, 2-2} → 캐스케이드 → main close.
 
 ## 5. 산출물
 
-### 5.1 `scripts/ready_leaves.py` (신규 — prior art 재사용, 신규 로직 최소)
+### 5.1 `skills/orchestrate/scripts/ready_leaves.py` (신규 — prior art 재사용, 신규 로직 최소)
 
 reviewer 확인: context_bundle.py는 단일이슈·gh미호출이라 재사용 불가가 맞으나,
 **진짜 prior art는 따로 있다 → 재사용으로 신규 코드 대폭 축소(S1):**
@@ -60,18 +60,20 @@ reviewer 확인: context_bundle.py는 단일이슈·gh미호출이라 재사용 
 
 - 입력: root 이슈# + root 루프가 가진 `spawned_set`/`failed_set`.
   GitHub만으로는 "이번 루프가 띄운 worker"를 알 수 없으므로 helper가 추론하지 않는다.
-- 동작: 서브이슈 재귀 walk(GraphQL `subIssues`, **커서 페이지네이션 루프 필수** — first:50 잘리면 leaf 영영 누락, N1), 노드별 open/리프/blocker 판정
+- 동작: 서브이슈 재귀 walk(GraphQL `subIssues`, **커서 페이지네이션 루프 필수** — `open/SKILL.md`의 `first:50` 예시는 그대로 복사하지 않는다), 노드별 open/리프/blocker 판정
 - 출력 JSON:
+  - `ok`/`errors[]` 또는 `stop_reason` — API 실패를 조용한 `ready=[]`로 숨기지 않는다
   - `ready[]` — 수행가능 리프. **각 항목에 `gear` 포함**(B1: spawn 전 게이트용)
   - `blocked[]` — 열린 blocker 있는 리프
   - `review_waiting[]` — `in-review`/`changes-requested` 등 사람 review/merge가 필요한 리프
   - `invalid_gear[]` — gear 라벨이 없거나, 여러 개거나, `micro|normal|major` 밖인 ready 리프. default 금지, 루프 STOP.
   - `stuck[]` — **in-progress 리프 중 active spawned worker가 아닌 것**. root가 넘긴
     `spawned_set`/`failed_set`으로만 판정한다. 각 항목 `reason: prior_run|spawned_failed` (C4)
-  - `done_containers[]` — `subIssuesSummary` total==completed 인 미close 컨테이너 (S2)
-  - `root_done`
-- self-check 1개 동봉(§4 예시트리 fixture로 tick0 ready=={1-1,2-1-1,2-2} 단언)
-- **API 실패 거동(N2)**: `subIssues`/`dependencies` 조회 실패 시 **부분 ready-set 스폰 금지** — 빈/에러 반환하고 루프는 STOP(`rules/dependencies.md` §7 루프 버전).
+  - `done_containers[]` — root issue를 제외한, `subIssuesSummary` total==completed 인 미close 컨테이너 (S2)
+  - `root_done` — root issue 완료는 이 경로로만 보고하고 `done_containers[]`에 넣지 않는다
+- item shape는 `{number,title,state,labels,reason?}`까지만 맞춘다. 별도 formatter는 아직 만들지 않는다.
+- self-check는 4개만 동봉: §4 예시트리 tick0 ready, `invalid_gear`, dependency API failure, done_containers+ready 동시 발생 시 close 후 re-tick.
+- **API 실패 거동(N2)**: `subIssues`/`dependencies` 조회 실패 시 **부분 ready-set 스폰 금지** — `ok:false` + `errors[]`/`stop_reason` 반환, 루프는 STOP(`rules/dependencies.md` §7 루프 버전).
 
 ### 5.2 `skills/orchestrate/SKILL.md` (절차 문서 — root 루프)
 ```
@@ -79,15 +81,18 @@ loop:
   r = ready_leaves.py(root, spawned_set, failed_set)  # 실패 시 STOP (부분 진행 금지)
   r.root_done            → 종료 + 보고
   r.stuck 있음           → 사람 게이트: STOP + 브리핑 (자동 재시도 금지, B2)
-  r.done_containers      → root가 컨테이너 issue 직접 close (closeout.py 위임 아님)
+  r.done_containers      → container별 열린 blocked_by/API 실패 guard 후 root가 직접 close,
+                           같은 tick의 ready[]는 버리고 re-tick
   r.review_waiting 있음  → 사람 게이트: review/merge STOP + 브리핑
   r.invalid_gear 있음    → 사람 게이트: STOP + 브리핑 (default 금지)
   r.ready 중 gear:major  → 사람 게이트: STOP (spawn 전 거름, B1)
-  r.ready (gear:micro|normal) → 리프마다 worker spawn (병렬, 워크트리 격리)
+  r.ready (gear:micro|normal) → --max-workers 수만큼 worker spawn (기본 1)
+                           batch가 전부 return/fail/timeout 될 때까지 다음 tick 금지
+                           timeout/fail은 failed_set에 넣고 STOP 브리핑
                            worker = 기존 start→run→done, 상태라벨 전이 전담, 요약만 리턴
   진행 단조성 검사: (closed leaf + done_containers) 증가 없으면 STOP (D3)
   max-iter = backstop (D3)
-  # 분기 순서 안전(C5): stuck > done_containers > review_waiting > invalid_gear > spawn.
+  # 분기 순서 안전(C5): stuck > done_containers > review_waiting > invalid_gear > gear:major > spawn.
   # stuck 있으면 root_done 도달 불가.
 ```
 worker 새 코드 0. 기존 start/run/done 재사용.
@@ -102,8 +107,9 @@ worker 새 코드 0. 기존 start/run/done 재사용.
 ## 7. 도구 선택
 
 - worker = Agent 서브에이전트 (기존 스킬 재사용)
-- 루프 = main thread가 skill 실행 (unattended는 `/loop` 옵션)
-- 헬퍼 = python + gh GraphQL (open/closeout prior art 재사용)
+- 루프 = main thread가 foreground로 skill 실행. `/loop` unattended와 persistent spawned ledger는 v1에서 제외한다.
+- 헬퍼 = python + gh GraphQL (open/closeout prior art 재사용). v1 API scope는 `blocked_by` 중심으로 시작한다.
+- v1 기본은 `--max-workers 1`; 병렬 설계는 유지하되 rate limit/worktree lock/라벨 race 디버깅을 나중으로 미룬다.
 - Workflow 미사용 (v1 라지; 병렬 강화 필요시 업글 경로)
 
 ## 8. 불변식 + 선행 입력
@@ -118,6 +124,10 @@ worker 새 코드 0. 기존 start/run/done 재사용.
 - **각 리프의 `gear:*` 라벨**(B1 — gear:major 사전식별 위해 define/분해 시점 선결. 고정트리=완전스케줄 철학과 정합)
   - **구현 주체(C1)**: `create_issue_tree.py` child spec(validate_spec)에 현재 `gear`/`labels` 필드 없음 → child spec에 `gear` 필드 추가 + `create_child_issue` execute에서 `gh issue edit {N} --add-label gear:{v}` 1줄. 이게 "gear 선결"의 실행 지점.
   - `plugins/task-github/skills/define/SKILL.md`의 spec 예시와 "기어 라벨 안 붙임" 불변식도 같은 커밋에서 orchestrate tree 예외로 갱신한다.
+  - `plugins/task-github/DESIGN.md`와 `plugins/task-github/skills/start/SKILL.md`의 "start가 gear 부여 지점" 문구도 같은 커밋에서 선결 gear 예외를 최소 문구로 맞춘다.
+- **모든 `blocked_by` dependency가 GitHub에 materialize되어야 한다.**
+  `create_issue_tree.py`의 comment-only fallback은 수동 define에는 남길 수 있지만,
+  orchestrate/gear-bearing tree에서는 dependency 생성 실패를 `dep_create_failed`로 실패 처리해 non-runnable로 둔다.
 
 ### 알려진 한계 (구현시 `ponytail:` 주석)
 - 동시 worktree 생성 경합 = 경로충돌 아님(경로 `issue-{N}` keyed). 공유 `.gitignore` append + `git worktree add` 레지스트리 락 → **worktree 생성단계만 직렬화** (D1)
@@ -126,4 +136,4 @@ worker 새 코드 0. 기존 start/run/done 재사용.
 
 ## 9. 미해결 (r1 4 → r2 0)
 
-- **확정(C3)**: 컨테이너 close = **root가 `done_containers` 신호로 직접 close**. closeout.py는 root-close 감지만(트리 walk 캐스케이드를 떠안으면 single-issue 도구 성격이 흐려짐). 완료감지는 S2(subIssuesSummary)로 해결. → 미해결 0.
+- **확정(C3)**: 컨테이너 close = **root가 `done_containers` 신호로 직접 close**. 단 close 직전 열린 `blocked_by`와 dependency 조회 실패를 guard하고, 실패/열린 blocker면 STOP 브리핑한다. closeout.py는 root-close 감지만(트리 walk 캐스케이드를 떠안으면 single-issue 도구 성격이 흐려짐). 완료감지는 S2(subIssuesSummary)로 해결. → 미해결 0.
