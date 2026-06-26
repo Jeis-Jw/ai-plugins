@@ -235,11 +235,12 @@ def validate_self_profile_fields(status: dict[str, Any]) -> None:
     flow_mode = normalized.get("flow_mode")
     self_automation = normalized.get("self_automation")
     recording_mode = normalized.get("recording_mode")
+    if flow_mode != "self" and self_automation is not None:
+        raise StatusError("self_automation requires flow_mode self")
+    if flow_mode != "self" and recording_mode == "fast":
+        raise StatusError("recording_mode fast requires flow_mode self")
     if flow_mode == "separate":
-        if self_automation is not None:
-            raise StatusError("separate flow must not set self_automation")
-        if recording_mode == "fast":
-            raise StatusError("separate flow requires recording_mode audit")
+        return
     if flow_mode == "self" and self_automation == "turnkey" and recording_mode != "fast":
         raise StatusError("self turnkey requires recording_mode fast")
 

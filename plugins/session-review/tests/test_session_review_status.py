@@ -226,6 +226,19 @@ review_strength: normal
                 "self_automation": "auto-rounds",
             })
 
+    def test_self_only_fields_require_self_flow(self):
+        with self.assertRaisesRegex(session_review.StatusError, "self_automation"):
+            session_review.validate_status({
+                "phase": "awaiting-review",
+                "self_automation": "turnkey",
+            })
+
+        with self.assertRaisesRegex(session_review.StatusError, "recording_mode"):
+            session_review.validate_status({
+                "phase": "awaiting-review",
+                "recording_mode": "fast",
+            })
+
     def test_self_turnkey_complete_does_not_need_user_confirmation(self):
         approved = {
             "phase": "approved",
