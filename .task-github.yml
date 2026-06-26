@@ -1,9 +1,0 @@
-mode: solo
-base_branch: main
-planning-tool:
-verify-tool:
-review-tool:
-orchestrate:
-  verify-command:
-  review-mode: gear
-  review-command:
