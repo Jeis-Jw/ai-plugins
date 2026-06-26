@@ -63,7 +63,7 @@ gh issue edit {N} --remove-label "in-progress" --add-label "in-review"
 ```bash
 touch .gitignore
 grep -qxF ".worktrees/" .gitignore || printf "\n.worktrees/\n" >> .gitignore
-BASE_BRANCH=${BASE_BRANCH:-main}  # orchestrate에서는 parent branch를 주입한다.
+BASE_BRANCH=${BASE_BRANCH:-$(python3 plugins/task-github/scripts/task_config.py get base_branch 2>/dev/null || echo main)}  # orchestrate는 parent branch 주입, standalone은 .task-github.yml base_branch(없으면 main).
 git worktree add .worktrees/issue-{N} -b task/issue-{N} "$BASE_BRANCH"
 # .worktreeinclude 처리 + 잔재 점검 (git clean은 컨펌 후)
 ```

@@ -120,7 +120,26 @@ def main(argv: list[str] | None = None) -> int:
     p_scaffold.add_argument("--path", default=".task-github.yml")
     p_scaffold.add_argument("--base-branch", default="main")
     p_scaffold.add_argument("--json", action="store_true", dest="as_json")
+    p_get = sub.add_parser("get")
+    p_get.add_argument("key", help="top-level or dotted key, e.g. base_branch / orchestrate.review-mode")
+    p_get.add_argument("--path", default=".task-github.yml")
     args = parser.parse_args(argv)
+
+    if args.cmd == "get":
+        # Prints the value (exit 0) or nothing (exit 1 — absent file/key/empty).
+        # Lets shell snippets prefer config base_branch without inferring the repo default.
+        try:
+            node: Any = load_config(args.path)
+        except OSError:
+            return 1
+        for part in args.key.split("."):
+            if not isinstance(node, dict) or part not in node:
+                return 1
+            node = node[part]
+        if node is None or node == "":
+            return 1
+        print(node)
+        return 0
 
     if args.cmd == "scaffold":
         path = Path(args.path)
