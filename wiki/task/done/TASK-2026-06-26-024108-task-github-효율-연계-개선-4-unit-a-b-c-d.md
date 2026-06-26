@@ -32,7 +32,7 @@ session-review 3라운드 co-design 합의(explore → converge → confirm)로 
 
 **범위**: `plugins/task-github/**`(skills/rules/scripts/DESIGN). 위키 측 변경 없음(브릿지는 task-github 단방향). 새 기능 확장은 별도 후보로 분리(scope 동결).
 
-**구현 순서/의존**: A(토대) → B(A 위) → C(A+B 위) → D(A 위). 
+**구현 순서/의존**: A(토대) → B(A 위) → C(A+B 위) → D(A 위).
 
 **완료 기준**:
 1. A/B/C/D 각 unit 구현 + 검증(unit별 완료조건은 구현 시 정의).

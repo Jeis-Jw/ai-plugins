@@ -63,8 +63,8 @@ printf '%s\n' "$RESULT"
 #### Local mode
 local mode는 self-flow 전용이다. PR 없이 leaf branch를 parent branch로 합치지만, **temp worktree merge simulation**이 먼저 통과해야 한다.
 
-1. root issue의 Execution Contract에서 `required_checks`, `leaf_policy`, `closeout_mode`, `topology`를 읽는다.
-2. 위키 가용 시 `refresh --level integrity --strict`와 `changed-path-stale` 결과를 JSON 파일로 저장한다. closeout 스크립트는 wiki를 직접 변경하지 않고 이 evidence를 검증한다.
+1. root issue의 Execution Contract에서 `required_checks`, `leaf_policy`, `closeout_mode`, `topology`를 읽는다. `required_checks`는 argv array만 실행된다(shell string은 거부).
+2. 위키 가용 시 `refresh --level integrity --strict`와 `changed-path-stale` 결과를 JSON 파일로 저장한다. 위키 미가용이면 `{"skipped": true, "reason": "wiki_unavailable"}` evidence 파일을 명시적으로 만든다. evidence 파일이 없으면 local closeout은 실패한다. closeout 스크립트는 wiki를 직접 변경하지 않고 이 evidence를 검증한다.
 3. `closeout.py --mode local`을 dry-run으로 실행한다. 이 dry-run은 temp worktree에서 실제 merge simulation과 required checks를 실행하지만 parent branch에는 반영하지 않는다.
 
 ```bash
@@ -112,7 +112,7 @@ GitHub 이슈/PR 흐름이 상태 정본이고 위키 done/는 투영이다([wik
 
 ## 불변식
 - `--merge`(머지 커밋) 방식.
-- closeout mode는 `pr|local` 둘 중 하나다. local은 temp worktree merge simulation + `required_checks` + drift + integrity evidence가 모두 green이어야 한다.
+- closeout mode는 `pr|local` 둘 중 하나다. local은 temp worktree merge simulation + non-empty safe `required_checks` + drift + integrity evidence가 모두 green이어야 한다.
 - 상태 라벨 제거하되 `gear:*` 유지.
 - 열린 `blocked_by`가 있으면 머지 금지. 머지 후 `blocking` downstream을 안내.
 - 위키가 가용하면 `refresh --level integrity --strict`와 PR diff `changed-path-stale`를 통과해야 머지한다(integrity + drift만 차단; hygiene은 경고).

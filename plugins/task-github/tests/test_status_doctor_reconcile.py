@@ -66,6 +66,25 @@ class DoctorTests(unittest.TestCase):
             ["missing_labels", "dependency_api_unavailable", "worktrees_not_ignored", "missing_root_wiki_task"],
         )
 
+    def test_doctor_fix_plans_reconcile_actions(self):
+        snapshot = {
+            "context_bundle": {
+                "owner": "jin",
+                "repo": "ai-plugins",
+                "root": {"number": 10},
+                "wiki_task": {"id": "TASK-2026-06-26-024108-task-github-개선"},
+                "integrity": {"errors": [{"code": "root_closed_task_active"}], "warnings": []},
+            }
+        }
+
+        result = doctor.fix(snapshot, apply=False)
+
+        self.assertFalse(result["applied"])
+        self.assertEqual(
+            result["actions"][0]["argv"],
+            ["wiki", "complete", "TASK-2026-06-26-024108-task-github-개선"],
+        )
+
 
 class ReconcileTests(unittest.TestCase):
     def test_reconcile_plans_wiki_cli_actions_without_applying(self):
@@ -93,6 +112,19 @@ class ReconcileTests(unittest.TestCase):
                 ["wiki", "complete", "TASK-2026-06-26-024108-task-github-개선"],
             ],
         )
+
+    def test_reconcile_apply_does_not_treat_manual_action_as_success(self):
+        bundle = {
+            "root": {"number": 10},
+            "wiki_task": {"id": "TASK-2026-06-26-024108-task-github-개선"},
+            "integrity": {"errors": [{"code": "task_relation_missing_root"}], "warnings": []},
+        }
+
+        result = reconcile.reconcile(bundle, apply=True)
+
+        self.assertTrue(result["applied"])
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["results"][0]["skipped"])
 
 
 if __name__ == "__main__":

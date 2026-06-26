@@ -18,7 +18,7 @@ class ExecutionContractTests(unittest.TestCase):
             "gate": "local-merge",
             "parent_branch": "task/root-10",
             "leaf_policy": {"risk_class": "normal"},
-            "required_checks": ["python3 -m pytest plugins/task-github/tests/ -q"],
+            "required_checks": [["python3", "-m", "pytest", "plugins/task-github/tests/", "-q"]],
             "closeout_mode": "local",
             "future_key": "ignored",
         })
@@ -45,7 +45,7 @@ class ExecutionContractTests(unittest.TestCase):
         root = {
             "number": 10,
             "state": "OPEN",
-            "body": "[[TASK-2026-06-26-024108-task-github-개선]]\n" + contract,
+            "body": "## Wiki Context\n[[TASK-2026-06-26-024108-task-github-개선]]\n" + contract,
         }
 
         bundle = context_bundle.build_context_bundle(issue=root, root=root)

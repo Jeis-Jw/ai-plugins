@@ -81,8 +81,12 @@ spec 형식:
       "topology": "flat|stacked",
       "gate": "pr|local-merge",
       "parent_branch": "main 또는 task/root-{ROOT}",
-      "leaf_policy": {"risk_class": "micro|normal|major|irreversible|db|public-api|security|data-loss"},
-      "required_checks": ["python3 -m pytest plugins/task-github/tests/ -q"],
+      "leaf_policy": {
+        "risk_class": "micro|normal|major|irreversible|db|public-api|security|data-loss",
+        "self_flow_verified": false,
+        "hard_self_flow_verified": false
+      },
+      "required_checks": [["python3", "-m", "pytest", "plugins/task-github/tests/", "-q"]],
       "closeout_mode": "pr|local"
     }
   },
@@ -104,7 +108,7 @@ spec 형식:
   ]
 }
 ```
-헬퍼는 `root.execution_contract`가 있으면 root issue body에 parser-safe fenced block(`task-github-execution`)으로 materialize한다. unknown key는 버리고 stable key만 남긴다. 이 contract는 **실행 방법(how)** 이며 wiki task의 작업정의(why/what)를 대체하지 않는다. 위키에는 쓰지 않는다.
+헬퍼는 `root.execution_contract`가 있으면 root issue body에 parser-safe fenced block(`task-github-execution`)으로 materialize한다. unknown key는 버리고 stable key만 남긴다. 이 contract는 **실행 방법(how)** 이며 wiki task의 작업정의(why/what)를 대체하지 않는다. 위키에는 쓰지 않는다. `required_checks`는 shell string이 아니라 argv array만 local closeout에서 실행된다.
 
 헬퍼는 서브이슈 부모 연결을 **GraphQL `createIssue(parentIssueId)`** 로 통일한다. child마다 완료 기준, 검증 anchor, 영향 경로/파일 anchor, `affects_paths`가 필요하다. `affects_paths`가 겹치는 child는 한쪽 `blocked_by`를 선언해야 dry-run을 통과한다([quality-gates.md](../../rules/quality-gates.md) G3/G4). dependency는 REST Issue dependency API를 쓰며 `X-GitHub-Api-Version: 2026-03-10`을 고정한다. dependency API 실패 시 헬퍼가 child 이슈에 fallback 코멘트를 남긴다([dependencies.md](../../rules/dependencies.md)).
 6. **(위키 가용 시) 이슈 ↔ 작업정의 노드 연결** — task 노드는 3에서 이미 확보됨. 이제 이슈 번호를 task 노드에 **역링크**하고, 루트 이슈 본문에 task 노드를 기록한다. merge/done이 이 본문의 `[[TASK-...]]`를 읽어 완료 전이하므로 실제 ID를 박아야 한다([wiki-bridge.md](../../rules/wiki-bridge.md) §4):

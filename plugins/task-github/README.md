@@ -66,13 +66,13 @@ task-github:reconcile --apply
 
 ## Execution Contract
 
-root issue body에는 필요 시 `task-github-execution` fenced JSON block을 둔다. 여기에는 integration 실행 전략(`topology`, `gate`, `parent_branch`, `leaf_policy`, `required_checks`, `closeout_mode`)을 materialize한다. contract가 없으면 기존 profile+gear 기본 판단을 사용하며, context bundle은 이를 `default_source: "profile+gear"`로 드러낸다.
+root issue body에는 필요 시 `task-github-execution` fenced JSON block을 둔다. 여기에는 integration 실행 전략(`topology`, `gate`, `parent_branch`, `leaf_policy`, `required_checks`, `closeout_mode`)을 materialize한다. `required_checks`는 argv array만 local closeout에서 실행된다. contract가 없으면 기존 profile+gear 기본 판단을 사용하며, context bundle은 이를 `default_source: "profile+gear"`로 드러낸다.
 
 이 contract는 GitHub root issue에만 존재하는 실행 계약이다. wiki `TASK` 노드의 작업정의·취지를 대체하지 않는다.
 
 ## Local Closeout
 
-`merge`는 `closeout.py --mode pr|local`을 지원한다. `local`은 PR 없이 leaf branch를 parent branch에 합치되, temp worktree merge simulation + Execution Contract의 `required_checks` + drift/integrity evidence가 모두 통과해야 실제 merge한다.
+`merge`는 `closeout.py --mode pr|local`을 지원한다. `local`은 PR 없이 leaf branch를 parent branch에 합치되, temp worktree merge simulation + non-empty safe `required_checks` + drift/integrity evidence가 모두 통과해야 실제 merge한다. drift/integrity evidence가 없으면 실패하며, 위키 미가용은 명시적 skip evidence로만 통과한다.
 
 `topology=stacked` + `closeout_mode=local`이면 root issue에 Integration Ledger comment를 append한다. ledger는 GitHub 실행 로그이며 wiki에는 기록하지 않는다.
 

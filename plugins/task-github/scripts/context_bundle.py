@@ -17,6 +17,9 @@ from typing import Any, Iterable, Mapping
 
 
 TASK_ID_RE = re.compile(r"TASK-\d{4}-\d{2}-\d{2}-\d{6}-[^\s)\],.]+")
+WIKI_CONTEXT_RE = re.compile(
+    r"(?ims)^##\s+Wiki Context\s*\n(?P<body>.*?)(?=^##\s+|\Z)",
+)
 INTEGRATION_FIELDS = ("topology", "gate", "parent_branch")
 EXECUTION_CONTRACT_FENCE = "task-github-execution"
 EXECUTION_CONTRACT_SCHEMA_VERSION = 1
@@ -44,6 +47,13 @@ def extract_task_ids(body: str | None) -> list[str]:
             out.append(task_id)
             seen.add(task_id)
     return out
+
+
+def extract_wiki_context_task_ids(body: str | None) -> list[str]:
+    match = WIKI_CONTEXT_RE.search(body or "")
+    if not match:
+        return []
+    return extract_task_ids(match.group("body"))
 
 
 def normalize_execution_contract(contract: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -181,7 +191,7 @@ def _link_integrity(
         errors.append({"code": "missing_root_issue", "message": "root issue data is required"})
         return None, errors, warnings
 
-    task_ids = extract_task_ids(root.get("body"))
+    task_ids = extract_wiki_context_task_ids(root.get("body"))
     task_id = task_ids[0] if task_ids else None
     if not task_id:
         errors.append({
@@ -258,6 +268,8 @@ def build_context_bundle(
     )
     bundle = {
         "ok": not errors,
+        "owner": owner,
+        "repo": repo,
         "issue": issue_out,
         "root": root_out,
         "wiki_task": {"id": task_id, "record": dict(wiki_task_record)} if task_id and wiki_task_record else (

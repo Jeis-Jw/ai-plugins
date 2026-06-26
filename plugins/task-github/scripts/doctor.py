@@ -8,6 +8,8 @@ import json
 import sys
 from typing import Any
 
+import reconcile as reconcile_module
+
 
 def _finding(code: str, message: str, severity: str = "warning") -> dict[str, str]:
     return {"code": code, "message": message, "severity": severity}
@@ -42,6 +44,18 @@ def diagnose(snapshot: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def fix(snapshot: dict[str, Any], *, apply: bool = True, wiki_cmd: str = "wiki") -> dict[str, Any]:
+    bundle = snapshot.get("context_bundle")
+    if not isinstance(bundle, dict):
+        return {
+            "ok": False,
+            "applied": False,
+            "error_code": "missing_context_bundle",
+            "message": "doctor --fix requires context_bundle in the doctor snapshot",
+        }
+    return reconcile_module.reconcile(bundle, apply=apply, wiki_cmd=wiki_cmd)
+
+
 def _read_json(path: str) -> dict[str, Any]:
     if path == "-":
         return json.load(sys.stdin)
@@ -54,10 +68,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--input", required=True, help="doctor snapshot JSON path, or '-'")
     parser.add_argument("--json", action="store_true", dest="as_json")
     parser.add_argument("--fix", action="store_true", help="reserved explicit mutation alias; use reconcile --apply")
+    parser.add_argument("--wiki-cmd", default="wiki")
     args = parser.parse_args(argv)
-    result = diagnose(_read_json(args.input))
+    snapshot = _read_json(args.input)
+    result = fix(snapshot, apply=True, wiki_cmd=args.wiki_cmd) if args.fix else diagnose(snapshot)
     if args.fix:
-        result["fix_hint"] = "Use reconcile.py --apply with the same context bundle; doctor default is diagnose-only."
+        result["mutation_allowed"] = True
     print(json.dumps(result, ensure_ascii=False) if args.as_json else result)
     return 0 if result["ok"] else 1
 

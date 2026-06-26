@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -30,6 +31,9 @@ STATE_LABELS = ("in-review", "in-progress", "changes-requested")
 # Unicode-safe: the slug may contain Korean. Stop at whitespace or bracket so a
 # trailing ``]`` / ``)`` in markdown doesn't get swallowed.
 TASK_ID_RE = re.compile(r"TASK-\d{4}-\d{2}-\d{2}-\d{6}-[^\s)\],.]+")
+WIKI_CONTEXT_RE = re.compile(
+    r"(?ims)^##\s+Wiki Context\s*\n(?P<body>.*?)(?=^##\s+|\Z)",
+)
 LINKED_ISSUE_RE = re.compile(r"(?i)\b(?:closes|fixes|resolves)\s+#(\d+)")
 LEDGER_MARKER = "<!-- task-github:integration-ledger:v1 -->"
 LEDGER_FENCE = "task-github-ledger"
@@ -52,8 +56,11 @@ def parse_linked_issue(pr_body: str) -> Optional[int]:
 
 
 def extract_task_id(issue_body: str) -> Optional[str]:
-    """First wiki task basename in an issue body (Unicode slug preserved)."""
-    m = TASK_ID_RE.search(issue_body or "")
+    """First wiki task basename in the Wiki Context section, else None."""
+    section = WIKI_CONTEXT_RE.search(issue_body or "")
+    if not section:
+        return None
+    m = TASK_ID_RE.search(section.group("body"))
     return m.group(0) if m else None
 
 
@@ -78,6 +85,25 @@ def leaf_policy_requirements(policy: dict | None) -> dict:
     return {"risk_class": risk, "required_gates": required}
 
 
+def leaf_policy_failures(policy: dict | None, contract: dict | None) -> list[dict]:
+    requirements = leaf_policy_requirements(policy)
+    gates = set(requirements["required_gates"])
+    policy = policy or {}
+    contract = contract or {}
+    failures = []
+    self_flow_verified = contract.get("self_flow_verified") or policy.get("self_flow_verified")
+    hard_self_flow_verified = (
+        contract.get("hard_self_flow_verified") or policy.get("hard_self_flow_verified")
+    )
+    if "self-flow" in gates and not self_flow_verified:
+        failures.append({"code": "self_flow_required", "risk_class": requirements["risk_class"]})
+    if "pr-or-hard-self-flow" in gates and not (
+        contract.get("closeout_mode") == "pr" or hard_self_flow_verified
+    ):
+        failures.append({"code": "hard_self_flow_required", "risk_class": requirements["risk_class"]})
+    return failures
+
+
 def _drift_failed(report: dict | None) -> bool:
     if not report:
         return False
@@ -94,6 +120,22 @@ def _integrity_failed(report: dict | None) -> bool:
     return bool(issues)
 
 
+def _has_drift_evidence(report: dict | None) -> bool:
+    return isinstance(report, dict) and (report.get("skipped") is True or "issues" in report)
+
+
+def _has_integrity_evidence(report: dict | None) -> bool:
+    return isinstance(report, dict) and (
+        report.get("skipped") is True or "ok" in report or "issues" in report
+    )
+
+
+def _command_key(command) -> str:
+    if isinstance(command, list):
+        return json.dumps(command, ensure_ascii=False, separators=(",", ":"))
+    return str(command)
+
+
 def evaluate_merge_simulation(
     *,
     required_checks: list[str] | None,
@@ -104,10 +146,12 @@ def evaluate_merge_simulation(
     """Validate required checks + drift + integrity for local closeout."""
     required = list(required_checks or [])
     results = list(check_results or [])
-    by_command = {str(item.get("command")): item for item in results}
+    by_command = {_command_key(item.get("command")): item for item in results}
     failed = []
+    if not required:
+        failed.append({"code": "required_checks_empty"})
     for command in required:
-        result = by_command.get(command)
+        result = by_command.get(_command_key(command))
         if result is None:
             failed.append({"code": "required_check_missing", "command": command})
         elif int(result.get("returncode", 1)) != 0:
@@ -116,9 +160,13 @@ def evaluate_merge_simulation(
                 "command": command,
                 "returncode": result.get("returncode"),
             })
-    if _drift_failed(drift_report):
+    if not _has_drift_evidence(drift_report):
+        failed.append({"code": "drift_evidence_missing"})
+    elif drift_report.get("skipped") is not True and _drift_failed(drift_report):
         failed.append({"code": "changed_path_stale", "report": drift_report})
-    if _integrity_failed(integrity_report):
+    if not _has_integrity_evidence(integrity_report):
+        failed.append({"code": "integrity_evidence_missing"})
+    elif integrity_report.get("skipped") is not True and _integrity_failed(integrity_report):
         failed.append({"code": "integrity_failed", "report": integrity_report})
     return {
         "ok": not failed,
@@ -213,13 +261,12 @@ def _detect_root_task(owner: str, repo: str, issue: int) -> tuple[Optional[int],
     return root, closed, task
 
 
-def run_required_checks(commands: list[str], *, cwd: str) -> list[dict]:
+def run_required_checks(commands: list[list[str]], *, cwd: str) -> list[dict]:
     results = []
     for command in commands or []:
         result = subprocess.run(
             command,
             cwd=cwd,
-            shell=True,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -300,6 +347,9 @@ def run_local_closeout(
     issue_label_removals = _local_labels_to_remove(issue_view)
     downstream = _blocking(owner, repo, issue)
     policy = leaf_policy_requirements((contract or {}).get("leaf_policy"))
+    policy_failures = leaf_policy_failures((contract or {}).get("leaf_policy"), contract)
+    if policy_failures:
+        raise CloseoutError("leaf_policy_failed", json.dumps(policy_failures, ensure_ascii=False))
     simulation = run_merge_simulation(
         head=head,
         parent_branch=parent_branch,
@@ -434,11 +484,22 @@ def _load_json_file(path: str | None) -> dict | None:
         return json.load(fp)
 
 
-def _contract_required_checks(contract: dict | None, extras: list[str]) -> list[str]:
+def _normalize_contract_check(item) -> list[str]:
+    if isinstance(item, dict):
+        item = item.get("argv")
+    if isinstance(item, list) and item and all(isinstance(part, str) and part for part in item):
+        return list(item)
+    raise CloseoutError(
+        "unsafe_required_check",
+        "required_checks from Execution Contract must be argv arrays, not shell strings",
+    )
+
+
+def contract_required_checks(contract: dict | None, extras: list[str]) -> list[list[str]]:
     checks = []
     if isinstance(contract, dict) and isinstance(contract.get("required_checks"), list):
-        checks.extend(str(item) for item in contract["required_checks"])
-    checks.extend(extras or [])
+        checks.extend(_normalize_contract_check(item) for item in contract["required_checks"])
+    checks.extend(shlex.split(item) for item in extras or [])
     return checks
 
 
@@ -470,7 +531,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 head=args.head,
                 parent_branch=args.parent_branch,
                 dry_run=args.dry_run,
-                required_checks=_contract_required_checks(contract, args.required_check),
+                required_checks=contract_required_checks(contract, args.required_check),
                 drift_report=_load_json_file(args.drift_json),
                 integrity_report=_load_json_file(args.integrity_json),
                 contract=contract,

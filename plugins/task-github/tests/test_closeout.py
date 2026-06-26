@@ -36,20 +36,23 @@ class ExtractTaskIdTests(unittest.TestCase):
     def test_korean_slug_preserved(self):
         # The ASCII-only grep in the old SKILL truncated Korean slugs; we must not.
         tid = "TASK-2026-06-19-125723-wiki-markdown-운용-효율-개선-문서-오버헤드-감소"
-        self.assertEqual(closeout.extract_task_id(f"root: {tid} (done)"), tid)
+        self.assertEqual(closeout.extract_task_id(f"## Wiki Context\nroot: {tid} (done)"), tid)
 
     def test_stops_at_markdown_bracket(self):
-        self.assertEqual(closeout.extract_task_id("[[TASK-2026-06-19-120000-abc]]"),
+        self.assertEqual(closeout.extract_task_id("## Wiki Context\n[[TASK-2026-06-19-120000-abc]]"),
                          "TASK-2026-06-19-120000-abc")
 
     def test_stops_at_trailing_punctuation(self):
-        self.assertEqual(closeout.extract_task_id("done: TASK-2026-06-19-120000-abc."),
+        self.assertEqual(closeout.extract_task_id("## Wiki Context\ndone: TASK-2026-06-19-120000-abc."),
                          "TASK-2026-06-19-120000-abc")
-        self.assertEqual(closeout.extract_task_id("TASK-2026-06-19-120000-abc, next"),
+        self.assertEqual(closeout.extract_task_id("## Wiki Context\nTASK-2026-06-19-120000-abc, next"),
                          "TASK-2026-06-19-120000-abc")
 
     def test_none_when_absent(self):
         self.assertIsNone(closeout.extract_task_id("no task here"))
+
+    def test_none_outside_wiki_context(self):
+        self.assertIsNone(closeout.extract_task_id("## Notes\nTASK-2026-06-19-120000-abc"))
 
 
 class LabelsToRemoveTests(unittest.TestCase):
@@ -96,6 +99,30 @@ class MergeSimulationTests(unittest.TestCase):
             ["required_check_missing", "changed_path_stale", "integrity_failed"],
         )
 
+    def test_simulation_blocks_missing_evidence_and_empty_checks(self):
+        result = closeout.evaluate_merge_simulation(
+            required_checks=[],
+            check_results=[],
+            drift_report=None,
+            integrity_report=None,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(
+            [failure["code"] for failure in result["failed"]],
+            ["required_checks_empty", "drift_evidence_missing", "integrity_evidence_missing"],
+        )
+
+    def test_explicit_skip_evidence_is_accepted(self):
+        result = closeout.evaluate_merge_simulation(
+            required_checks=[["python3", "-m", "unittest"]],
+            check_results=[{"command": ["python3", "-m", "unittest"], "returncode": 0}],
+            drift_report={"skipped": True, "reason": "wiki_unavailable"},
+            integrity_report={"skipped": True, "reason": "wiki_unavailable"},
+        )
+
+        self.assertTrue(result["ok"])
+
 
 class LeafPolicyTests(unittest.TestCase):
     def test_major_adds_self_flow(self):
@@ -109,6 +136,52 @@ class LeafPolicyTests(unittest.TestCase):
             with self.subTest(risk=risk):
                 result = closeout.leaf_policy_requirements({"risk_class": risk})
                 self.assertIn("pr-or-hard-self-flow", result["required_gates"])
+
+    def test_hard_risk_blocks_local_without_hard_self_flow(self):
+        failures = closeout.leaf_policy_failures(
+            {"risk_class": "db"},
+            {"closeout_mode": "local"},
+        )
+
+        self.assertEqual([failure["code"] for failure in failures], ["hard_self_flow_required"])
+
+    def test_major_blocks_local_without_self_flow(self):
+        failures = closeout.leaf_policy_failures(
+            {"risk_class": "major"},
+            {"closeout_mode": "local"},
+        )
+
+        self.assertEqual([failure["code"] for failure in failures], ["self_flow_required"])
+
+    def test_leaf_policy_accepts_evidence_inside_policy(self):
+        self.assertEqual(
+            closeout.leaf_policy_failures(
+                {"risk_class": "major", "self_flow_verified": True},
+                {"closeout_mode": "local"},
+            ),
+            [],
+        )
+        self.assertEqual(
+            closeout.leaf_policy_failures(
+                {"risk_class": "security", "hard_self_flow_verified": True},
+                {"closeout_mode": "local"},
+            ),
+            [],
+        )
+
+    def test_safe_required_checks_reject_contract_strings(self):
+        with self.assertRaises(closeout.CloseoutError) as ctx:
+            closeout.contract_required_checks({"required_checks": ["python3 -m unittest"]}, [])
+
+        self.assertEqual(ctx.exception.code, "unsafe_required_check")
+
+    def test_safe_required_checks_accept_argv_arrays_and_cli_extras(self):
+        checks = closeout.contract_required_checks(
+            {"required_checks": [["python3", "-m", "unittest"]]},
+            ["python3 -m pytest"],
+        )
+
+        self.assertEqual(checks, [["python3", "-m", "unittest"], ["python3", "-m", "pytest"]])
 
 
 class IntegrationLedgerTests(unittest.TestCase):

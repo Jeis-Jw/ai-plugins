@@ -45,6 +45,8 @@ class ContextBundleTests(unittest.TestCase):
         )
 
         self.assertTrue(bundle["ok"])
+        self.assertEqual(bundle["owner"], "jin")
+        self.assertEqual(bundle["repo"], "ai-plugins")
         self.assertEqual(bundle["issue"]["number"], 42)
         self.assertEqual(bundle["root"]["number"], 10)
         self.assertEqual(bundle["wiki_task"]["id"], task["id"])
@@ -75,7 +77,7 @@ class ContextBundleTests(unittest.TestCase):
         root = {
             "number": 10,
             "state": "CLOSED",
-            "body": "[[TASK-2026-06-26-024108-task-github-개선]]",
+            "body": "## Wiki Context\n[[TASK-2026-06-26-024108-task-github-개선]]",
         }
         task = {
             "id": "TASK-2026-06-26-024108-task-github-개선",
@@ -96,6 +98,22 @@ class ContextBundleTests(unittest.TestCase):
             [err["code"] for err in bundle["integrity"]["errors"]],
             ["task_relation_missing_root", "root_closed_task_active"],
         )
+
+    def test_ignores_task_mentions_outside_wiki_context(self):
+        root = {
+            "number": 10,
+            "state": "OPEN",
+            "body": (
+                "## Notes\n"
+                "[[TASK-2026-06-26-024108-task-github-개선]]\n"
+            ),
+        }
+
+        bundle = context_bundle.build_context_bundle(issue=root, root=root)
+
+        self.assertFalse(bundle["ok"])
+        self.assertIsNone(bundle["wiki_task"])
+        self.assertEqual(bundle["integrity"]["errors"][0]["code"], "missing_root_wiki_task")
 
 
 if __name__ == "__main__":

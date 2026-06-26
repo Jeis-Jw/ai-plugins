@@ -47,7 +47,7 @@ def apply_actions(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for action in actions:
         argv = action.get("argv")
         if not argv:
-            results.append({"action": action, "skipped": True})
+            results.append({"action": action, "skipped": True, "returncode": 1})
             continue
         result = subprocess.run(argv, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         results.append({
@@ -63,12 +63,16 @@ def apply_actions(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def reconcile(bundle: dict[str, Any], *, apply: bool, wiki_cmd: str = "wiki") -> dict[str, Any]:
     actions = plan_actions(bundle, wiki_cmd=wiki_cmd)
-    result = {"ok": True, "applied": False, "actions": actions}
+    result = {
+        "ok": not any(action.get("manual") for action in actions),
+        "applied": False,
+        "actions": actions,
+    }
     if apply:
         applied = apply_actions(actions)
         result["applied"] = True
         result["results"] = applied
-        result["ok"] = all(item.get("returncode", 0) == 0 for item in applied)
+        result["ok"] = all(item.get("returncode", 1) == 0 for item in applied)
     return result
 
 
