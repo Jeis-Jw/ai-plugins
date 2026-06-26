@@ -1,13 +1,13 @@
 ---
 title: orchestrate v2 — 브랜치트리 + 에이전트 분해 + 공통플로우 재정의 + .task-github.yml
 created_at: 2026-06-26
-summary: 이슈트리 자동수행 orchestrate를 공통 플로우(worktree·PR 필수) 위 브랜치트리 머지업 + 전문 에이전트 분해로 설계. 정본=PLAN.md r5.
+summary: 이슈트리 자동수행 orchestrate를 공통 플로우(worktree·PR 필수) 위 브랜치트리 머지업 + 전문 에이전트 분해로 설계. 정본 작업정의=TASK-2026-06-26-190656 (설계 r5).
 tags: [orchestrate, task-github, architecture, branch-tree, config]
 ---
 
 ## 결정
 
-orchestrate를 '공통 플로우(open→start→run→done→[review]→merge→close)를 이슈트리 위에서 자동 구동하는 레이어'로 설계한다. 핵심 결정: (1) 플로우는 모드 무관 공통 — worktree·PR 필수화(micro의 worktree/PR 스킵 폐기, 리뷰 스킵만 허용). (2) 이슈트리 미러 브랜치트리 + always-PR 머지업: 리프 PR→부모브랜치, 컨테이너 done→조부모, root→main. (3) 역할 분해 — 서브에이전트 work-agent(start→run→done까지, 머지 안 함)/reviewer-agent(session-review separate)/conflict-agent(test-gated); 오케스트레이터(메인스레드)는 결정론 머지·close·게이트·root완료 위키만. (4) verify=같은세션 자기검증/review=별개세션 독립검증, 위임은 .task-github.yml의 planning-tool/verify-tool/review-tool(비면 하네스). (5) 신규 .task-github.yml(워크스페이스 루트) 정본 config: mode(solo/team 글로벌), *-tool, orchestrate.review-mode(gear/all/skip, 우선순위 --review>config>gear). (6) orchestrate=solo 전용 게이트. (7) next 스킬 제거(status 중복). 정본 설계=plugins/task-github/skills/orchestrate/PLAN.md r5.
+orchestrate를 '공통 플로우(open→start→run→done→[review]→merge→close)를 이슈트리 위에서 자동 구동하는 레이어'로 설계한다. 핵심 결정: (1) 플로우는 모드 무관 공통 — worktree·PR 필수화(micro의 worktree/PR 스킵 폐기, 리뷰 스킵만 허용). (2) 이슈트리 미러 브랜치트리 + always-PR 머지업: 리프 PR→부모브랜치, 컨테이너 done→조부모, root→main. (3) 역할 분해 — 서브에이전트 work-agent(start→run→done까지, 머지 안 함)/reviewer-agent(session-review separate)/conflict-agent(test-gated); 오케스트레이터(메인스레드)는 결정론 머지·close·게이트·root완료 위키만. (4) verify=같은세션 자기검증/review=별개세션 독립검증, 위임은 .task-github.yml의 planning-tool/verify-tool/review-tool(비면 하네스). (5) 신규 .task-github.yml(워크스페이스 루트) 정본 config: mode(solo/team 글로벌), *-tool, orchestrate.review-mode(gear/all/skip, 우선순위 --review>config>gear). (6) orchestrate=solo 전용 게이트. (7) next 스킬 제거(status 중복). 정본 설계/작업정의=[[TASK-2026-06-26-190656-orchestrate-v2-구현-브랜치트리-에이전트-분해-공통플로우-재정의]] (설계 r5, 본문에 PLAN 전문 이관).
 
 ## 취지
 
@@ -23,7 +23,7 @@ orchestrate를 '공통 플로우(open→start→run→done→[review]→merge→
 - **B. sparse 브랜치트리** — rollback 단위(root+gear:major)에만 브랜치. 완료=머지업 일관성 위해 풀 미러 채택.
 - **C. config를 CLAUDE.md/AGENTS.md 프로즈에 유지** — harness 중복·파싱 취약으로 `.task-github.yml` 별도 파일.
 - **D. completion-agent 분리** — root 완료=루프 종료상태라 메인스레드 직접 처리로 폐기.
-- 상세 근거는 트레이드오프 절 및 PLAN.md §11.2 논의 로그.
+- 상세 근거는 트레이드오프 절 및 TASK 노드 설계 §11.2 논의 로그.
 
 ## 트레이드오프
 
