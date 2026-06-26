@@ -132,6 +132,15 @@ def plan_tick(
     review_command: str | None = None,
     max_workers: int = 1,
 ) -> dict[str, Any]:
+    # Branch order mirrors evaluate_tree / SKILL.md: stuck and api_failure (ok:false
+    # 하드 STOP) win over merge/spawn. evaluate_tree leaves done_parents/review_waiting
+    # populated even when it _stop()s for stuck, so these must be gated FIRST — else a
+    # stuck tick with a completed parent would auto-merge instead of STOP (부분진행금지 위반).
+    if ready_state.get("stuck"):
+        return {"action": "stop", "stop_reason": ready_state.get("stop_reason") or "stuck"}
+    if ready_state.get("ok") is False and ready_state.get("stop_reason") not in (None, "human_gate_review"):
+        return {"action": "stop", "stop_reason": ready_state.get("stop_reason")}
+
     done_parents = _numbers(ready_state.get("done_parents"))
     if done_parents:
         return {"action": "merge_done_parents", "issues": done_parents}

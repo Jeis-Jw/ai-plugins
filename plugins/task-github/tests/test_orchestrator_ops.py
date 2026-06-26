@@ -178,6 +178,30 @@ class OrchestratorOpsTests(unittest.TestCase):
 
         self.assertEqual(plan, {"action": "spawn_workers", "issues": [2]})
 
+    def test_plan_tick_stuck_preempts_done_parents(self):
+        # evaluate_tree leaves done_parents populated even when it _stop()s for stuck.
+        # plan_tick must STOP(stuck), not auto-merge the completed parent (부분진행금지).
+        plan = orchestrator_ops.plan_tick(
+            {
+                "ok": False,
+                "stop_reason": "stuck",
+                "stuck": [{"number": 9, "reason": "prior_run"}],
+                "done_parents": [{"number": 2}],
+            },
+            review_tool=None,
+        )
+
+        self.assertEqual(plan, {"action": "stop", "stop_reason": "stuck"})
+
+    def test_plan_tick_api_failure_preempts_done_parents(self):
+        # A hard STOP (ok:false, non-review reason) must win over any actionable set.
+        plan = orchestrator_ops.plan_tick(
+            {"ok": False, "stop_reason": "api_failure", "done_parents": [{"number": 2}]},
+            review_tool=None,
+        )
+
+        self.assertEqual(plan, {"action": "stop", "stop_reason": "api_failure"})
+
 
 if __name__ == "__main__":
     unittest.main()

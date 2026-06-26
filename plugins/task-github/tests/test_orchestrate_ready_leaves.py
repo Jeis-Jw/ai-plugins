@@ -1,3 +1,4 @@
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -54,6 +55,36 @@ class ReadyLeavesTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual([item["number"] for item in result["done_parents"]], [2])
         self.assertEqual([item["number"] for item in result["ready"]], [3])
+
+    def test_dropped_ready_reappears_after_parent_closes(self):
+        # Self-check ③: the same-tick ready[] dropped while merging done_parents must
+        # resurface on the next tick (parent now CLOSED) — guards the starvation regression.
+        tick2 = node(1, children=[
+            node(2, state="CLOSED", children=[node(4, state="CLOSED")]),
+            node(3),
+        ])
+
+        result = ready_leaves.evaluate_tree(tick2)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual([item["number"] for item in result["done_parents"]], [])
+        self.assertEqual([item["number"] for item in result["ready"]], [3])
+
+    def test_api_failure_never_degrades_to_ready(self):
+        # Self-check ②: a fetch/parse failure at the CLI boundary returns ok:false +
+        # api_failure, never a silent ready=[]. (Central safety invariant.)
+        import io
+        from contextlib import redirect_stdout
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = ready_leaves.main(["1", "--fixture-json", "/nonexistent/tree.json", "--json"])
+        payload = json.loads(buf.getvalue())
+
+        self.assertEqual(rc, 1)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["stop_reason"], "api_failure")
+        self.assertEqual(payload["ready"], [])
 
     def test_blocked_parent_is_not_silently_dropped(self):
         tree = node(1, children=[
