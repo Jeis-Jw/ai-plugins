@@ -20,8 +20,8 @@
     {
       "name": "session-review",
       "source": "./plugins/session-review",
-      "description": "wiki snapshot 핸드셰이크(없으면 내장 fallback)와 git review branch로 worker/reviewer 세션 리뷰 루프를 운영. 단일 CLI facade, set-status, 하니스 무관 경로(Claude+Codex).",
-      "version": "0.2.1"
+      "description": "wiki snapshot audit 모드와 fast self-mode로 worker/reviewer 세션 리뷰 루프를 운영. 단일 CLI facade, profile-aware complete gate, 하니스 무관 경로(Claude+Codex).",
+      "version": "0.4.0"
     }
   ]
 }

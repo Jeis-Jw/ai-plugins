@@ -184,6 +184,59 @@ review_strength: normal
         with self.assertRaisesRegex(session_review.StatusError, "requires phase"):
             session_review.validate_complete(requested, user_confirmed=True)
 
+    def test_self_profile_defaults_audit_except_turnkey_forces_fast(self):
+        auto_rounds = session_review.normalize_status({
+            "phase": "awaiting-review",
+            "flow_mode": "self",
+            "self_automation": "auto-rounds",
+        })
+        self.assertEqual(auto_rounds["recording_mode"], "audit")
+
+        turnkey = session_review.normalize_status({
+            "phase": "approved",
+            "flow_mode": "self",
+            "self_automation": "turnkey",
+        })
+        self.assertEqual(turnkey["recording_mode"], "fast")
+
+    def test_self_turnkey_rejects_audit_recording(self):
+        with self.assertRaisesRegex(session_review.StatusError, "turnkey"):
+            session_review.validate_status({
+                "phase": "approved",
+                "next_actor": "worker",
+                "active_actor": "none",
+                "blocking_count": 0,
+                "flow_mode": "self",
+                "self_automation": "turnkey",
+                "recording_mode": "audit",
+            })
+
+    def test_separate_flow_rejects_fast_or_self_automation(self):
+        with self.assertRaisesRegex(session_review.StatusError, "recording_mode"):
+            session_review.validate_status({
+                "phase": "awaiting-review",
+                "flow_mode": "separate",
+                "recording_mode": "fast",
+            })
+
+        with self.assertRaisesRegex(session_review.StatusError, "self_automation"):
+            session_review.validate_status({
+                "phase": "awaiting-review",
+                "flow_mode": "separate",
+                "self_automation": "auto-rounds",
+            })
+
+    def test_self_turnkey_complete_does_not_need_user_confirmation(self):
+        approved = {
+            "phase": "approved",
+            "active_actor": "none",
+            "next_actor": "worker",
+            "blocking_count": 0,
+            "flow_mode": "self",
+            "self_automation": "turnkey",
+        }
+        session_review.validate_complete(approved, user_confirmed=False)
+
 
 class BackendResolverTests(unittest.TestCase):
     def test_env_override_none_forces_builtin(self):
@@ -444,6 +497,24 @@ class FacadeCliTests(unittest.TestCase):
         self.assertTrue(r.stdout.startswith("```yaml\n"), r.stdout)
         self.assertIn("phase: \"approved\"", r.stdout)
         self.assertIn("```", r.stdout.rstrip()[-3:])
+
+    def test_validate_complete_allows_self_turnkey_without_user_confirmed_flag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = str(Path(tmp) / "wiki")
+            status = {"phase": "approved", "active_actor": "none",
+                      "lock_since": None, "next_actor": "worker",
+                      "target_mode": "diff", "target_ref": "b", "base_ref": "a",
+                      "responding_to": "a", "round": 1, "flow_mode": "self",
+                      "self_automation": "turnkey", "blocking_count": 0}
+            disc = "```yaml\n" + session_review.render_status(status).rstrip() + "\n```"
+            save = run_cli("snapshot-save", "--vault", vault, "--slug", "h",
+                           "--title", "T", "--summary", "s", "--tags", "x",
+                           "--discussion", disc, env=self.BUILTIN)
+            self.assertEqual(save.returncode, 0, save.stderr)
+
+            r = run_cli("validate-complete", "--vault", vault, "--slug", "h",
+                        env=self.BUILTIN)
+            self.assertEqual(r.returncode, 0, r.stderr)
 
     def test_self_locates_regardless_of_cwd(self):
         # Run from a foreign cwd; script must still work via __file__/--vault.

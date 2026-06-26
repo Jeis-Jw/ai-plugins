@@ -33,6 +33,8 @@ STRING_FIELDS = (
     "base_ref",
     "responding_to",
     "flow_mode",
+    "self_automation",
+    "recording_mode",
     "review_strength",
     "round_type",
     "review_posture",
@@ -50,6 +52,8 @@ STATUS_ORDER = (
     "round",
     "round_type",
     "flow_mode",
+    "self_automation",
+    "recording_mode",
     "review_strength",
     "review_posture",
     "blocking_count",
@@ -67,6 +71,8 @@ INT_FIELDS = ("round", "blocking_count")
 TARGET_NATURE_VALUES = {"code", "spec", "direction", "process", "general"}
 ROUND_TYPE_VALUES = {"explore", "converge", "confirm", "review"}
 REVIEW_POSTURE_VALUES = {"verify", "challenge", "co-design"}
+SELF_AUTOMATION_VALUES = {"manual", "auto-rounds", "turnkey"}
+RECORDING_MODE_VALUES = {"audit", "fast"}
 DEFAULT_POSTURE_BY_TARGET_AND_ROUND = {
     "code": {
         "explore": "verify",
@@ -196,6 +202,13 @@ def normalize_status(status: dict[str, Any]) -> dict[str, Any]:
             normalized["target_nature"] = "general"
     if normalized.get("round_type") is None:
         normalized["round_type"] = "review"
+    if normalized.get("flow_mode") == "self":
+        if normalized.get("self_automation") is None:
+            normalized["self_automation"] = "manual"
+        if normalized.get("recording_mode") is None:
+            normalized["recording_mode"] = (
+                "fast" if normalized.get("self_automation") == "turnkey" else "audit"
+            )
     return normalized
 
 
@@ -215,6 +228,22 @@ def validate_review_posture_fields(status: dict[str, Any]) -> None:
     _validate_enum(normalized, "review_posture", REVIEW_POSTURE_VALUES)
 
 
+def validate_self_profile_fields(status: dict[str, Any]) -> None:
+    normalized = normalize_status(status)
+    _validate_enum(normalized, "self_automation", SELF_AUTOMATION_VALUES)
+    _validate_enum(normalized, "recording_mode", RECORDING_MODE_VALUES)
+    flow_mode = normalized.get("flow_mode")
+    self_automation = normalized.get("self_automation")
+    recording_mode = normalized.get("recording_mode")
+    if flow_mode == "separate":
+        if self_automation is not None:
+            raise StatusError("separate flow must not set self_automation")
+        if recording_mode == "fast":
+            raise StatusError("separate flow requires recording_mode audit")
+    if flow_mode == "self" and self_automation == "turnkey" and recording_mode != "fast":
+        raise StatusError("self turnkey requires recording_mode fast")
+
+
 def effective_review_posture(status: dict[str, Any]) -> str:
     normalized = normalize_status(status)
     validate_review_posture_fields(normalized)
@@ -231,9 +260,13 @@ def requires_confirm_lock_check(status: dict[str, Any]) -> bool:
 
 
 def status_metadata(status: dict[str, Any]) -> dict[str, Any]:
+    normalized = normalize_status(status)
+    validate_self_profile_fields(normalized)
     return {
         "effective_review_posture": effective_review_posture(status),
         "confirm_lock_check": requires_confirm_lock_check(status),
+        "self_automation": normalized.get("self_automation"),
+        "recording_mode": normalized.get("recording_mode"),
     }
 
 
@@ -258,6 +291,7 @@ def _render_scalar(key: str, value: Any) -> str:
 def render_status(status: dict[str, Any]) -> str:
     normalized = normalize_status(status)
     validate_review_posture_fields(normalized)
+    validate_self_profile_fields(normalized)
     keys = [key for key in STATUS_ORDER if key in normalized]
     keys.extend(key for key in normalized if key not in STATUS_ORDER)
     return "\n".join(f"{key}: {_render_scalar(key, normalized[key])}" for key in keys) + "\n"
@@ -299,7 +333,10 @@ def validate_complete(status: dict[str, Any], *, user_confirmed: bool) -> None:
     if blocking is None or int(blocking) != 0:
         raise StatusError(
             f"complete requires blocking_count == 0, got {blocking}")
-    if not user_confirmed:
+    if not user_confirmed and not (
+        normalized.get("flow_mode") == "self"
+        and normalized.get("self_automation") == "turnkey"
+    ):
         raise StatusError("complete requires explicit user confirmation")
 
 
@@ -322,6 +359,7 @@ def validate_status(status: dict[str, Any]) -> None:
     the phase owner, and an `approved` phase carries no blocking findings."""
     normalized = normalize_status(status)
     validate_review_posture_fields(normalized)
+    validate_self_profile_fields(normalized)
     phase = str(normalized.get("phase"))
     expected = PHASE_OWNER.get(phase)
     next_actor = normalized.get("next_actor") or expected

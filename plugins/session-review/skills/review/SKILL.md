@@ -1,6 +1,6 @@
 ---
 name: review
-description: Reviewer inspects a session-review snapshot and target, writes approved or changes-requested feedback, and commits the handoff. Use when the user says "리뷰해", "n라운드 리뷰요청 왔어", "session-review 검토해".
+description: Reviewer inspects a session-review target in audit or fast self-mode, writes approved or changes-requested feedback, and records it according to the chosen profile. Use when the user says "리뷰해", "n라운드 리뷰요청 왔어", "session-review 검토해".
 ---
 
 # review
@@ -22,6 +22,8 @@ wiki_cli를 직접 호출하지 않는다.
 ## 절차
 
 1. snapshot 로드
+   `recording_mode=fast` self-review면 snapshot이 없으므로 1~2단계를 생략하고 현재
+   context의 target을 바로 검토한다.
    ```bash
    python3 "$SR" snapshot-load --slug <snapshot> --json
    ```
@@ -75,6 +77,8 @@ wiki_cli를 직접 호출하지 않는다.
      --discussion "$(printf '%s\n\n### 리뷰 피드백 (round %s)\n%s\n' "$STATUS" "$ROUND" "$FEEDBACK")"
    ```
 5. 일관성 검증 후 commit
+   `recording_mode=fast` self-review면 snapshot 저장과 commit을 생략한다. 판정,
+   blocking_count, 주요 finding은 현재 context에만 두고 worker가 바로 반영한다.
    ```bash
    python3 "$SR" validate-status --slug <snapshot>   # approved ⇒ blocking_count==0 강제
    git add wiki/snapshot

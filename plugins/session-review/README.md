@@ -3,8 +3,10 @@
 `session-review` coordinates a worker/reviewer loop inside a workspace. The
 handshake is a `wiki-markdown` snapshot, the review target is either a git diff
 or a document, and convergence lands by squash-merging the review branch back
-to the worker branch only after reviewer approval and explicit user
-confirmation.
+to the worker branch after reviewer approval. Separate/team review and audit
+self-review require explicit user confirmation before completion; self turnkey
+can complete without a second confirmation because that consent is part of the
+initial profile.
 
 The machine-readable source of truth is the first fenced `yaml` block inside
 the snapshot `## 현재 논의` section. Helper code lives in
@@ -41,6 +43,23 @@ workspace with only `session-review` installed still works.
   invocation where the harness can't supply the plugin root).
 - `WIKI_VAULT` — vault root (default `./wiki`).
 
+## Self-mode profiles
+
+Self review has two independent axes:
+
+- `self_automation`: `manual|auto-rounds|turnkey`
+- `recording_mode`: `audit|fast`
+
+Defaults are conservative: `self` uses `manual + audit`, and `separate` is
+always audit. `auto-rounds` may use audit or fast, but still stops before
+complete for user confirmation. `turnkey` is self-only and forces fast: no
+snapshot, review branch, or round commits; the final complete commit carries
+the self-review summary, resolved findings, and test evidence.
+
+Audit mode keeps the snapshot handshake and round commits. Its complete flow
+lands the squash merge and snapshot discard in one `review: complete` commit,
+so the transient snapshot does not survive in main history.
+
 ## Status block consistency
 
 The status block may carry these optional review-posture fields:
@@ -48,6 +67,8 @@ The status block may carry these optional review-posture fields:
 - `target_nature`: `code|spec|direction|process|general`
 - `round_type`: `explore|converge|confirm|review`
 - `review_posture`: optional override, `verify|challenge|co-design`
+- `self_automation`: self-only, `manual|auto-rounds|turnkey`
+- `recording_mode`: `audit|fast`
 
 Defaults are conservative: `target_mode: "diff"` derives `target_nature:
 "code"`, document/unknown targets fall back to `"general"`, and missing
@@ -64,3 +85,7 @@ not "no further ideas"; co-design/challenge reviews may still leave
 `[should-reflect-before-implementation]`, `[directional]`, `[nice-to-have]`, or
 `[nit]` items for the worker synthesis and complete path. `validate-complete`
 also rejects missing or nonzero `blocking_count`.
+
+`recording_mode=fast` is self-only. `self_automation=turnkey` must use fast and
+is the only profile where `validate-complete` does not require
+`--user-confirmed`.

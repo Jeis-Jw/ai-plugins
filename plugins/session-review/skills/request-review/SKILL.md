@@ -1,6 +1,6 @@
 ---
 name: request-review
-description: Worker starts or resumes a session-review loop by forking a review branch, choosing flow mode and review strength, and saving the handshake through wiki snapshot. Use when the user says "리뷰 요청해", "session-review 시작", "이 작업 리뷰브랜치로 넘겨".
+description: Worker starts or resumes a session-review loop, choosing separate/self flow and self-mode automation/recording profile. Use when the user says "리뷰 요청해", "session-review 시작", "이 작업 리뷰브랜치로 넘겨".
 ---
 
 # request-review
@@ -31,15 +31,17 @@ $ARGUMENTS:
   --round-type explore|converge|confirm|review        # 기본: review
   --review-posture verify|challenge|co-design         # optional override only
   --flow-mode self|separate        # 기본: separate; 서브에이전트 가능하면 self 선택 가능
+  --self-automation manual|auto-rounds|turnkey # self 전용; 기본 manual
+  --recording-mode audit|fast      # 기본 audit; self+turnkey는 fast 강제
   --review-strength fast|normal|hard # 기본: normal
   --snapshot <slug>                # 기본: session-review-<target slug>
 ```
 
 ## 절차
 
-1. 대상 확정
-   - `target_mode=diff`: 현재 작업브랜치의 `HEAD`를 `base_ref`로 기록하고
-     `<current>-review` 형태의 리뷰브랜치를 만든다. `target_nature` 기본값은 `code`.
+1. 대상 및 profile 확정
+   - `target_mode=diff`: 현재 작업브랜치의 `HEAD`를 `base_ref`로 기록한다.
+     `target_nature` 기본값은 `code`.
    - `target_mode=document`: 대상 문서 경로를 `target_ref`로 기록한다. 이때
      `target_nature`를 worker/user에게 명시하게 한다. 불명확하면 `general` fallback을
      쓰되, `general`은 편한 기본값이 아니라 성격 미확정 표시다.
@@ -50,7 +52,16 @@ $ARGUMENTS:
      `effective_review_posture`를 계산한다. override가 필요할 때만
      `verify|challenge|co-design` 중 하나를 쓴다. `confirm`은 posture가 아니라
      `round_type`으로만 표현한다.
+   - `flow_mode=separate`는 항상 `recording_mode=audit`이다.
+   - `flow_mode=self` 기본은 `self_automation=manual`, `recording_mode=audit`이다.
+   - `self_automation=auto-rounds`는 리뷰/수정 라운드만 자동 진행하고, complete는
+     사용자 승인을 기다린다.
+   - `self_automation=turnkey`는 complete까지 자동 진행하며 `recording_mode=fast`만 허용한다.
+   - `recording_mode=fast`는 self 전용이다. snapshot/review branch/round commit을 만들지
+     않고 현재 context에서 review → fix → re-review를 진행한다.
 2. 리뷰브랜치 생성
+   `recording_mode=fast`면 이 단계와 4~5단계를 생략한다.
+   audit mode에서는 `<current>-review` 형태의 리뷰브랜치를 만든다.
    ```bash
    git status --short
    BASE=$(git rev-parse HEAD)
@@ -66,13 +77,13 @@ $ARGUMENTS:
    - `lock_since: null`
    - `next_actor: "reviewer"`
    - `target_mode`, `target_ref`, `base_ref`, `responding_to`, `flow_mode`,
-     `review_strength`, `target_nature`, `round_type`, optional `review_posture`는 모두
-     quoted string으로 저장한다.
+     `review_strength`, `target_nature`, `round_type`, optional `review_posture`,
+     self일 때 `self_automation`, `recording_mode`는 모두 quoted string으로 저장한다.
    - `round`만 integer다.
    `blocking_count: 0`을 포함한다(초기엔 0). `--fenced`로 ```yaml 펜스째 렌더한다:
    ```bash
    STATUS=$(python3 "$SR" render --fenced \
-     --status-json '{"phase":"awaiting-review","active_actor":"none","lock_since":null,"next_actor":"reviewer","target_mode":"diff","target_nature":"code","target_ref":"task/issue-10-review","base_ref":"<BASE>","responding_to":"<BASE>","round":1,"round_type":"review","flow_mode":"separate","review_strength":"normal","blocking_count":0}')
+     --status-json '{"phase":"awaiting-review","active_actor":"none","lock_since":null,"next_actor":"reviewer","target_mode":"diff","target_nature":"code","target_ref":"task/issue-10-review","base_ref":"<BASE>","responding_to":"<BASE>","round":1,"round_type":"review","flow_mode":"self","self_automation":"auto-rounds","recording_mode":"audit","review_strength":"normal","blocking_count":0}')
    ```
    상태를 확인하면 helper가 파생값을 함께 보여준다.
    ```bash
@@ -104,8 +115,10 @@ $ARGUMENTS:
 
 - `separate`: 사용자 운영 릴레이를 전제로 독립 reviewer 세션이 `review`를 실행한다.
 - `self`: 작업자가 핸드셰이크 저장 직후 **fresh 서브에이전트 reviewer**를 띄워
-  `review` 스킬을 실행시킨다(독립 세션 릴레이 대신). snapshot, review branch,
-  status block, 완료 게이트는 separate와 동일하다.
+  `review` 스킬을 실행시킨다(독립 세션 릴레이 대신).
+- `self + audit`: snapshot, review branch, status block, round commit을 유지한다.
+- `self + fast`: snapshot, review branch, round commit을 생략한다. 최종 commit message에
+  self-review 요약과 resolved findings/test 요약을 남긴다.
 
 ## 불변식
 
