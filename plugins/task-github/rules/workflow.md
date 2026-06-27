@@ -174,6 +174,6 @@ Closes #{N}
 - GitHub 이슈트리의 각 노드는 `task/issue-{N}` 브랜치를 가질 수 있다.
 - 자식 PR base는 부모 브랜치다. 루트 PR base는 `.task-github.yml base_branch`다.
 - non-default branch merge는 GitHub auto-close에 의존하지 않는다. merge/orchestrate가 `gh issue close`를 명시 수행한다.
-- v1 orchestrate는 reviewer/conflict 자동화를 하지 않는다. review 필요 PR은 `human_gate_review`, merge conflict는 `merge_conflict`로 STOP한다.
+- orchestrate는 configured review-tool/conflict-agent가 있을 때만 자동화한다. 없으면 review 필요 PR은 `human_gate_review`, merge conflict는 `merge_conflict`로 STOP한다. 병렬 worker는 issue별 background lane으로 dispatch하고 completion re-tick으로 review를 시작한다.
 
 *이 룰이 바뀌면 모든 스킬의 GitHub 조작이 바뀐다.*

@@ -131,7 +131,10 @@ def plan_tick(
     review_tool: str | None,
     review_command: str | None = None,
     max_workers: int = 1,
+    pipeline: bool = False,
 ) -> dict[str, Any]:
+    pipeline = pipeline or max_workers > 1
+
     # Branch order mirrors evaluate_tree / SKILL.md: stuck and api_failure (ok:false
     # 하드 STOP) win over merge/spawn. evaluate_tree leaves done_parents/review_waiting
     # populated even when it _stop()s for stuck, so these must be gated FIRST — else a
@@ -152,8 +155,29 @@ def plan_tick(
     review_waiting = _numbers(ready_state.get("review_waiting"))
     if review_waiting:
         command = compose_tool_command(review_tool, review_command)
-        if command:
+        if command and not pipeline:
             return {"action": "call_review_tool", "issues": review_waiting, "command": command}
+        if command:
+            actions: list[dict[str, Any]] = [{
+                "action": "dispatch_background_reviews",
+                "issues": review_waiting,
+                "command": command,
+                "retick_on": "review_completion",
+            }]
+            ready = _numbers(ready_state.get("ready"))
+            if ready:
+                actions.append({
+                    "action": "dispatch_background_workers",
+                    "issues": ready[:max(1, max_workers)],
+                    "ledger_update": "spawned",
+                    "retick_on": "worker_completion",
+                })
+            return {
+                "action": "pipeline",
+                "actions": actions,
+                "ledger_required": True,
+                "retick_on": "any_lane_completion",
+            }
         return {"action": "stop", "stop_reason": "human_gate_review"}
 
     if ready_state.get("ok") is False:
@@ -161,5 +185,13 @@ def plan_tick(
 
     ready = _numbers(ready_state.get("ready"))
     if ready:
+        if pipeline:
+            return {
+                "action": "dispatch_background_workers",
+                "issues": ready[:max(1, max_workers)],
+                "ledger_update": "spawned",
+                "ledger_required": True,
+                "retick_on": "worker_completion",
+            }
         return {"action": "spawn_workers", "issues": ready[:max(1, max_workers)]}
     return {"action": "stop", "stop_reason": "no_progress"}

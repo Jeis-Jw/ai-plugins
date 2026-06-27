@@ -15,6 +15,7 @@ $ARGUMENTS:
   {container_issue}
   [--review gear|all|skip]   # 기본: .task-github.yml orchestrate.review-mode 또는 gear
   [--max-workers N]          # v1 기본 1
+  [--pipeline]               # worker/review lane을 background dispatch하고 완료 이벤트마다 re-tick
 ```
 
 ## 전제
@@ -51,7 +52,7 @@ from orchestrator_ops import (
 
 ```bash
 python3 plugins/task-github/skills/orchestrate/scripts/ready_leaves.py {container_issue} \
-  --spawned "$SPAWNED" --failed "$FAILED" --json
+  --ledger ".task-github/orchestrate/{container_issue}.json" --json
 ```
 
 분기 순서:
@@ -65,7 +66,8 @@ python3 plugins/task-github/skills/orchestrate/scripts/ready_leaves.py {containe
 5. `review_waiting[]` → review-tool이 설정돼 있으면 reviewer-agent relay, 없으면 STOP(`human_gate_review`). 사람 리뷰/머지 후 재실행.
 6. `ready[]` → 최대 `--max-workers`개 work-agent에 위임.
 
-실제 분기 결정은 `plan_tick(ready_state, review_tool=..., review_command=..., max_workers=...)` 결과를 따른다.
+실제 분기 결정은 `plan_tick(ready_state, review_tool=..., review_command=..., max_workers=..., pipeline=...)` 결과를 따른다.
+`--pipeline`이거나 `--max-workers > 1`이면 foreground 병렬 batch로 worker를 호출하지 않는다. worker/reviewer는 issue별 background lane으로 dispatch하고, lane 하나가 완료될 때마다 ledger를 갱신한 뒤 즉시 re-tick한다. foreground batch는 모든 worker가 반환될 때까지 orchestrator 턴이 막혀 first-finisher PR review가 long-pole worker 뒤로 밀리므로 병렬 모드에서 금지한다.
 
 v1 worker handoff:
 
@@ -77,6 +79,31 @@ task-github:done {N}
 
 work-agent는 start에서 gear를 판단/보고한다. 오케스트레이터는 gear label을 쓰지 않고
 보고값을 review/merge 정책 판단에만 읽는다.
+
+## Pipeline Mode
+
+pipeline lane은 `worker → review → merge` 순서만 issue 내부에서 직렬화한다. 형제 lane끼리는 dependency, parent/container branch merge, shared index conflict처럼 실제 공유 자원이 있을 때만 동기화한다.
+
+1. ledger 초기화/로드:
+   ```bash
+   LEDGER=".task-github/orchestrate/{container_issue}.json"
+   python3 plugins/task-github/skills/orchestrate/scripts/orchestrate_ledger.py "$LEDGER" --json
+   python3 plugins/task-github/skills/orchestrate/scripts/ready_leaves.py {container_issue} --ledger "$LEDGER" --json
+   ```
+2. `plan_tick(..., pipeline=True)`가 `dispatch_background_workers`를 반환하면 issue별 worker를 background로 띄우고 즉시 ledger에 spawned를 기록한다.
+   ```bash
+   python3 plugins/task-github/skills/orchestrate/scripts/orchestrate_ledger.py "$LEDGER" --spawned "4 6 7 8" --json
+   ```
+3. worker 완료 callback/notification을 받으면 해당 issue를 completed로 제거하고 바로 re-tick한다. 이 re-tick에서 완료된 PR은 `review_waiting[]`에 나타나며, 남은 worker가 계속 도는 중이어도 review lane을 background로 dispatch한다.
+   ```bash
+   python3 plugins/task-github/skills/orchestrate/scripts/orchestrate_ledger.py "$LEDGER" --completed "7" --json
+   python3 plugins/task-github/skills/orchestrate/scripts/ready_leaves.py {container_issue} --ledger "$LEDGER" --json
+   ```
+4. worker failure/timeout callback은 failed로 기록하고 re-tick한다. `ready_leaves.py`는 `in-progress` + failed issue를 `stuck(reason=spawned_failed)`로 올려 자동 재시도를 막는다.
+
+`--spawned`/`--failed` 직접 전달도 유지하되, 포맷은 comma/space mixed-separated issue numbers다(`"4,6 7"` 가능). pipeline 모드의 정본은 ledger 파일이다.
+
+`ready_leaves.py`는 `ok:false`에서도 유효 JSON을 stdout에 출력한다. 호출부는 `subprocess.check_output`로 exit 1을 치명 처리하지 말고 stdout JSON의 `stop_reason`을 먼저 읽는다. `api_failure`처럼 JSON 생성 자체는 됐지만 외부 조회가 실패한 경우만 hard STOP으로 다룬다.
 
 ## 브랜치트리
 

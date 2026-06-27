@@ -7,6 +7,7 @@ TASK_GITHUB = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TASK_GITHUB / "skills" / "orchestrate" / "scripts"))
 
 import ready_leaves  # noqa: E402
+import orchestrate_ledger  # noqa: E402
 
 
 def node(number, *, state="OPEN", labels=None, blockers=None, children=None):
@@ -129,6 +130,80 @@ class ReadyLeavesTests(unittest.TestCase):
             [(item["number"], item["reason"]) for item in result["stuck"]],
             [(2, "prior_run"), (3, "spawned_failed")],
         )
+
+    def test_cli_accepts_space_or_comma_separated_spawned(self):
+        import io
+        import tempfile
+        from contextlib import redirect_stdout
+
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = Path(tmp) / "tree.json"
+            fixture.write_text(json.dumps(node(1, children=[
+                node(2, labels=["in-progress"]),
+                node(3, labels=["in-progress"]),
+            ])), encoding="utf-8")
+
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = ready_leaves.main([
+                    "1",
+                    "--fixture-json", str(fixture),
+                    "--spawned", "2, 3",
+                    "--json",
+                ])
+
+        payload = json.loads(buf.getvalue())
+        self.assertEqual(rc, 1)
+        self.assertEqual(payload["stop_reason"], "no_progress")
+        self.assertEqual(payload["stuck"], [])
+
+    def test_cli_reads_persistent_ledger(self):
+        import io
+        import tempfile
+        from contextlib import redirect_stdout
+
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = Path(tmp) / "tree.json"
+            ledger = Path(tmp) / "ledger.json"
+            fixture.write_text(json.dumps(node(1, children=[node(2, labels=["in-progress"])])), encoding="utf-8")
+            orchestrate_ledger.update_ledger(ledger, spawned={2})
+
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = ready_leaves.main([
+                    "1",
+                    "--fixture-json", str(fixture),
+                    "--ledger", str(ledger),
+                    "--json",
+                ])
+
+        payload = json.loads(buf.getvalue())
+        self.assertEqual(rc, 1)
+        self.assertEqual(payload["stop_reason"], "no_progress")
+        self.assertEqual(payload["stuck"], [])
+
+    def test_cli_missing_ledger_starts_empty(self):
+        import io
+        import tempfile
+        from contextlib import redirect_stdout
+
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = Path(tmp) / "tree.json"
+            missing_ledger = Path(tmp) / "missing.json"
+            fixture.write_text(json.dumps(node(1, children=[node(2)])), encoding="utf-8")
+
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = ready_leaves.main([
+                    "1",
+                    "--fixture-json", str(fixture),
+                    "--ledger", str(missing_ledger),
+                    "--json",
+                ])
+
+        payload = json.loads(buf.getvalue())
+        self.assertEqual(rc, 0)
+        self.assertEqual([item["number"] for item in payload["ready"]], [2])
 
     def test_empty_tree_is_explicit_stop(self):
         result = ready_leaves.evaluate_tree(node(1))

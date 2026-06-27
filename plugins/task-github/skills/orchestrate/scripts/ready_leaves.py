@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
+from pathlib import Path
 from typing import Any, Callable, Iterable
 
 STATE_LABELS = {"in-progress", "in-review", "changes-requested"}
@@ -82,6 +84,27 @@ def _stop(result: dict[str, Any], reason: str) -> dict[str, Any]:
     result["ok"] = False
     result["stop_reason"] = reason
     return result
+
+
+def parse_number_set(raw: str | None) -> set[int]:
+    if not raw:
+        return set()
+    numbers: set[int] = set()
+    for part in re.split(r"[\s,]+", raw.strip()):
+        if not part:
+            continue
+        try:
+            numbers.add(int(part))
+        except ValueError as exc:
+            raise ValueError(f"invalid issue number: {part!r}") from exc
+    return numbers
+
+
+def ledger_number_set(ledger: dict[str, Any], field: str) -> set[int]:
+    value = ledger.get(field) or []
+    if isinstance(value, str):
+        return parse_number_set(value)
+    return {int(part) for part in value}
 
 
 def evaluate_tree(
@@ -240,14 +263,12 @@ def github_fetch_page(owner: str, repo: str) -> Callable[[int, str | None], dict
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("container", type=int)
-    parser.add_argument("--spawned", default="", help="comma-separated issue numbers active in this run")
-    parser.add_argument("--failed", default="", help="comma-separated issue numbers failed in this run")
+    parser.add_argument("--spawned", default="", help="comma/space-separated issue numbers active in this run")
+    parser.add_argument("--failed", default="", help="comma/space-separated issue numbers failed in this run")
+    parser.add_argument("--ledger", help="persistent orchestrate ledger JSON; merged with --spawned/--failed")
     parser.add_argument("--fixture-json", help="read a tree fixture instead of calling gh")
     parser.add_argument("--json", action="store_true", dest="as_json")
     args = parser.parse_args(argv)
-
-    def nums(raw: str) -> set[int]:
-        return {int(part) for part in raw.split(",") if part.strip()}
 
     try:
         if args.fixture_json:
@@ -256,7 +277,15 @@ def main(argv: list[str] | None = None) -> int:
         else:
             owner, repo = _repo()
             tree = collect_tree(args.container, github_fetch_page(owner, repo))
-        payload = evaluate_tree(tree, spawned_set=nums(args.spawned), failed_set=nums(args.failed))
+
+        spawned = parse_number_set(args.spawned)
+        failed = parse_number_set(args.failed)
+        if args.ledger and Path(args.ledger).exists():
+            with open(args.ledger, encoding="utf-8") as fp:
+                ledger = json.load(fp)
+            spawned |= ledger_number_set(ledger, "spawned")
+            failed |= ledger_number_set(ledger, "failed")
+        payload = evaluate_tree(tree, spawned_set=spawned, failed_set=failed)
     except Exception as exc:  # CLI boundary: never silently degrade to ready=[]
         payload = {**_base_result(), "ok": False, "stop_reason": "api_failure", "message": str(exc)}
     print(json.dumps(payload, ensure_ascii=False) if args.as_json else json.dumps(payload, ensure_ascii=False, indent=2))

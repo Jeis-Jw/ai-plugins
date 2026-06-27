@@ -513,9 +513,9 @@ flag는 block이 아니라 confirm 전 보완 신호다. 단, flag가 있는데 
 - **불변식**: read-only.
 
 ### 7.12 `orchestrate` — 이슈트리 자동 구동
-- **입력**: 컨테이너 이슈 번호. **동작**: `ready_leaves.py`로 ready/stuck/review_waiting/done_parent/container_done을 산출하고, work-agent(start→run→done), configured review-tool relay, conflict-resolver, 결정론적 merge/close를 조합한다. review-tool/conflict-agent가 없으면 해당 슬롯은 STOP으로 안전하게 퇴각한다.
+- **입력**: 컨테이너 이슈 번호. **동작**: `ready_leaves.py`로 ready/stuck/review_waiting/done_parent/container_done을 산출하고, work-agent(start→run→done), configured review-tool relay, conflict-resolver, 결정론적 merge/close를 조합한다. review-tool/conflict-agent가 없으면 해당 슬롯은 STOP으로 안전하게 퇴각한다. `--max-workers > 1` 병렬 모드는 issue별 background lane으로 worker→review→merge를 pipeline 처리하며, lane 완료 이벤트마다 persistent ledger를 갱신하고 re-tick한다. foreground 병렬 batch는 first-finisher review를 long-pole worker 뒤로 밀기 때문에 금지한다.
 - **위키**: 루트 완료 때만 task done 전이와 refresh를 수행한다. non-root 컨테이너 완료는 부모 브랜치 merge+close만 한다.
-- **불변식**: `mode: solo` 전용. GitHub=SoT, persistent spawned ledger 없음, gear label write는 start 단일 책임.
+- **불변식**: `mode: solo` 전용. GitHub=SoT, pipeline liveness는 `.task-github/orchestrate/{container}.json` spawned/failed ledger로 보조한다. gear label write는 start 단일 책임.
 
 ### 7.13 `doctor` — 운영 전제 진단
 - **입력**: prereq snapshot + context bundle. **동작**: labels/gh auth/dependency API/`.task-github.yml`/`.worktrees` ignore/`.worktreeinclude`/wiki·session-review availability/default config/nested repo guard/linkage를 진단한다.
@@ -533,7 +533,7 @@ flag는 block이 아니라 confirm 전 보완 신호다. 단, flag가 있는데 
 `agents/pr-verifier.md`. `review`(및 복잡 PR의 `verify`)가 호출하는 **독립 검증 서브에이전트**.
 
 - **2모드**: spot-check(verify 결과 입력 시, 의심 2~3건 재검증) / 전수(verify 결과 없을 때 완료 조건 전체).
-- **절차**: `gh pr view --json`→연결 Issue(`Closes #N`)→`gh pr diff`→완료 조건 1:1 대조→**PR 코멘트 게시 후** 메인에 동일 결과 반환.
+- **절차**: `gh pr view --json`→연결 Issue(`Closes #N`)→`gh pr diff`→완료 조건 1:1 대조→메인에 결과 반환. PR 코멘트 게시는 호출자가 명시 지시한 경우에만 한다.
 - **위키**: 연결 task 노드의 `decisions`를 받으면, PR 변경이 그 결정과 **모순**되는지 추가 점검(예: 이미 반려된 대안으로 회귀했는지).
 - **판정**: `APPROVED` / `CHANGES_REQUESTED` / `NEEDS_REVIEW`.
 - **불변식**: 후속 조치(머지)는 **메인 에이전트의 몫**. pr-verifier는 판정만(관심사 분리).

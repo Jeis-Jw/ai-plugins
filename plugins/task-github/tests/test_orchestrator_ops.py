@@ -178,6 +178,41 @@ class OrchestratorOpsTests(unittest.TestCase):
 
         self.assertEqual(plan, {"action": "spawn_workers", "issues": [2]})
 
+    def test_plan_tick_max_workers_gt_one_dispatches_workers_in_background(self):
+        plan = orchestrator_ops.plan_tick(
+            {"ok": True, "ready": [{"number": 2}, {"number": 3}]},
+            review_tool=None,
+            max_workers=2,
+        )
+
+        self.assertEqual(plan["action"], "dispatch_background_workers")
+        self.assertEqual(plan["issues"], [2, 3])
+        self.assertTrue(plan["ledger_required"])
+        self.assertEqual(plan["retick_on"], "worker_completion")
+
+    def test_plan_tick_pipeline_reviews_and_spawns_without_barrier(self):
+        plan = orchestrator_ops.plan_tick(
+            {
+                "ok": False,
+                "stop_reason": "human_gate_review",
+                "review_waiting": [{"number": 2}],
+                "ready": [{"number": 3}],
+            },
+            review_tool="session-review:request-review",
+            review_command="self turnkey",
+            max_workers=1,
+            pipeline=True,
+        )
+
+        self.assertEqual(plan["action"], "pipeline")
+        self.assertTrue(plan["ledger_required"])
+        self.assertEqual([action["action"] for action in plan["actions"]], [
+            "dispatch_background_reviews",
+            "dispatch_background_workers",
+        ])
+        self.assertEqual(plan["actions"][0]["issues"], [2])
+        self.assertEqual(plan["actions"][1]["issues"], [3])
+
     def test_plan_tick_stuck_preempts_done_parents(self):
         # evaluate_tree leaves done_parents populated even when it _stop()s for stuck.
         # plan_tick must STOP(stuck), not auto-merge the completed parent (부분진행금지).
