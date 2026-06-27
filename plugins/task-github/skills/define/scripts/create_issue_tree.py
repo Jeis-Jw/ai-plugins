@@ -85,9 +85,11 @@ def validate_spec(spec: dict) -> dict:
 
     root_body = _require_text(root, "body", "root")
     execution_contract = root.get("execution_contract", spec.get("execution_contract"))
+    topology = None
     if execution_contract is not None:
         if not isinstance(execution_contract, dict):
             raise IssueTreeError("bad_spec", "root.execution_contract must be an object")
+        topology = execution_contract.get("topology")
         root_body = context_bundle.materialize_execution_contract(root_body, execution_contract)
 
     root_out = {
@@ -95,6 +97,8 @@ def validate_spec(spec: dict) -> dict:
         "body": root_body,
     }
 
+    # Pass 1: parse keys, parent refs, blocked_by. affects_paths/quality gate
+    # are role-dependent (leaf vs epic), so they wait until roles are known.
     child_out: List[dict] = []
     keys = set()
     for idx, child in enumerate(children):
@@ -105,18 +109,60 @@ def validate_spec(spec: dict) -> dict:
         if key in keys:
             raise IssueTreeError("duplicate_key", f"duplicate child key: {key}")
         keys.add(key)
+        parent = child.get("parent")
+        if parent is not None and (not isinstance(parent, str) or not parent.strip()):
+            raise IssueTreeError("bad_spec", f"{where}.parent must be a child key string or omitted")
         blocked_by = child.get("blocked_by", [])
         if not isinstance(blocked_by, list) or not all(isinstance(v, str) for v in blocked_by):
             raise IssueTreeError("bad_spec", f"{where}.blocked_by must be a string list")
-        normalized_child = {
+        child_out.append({
             "key": key,
             "title": _require_text(child, "title", where),
             "body": _require_text(child, "body", where),
-            "affects_paths": _require_string_list(child, "affects_paths", where),
+            "parent": parent.strip() if isinstance(parent, str) else None,
+            "affects_paths": child.get("affects_paths"),
             "blocked_by": blocked_by,
-        }
-        _assert_child_quality(normalized_child, where)
-        child_out.append(normalized_child)
+            "_where": where,
+        })
+
+    # Parent edges: must reference a known key, no self-parent, no cycles.
+    # A key that is some child's parent is an intermediate node (epic); the
+    # rest are leaves. Branch derivation is structural (workflow.md §8), so
+    # define only needs the shape — per-epic parent_branch is not stored here.
+    by_key = {c["key"]: c for c in child_out}
+    epic_keys = set()
+    for c in child_out:
+        parent = c["parent"]
+        if parent is None:
+            continue
+        if parent not in keys:
+            raise IssueTreeError("unknown_parent", f"{c['key']} parent unknown child key: {parent}")
+        if parent == c["key"]:
+            raise IssueTreeError("self_parent", f"{c['key']} cannot parent itself")
+        epic_keys.add(parent)
+    for c in child_out:
+        seen = set()
+        cur = c["parent"]
+        while cur is not None:
+            if cur in seen:
+                raise IssueTreeError("parent_cycle", f"parent cycle reaches {c['key']}")
+            seen.add(cur)
+            cur = by_key[cur]["parent"]
+
+    # Pass 2: role-based quality gate. Leaves are PR units — full gate +
+    # required affects_paths. Epics are branch containers — lighter gate,
+    # affects_paths optional (empty → excluded from overlap checks below).
+    for c in child_out:
+        if c["key"] in epic_keys:
+            ap = c["affects_paths"]
+            if ap is None:
+                ap = []
+            elif not isinstance(ap, list) or not all(isinstance(v, str) and v.strip() for v in ap):
+                raise IssueTreeError("bad_spec", f"{c['_where']}.affects_paths must be a string list")
+            c["affects_paths"] = [v.strip() for v in ap]
+        else:
+            c["affects_paths"] = _require_string_list(c, "affects_paths", c["_where"])
+            _assert_child_quality(c, c["_where"])
 
     for child in child_out:
         for blocker in child["blocked_by"]:
@@ -145,7 +191,24 @@ def validate_spec(spec: dict) -> dict:
                      f"({lp!r}, {rp!r}); declare blocked_by in one direction"),
                 )
 
-    return {"root": root_out, "children": child_out, "strict_deps": bool(spec.get("strict_deps"))}
+    warnings: List[str] = []
+    if str(topology) == "stacked" and child_out and not epic_keys:
+        warnings.append(
+            "topology=stacked이지만 중간 노드(epic)가 없습니다 — 모든 리프가 root "
+            "브랜치에서 분기되어 트랙 격리가 없습니다. 트랙별 독립 브랜치를 원하면 "
+            "트랙을 parent로 묶고, 의도된 평면이면 topology=flat을 쓰세요."
+        )
+
+    for c in child_out:
+        c.pop("_where", None)
+
+    return {
+        "root": root_out,
+        "children": child_out,
+        "strict_deps": bool(spec.get("strict_deps")),
+        "epics": sorted(epic_keys),
+        "warnings": warnings,
+    }
 
 
 def build_plan(spec: dict) -> dict:
@@ -161,7 +224,32 @@ def build_plan(spec: dict) -> dict:
         "children": spec["children"],
         "dependencies": dependencies,
         "strict_deps": bool(spec.get("strict_deps")),
+        "epics": spec.get("epics", []),
+        "warnings": spec.get("warnings", []),
     }
+
+
+def _topo_order(children: List[dict]) -> List[dict]:
+    """Order children so every parent precedes its descendants.
+
+    validate_spec already proved the parent graph is acyclic, so this always
+    terminates; the no-progress guard is defensive only.
+    """
+    ordered: List[dict] = []
+    placed = set()
+    remaining = list(children)
+    while remaining:
+        next_remaining = []
+        for child in remaining:
+            if child["parent"] is None or child["parent"] in placed:
+                ordered.append(child)
+                placed.add(child["key"])
+            else:
+                next_remaining.append(child)
+        if len(next_remaining) == len(remaining):
+            raise IssueTreeError("parent_cycle", "unable to order children by parent")
+        remaining = next_remaining
+    return ordered
 
 
 def gh(args: List[str], *, input_text: str | None = None) -> str:
@@ -275,13 +363,17 @@ def execute(spec: dict) -> dict:
     owner, repo, repo_id = repo_context()
     strict_deps = bool(spec.get("strict_deps"))
     root_number = create_root_issue(spec["root"])
-    parent_id = issue_node_id(owner, repo, root_number)
+    # node_ids[None] = root; node_ids[epic_key] = that epic's GraphQL node id.
+    # Topological order guarantees an epic exists before its children create.
+    node_ids = {None: issue_node_id(owner, repo, root_number)}
     numbers = {}
     children_out = []
-    for child in spec["children"]:
+    for child in _topo_order(spec["children"]):
+        parent_id = node_ids[child["parent"]]
         number = create_child_issue(repo_id, parent_id, child)
         numbers[child["key"]] = number
-        children_out.append({"key": child["key"], "number": number})
+        node_ids[child["key"]] = issue_node_id(owner, repo, number)
+        children_out.append({"key": child["key"], "number": number, "parent": child["parent"]})
     dependencies_out = []
     for child in spec["children"]:
         for blocker in child["blocked_by"]:
@@ -303,6 +395,7 @@ def execute(spec: dict) -> dict:
         "children": children_out,
         "dependencies": dependencies_out,
         "strict_deps": strict_deps,
+        "epics": spec.get("epics", []),
         "parent_method": PARENT_METHOD,
         "dependency_api_version": API_VERSION,
     }
