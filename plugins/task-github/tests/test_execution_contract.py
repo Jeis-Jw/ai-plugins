@@ -121,5 +121,151 @@ class ExecutionContractTests(unittest.TestCase):
         self.assertFalse(any(args[:2] == ["issue", "comment"] for args in calls))
 
 
+def _leaf(key, parent=None, paths=None, blocked_by=None):
+    return {
+        "key": key,
+        "title": key,
+        "body": f"완료 기준: x\n검증: y\n영향 경로: {key}.py",
+        "parent": parent,
+        "affects_paths": paths or [f"{key}.py"],
+        "blocked_by": blocked_by or [],
+    }
+
+
+class TreeShapeTests(unittest.TestCase):
+    def _root(self, topology="stacked"):
+        return {
+            "title": "root",
+            "body": "root body",
+            "execution_contract": {"topology": topology, "gate": "local-merge",
+                                   "parent_branch": "task/root-10", "closeout_mode": "local"},
+        }
+
+    def test_flat_spec_regresses_clean(self):
+        # No parent keys → every child is a leaf, full gate, no epics/warnings.
+        spec = {"root": {"title": "r", "body": "b"},
+                "children": [_leaf("a"), _leaf("b", blocked_by=["a"])]}
+        validated = create_issue_tree.validate_spec(spec)
+        self.assertEqual(validated["epics"], [])
+        self.assertEqual(validated["warnings"], [])
+
+    def test_parent_pointer_classifies_epic_and_builds_depth3_plan(self):
+        spec = {
+            "root": self._root(),
+            "children": [
+                {"key": "BE", "title": "BE", "body": "백엔드 트랙", "parent": None},
+                _leaf("BE-AUTH", parent="BE", paths=["api/auth.py"]),
+                _leaf("BE-ORDER", parent="BE", paths=["api/order.py"], blocked_by=["BE-AUTH"]),
+            ],
+        }
+        validated = create_issue_tree.validate_spec(spec)
+        self.assertEqual(validated["epics"], ["BE"])
+        self.assertEqual(validated["warnings"], [])  # has epic → no stacked/flat warning
+        plan = create_issue_tree.build_plan(validated)
+        # cross-level dependency survives
+        self.assertIn({"child": "BE-ORDER", "blocked_by": "BE-AUTH"}, plan["dependencies"])
+
+    def test_epic_skips_leaf_quality_gate_and_overlap(self):
+        # Epic body need not carry 완료기준/검증, and an epic with no
+        # affects_paths never triggers path-overlap against its own children.
+        spec = {
+            "root": self._root(),
+            "children": [
+                {"key": "BE", "title": "BE", "body": "그냥 컨테이너", "parent": None},
+                _leaf("BE-X", parent="BE", paths=["api/x.py"]),
+            ],
+        }
+        validated = create_issue_tree.validate_spec(spec)  # must not raise
+        self.assertEqual(validated["epics"], ["BE"])
+
+    def test_cross_tree_blocked_by_resolves(self):
+        spec = {
+            "root": self._root(),
+            "children": [
+                {"key": "BE", "title": "BE", "body": "be", "parent": None},
+                {"key": "FE", "title": "FE", "body": "fe", "parent": None},
+                _leaf("BE-PAY", parent="BE", paths=["api/pay.py"]),
+                _leaf("FE-PAY", parent="FE", paths=["mobile/pay.py"], blocked_by=["BE-PAY"]),
+            ],
+        }
+        validated = create_issue_tree.validate_spec(spec)
+        self.assertEqual(validated["epics"], ["BE", "FE"])
+
+    def test_stacked_flat_tree_warns(self):
+        spec = {"root": self._root("stacked"), "children": [_leaf("a"), _leaf("b")]}
+        validated = create_issue_tree.validate_spec(spec)
+        self.assertTrue(validated["warnings"])
+        self.assertIn("epic", validated["warnings"][0])
+
+    def test_unknown_parent_rejected(self):
+        spec = {"root": self._root(), "children": [_leaf("a", parent="ghost")]}
+        with self.assertRaises(create_issue_tree.IssueTreeError) as ctx:
+            create_issue_tree.validate_spec(spec)
+        self.assertEqual(ctx.exception.error_code, "unknown_parent")
+
+    def test_parent_cycle_rejected(self):
+        spec = {
+            "root": self._root(),
+            "children": [
+                {"key": "a", "title": "a", "body": "a", "parent": "b"},
+                {"key": "b", "title": "b", "body": "b", "parent": "a"},
+            ],
+        }
+        with self.assertRaises(create_issue_tree.IssueTreeError) as ctx:
+            create_issue_tree.validate_spec(spec)
+        self.assertEqual(ctx.exception.error_code, "parent_cycle")
+
+    def test_topo_order_places_parents_first(self):
+        children = [
+            {"key": "leaf", "parent": "epic"},
+            {"key": "epic", "parent": None},
+        ]
+        ordered = [c["key"] for c in create_issue_tree._topo_order(children)]
+        self.assertLess(ordered.index("epic"), ordered.index("leaf"))
+
+    def test_execute_passes_epic_node_id_to_grandchild(self):
+        captured = []
+
+        def fake_repo_context():
+            return ("o", "r", "REPO")
+
+        def fake_create_root_issue(root):
+            return 100
+
+        def fake_issue_node_id(owner, repo, number):
+            return f"ND-{number}"
+
+        counter = {"n": 100}
+
+        def fake_create_child_issue(repo_id, parent_id, child):
+            counter["n"] += 1
+            captured.append((child["key"], parent_id, counter["n"]))
+            return counter["n"]
+
+        orig = {name: getattr(create_issue_tree, name) for name in
+                ("repo_context", "create_root_issue", "issue_node_id", "create_child_issue")}
+        create_issue_tree.repo_context = fake_repo_context
+        create_issue_tree.create_root_issue = fake_create_root_issue
+        create_issue_tree.issue_node_id = fake_issue_node_id
+        create_issue_tree.create_child_issue = fake_create_child_issue
+        try:
+            spec = create_issue_tree.validate_spec({
+                "root": self._root(),
+                "children": [
+                    {"key": "BE", "title": "BE", "body": "be", "parent": None},
+                    _leaf("BE-AUTH", parent="BE", paths=["api/auth.py"]),
+                ],
+            })
+            create_issue_tree.execute(spec)
+        finally:
+            for name, fn in orig.items():
+                setattr(create_issue_tree, name, fn)
+
+        parents = {key: parent_id for key, parent_id, _ in captured}
+        be_number = next(n for key, _, n in captured if key == "BE")
+        self.assertEqual(parents["BE"], "ND-100")             # epic → root node
+        self.assertEqual(parents["BE-AUTH"], f"ND-{be_number}")  # grandchild → epic node
+
+
 if __name__ == "__main__":
     unittest.main()
