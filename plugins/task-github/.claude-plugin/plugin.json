@@ -1,5 +1,5 @@
 {
   "name": "task-github",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "description": "GitHub 기반 자율 작업 프로토콜 — Issue 추적·Plan Mode·PR 검증을 wiki-markdown task 노드로 결정 그래프와 연계"
 }
