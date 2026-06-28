@@ -200,6 +200,11 @@ class IntegrationLedgerTests(unittest.TestCase):
         self.assertEqual(events[0]["leaf"], 42)
         self.assertEqual(events[0]["sha"], "abc123")
 
+    def test_issue_close_already_closed_is_ok(self):
+        self.assertTrue(closeout.issue_close_failure_is_ok("GraphQL: already closed"))
+        self.assertTrue(closeout.issue_close_failure_is_ok("issue is not open"))
+        self.assertFalse(closeout.issue_close_failure_is_ok("permission denied"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -25,6 +25,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 from typing import Iterable, List, Optional
 
 STATE_LABELS = ("in-review", "in-progress", "changes-requested")
@@ -208,6 +209,13 @@ def _run(cmd: List[str], *, code: str) -> str:
     return result.stdout.strip()
 
 
+def _run_warning(cmd: List[str]) -> str | None:
+    result = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if result.returncode != 0:
+        return f"{' '.join(cmd)}: {result.stderr.strip() or result.stdout.strip()}"
+    return None
+
+
 def gh(args: List[str], *, code: str = "gh_failed") -> str:
     return _run(["gh", *args], code=code)
 
@@ -215,6 +223,11 @@ def gh(args: List[str], *, code: str = "gh_failed") -> str:
 def _repo() -> tuple[str, str]:
     data = json.loads(gh(["repo", "view", "--json", "owner,name"]))
     return data["owner"]["login"], data["name"]
+
+
+def _default_branch() -> str:
+    data = json.loads(gh(["repo", "view", "--json", "defaultBranchRef"]))
+    return data["defaultBranchRef"]["name"]
 
 
 def _open_blockers(owner: str, repo: str, issue: int) -> List[str]:
@@ -326,6 +339,91 @@ def _append_ledger(owner: str, repo: str, root: int, event: dict) -> None:
     gh(["issue", "comment", str(root), "--body", body], code="ledger_failed")
 
 
+def issue_close_failure_is_ok(message: str) -> bool:
+    text = (message or "").lower()
+    return "already closed" in text or "not open" in text
+
+
+def _close_issue_best_effort(issue: int, *, comment: str) -> str | None:
+    result = subprocess.run(
+        ["gh", "issue", "close", str(issue), "--comment", comment],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode == 0:
+        return None
+    message = result.stderr.strip() or result.stdout.strip()
+    if issue_close_failure_is_ok(message):
+        return None
+    return f"gh issue close {issue}: {message}"
+
+
+def _worktree_for_branch(branch: str) -> str | None:
+    result = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode != 0:
+        return None
+    current_path = None
+    for line in result.stdout.splitlines():
+        if line.startswith("worktree "):
+            current_path = line.removeprefix("worktree ")
+        elif line == f"branch refs/heads/{branch}" and current_path:
+            return current_path
+    return None
+
+
+def _local_branch_exists(branch: str) -> bool:
+    return subprocess.run(
+        ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    ).returncode == 0
+
+
+def _cleanup_local_branch(branch: str) -> list[str]:
+    if not _local_branch_exists(branch):
+        return []
+    warnings = []
+    worktree = _worktree_for_branch(branch)
+    if worktree:
+        status = subprocess.run(
+            ["git", "-C", worktree, "status", "--porcelain"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if status.returncode != 0:
+            return [f"git -C {worktree} status --porcelain: {status.stderr.strip() or status.stdout.strip()}"]
+        if status.stdout.strip():
+            return [f"local branch {branch} kept: worktree {worktree} has uncommitted changes"]
+        warning = _run_warning(["git", "worktree", "remove", worktree])
+        if warning:
+            return [warning]
+    warning = _run_warning(["git", "branch", "-d", branch])
+    if warning:
+        warnings.append(warning)
+    return warnings
+
+
+def _record_orchestrate_events(path: str | None, events: list[dict]) -> str | None:
+    if not path:
+        return None
+    try:
+        scripts_dir = Path(__file__).resolve().parents[2] / "orchestrate" / "scripts"
+        sys.path.insert(0, str(scripts_dir))
+        from orchestrate_ledger import record_events  # type: ignore
+
+        record_events(path, events)
+    except Exception as exc:  # post-merge bookkeeping must not hide the merge
+        return f"orchestrate ledger update failed: {exc}"
+    return None
+
+
 def run_local_closeout(
     *,
     issue: int,
@@ -411,7 +509,7 @@ def run_local_closeout(
     return base_result
 
 
-def run_pr_closeout(pr: int, *, dry_run: bool) -> dict:
+def run_pr_closeout(pr: int, *, dry_run: bool, orchestrate_ledger: str | None = None) -> dict:
     owner, repo = _repo()
     view = json.loads(gh(["pr", "view", str(pr), "--json",
                           "number,headRefName,baseRefName,state,body,labels"]))
@@ -438,7 +536,7 @@ def run_pr_closeout(pr: int, *, dry_run: bool) -> dict:
         root, root_closed, task = _detect_root_task(owner, repo, issue)
         return {
             "ok": True, "dry_run": True, "pr": pr, "issue": issue, "head": head,
-            "merged": False, "would_merge": f"gh pr merge {pr} --merge --delete-branch",
+            "merged": False, "would_merge": f"gh pr merge {pr} --merge",
             "pr_labels_to_remove": pr_label_removals,
             "issue_labels_to_remove": issue_label_removals,
             "downstream": downstream,
@@ -451,7 +549,21 @@ def run_pr_closeout(pr: int, *, dry_run: bool) -> dict:
     for lbl in issue_label_removals:
         gh(["issue", "edit", str(issue), "--remove-label", lbl], code="label_failed")
 
-    gh(["pr", "merge", str(pr), "--merge", "--delete-branch"], code="merge_failed")
+    gh(["pr", "merge", str(pr), "--merge"], code="merge_failed")
+
+    sync_warnings = []
+    try:
+        default_branch = _default_branch()
+    except CloseoutError as exc:
+        default_branch = None
+        sync_warnings.append(f"default branch lookup failed: {exc.message}")
+    if default_branch and view["baseRefName"] != default_branch:
+        warning = _close_issue_best_effort(
+            issue,
+            comment=f"task-github closeout: PR #{pr} merged into `{view['baseRefName']}`.",
+        )
+        if warning:
+            sync_warnings.append(warning)
 
     # Detect the (possibly now-closed) root + task id RIGHT AFTER the
     # irreversible merge — before any local-sync step that could fail — so a
@@ -463,17 +575,32 @@ def run_pr_closeout(pr: int, *, dry_run: bool) -> dict:
         "merged": True, "downstream": downstream,
         "root": root, "root_closed": root_closed, "task_to_complete": task,
     }
+    ledger_events = [{
+        "type": "pr_merged",
+        "issue": issue,
+        "pr": pr,
+        "head": head,
+        "base": view["baseRefName"],
+    }]
+    if default_branch and view["baseRefName"] != default_branch and not any(
+        warning.startswith(f"gh issue close {issue}:") for warning in sync_warnings
+    ):
+        ledger_events.append({"type": "issue_closed", "issue": issue})
+    warning = _record_orchestrate_events(orchestrate_ledger, ledger_events)
+    if warning:
+        sync_warnings.append(warning)
 
     # Local sync is best-effort: the merge already landed on the remote, so a
     # failure here must not abort (and must not hide the result above).
-    sync_warnings = []
-    for cmd in (["git", "checkout", view["baseRefName"]], ["git", "pull"],
-                ["git", "branch", "-d", head]):
-        r = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        if r.returncode != 0:
-            sync_warnings.append(f"{' '.join(cmd)}: {r.stderr.strip() or r.stdout.strip()}")
+    for cmd in (["git", "checkout", view["baseRefName"]], ["git", "pull"], ["git", "push", "origin", "--delete", head]):
+        warning = _run_warning(cmd)
+        if warning:
+            sync_warnings.append(warning)
+    sync_warnings.extend(_cleanup_local_branch(head))
     if sync_warnings:
         result["sync_warnings"] = sync_warnings
+    if orchestrate_ledger:
+        result["ledger_events"] = ledger_events
     return result
 
 
@@ -514,6 +641,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--required-check", action="append", default=[])
     parser.add_argument("--drift-json")
     parser.add_argument("--integrity-json")
+    parser.add_argument("--orchestrate-ledger")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--json", action="store_true", dest="as_json")
     args = parser.parse_args(argv)
@@ -521,7 +649,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         if args.mode == "pr":
             if args.pr is None:
                 raise CloseoutError("bad_args", "--pr is required in --mode pr")
-            result = run_pr_closeout(args.pr, dry_run=args.dry_run)
+            result = run_pr_closeout(args.pr, dry_run=args.dry_run, orchestrate_ledger=args.orchestrate_ledger)
         else:
             if args.issue is None or not args.head:
                 raise CloseoutError("bad_args", "--issue and --head are required in --mode local")

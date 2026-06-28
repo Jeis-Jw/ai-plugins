@@ -182,6 +182,24 @@ class ReadyLeavesTests(unittest.TestCase):
         self.assertEqual(payload["stop_reason"], "no_progress")
         self.assertEqual(payload["stuck"], [])
 
+    def test_cli_from_ledger_uses_write_through_state(self):
+        import io
+        import tempfile
+        from contextlib import redirect_stdout
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = Path(tmp) / "ledger.json"
+            orchestrate_ledger.record_snapshot(ledger, node(1, children=[node(2)]))
+            orchestrate_ledger.record_event(ledger, {"type": "issue_closed", "issue": 2})
+
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = ready_leaves.main(["--from-ledger", str(ledger), "--json"])
+
+        payload = json.loads(buf.getvalue())
+        self.assertEqual(rc, 0)
+        self.assertEqual(payload["container_done"]["number"], 1)
+
     def test_cli_missing_ledger_starts_empty(self):
         import io
         import tempfile
