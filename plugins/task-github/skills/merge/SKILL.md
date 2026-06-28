@@ -44,7 +44,7 @@ HYG=$(wiki refresh --level hygiene --json)  # 경고 surface (비차단)
 `refresh --level integrity --strict`가 비0 종료하거나, `changed-path-stale` 이슈가 있으면 머지하지 않는다(integrity 깨짐 + 코드-문서 drift만 차단). `HYG`의 hygiene 이슈(orphan/stale/tags 등)는 머지를 막지 않고 머지 후 보고로만 남긴다. stale 문서는 `verified_at` 갱신 또는 supersede 대상이며, 자동 변경하지 않고 사령관에게 보완 경로를 보고한다.
 
 ### Step 3. closeout 스크립트로 머지 + 정리 (git/gh 결정적 시퀀스)
-게이트 통과 후, `closeout.py`가 연결이슈 해석·blocker 재확인·라벨 정리·머지·브랜치 정리·downstream 안내·루트 닫힘 감지를 한 번에 한다. wiki는 호출하지 않고 `task_to_complete`만 방출한다.
+게이트 통과 후, `closeout.py`가 연결이슈 해석·blocker 재확인·라벨 정리·머지·브랜치 정리·downstream 안내·루트 닫힘 감지를 한 번에 한다. wiki는 호출하지 않고 `task_to_complete`만 방출한다. PR merge 성공 뒤 local sync/branch cleanup 실패는 `sync_warnings`로만 보고한다.
 
 #### PR mode
 ```bash
@@ -57,6 +57,11 @@ RESULT=$(python3 "${CLAUDE_SKILL_DIR}/scripts/closeout.py" --mode pr --pr {PR} -
   exit 1
 }
 printf '%s\n' "$RESULT"
+```
+orchestrate 중이면 ledger를 같이 넘긴다:
+```bash
+RESULT=$(python3 "${CLAUDE_SKILL_DIR}/scripts/closeout.py" \
+  --mode pr --pr {PR} --orchestrate-ledger ".task-github/orchestrate/{ROOT}.json" --json)
 ```
 `open_blockers`면 머지하지 않고 중단(에이전트가 사령관에 보고). `downstream` 배열은 머지 후 재검토 대상으로 안내한다.
 
@@ -116,7 +121,7 @@ GitHub 이슈/PR 흐름이 상태 정본이고 위키 done/는 투영이다([wik
 - 상태 라벨 제거하되 `gear:*` 유지.
 - 열린 `blocked_by`가 있으면 머지 금지. 머지 후 `blocking` downstream을 안내.
 - 위키가 가용하면 `refresh --level integrity --strict`와 PR diff `changed-path-stale`를 통과해야 머지한다(integrity + drift만 차단; hygiene은 경고).
-- Issue는 PR의 `Closes #N`으로 자동 close.
+- default branch PR은 `Closes #N` 자동 close를 사용한다. non-default base PR은 merge 후 linked issue를 직접 close한다.
 - task 노드 done 전이는 **루트 이슈가 실제 close될 때만**. 리프 하나 머지가 곧 업무 완료는 아니다.
 - 최종 보고 전에 Knowledge Capture Audit 결과를 포함한다.
 - context bundle/link integrity는 판단 입력이다. wiki 상태 변경은 closeout 결과의 `task_to_complete`를 받은 뒤 `wiki complete`로만 수행한다.

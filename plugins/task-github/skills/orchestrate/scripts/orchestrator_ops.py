@@ -27,7 +27,7 @@ def review_required(review_mode: str, gear_label: str | None) -> bool:
         return True
     if review_mode != "gear":
         raise ValueError("review_mode must be gear, all, or skip")
-    return _gear_name(gear_label) != "micro"
+    return _gear_name(gear_label) in {None, "major"}
 
 
 def _pr_field(pr: dict[str, Any], *names: str) -> Any:

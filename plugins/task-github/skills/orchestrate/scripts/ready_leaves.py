@@ -10,6 +10,8 @@ import subprocess
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from orchestrate_ledger import load_ledger, record_snapshot, tree_from_ledger
+
 STATE_LABELS = {"in-progress", "in-review", "changes-requested"}
 REVIEW_LABELS = {"in-review", "changes-requested"}
 
@@ -34,7 +36,7 @@ def _summary(node: dict[str, Any]) -> dict[str, int]:
     children = _children(node)
     return node.get("subissues_summary") or {
         "total": len(children),
-        "completed": sum(1 for child in children if child.get("state") == "CLOSED"),
+        "completed": sum(1 for child in children if _is_complete_state(child.get("state"))),
     }
 
 
@@ -46,6 +48,10 @@ def _walk(node: dict[str, Any]) -> Iterable[dict[str, Any]]:
 
 def _is_open(node: dict[str, Any]) -> bool:
     return node.get("state") == "OPEN"
+
+
+def _is_complete_state(state: str | None) -> bool:
+    return state in {"CLOSED", "close_expected"}
 
 
 def _is_leaf(node: dict[str, Any]) -> bool:
@@ -185,7 +191,7 @@ def collect_tree(
     root["children"] = [collect_tree(child["number"], fetch_page) for child in children]
     root["subissues_summary"] = {
         "total": len(root["children"]),
-        "completed": sum(1 for child in root["children"] if child.get("state") == "CLOSED"),
+        "completed": sum(1 for child in root["children"] if _is_complete_state(child.get("state"))),
     }
     return root
 
@@ -262,27 +268,39 @@ def github_fetch_page(owner: str, repo: str) -> Callable[[int, str | None], dict
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("container", type=int)
+    parser.add_argument("container", nargs="?", type=int)
     parser.add_argument("--spawned", default="", help="comma/space-separated issue numbers active in this run")
     parser.add_argument("--failed", default="", help="comma/space-separated issue numbers failed in this run")
     parser.add_argument("--ledger", help="persistent orchestrate ledger JSON; merged with --spawned/--failed")
+    parser.add_argument("--from-ledger", help="evaluate from local ledger only; no GitHub read")
+    parser.add_argument("--reconcile-github", help="refresh ledger from GitHub, then evaluate")
     parser.add_argument("--fixture-json", help="read a tree fixture instead of calling gh")
     parser.add_argument("--json", action="store_true", dest="as_json")
     args = parser.parse_args(argv)
 
     try:
-        if args.fixture_json:
+        ledger_path = args.from_ledger or args.reconcile_github or args.ledger
+        ledger = None
+        if args.from_ledger:
+            ledger = load_ledger(args.from_ledger)
+            tree = tree_from_ledger(ledger, args.container)
+        elif args.fixture_json:
             with open(args.fixture_json, encoding="utf-8") as fp:
                 tree = json.load(fp)
+            if ledger_path:
+                ledger = record_snapshot(ledger_path, tree)
         else:
+            if args.container is None:
+                raise ValueError("container issue is required unless --from-ledger is used")
             owner, repo = _repo()
             tree = collect_tree(args.container, github_fetch_page(owner, repo))
+            if ledger_path:
+                ledger = record_snapshot(ledger_path, tree)
 
         spawned = parse_number_set(args.spawned)
         failed = parse_number_set(args.failed)
-        if args.ledger and Path(args.ledger).exists():
-            with open(args.ledger, encoding="utf-8") as fp:
-                ledger = json.load(fp)
+        if ledger_path and Path(ledger_path).exists():
+            ledger = ledger or load_ledger(ledger_path)
             spawned |= ledger_number_set(ledger, "spawned")
             failed |= ledger_number_set(ledger, "failed")
         payload = evaluate_tree(tree, spawned_set=spawned, failed_set=failed)

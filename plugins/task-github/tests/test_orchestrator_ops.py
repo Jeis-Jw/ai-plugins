@@ -16,7 +16,7 @@ class OrchestratorOpsTests(unittest.TestCase):
 
     def test_review_policy(self):
         self.assertFalse(orchestrator_ops.review_required("gear", "gear:micro"))
-        self.assertTrue(orchestrator_ops.review_required("gear", "gear:normal"))
+        self.assertFalse(orchestrator_ops.review_required("gear", "gear:normal"))
         self.assertTrue(orchestrator_ops.review_required("gear", "gear:major"))
         self.assertTrue(orchestrator_ops.review_required("gear", None))
         self.assertFalse(orchestrator_ops.review_required("skip", "gear:major"))

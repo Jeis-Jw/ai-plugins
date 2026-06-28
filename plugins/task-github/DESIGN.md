@@ -124,7 +124,7 @@ plugins/task-github/
 
 root issue body에는 optional **Execution Contract** fenced block을 둔다. `schema_version: 1`과 stable keys(`wiki_task`, `topology`, `gate`, `parent_branch`, `leaf_policy`, `required_checks`, `closeout_mode`)만 해석하고 unknown key는 무시한다. contract는 root issue의 실행 방법(how)을 고정해 profile+gear 재추론 drift를 막는 장치이며, wiki TASK의 작업정의(why/what)를 대체하지 않는다. contract가 없으면 context bundle은 `topology/gate/parent_branch=null`, `default_source=profile+gear`를 출력한다. local closeout의 `required_checks`는 argv array만 실행한다.
 
-`skills/merge/scripts/closeout.py`는 `--mode pr|local`을 제공한다. PR mode는 기존 GitHub PR merge closeout이고, local mode는 temp worktree merge simulation으로 parent branch 병합 가능성을 확인한 뒤 Execution Contract의 non-empty safe `required_checks`, drift evidence, integrity evidence를 모두 검증해야 실제 local merge를 수행한다. 위키 미가용은 명시적 skip evidence로만 통과한다. `topology=stacked` + `closeout_mode=local`인 leaf closeout은 root issue comment에 Integration Ledger(`task-github-ledger`)를 append-only로 남긴다. 이 ledger도 GitHub 실행 산출물이며 wiki TASK의 대체물이 아니다.
+`skills/merge/scripts/closeout.py`는 `--mode pr|local`을 제공한다. PR mode는 GitHub PR merge closeout이고, merge 성공 뒤 local sync/branch cleanup 실패를 `sync_warnings`로만 남긴다. non-default base PR은 `Closes #N` 자동 close가 동작하지 않으므로 linked issue를 직접 close한다. local mode는 temp worktree merge simulation으로 parent branch 병합 가능성을 확인한 뒤 Execution Contract의 non-empty safe `required_checks`, drift evidence, integrity evidence를 모두 검증해야 실제 local merge를 수행한다. 위키 미가용은 명시적 skip evidence로만 통과한다. `topology=stacked` + `closeout_mode=local`인 leaf closeout은 root issue comment에 Integration Ledger(`task-github-ledger`)를 append-only로 남긴다. 이 ledger도 GitHub 실행 산출물이며 wiki TASK의 대체물이 아니다.
 
 ### 매니페스트 & 마켓플레이스 등록
 
@@ -503,7 +503,7 @@ flag는 block이 아니라 confirm 전 보완 신호다. 단, flag가 있는데 
 - **불변식**: review는 판정·라벨까지, 머지는 merge가. team은 `--auto-merge` 명시 필요(solo 자동 허용).
 
 ### 7.10 `merge` — PR 머지
-- **입력**: `{PR}` 또는 `--mode local --issue {N} --head {BRANCH}`. **동작**: PR mode는 연결 Issue 추출→dependency 차단 재확인→PR+Issue **상태 라벨만 제거**(gear 유지)→`gh pr merge --merge --delete-branch`→downstream 안내→로컬 정리. local mode는 temp worktree merge simulation→safe required checks/drift/integrity evidence 검증→leaf policy gate→parent branch local merge→Issue close→downstream 안내.
+- **입력**: `{PR}` 또는 `--mode local --issue {N} --head {BRANCH}`. **동작**: PR mode는 연결 Issue 추출→dependency 차단 재확인→PR+Issue **상태 라벨만 제거**(gear 유지)→`gh pr merge --merge`→non-default base면 Issue 직접 close→downstream 안내→로컬/원격 branch 정리(best-effort warning). local mode는 temp worktree merge simulation→safe required checks/drift/integrity evidence 검증→leaf policy gate→parent branch local merge→Issue close→downstream 안내.
 - **위키(핵심)**: 머지 전 `refresh --level integrity --strict` + diff `changed-path-stale` hard gate를 통과해야 한다. 게이트 통과 후 **`skills/merge/scripts/closeout.py`**(git/gh 전용, wiki mutation 없음)가 연결이슈 해석·blocker 재확인·라벨 정리·머지·브랜치 정리·downstream 안내·루트 닫힘 감지를 결정적으로 처리하고 `task_to_complete`를 방출한다(`--dry-run` 사전 검증). 이 머지로 **루트 이슈가 close되면**(업무 완료) 방출된 id로 연결 task 노드를 `complete`로 `done/` 전이([§6.5]). 단일 리프 업무면 그 이슈 close가 곧 업무 완료. 컨테이너 업무면 마지막 자식 close 시점.
 - **불변식**: `--merge` 방식. 상태 라벨 제거하되 `gear:*` 유지. Issue는 `Closes #N`으로 자동 close.
 
@@ -513,9 +513,9 @@ flag는 block이 아니라 confirm 전 보완 신호다. 단, flag가 있는데 
 - **불변식**: read-only.
 
 ### 7.12 `orchestrate` — 이슈트리 자동 구동
-- **입력**: 컨테이너 이슈 번호. **동작**: `ready_leaves.py`로 ready/stuck/review_waiting/done_parent/container_done을 산출하고, work-agent(start→run→done), configured review-tool relay, conflict-resolver, 결정론적 merge/close를 조합한다. review-tool/conflict-agent가 없으면 해당 슬롯은 STOP으로 안전하게 퇴각한다. `--max-workers > 1` 병렬 모드는 issue별 background lane으로 worker→review→merge를 pipeline 처리하며, lane 완료 이벤트마다 persistent ledger를 갱신하고 re-tick한다. foreground 병렬 batch는 first-finisher review를 long-pole worker 뒤로 밀기 때문에 금지한다.
+- **입력**: 컨테이너 이슈 번호. **동작**: `ready_leaves.py`로 ready/stuck/review_waiting/done_parent/container_done을 산출하고, work-agent(start→run→done), configured review-tool relay, conflict-resolver, 결정론적 merge/close를 조합한다. 시작/재개/오류 복구는 `--reconcile-github`로 GitHub snapshot을 ledger에 반영하고, 평상시 tick은 `--from-ledger`로 실행 중 write-through 상태를 사용한다. review-tool/conflict-agent가 없으면 해당 슬롯은 STOP으로 안전하게 퇴각한다. `--max-workers > 1` 병렬 모드는 issue별 background lane으로 worker→review→merge를 pipeline 처리하며, lane 완료 이벤트마다 persistent ledger를 갱신하고 re-tick한다. foreground 병렬 batch는 first-finisher review를 long-pole worker 뒤로 밀기 때문에 금지한다.
 - **위키**: 루트 완료 때만 task done 전이와 refresh를 수행한다. non-root 컨테이너 완료는 부모 브랜치 merge+close만 한다.
-- **불변식**: `mode: solo` 전용. GitHub=SoT, pipeline liveness는 `.task-github/orchestrate/{container}.json` spawned/failed ledger로 보조한다. gear label write는 start 단일 책임.
+- **불변식**: `mode: solo` 전용. GitHub=SoT, 실행 중 local ledger는 root snapshot + issue/PR derived state + events + spawned/failed를 보관한다. 성공한 write는 ledger에 즉시 반영하고, GitHub 재조회는 boundary/reconcile에서만 한다. gear label write는 start 단일 책임.
 
 ### 7.13 `doctor` — 운영 전제 진단
 - **입력**: prereq snapshot + context bundle. **동작**: labels/gh auth/dependency API/`.task-github.yml`/`.worktrees` ignore/`.worktreeinclude`/wiki·session-review availability/default config/nested repo guard/linkage를 진단한다.
