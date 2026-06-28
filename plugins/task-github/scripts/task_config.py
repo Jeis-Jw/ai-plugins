@@ -14,9 +14,12 @@ from pathlib import Path
 from typing import Any
 
 TOP_KEYS = {"mode", "base_branch", "planning-tool", "verify-tool", "review-tool", "orchestrate"}
-ORCH_KEYS = {"verify-command", "review-mode", "review-command"}
+ORCH_KEYS = {"verify-command", "review-mode", "review-command", "gear-options"}
+GEARS = {"micro", "normal", "major"}
+GEAR_OPTION_KEYS = {"plan", "verify", "pr-review"}
 REVIEW_MODES = {"gear", "all", "skip"}
 MODES = {"solo", "team"}
+MAPPING_KEYS = {"orchestrate", "gear-options", *GEARS}
 
 
 def _strip_comment(line: str) -> str:
@@ -35,14 +38,18 @@ def _parse_value(raw: str) -> str | None:
     value = raw.strip()
     if value == "":
         return None
+    if value.lower() in {"true", "yes", "on"}:
+        return True
+    if value.lower() in {"false", "no", "off"}:
+        return False
     if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
         return value[1:-1]
     return value
 
 
 def parse_config(text: str) -> dict[str, Any]:
-    config: dict[str, Any] = {"orchestrate": {}}
-    section: str | None = None
+    config: dict[str, Any] = {}
+    stack: list[tuple[int, dict[str, Any]]] = [(-1, config)]
     for raw_line in text.splitlines():
         line = _strip_comment(raw_line)
         if not line.strip():
@@ -51,19 +58,31 @@ def parse_config(text: str) -> dict[str, Any]:
         if ":" not in line:
             raise ValueError(f"invalid config line: {raw_line}")
         key, raw_value = line.strip().split(":", 1)
-        if indent == 0:
-            section = key if key == "orchestrate" and raw_value.strip() == "" else None
-            config[key] = {} if section == key else _parse_value(raw_value)
-        elif section == "orchestrate" and indent >= 2:
-            config.setdefault("orchestrate", {})[key] = _parse_value(raw_value)
-        else:
+        while indent <= stack[-1][0]:
+            stack.pop()
+        if indent > 0 and stack[-1][0] < 0:
             raise ValueError(f"invalid indentation: {raw_line}")
+        parent = stack[-1][1]
+        if raw_value.strip() == "" and key in MAPPING_KEYS:
+            child: dict[str, Any] = {}
+            parent[key] = child
+            stack.append((indent, child))
+        else:
+            parent[key] = _parse_value(raw_value)
     config.setdefault("orchestrate", {})
     return config
 
 
 def _finding(code: str, message: str, severity: str = "error") -> dict[str, str]:
     return {"code": code, "message": message, "severity": severity}
+
+
+def _valid_bool(value: Any) -> bool:
+    if value is None or value == "":
+        return True
+    if isinstance(value, bool):
+        return True
+    return str(value).strip().lower() in {"1", "0", "true", "false", "yes", "no", "on", "off", "o", "x"}
 
 
 def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
@@ -85,6 +104,22 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
         findings.append(_finding("unknown_orchestrate_key", f"unknown orchestrate key: {key}", "warning"))
     if orchestrate.get("review-mode", "gear") not in REVIEW_MODES:
         findings.append(_finding("bad_orchestrate_review_mode", "orchestrate.review-mode must be gear, all, or skip"))
+    gear_options = orchestrate.get("gear-options", {})
+    if gear_options is not None and not isinstance(gear_options, dict):
+        findings.append(_finding("bad_orchestrate_gear_options", "orchestrate.gear-options must be a mapping"))
+    elif isinstance(gear_options, dict):
+        for gear, options in gear_options.items():
+            if gear not in GEARS:
+                findings.append(_finding("unknown_orchestrate_gear", f"unknown orchestrate gear: {gear}", "warning"))
+                continue
+            if not isinstance(options, dict):
+                findings.append(_finding("bad_orchestrate_gear", f"orchestrate.gear-options.{gear} must be a mapping"))
+                continue
+            for option, value in options.items():
+                if option not in GEAR_OPTION_KEYS:
+                    findings.append(_finding("unknown_orchestrate_gear_option", f"unknown gear option: {gear}.{option}", "warning"))
+                elif not _valid_bool(value):
+                    findings.append(_finding("bad_orchestrate_gear_option", f"{gear}.{option} must be boolean/o/x"))
     if orchestrate.get("verify-command") and not config.get("verify-tool"):
         findings.append(_finding("verify_tool_required", "orchestrate.verify-command requires verify-tool"))
     if orchestrate.get("review-command") and not config.get("review-tool"):
@@ -103,6 +138,19 @@ def render_default_config(*, base_branch: str = "main") -> str:
         "  verify-command:\n"
         "  review-mode: gear\n"
         "  review-command:\n"
+        "  gear-options:\n"
+        "    micro:\n"
+        "      plan: false\n"
+        "      verify: true\n"
+        "      pr-review: false\n"
+        "    normal:\n"
+        "      plan: true\n"
+        "      verify: true\n"
+        "      pr-review: false\n"
+        "    major:\n"
+        "      plan: true\n"
+        "      verify: true\n"
+        "      pr-review: true\n"
     )
 
 

@@ -22,6 +22,30 @@ class OrchestratorOpsTests(unittest.TestCase):
         self.assertFalse(orchestrator_ops.review_required("skip", "gear:major"))
         self.assertTrue(orchestrator_ops.review_required("all", "gear:micro"))
 
+    def test_flow_policy_defaults_and_overrides(self):
+        self.assertEqual(
+            orchestrator_ops.flow_policy("gear:micro"),
+            {"plan": False, "verify": True, "pr-review": False},
+        )
+        self.assertEqual(
+            orchestrator_ops.flow_policy("gear:normal"),
+            {"plan": True, "verify": True, "pr-review": False},
+        )
+        self.assertEqual(
+            orchestrator_ops.flow_policy("gear:major"),
+            {"plan": True, "verify": True, "pr-review": True},
+        )
+
+        config = {"normal": {"pr-review": "o"}, "major": {"verify": "x"}}
+        commander = {"normal": {"pr-review": False, "plan": False}}
+
+        self.assertEqual(
+            orchestrator_ops.flow_policy("gear:normal", gear_options=config, commander_options=commander),
+            {"plan": False, "verify": True, "pr-review": False},
+        )
+        self.assertFalse(orchestrator_ops.verify_required("gear:major", gear_options=config))
+        self.assertTrue(orchestrator_ops.review_required("all", "gear:micro", gear_options={"micro": {"pr-review": False}}))
+
     def test_pr_recovery_reuses_open_exact_base(self):
         result = orchestrator_ops.classify_pr_recovery(
             head="task/issue-3",

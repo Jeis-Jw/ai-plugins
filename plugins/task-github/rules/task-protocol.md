@@ -22,15 +22,15 @@
 
 | 항목 | solo (기본) | team |
 |------|------|------|
-| 플로우 판단 단위 | 2단 (micro / full) | 3단 (micro / normal / major) |
+| 플로우 판단 단위 | gear flow options | gear flow options |
 | 기어 **라벨** | `gear:micro/normal/major` (공통) | `gear:micro/normal/major` (공통) |
 | 지식 기록(위키) | 권장 | 권장 |
 | 서브에이전트 | 선택 | 적극 고려 |
 | `review` 머지 | 자동 허용 | `--auto-merge` 명시 시만 |
 
 - **기어 라벨은 프로파일과 무관하게 항상 `gear:micro|normal|major`** — 라벨은 영구 히스토리라 환경에 의존하면 안 된다. **`gear:full` 같은 라벨은 존재하지 않는다.**
-- solo의 `full`은 **플로우 판단 단위**일 뿐이다: "micro가 아니면 제대로 한다(planned --full)". 라벨을 붙일 땐 실제 파급력대로 `gear:normal`(서비스 내부) 또는 `gear:major`(외부 계약)를 고른다. 즉 solo는 normal/major를 **라벨로는 구분하되 플로우로는 통합**(둘 다 planned --full)한다.
-- team과의 유일한 차이: team은 normal→`plan`, major→`plan --full`로 플로우를 나누지만, solo는 full(normal·major) 모두 `plan --full`로 통합한다.
+- 기본 flow option은 `gear:micro|normal|major`별로 `plan`/`verify`/`pr-review`를 따로 계산한다. `gear:full` 같은 라벨이나 flow option은 없다.
+- solo/team 차이는 자동 머지 허용과 운영 강도 차이에 가깝고, gear별 기본 flow option 자체는 동일하다.
 - 프로파일은 **같은 스킬을 다르게 동작**시키는 게 아니라, 호출자(에이전트/사용자)의 **판단 강도**를 조절한다.
 - `orchestrate`는 `mode: solo` 전용이다. `team`에서는 자동 드라이브/머지 대신 사람이 `status`와 개별 스킬을 운영한다.
 
@@ -40,34 +40,34 @@
 
 > **★ 가장 중요한 분류**: 기어는 **영향 반경(파급력)** 으로만 판단한다. 크기(파일 수·커밋 수)는 근거가 아니다.
 
-| 기어 | 영향 반경 | 예시 | 플로우 |
+| 기어 | 영향 반경 | 예시 | 기본 flow options |
 |------|----------|------|--------|
-| **micro** | 자기 파일 내부만 | 오타, 주석, 로컬 로직 | express |
-| **normal** | 자기 서비스/모듈 내부 | 신규 기능, 일반 로직 | planned |
-| **major** | 외부 계약 변경 | API/DB/CLI/파일포맷/공개 IF | planned --full |
+| **micro** | 자기 파일 내부만 | 오타, 주석, 로컬 로직 | plan:x / verify:o / pr-review:x |
+| **normal** | 자기 서비스/모듈 내부 | 신규 기능, 일반 로직 | plan:o / verify:o / pr-review:x |
+| **major** | 외부 계약 변경 | API/DB/CLI/파일포맷/공개 IF | plan:o / verify:o / pr-review:o |
 
 판단 규칙:
 - **애매하면 상위 기어.** 잘못 판단 시 승격(강등 금지).
 - 여러 기어 섞이면 **가장 높은 기어**.
-- **라벨은 항상 micro/normal/major.** solo는 *플로우*만 micro/full 2단으로 통합할 뿐, 라벨은 파급력대로 normal/major를 구분해 붙인다(`gear:full` 없음).
+- **라벨은 항상 micro/normal/major.** flow option도 gear별로 계산하며 `gear:full`은 없다.
 
 ---
 
-## 3. 플로우 (승인 관문)
+## 3. 플로우 옵션
 
-기어에서 자동 결정된다:
+기본 flow option은 기어에서 결정된다:
 
-| 플로우 | 트리거 (team) | 트리거 (solo) | 절차 |
-|--------|--------|--------|------|
-| **express** | micro | micro | `run` → (자동 검증) → 완료 |
-| **planned** | normal | — | `plan` → 승인 → `run` → `verify` |
-| **planned --full** | major | full (normal·major) | `plan --full` → 승인 → `run` → `verify` (롤백·영향 분석 포함) |
+| 기어 | plan | verify | pr-review |
+|------|------|--------|-----------|
+| **micro** | x | o | x |
+| **normal** | o | o | x |
+| **major** | o | o | o |
 
-- **express**: plan 없이 즉시 실행. 단순 변경에만.
-- **planned**: Plan Mode로 계획 → 사령관 승인 → 실행 → 검증. (team의 normal 전용)
-- **planned --full**: 롤백 계획·영향 범위·ADR 초안 포함. team은 major 전용, **solo는 full(=micro 아닌 모든 것)** 에 적용.
+- **plan**: 사령관 승인용 계획 작성.
+- **verify**: 작업 완료 조건 검증 리포트 작성.
+- **pr-review**: PR에 별도 review/pr-verifier gate 적용.
 
-오버라이드(매핑 이탈)는 **양방향 재확인**: 하향(major를 express로)은 검증 없이 외부 계약 변경하는 위험, 상향(micro를 planned로)은 과도한 오버헤드 — 둘 다 사령관 재확인.
+우선순위는 **사령관 현재 지시 > `.task-github.yml` `orchestrate.gear-options` > 시스템 기본값**이다. 설정은 비어 있으면 기본값을 쓴다.
 
 ### 3.1 출하 ceremony (PR 분할·리뷰 강도)
 
@@ -75,7 +75,7 @@
 
 | 기어 | PR 분할 | 리뷰 강도 |
 |------|---------|-----------|
-| **micro** | 형제 PR에 동승 가능(단독 PR 불필요) | 경량 — express self-check / PR-gate 1회 |
+| **micro** | 형제 PR에 동승 가능(단독 PR 불필요) | 경량 self-check / verify |
 | **normal** | 같은 테마·무차단의존 변경은 **한 PR로 묶음** | self-flow 1라운드 **또는** PR-gate |
 | **major / 비가역** | **격리 PR** | 적대적 — self-flow(+PR-gate), 필요 시 다중 라운드 |
 

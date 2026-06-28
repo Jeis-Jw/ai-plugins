@@ -5,6 +5,14 @@ from __future__ import annotations
 
 from typing import Any
 
+GEARS = ("micro", "normal", "major")
+GEAR_OPTION_KEYS = ("plan", "verify", "pr-review")
+DEFAULT_GEAR_OPTIONS = {
+    "micro": {"plan": False, "verify": True, "pr-review": False},
+    "normal": {"plan": True, "verify": True, "pr-review": False},
+    "major": {"plan": True, "verify": True, "pr-review": True},
+}
+
 
 def issue_branch(number: int) -> str:
     return f"task/issue-{number}"
@@ -20,14 +28,102 @@ def _gear_name(label: str | None) -> str | None:
     return label.removeprefix("gear:")
 
 
-def review_required(review_mode: str, gear_label: str | None) -> bool:
+def _bool_option(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on", "o"}:
+        return True
+    if text in {"0", "false", "no", "off", "x"}:
+        return False
+    raise ValueError(f"invalid gear option value: {value!r}")
+
+
+def _gear_or_major(gear_label: str | None) -> str:
+    gear = _gear_name(gear_label)
+    return gear if gear in DEFAULT_GEAR_OPTIONS else "major"
+
+
+def _action_name(action: str) -> str:
+    normalized = action.replace("_", "-")
+    if normalized == "review":
+        return "pr-review"
+    if normalized not in GEAR_OPTION_KEYS:
+        raise ValueError(f"unknown gear option: {action}")
+    return normalized
+
+
+def _options_for_gear(options: dict[str, Any] | None, gear: str) -> dict[str, Any]:
+    if not isinstance(options, dict):
+        return {}
+    if isinstance(options.get(gear), dict):
+        return options[gear]
+    if any(key in options for key in GEAR_OPTION_KEYS):
+        return options
+    return {}
+
+
+def flow_policy(
+    gear_label: str | None,
+    *,
+    gear_options: dict[str, Any] | None = None,
+    commander_options: dict[str, Any] | None = None,
+) -> dict[str, bool]:
+    """Resolve plan/verify/pr-review using commander > config > defaults."""
+    gear = _gear_or_major(gear_label)
+    policy = dict(DEFAULT_GEAR_OPTIONS[gear])
+    for source in (gear_options, commander_options):
+        for key, value in _options_for_gear(source, gear).items():
+            if value is None or value == "":
+                continue
+            policy[_action_name(key)] = _bool_option(value)
+    return policy
+
+
+def option_required(
+    action: str,
+    gear_label: str | None,
+    *,
+    gear_options: dict[str, Any] | None = None,
+    commander_options: dict[str, Any] | None = None,
+) -> bool:
+    return flow_policy(
+        gear_label,
+        gear_options=gear_options,
+        commander_options=commander_options,
+    )[_action_name(action)]
+
+
+def plan_required(gear_label: str | None, **kwargs: Any) -> bool:
+    return option_required("plan", gear_label, **kwargs)
+
+
+def verify_required(gear_label: str | None, **kwargs: Any) -> bool:
+    return option_required("verify", gear_label, **kwargs)
+
+
+def pr_review_required(gear_label: str | None, **kwargs: Any) -> bool:
+    return option_required("pr-review", gear_label, **kwargs)
+
+
+def review_required(
+    review_mode: str,
+    gear_label: str | None,
+    *,
+    gear_options: dict[str, Any] | None = None,
+    commander_options: dict[str, Any] | None = None,
+) -> bool:
     if review_mode == "skip":
         return False
     if review_mode == "all":
         return True
     if review_mode != "gear":
         raise ValueError("review_mode must be gear, all, or skip")
-    return _gear_name(gear_label) in {None, "major"}
+    return pr_review_required(
+        gear_label,
+        gear_options=gear_options,
+        commander_options=commander_options,
+    )
 
 
 def _pr_field(pr: dict[str, Any], *names: str) -> Any:

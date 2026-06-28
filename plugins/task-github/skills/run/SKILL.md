@@ -19,7 +19,7 @@ $ARGUMENTS: {N}
 - plan이 컨텍스트에 있으면 그대로 사용 (재조회 금지)
 - 끊겼으면: `gh issue view {N} --comments`에서 "작업 계획" 코멘트 탐색
 - 계획 있음 → 태스크 목록 기준
-- 계획 없음 → 완료 조건 기준 (express)
+- 계획 없음 → 완료 조건 기준 (`plan:false` flow)
 
 ### Step 2. dependency 차단 재확인
 `start`를 우회해 `run`이 직접 호출될 수 있으므로 열린 blocker를 다시 확인한다:

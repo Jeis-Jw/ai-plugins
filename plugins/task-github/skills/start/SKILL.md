@@ -28,7 +28,7 @@ fi
 
 ### 모드 A — 리프 이슈 생성 + 즉시 점유 (micro 단발 전용)
 
-> **이 모드는 micro 단발 작업 전용이다.** 판단이 normal/major(solo의 full)면 — 즉 업무가 결정·취지를 동반하거나 분해가 필요하면 — **`define`으로 전환**해 루트 이슈 + 위키 task 노드를 먼저 만든 뒤 그 리프를 `start {N}`(모드 B)로 점유한다. (모드 A로 바로 시작하면 task 노드 1:1 다리를 우회한다 → [wiki-bridge.md](../../rules/wiki-bridge.md) §4)
+> **이 모드는 micro 단발 작업 전용이다.** 판단이 normal/major면 — 즉 업무가 결정·취지를 동반하거나 분해가 필요하면 — **`define`으로 전환**해 루트 이슈 + 위키 task 노드를 먼저 만든 뒤 그 리프를 `start {N}`(모드 B)로 점유한다. (모드 A로 바로 시작하면 task 노드 1:1 다리를 우회한다 → [wiki-bridge.md](../../rules/wiki-bridge.md) §4)
 
 1. **기어 판단** (파급력 기준). **micro면 이 모드 계속, 아니면 위 안내대로 `define` 권유.**
 2. 이슈 생성 — **번호를 변수로 확보**(이후 단계가 `$N`을 쓴다):
@@ -40,7 +40,7 @@ echo "이슈 #$N"
 ```bash
 gh issue edit $N --add-assignee @me --add-label "in-progress" --add-label "gear:micro"
 ```
-> 라벨은 항상 `gear:micro|normal|major` 중 하나 — **`gear:full`은 존재하지 않는다.** solo의 `full` 판단도 라벨은 파급력대로 normal/major를 붙인다(§task-protocol §1·§2).
+> 라벨은 항상 `gear:micro|normal|major` 중 하나 — **`gear:full`은 존재하지 않는다.** flow option도 gear별로 계산한다(§task-protocol §1·§3).
 4. 다음 단계 권장 — micro이므로 `run {N}` 또는 직접 편집 후 `done {N}`. (micro 단발이라 대화 요약 코멘트·위키 task 노드 주입은 생략 — 그 맥락이 필요한 업무면 애초에 define 경로로 갔어야 한다.)
 
 ### 모드 B — 기존 이슈 점유
