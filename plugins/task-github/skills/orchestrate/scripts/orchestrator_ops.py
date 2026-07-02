@@ -25,10 +25,13 @@ def issue_base_branch(*, parent_number: int | None, base_branch: str) -> str:
 def ensure_branch_chain(
     number: int, *, parents: dict[int, int | None], base_branch: str
 ) -> list[dict[str, Any]]:
-    """Return the ancestor chain for `number` in root-first order.
+    """Return the branch chain from root down to `number`, root-first.
 
     Each entry is {"issue": N, "branch": task/issue-N, "base": <parent branch or trunk>}.
-    Callers ensure/push branches in this order before spawning a leaf worker.
+    The last entry is `number` itself; its `base` is the worker's expected PR base.
+    Callers ensure/push only the ANCESTOR branches (chain[:-1]) before spawning the
+    leaf worker — the leaf branch is created by the worker's `git worktree add -b`,
+    so pre-creating it here would make that add fail with "already exists".
     """
     chain: list[int] = []
     current: int | None = number

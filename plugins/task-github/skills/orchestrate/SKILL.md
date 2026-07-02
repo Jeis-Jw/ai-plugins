@@ -174,7 +174,10 @@ sys.path.insert(0, "plugins/task-github/skills/orchestrate/scripts")
 import orchestrator_ops as ops
 
 parents = {83: 82, 82: 81, 81: None}  # ledger issues[].parent에서 구성
-for step in ops.ensure_branch_chain(83, parents=parents, base_branch="main"):
+# chain[:-1] — leaf(자기 자신)는 제외하고 조상만 보장한다.
+# leaf branch(task/issue-83)는 worker의 `git worktree add -b`가 만든다. 여기서 미리 만들면
+# 그 add가 "a branch named 'task/issue-83' already exists"로 실패한다.
+for step in ops.ensure_branch_chain(83, parents=parents, base_branch="main")[:-1]:
     branch, base = step["branch"], step["base"]
     exists = subprocess.run(["git", "ls-remote", "--exit-code", "--heads", "origin", branch],
                              capture_output=True).returncode == 0
@@ -183,7 +186,7 @@ for step in ops.ensure_branch_chain(83, parents=parents, base_branch="main"):
         subprocess.run(["git", "push", "origin", branch], check=True)
 PY
 ```
-leaf worker는 이 체인의 마지막 항목(`parent_issue_branch`)이 remote에 존재를 확인한 뒤에만 spawn한다.
+leaf worker는 조상 체인(`chain[:-1]`)의 마지막 항목 = `parent_issue_branch`가 remote에 존재를 확인한 뒤에만 spawn한다. leaf 자신의 branch(`task/issue-{N}`)는 만들지 않는다 — worker가 `git worktree add -b`로 생성한다.
 
 ## PR Review Policy
 
