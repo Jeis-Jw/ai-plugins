@@ -50,7 +50,7 @@ HYG=$(wiki refresh --level hygiene --json)  # 경고 surface (비차단)
 `refresh --level integrity --strict`가 비0 종료하거나, `changed-path-stale` 이슈가 있으면 머지하지 않는다(integrity 깨짐 + 코드-문서 drift만 차단). `HYG`의 hygiene 이슈(orphan/stale/tags 등)는 머지를 막지 않고 머지 후 보고로만 남긴다. stale 문서는 `verified_at` 갱신 또는 supersede 대상이며, 자동 변경하지 않고 사령관에게 보완 경로를 보고한다.
 
 ### Step 3. merge preflight evidence 기록
-게이트 통과 후 `merge_preflight.py`를 먼저 실행한다. 이 스크립트는 live PR head(`headRefOid`), mergeability, CI/check, reviewDecision을 한 번의 PR 조회 boundary에서 확인하고, 통과한 wiki gate 결과를 `gate_evidence`로 ledger에 기록한다. `headRefOid`가 기대값과 다르거나 required field가 빠지면 closeout으로 넘어가지 않는다.
+게이트 통과 후 `merge_preflight.py`를 먼저 실행한다. 이 스크립트는 live PR head(`headRefOid`), mergeability, CI/check, reviewDecision을 한 번의 PR 조회 boundary에서 확인하고, 통과한 wiki gate 결과를 `gate_evidence`로 ledger에 기록한다. `headRefOid`가 기대값과 다르거나 required field가 빠지면 closeout으로 넘어가지 않는다. parent/root PR이면 ledger의 child `merge_evidence`/`gate_evidence`를 소비해 valid child path를 `changed-path-stale` target에서 제외하고, invalid/missing/overlap child path는 fallback target으로 검사한다.
 
 ```bash
 python3 "${CLAUDE_SKILL_DIR}/scripts/merge_preflight.py" \

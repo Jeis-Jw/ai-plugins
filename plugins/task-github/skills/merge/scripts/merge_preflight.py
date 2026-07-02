@@ -15,7 +15,7 @@ SCRIPTS = Path(__file__).resolve().parents[2] / "orchestrate" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 import orchestrator_ops  # type: ignore  # noqa: E402
-from orchestrate_ledger import record_gate_evidence, record_github_read  # type: ignore  # noqa: E402
+from orchestrate_ledger import load_ledger, record_gate_evidence, record_github_read  # type: ignore  # noqa: E402
 
 GATE_VERSION = "changed-path-stale:v1"
 REQUIRED_GATE_FIELDS = (
@@ -140,6 +140,87 @@ def validate_pr_status(view: dict[str, Any], *, expected_head_oid: str | None = 
     return {"ok": True, "headRefOid": head_oid}
 
 
+def _ledger_issue(ledger: dict[str, Any], number: int) -> dict[str, Any]:
+    return dict((ledger.get("issues") or {}).get(str(number)) or {})
+
+
+def _ledger_evidence(ledger: dict[str, Any], block: str, number: int) -> dict[str, Any] | None:
+    value = (ledger.get(block) or {}).get(str(number))
+    return dict(value) if isinstance(value, dict) else None
+
+
+def scoped_gate_plan_from_ledger(
+    *,
+    parent_issue: int,
+    expected_base: str,
+    changed_paths: list[str],
+    ledger: dict[str, Any],
+    current_gate_version: str,
+    current_tool_versions: dict[str, str],
+    current_drift_surface_hashes: dict[int, str] | None = None,
+    expected_pr_heads: dict[int, str] | None = None,
+    current_tool_version_policy_token: str | None = None,
+) -> dict[str, Any]:
+    parent = _ledger_issue(ledger, parent_issue)
+    child_numbers = [int(child) for child in parent.get("children") or []]
+    if not child_numbers:
+        paths = orchestrator_ops.canonical_path_list(changed_paths)
+        return {"target_paths": paths, "reused": [], "fallback": [], "full_fallback": False}
+
+    children = []
+    child_path_set: set[str] = set()
+    for number in child_numbers:
+        gate = _ledger_evidence(ledger, "gate_evidence", number)
+        merge = _ledger_evidence(ledger, "merge_evidence", number)
+        issue = _ledger_issue(ledger, number)
+        paths = orchestrator_ops.canonical_path_list((gate or {}).get("changed_paths") or issue.get("changed_paths"))
+        child_path_set.update(paths)
+        child = {"number": number, "changed_paths": paths}
+        if gate:
+            child["gate_evidence"] = gate
+        if merge:
+            child["merge_evidence"] = merge
+        children.append(child)
+
+    parent_paths = [
+        path for path in orchestrator_ops.canonical_path_list(changed_paths)
+        if path not in child_path_set
+    ]
+    target_paths: set[str] = set(parent_paths)
+    reused: list[int] = []
+    fallback: list[dict[str, Any]] = []
+    hash_by_child = current_drift_surface_hashes or {}
+    heads_by_child = expected_pr_heads or {}
+
+    for child in children:
+        number = int(child["number"])
+        gate = child.get("gate_evidence") or {}
+        merge = child.get("merge_evidence") or {}
+        current_hash = hash_by_child.get(number) or gate.get("drift_surface_hash") or ""
+        expected_head = heads_by_child.get(number) or merge.get("head_sha") or gate.get("pr_head_sha")
+        plan = orchestrator_ops.scoped_changed_path_stale_targets(
+            parent_paths=parent_paths,
+            children=[child],
+            expected_base=expected_base,
+            current_gate_version=current_gate_version,
+            current_tool_versions=current_tool_versions,
+            current_drift_surface_hash=current_hash,
+            expected_pr_heads={number: expected_head} if expected_head else None,
+            current_tool_version_policy_token=current_tool_version_policy_token,
+        )
+        reused.extend(plan["reused"])
+        fallback.extend(plan["fallback"])
+        target_paths.update(plan["target_paths"])
+
+    return {
+        "target_paths": sorted(target_paths),
+        "reused": reused,
+        "fallback": fallback,
+        "full_fallback": bool(fallback),
+        "parent_paths": parent_paths,
+    }
+
+
 def _run(cmd: list[str], *, code: str) -> str:
     result = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if result.returncode != 0:
@@ -185,19 +266,37 @@ def run_preflight(
     if integrity.get("issues") or integrity.get("ok") is False:
         return {"ok": False, "stop_reason": "wiki_integrity_failed", "integrity": integrity, "pr": pr}
 
-    changed_paths = [line for line in gh(["pr", "diff", str(pr), "--name-only"], code="pr_diff_failed").splitlines() if line]
-    drift = _wiki([
-        "refresh",
-        "--check",
-        "changed-path-stale",
-        "--changed-path",
-        ",".join(orchestrator_ops.canonical_path_list(changed_paths)),
-        "--json",
-    ], code="wiki_drift_failed")
     tools, policy_token = plugin_tool_versions()
+    issue = parse_linked_issue(view.get("body") or "")
+    changed_paths = [line for line in gh(["pr", "diff", str(pr), "--name-only"], code="pr_diff_failed").splitlines() if line]
+    scoped_plan = None
+    checked_paths = orchestrator_ops.canonical_path_list(changed_paths)
+    if orchestrate_ledger and issue is not None:
+        ledger = load_ledger(orchestrate_ledger)
+        scoped_plan = scoped_gate_plan_from_ledger(
+            parent_issue=issue,
+            expected_base=view["baseRefName"],
+            changed_paths=changed_paths,
+            ledger=ledger,
+            current_gate_version=GATE_VERSION,
+            current_tool_versions=tools,
+            current_tool_version_policy_token=policy_token,
+        )
+        checked_paths = scoped_plan["target_paths"]
+    if checked_paths:
+        drift = _wiki([
+            "refresh",
+            "--check",
+            "changed-path-stale",
+            "--changed-path",
+            ",".join(checked_paths),
+            "--json",
+        ], code="wiki_drift_failed")
+    else:
+        drift = {"issues": [], "skipped": True, "reason": "valid_child_evidence_reused"}
     evidence = build_gate_evidence(
         changed_paths=changed_paths,
-        checked_paths=changed_paths,
+        checked_paths=checked_paths,
         drift_report=drift,
         pr_head_sha=view["headRefOid"],
         tool_versions=tools,
@@ -207,10 +306,16 @@ def run_preflight(
     if not required.get("ok"):
         return {"ok": False, **required, "pr": pr}
 
-    issue = parse_linked_issue(view.get("body") or "")
     if orchestrate_ledger and issue is not None:
         record_gate_evidence(orchestrate_ledger, issue, evidence)
-    return {"ok": True, "pr": pr, "issue": issue, "headRefOid": view["headRefOid"], "gate_evidence": evidence}
+    return {
+        "ok": True,
+        "pr": pr,
+        "issue": issue,
+        "headRefOid": view["headRefOid"],
+        "gate_evidence": evidence,
+        "scoped_gate_plan": scoped_plan,
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
