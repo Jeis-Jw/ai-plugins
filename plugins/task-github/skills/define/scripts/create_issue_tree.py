@@ -25,6 +25,12 @@ import context_bundle  # noqa: E402
 API_VERSION = "2026-03-10"
 PARENT_METHOD = "graphql_create_issue_parentIssueId"
 
+DOMAIN_KEYWORDS = [
+    "backend", "mobile", "auth", "wallet", "ops", "infra", "api", "ui",
+    "백엔드", "모바일", "인증", "지갑", "운영", "인프라",
+]
+VERTICAL_SLICE_RE = re.compile(r"vertical\s*slice|\be2e\b|onboarding|온보딩", re.I)
+
 
 class IssueTreeError(Exception):
     def __init__(self, error_code: str, message: str):
@@ -73,6 +79,70 @@ def _paths_overlap(left: str, right: str) -> bool:
     if left == right:
         return True
     return fnmatch.fnmatch(left, right) or fnmatch.fnmatch(right, left)
+
+
+def _cluster_key(path: str) -> str:
+    """Domain cluster key: up to 2 leading path segments, stopping at a glob."""
+    segments = [s for s in path.split("/") if s and s != "**"]
+    key_segments: List[str] = []
+    for seg in segments:
+        if "*" in seg:
+            break
+        key_segments.append(seg)
+        if len(key_segments) == 2:
+            break
+    return "/".join(key_segments) if key_segments else path
+
+
+def _detect_flat_understructuring(topology: str | None, leaves: List[dict], root_body: str) -> dict | None:
+    """Static heuristic: 2+ of 5 signals on a flat leaf-only tree suggest stacked."""
+    if str(topology) != "flat" or not leaves:
+        return None
+
+    signals: List[str] = []
+
+    leaf_count = len(leaves)
+    if leaf_count >= 6:
+        signals.append(f"leaf_count>={leaf_count}")
+
+    clusters = sorted({_cluster_key(p) for leaf in leaves for p in leaf["affects_paths"]})
+    if len(clusters) >= 3:
+        signals.append(f"path_clusters>={len(clusters)}")
+
+    keyword_hits = {kw: 0 for kw in DOMAIN_KEYWORDS}
+    for leaf in leaves:
+        title_lower = leaf["title"].lower()
+        for kw in DOMAIN_KEYWORDS:
+            if kw.lower() in title_lower:
+                keyword_hits[kw] += 1
+    repeated_keywords = [kw for kw, count in keyword_hits.items() if count >= 2]
+    if len(repeated_keywords) >= 2:
+        signals.append(f"domain_prefix_repeated={repeated_keywords}")
+
+    leaf_cluster = {leaf["key"]: _cluster_key(leaf["affects_paths"][0]) for leaf in leaves}
+    cross_cluster_deps = sum(
+        1
+        for leaf in leaves
+        for blocker in leaf["blocked_by"]
+        if blocker in leaf_cluster and leaf_cluster[blocker] != leaf_cluster[leaf["key"]]
+    )
+    if cross_cluster_deps >= 2:
+        signals.append(f"cross_cluster_blocked_by>={cross_cluster_deps}")
+
+    if VERTICAL_SLICE_RE.search(root_body) and len(clusters) >= 2:
+        signals.append("vertical_slice_multi_surface")
+
+    if len(signals) < 2:
+        return None
+
+    return {
+        "code": "flat_maybe_understructured",
+        "message": (
+            f"{leaf_count}개 리프가 {len(clusters)}개 경로 클러스터로 갈립니다 — "
+            f"stacked topology 후보입니다. 신호: {', '.join(signals)}."
+        ),
+        "suggested_epics": clusters,
+    }
 
 
 def validate_spec(spec: dict) -> dict:
@@ -207,13 +277,21 @@ def validate_spec(spec: dict) -> dict:
                      f"({lp!r}, {rp!r}); declare blocked_by in one direction"),
                 )
 
-    warnings: List[str] = []
+    warnings: List[dict] = []
     if str(topology) == "stacked" and child_out and not epic_keys:
-        warnings.append(
-            "topology=stacked이지만 중간 노드(epic)가 없습니다 — 모든 리프가 root "
-            "브랜치에서 분기되어 트랙 격리가 없습니다. 트랙별 독립 브랜치를 원하면 "
-            "트랙을 parent로 묶고, 의도된 평면이면 topology=flat을 쓰세요."
-        )
+        warnings.append({
+            "code": "stacked_without_epics",
+            "message": (
+                "topology=stacked이지만 중간 노드(epic)가 없습니다 — 모든 리프가 root "
+                "브랜치에서 분기되어 트랙 격리가 없습니다. 트랙별 독립 브랜치를 원하면 "
+                "트랙을 parent로 묶고, 의도된 평면이면 topology=flat을 쓰세요."
+            ),
+        })
+    elif str(topology) == "flat":
+        leaves = [c for c in child_out if c["key"] not in epic_keys]
+        flat_warning = _detect_flat_understructuring(topology, leaves, root_out["body"])
+        if flat_warning:
+            warnings.append(flat_warning)
 
     for c in child_out:
         c.pop("_where", None)
