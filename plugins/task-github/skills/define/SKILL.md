@@ -57,6 +57,7 @@ fi
    > 위키 미가용이면 3 전체 스킵 — 이슈만 만들고 task 노드는 두지 않는다(정상).
 4. **진행 확인 (이슈 생성 게이트)** — 생성 구조(루트 이슈 + 연결할 작업정의 task 노드 + 결정/취지)를 사령관에게 보여주고 **"진행?" 확인**.
    - 확인안에는 [quality-gates.md](../../rules/quality-gates.md) G3 기준을 포함한다: 근거, 완료 기준, 검증, 영향 경로/파일, 관련 intent/decision.
+   - 트리가 2개 이상 리프면 **Topology Decision 섹션도 필수 포함**한다(아래 "트리 깊이 / 토폴로지 결정 게이트" 참조).
    - 기준이 비어 있으면 자동으로 보완하지 말고 `FLAG-to-human`으로 표시한 뒤 확인받는다.
 5. 이슈 생성 — 테스트된 배치 헬퍼 사용:
 ```bash
@@ -120,9 +121,21 @@ spec 형식:
 | 코드 산출 + 병렬 트랙 ≥2 + 트랙별 경로 분리 | **트랙 = 서브트리(epic)** · `topology=stacked` · 트랙별 통합 브랜치 |
 | 단일 surface / 순차 / 문서 산출 | **평면(flat)** · `topology=flat` |
 
+> **Vertical slice ≠ flat.** Vertical slice는 product goal이 하나라는 뜻이지, issue tree가 flat이어야 한다는 뜻이 아니다. 구현 ownership, affected paths, integration branch가 나뉘면 vertical slice라도 stacked topology를 우선 검토한다.
+
 - **서브트리(중간 노드/epic)는 child에 `parent` 키**로 만든다(값 = 부모 child의 `key`, 생략·null = 루트 직속). 헬퍼가 위상정렬로 root→epic→leaf를 한 번에 생성하고, `blocked_by`는 레벨을 넘어 동작한다. epic은 **브랜치 컨테이너**라 `affects_paths`·완료기준 게이트가 면제되고, 리프는 그대로 풀 게이트.
+- **container/epic 승격 기준** — 아래 중 해당하면 승격을 검토한다: 해당 묶음만의 integration branch가 의미 있다 / leaf들이 같은 domain·path를 공유한다 / 다른 domain leaf가 이 묶음의 완료를 기다린다 / 병렬 subagent·worker에게 맡기기 좋은 단위다 / leaf 2개 이상이 같은 완료 목표를 향한다.
+- **container/epic 비승격 기준** — leaf가 1개뿐이다 / 단순 label·category일 뿐 branch boundary가 없다 / 완료 기준이 leaf 완료의 단순 합 외에 없다. 이 경우 epic으로 감싸지 않는다.
 - **결정 시점 안내(사령관 확인안에 포함)**: "리프 PR base = 부모 브랜치. 트랙별 독립 브랜치를 원하면 트랙을 `parent`로 묶어 epic으로 둔다."
-- `topology=stacked`인데 epic이 0개(전 리프가 루트 직속)면 dry-run이 **경고**한다(트랙 격리 없음 — 의도면 `topology=flat`).
+- `topology=stacked`인데 epic이 0개(전 리프가 루트 직속)면 dry-run이 `stacked_without_epics` **경고**를 낸다(트랙 격리 없음 — 의도면 `topology=flat`).
+- **`topology=flat` under-structuring 경고**: 아래 5개 신호 중 **2개 이상**이면 dry-run이 `flat_maybe_understructured` 경고(+`suggested_epics` 후보 클러스터)를 낸다.
+  - leaf 6개 이상
+  - `affects_paths`가 3개 이상 경로 클러스터로 갈라짐
+  - title에 `backend`/`mobile`/`auth`/`wallet`/`ops`/`infra`/`api`/`ui` 같은 domain 키워드가 2개 이상 반복(같은 키워드가 leaf 2개 이상에서 등장하는 키워드가 2개 이상)
+  - `blocked_by`가 클러스터 경계를 넘는 것이 2개 이상
+  - root body에 "vertical slice"/"E2E"/"onboarding" 언급 + 클러스터 2개 이상
+  - 경고가 뜨면 **flat 하나만 제시하지 말고 flat/stacked 최소 2안**(장단점 + 권고)을 사령관 확인안에 포함한다. `suggested_epics`(클러스터 경로 키)를 참고해 의미 있는 epic 이름(예: Auth/Account, Wallet/Store, Receive/QR, E2E/Ops)으로 번역해 제시한다.
+- **확인 질문(topology가 불명확할 때만)**: "이 작업은 트랙별 parent branch를 둘까요?" / "{도메인들}을 container issue로 묶는 구조로 생성할까요, 단순 flat backlog로 유지할까요?" — 사령관이 이미 명확히 말했으면 묻지 않고 그 기준으로 생성한다.
 
 ```jsonc
 // 트랙 서브트리 예: BE/FE 각 epic, FE-PAY가 트랙을 넘어 BE-PAY에 의존
@@ -133,6 +146,28 @@ spec 형식:
   {"key": "FE-PAY", "parent": "FE", "title": "...", "body": "완료 기준:...\n검증:...\n영향 경로: apps/mobile/pay/**", "affects_paths": ["apps/mobile/pay/**"], "blocked_by": ["BE-PAY"]}
 ]
 ```
+
+**사령관 확인안 필수 섹션** — 이슈 생성 전 확인안에 아래를 포함한다(모드 A 4단계, 모드 C 2단계 공통):
+
+```markdown
+## Topology Decision
+- 선택: flat | stacked
+- 이유:
+- 병렬 트랙 수:
+- 경로/소유권 분리:
+- cross-track dependency:
+- parent branch / integration boundary 필요 여부:
+```
+`flat`을 선택했다면 사유를 구체적으로 밝힌다(단일 surface인가? 대부분 순차 작업인가? 중간 integration branch가 의미 없는가?). 위 5-신호 경고가 떴는데 flat을 그대로 확정하려면 그 사유를 확인안에 남긴다.
+
+**Topology Rationale 기록** — 루트 이슈 body에 (Execution Contract 근처) 채택한 topology의 근거를 짧게 남긴다. 나중에 orchestrate/run/merge가 왜 이 구조인지 복원할 수 있게 한다:
+
+```markdown
+## Topology Rationale
+이 tree는 {product 성격}이지만 {도메인들}의 ownership과 dependency가 분리되어 stacked topology로 정의한다.
+리프 PR base는 각 container branch를 기준으로 한다.
+```
+
 6. **(위키 가용 시) 이슈 ↔ 작업정의 노드 연결** — task 노드는 3에서 이미 확보됨. 이제 이슈 번호를 task 노드에 **역링크**하고, 루트 이슈 본문에 task 노드를 기록한다. merge/done이 이 본문의 `[[TASK-...]]`를 읽어 완료 전이하므로 실제 ID를 박아야 한다([wiki-bridge.md](../../rules/wiki-bridge.md) §4):
 ```bash
 # (a) task 노드에 루트 이슈 역링크 (capture가 --tasks 없이 만들었으므로 여기서 연결)
@@ -178,7 +213,7 @@ fi
    - 예: `#B blocked_by #A` = B는 A 완료 뒤 시작.
    - 하위 이슈마다 완료 기준, 검증 방법, 영향 경로/파일을 포함한다. path가 겹치는데 `blocked_by`가 없으면 [quality-gates.md](../../rules/quality-gates.md) G4에 따라 사령관 확인 또는 dependency 보완으로 승급한다.
    - brainstorm으로 나온 단위별 상세 설계(데이터 모델, DDL, API, 프롬프트 계약)는 **서브이슈 본문**에 둔다. 실행 중 새로 확정되는 장기 판단만 그때 `decision`/`observation`으로 캡처한다.
-2. 사령관 확인
+2. 사령관 확인 — 리프가 2개 이상이면 [Topology Decision](#트리-깊이--토폴로지-결정-게이트) 섹션을 포함한다.
 3. `/tmp/task-github-issue-tree.json` spec 작성
 4. `create_issue_tree.py --dry-run --strict-deps --json`으로 계획 검증 후 실제 실행
 5. **task 노드는 새로 만들지 않는다** — 루트의 task 노드를 자식들이 공유. (분해는 구조 변경이지 새 업무가 아님)
