@@ -80,6 +80,8 @@ fi
 ```
 `changed-path-stale`(drift) 이슈가 있으면 종료하지 않고 done을 중단한다. 리포트된 ssot/runbook/trial_error/observation은 `verified_at` 갱신 또는 supersede 대상이며, 자동 변경하지 않고 보완 후 다시 `done`을 실행한다. `HYG`의 hygiene 이슈는 done을 막지 않고 리포트로만 남긴다. (BASE_BRANCH는 경로 판단 전에 이미 확보했다.)
 
+ORCHESTRATED micro/normal FF 경로에서는 drift gate 통과 결과를 부모가 재사용할 수 있도록 `gate_evidence`를 먼저 ledger에 기록한다. evidence에는 canonical changed path list, `changed_paths_hash`, `checked_paths_hash`, `drift_surface_hash`, `tool_versions`, `gate_version`, 빈 `changed_path_stale_issues`가 모두 있어야 한다. required field가 빠지면 issue close/FF merge를 하지 않는다. 그 뒤 `ff_merged` event를 같은 closeout 구간에서 기록한다.
+
 #### A-1) micro / normal — 로컬 FF 머지 (PR 없음) — `ROUTE=ff`
 리프 브랜치를 부모 ref로 **checkout 없이** FF 전진시킨다(`ff_merge_command`; self-fetch refspec — main worktree HEAD는 트렁크를 떠나지 않는다, DEC-2026-07-02-212109 불변식 보존). 이 명령은 리프 worktree에서 실행한다:
 ```bash

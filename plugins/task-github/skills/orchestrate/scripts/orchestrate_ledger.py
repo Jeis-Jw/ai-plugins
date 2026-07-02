@@ -237,6 +237,25 @@ def apply_event(payload: dict[str, Any], event: dict[str, Any]) -> None:
             _add_label(issue, "in-review")
         elif kind == "pr_merged":
             issue["state"] = "close_expected"
+            merged_pr = {
+                "number": event.get("pr"),
+                "base": event.get("base"),
+                "head": event.get("head"),
+            }
+            for key in ("head_sha", "merge_commit_sha"):
+                if event.get(key):
+                    merged_pr[key] = event[key]
+            issue["merged_pr"] = merged_pr
+            payload.setdefault("merge_evidence", {})[str(int(issue_number))] = {
+                "kind": "merged_pr",
+                "issue": int(issue_number),
+                "pr": event.get("pr"),
+                "base": event.get("base"),
+                "head": event.get("head"),
+                "head_sha": event.get("head_sha"),
+                "merge_commit_sha": event.get("merge_commit_sha"),
+                "parent_contains_child": True,
+            }
             _remove_state_labels(issue)
         elif kind == "ff_merged":
             # micro/normal leaf/container merged to parent via local FF (no PR).
@@ -334,11 +353,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--head")
     parser.add_argument("--base")
     parser.add_argument("--sha-range", dest="sha_range")
+    parser.add_argument("--merge-evidence-json")
+    parser.add_argument("--gate-evidence-json")
     parser.add_argument("--json", action="store_true", dest="as_json")
     args = parser.parse_args(argv)
 
     try:
-        if args.event:
+        if args.merge_evidence_json or args.gate_evidence_json:
+            if args.issue is None:
+                raise ValueError("--issue is required with evidence JSON")
+            if args.merge_evidence_json:
+                payload = record_merge_evidence(args.path, args.issue, json.loads(args.merge_evidence_json))
+            else:
+                payload = record_gate_evidence(args.path, args.issue, json.loads(args.gate_evidence_json))
+        elif args.event:
             event = {"type": args.event}
             for key in ("issue", "pr", "head", "base", "sha_range"):
                 value = getattr(args, key)

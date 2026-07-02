@@ -246,8 +246,9 @@ def _record_orchestrate_events(path: str | None, events: list[dict]) -> str | No
     try:
         scripts_dir = Path(__file__).resolve().parents[2] / "orchestrate" / "scripts"
         sys.path.insert(0, str(scripts_dir))
-        from orchestrate_ledger import record_events  # type: ignore
+        from orchestrate_ledger import record_events, record_github_read  # type: ignore
 
+        record_github_read(path, reason="final_closeout", operation="closeout", detail={"events": events})
         record_events(path, events)
     except Exception as exc:  # post-merge bookkeeping must not hide the merge
         return f"orchestrate ledger update failed: {exc}"
@@ -257,7 +258,7 @@ def _record_orchestrate_events(path: str | None, events: list[dict]) -> str | No
 def run_pr_closeout(pr: int, *, dry_run: bool, orchestrate_ledger: str | None = None) -> dict:
     owner, repo = _repo()
     view = json.loads(gh(["pr", "view", str(pr), "--json",
-                          "number,headRefName,baseRefName,state,body,labels"]))
+                          "number,headRefName,headRefOid,baseRefName,state,body,labels"]))
     if view["state"] == "MERGED":
         raise CloseoutError("already_merged", f"PR #{pr} is already merged")
     head = view["headRefName"]
@@ -325,6 +326,7 @@ def run_pr_closeout(pr: int, *, dry_run: bool, orchestrate_ledger: str | None = 
         "issue": issue,
         "pr": pr,
         "head": head,
+        "head_sha": view.get("headRefOid"),
         "base": view["baseRefName"],
     }]
     if default_branch and view["baseRefName"] != default_branch and not any(
