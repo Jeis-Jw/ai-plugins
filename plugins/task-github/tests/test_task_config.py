@@ -146,5 +146,42 @@ orchestrate:
             self.assertEqual(task_config.main(["get", "nope", "--path", str(path)]), 1)
 
 
+    def test_parse_and_validate_define_section(self):
+        cfg = task_config.parse_config(
+            "mode: solo\n"
+            "base_branch: main\n"
+            "define:\n"
+            "  review-tool: session-review:review\n"
+            "  review-command: \"self doc\"\n"
+        )
+        self.assertEqual(cfg["define"]["review-tool"], "session-review:review")
+        self.assertEqual(cfg["define"]["review-command"], "self doc")
+        self.assertEqual(task_config.validate_config(cfg), [])
+
+    def test_define_review_command_requires_tool(self):
+        findings = task_config.validate_config({
+            "mode": "solo",
+            "base_branch": "main",
+            "orchestrate": {"review-mode": "gear"},
+            "define": {"review-command": "self doc"},
+        })
+        self.assertEqual([f["code"] for f in findings], ["define_review_tool_required"])
+
+    def test_unknown_define_key_warns(self):
+        findings = task_config.validate_config({
+            "mode": "solo",
+            "base_branch": "main",
+            "orchestrate": {"review-mode": "gear"},
+            "define": {"reviewtool": "x"},
+        })
+        self.assertEqual([f["code"] for f in findings], ["unknown_define_key"])
+
+    def test_scaffold_includes_define_section(self):
+        cfg = task_config.parse_config(task_config.render_default_config())
+        self.assertIn("define", cfg)
+        self.assertIn("review-tool", cfg["define"])
+        self.assertEqual(task_config.validate_config(cfg), [])
+
+
 if __name__ == "__main__":
     unittest.main()

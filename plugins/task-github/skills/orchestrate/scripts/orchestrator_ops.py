@@ -268,6 +268,30 @@ def child_merge_evidence(children: list[dict[str, Any]], *, expected_base: str) 
     return {"ok": True, "missing": []}
 
 
+def resolve_review_tool(
+    *,
+    enabled: bool,
+    directive_tool: str | None = None,
+    config_tool: str | None = None,
+) -> dict[str, Any]:
+    """Pick the reviewer for a gate that is off by default (DEC-2026-07-03-012207).
+
+    Two axes: enabled gates on/off; when on, the tool resolves by precedence
+    directive > config > harness (the same commander > config > default cascade
+    as orchestrate's flow options). The terminal is 'harness' — a built-in
+    fresh-context challenge subagent — NOT a STOP: define's challenge runs where
+    the human is already present (co-design), so an absent tool degrades to the
+    built-in rather than halting. (This is the deliberate divergence from
+    orchestrate, whose absent-tool review STOPs at a PR gate.)
+    """
+    if not enabled:
+        return {"mode": "off", "tool": None}
+    tool = (directive_tool or "").strip() or (config_tool or "").strip() or None
+    if tool:
+        return {"mode": "tool", "tool": tool}
+    return {"mode": "harness", "tool": None}
+
+
 def compose_tool_command(tool: str | None, command: str | None = None, extra: str | None = None) -> str | None:
     if not tool:
         return None

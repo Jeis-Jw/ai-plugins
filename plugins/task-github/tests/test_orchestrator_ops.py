@@ -349,6 +349,36 @@ class MergeEdgeGearTests(unittest.TestCase):
         )
         self.assertEqual(plan, {"action": "merge_container", "issue": 5})
 
+    def test_resolve_review_tool_off_by_default(self):
+        self.assertEqual(
+            orchestrator_ops.resolve_review_tool(enabled=False, directive_tool="x", config_tool="y"),
+            {"mode": "off", "tool": None},
+        )
+
+    def test_resolve_review_tool_directive_beats_config(self):
+        self.assertEqual(
+            orchestrator_ops.resolve_review_tool(enabled=True, directive_tool="D", config_tool="C"),
+            {"mode": "tool", "tool": "D"},
+        )
+
+    def test_resolve_review_tool_config_when_no_directive(self):
+        self.assertEqual(
+            orchestrator_ops.resolve_review_tool(enabled=True, config_tool="C"),
+            {"mode": "tool", "tool": "C"},
+        )
+
+    def test_resolve_review_tool_harness_terminal(self):
+        # Absent tool → harness (built-in challenge), NOT stop.
+        self.assertEqual(
+            orchestrator_ops.resolve_review_tool(enabled=True),
+            {"mode": "harness", "tool": None},
+        )
+        # Blank/whitespace tool strings fall through to harness too.
+        self.assertEqual(
+            orchestrator_ops.resolve_review_tool(enabled=True, directive_tool="  ", config_tool=""),
+            {"mode": "harness", "tool": None},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
