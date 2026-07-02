@@ -8,6 +8,39 @@ sys.path.insert(0, str(TASK_GITHUB / "skills" / "orchestrate" / "scripts"))
 import orchestrator_ops  # noqa: E402
 
 
+def gate_evidence(paths, **overrides):
+    paths = orchestrator_ops.canonical_path_list(paths)
+    evidence = {
+        "changed_paths": paths,
+        "changed_paths_hash": orchestrator_ops.path_list_hash(paths),
+        "checked_paths": paths,
+        "checked_paths_hash": orchestrator_ops.path_list_hash(paths),
+        "drift_surface_hash": "surface-1",
+        "gate_version": "changed-path-stale:v1",
+        "tool_versions": {"task-github": "0.15.0"},
+        "changed_path_stale_issues": [],
+        "pr_head_sha": "head-1",
+    }
+    evidence.update(overrides)
+    return evidence
+
+
+def child_with_evidence(number, paths, **overrides):
+    child = {
+        "number": number,
+        "changed_paths": paths,
+        "merge_evidence": {
+            "kind": "merged_pr",
+            "base": "task/issue-39",
+            "parent_contains_child": True,
+            "head_sha": "head-1",
+        },
+        "gate_evidence": gate_evidence(paths),
+    }
+    child.update(overrides)
+    return child
+
+
 class OrchestratorOpsTests(unittest.TestCase):
     def test_branch_names_and_base_branch(self):
         self.assertEqual(orchestrator_ops.issue_branch(12), "task/issue-12")
@@ -280,6 +313,115 @@ class OrchestratorOpsTests(unittest.TestCase):
         )
 
         self.assertEqual(plan, {"action": "stop", "stop_reason": "api_failure"})
+
+    def test_scoped_gate_planner_reuses_valid_child_evidence(self):
+        result = orchestrator_ops.scoped_changed_path_stale_targets(
+            parent_paths=["plugins/task-github/README.md"],
+            children=[
+                child_with_evidence(40, [
+                    "plugins/task-github/skills/orchestrate/scripts/orchestrate_ledger.py",
+                    "plugins/task-github/skills/orchestrate/scripts/ready_leaves.py",
+                ])
+            ],
+            expected_base="task/issue-39",
+            current_gate_version="changed-path-stale:v1",
+            current_tool_versions={"task-github": "0.15.0"},
+            current_drift_surface_hash="surface-1",
+            expected_pr_heads={40: "head-1"},
+        )
+
+        self.assertEqual(result["target_paths"], ["plugins/task-github/README.md"])
+        self.assertEqual(result["reused"], [40])
+        self.assertEqual(result["fallback"], [])
+        self.assertFalse(result["full_fallback"])
+
+    def test_scoped_gate_planner_falls_back_on_missing_evidence(self):
+        result = orchestrator_ops.scoped_changed_path_stale_targets(
+            parent_paths=["parent.md"],
+            children=[{"number": 40, "changed_paths": ["child.py"]}],
+            expected_base="task/issue-39",
+            current_gate_version="changed-path-stale:v1",
+            current_tool_versions={"task-github": "0.15.0"},
+            current_drift_surface_hash="surface-1",
+        )
+
+        self.assertEqual(result["target_paths"], ["child.py", "parent.md"])
+        self.assertEqual(result["fallback"], [{"issue": 40, "reason": "missing_merge_evidence", "paths": ["child.py"]}])
+        self.assertTrue(result["full_fallback"])
+
+    def test_scoped_gate_planner_falls_back_on_version_drift(self):
+        result = orchestrator_ops.scoped_changed_path_stale_targets(
+            parent_paths=[],
+            children=[child_with_evidence(40, ["child.py"], gate_evidence=gate_evidence(
+                ["child.py"],
+                tool_versions={"task-github": "0.14.0"},
+            ))],
+            expected_base="task/issue-39",
+            current_gate_version="changed-path-stale:v1",
+            current_tool_versions={"task-github": "0.15.0"},
+            current_drift_surface_hash="surface-1",
+        )
+
+        self.assertEqual(result["target_paths"], ["child.py"])
+        self.assertEqual(result["fallback"][0]["reason"], "tool_version_mismatch")
+
+    def test_scoped_gate_planner_allows_deterministic_unknown_tool_policy_token(self):
+        result = orchestrator_ops.scoped_changed_path_stale_targets(
+            parent_paths=[],
+            children=[child_with_evidence(40, ["child.py"], gate_evidence=gate_evidence(
+                ["child.py"],
+                tool_versions={"task-github": "unknown"},
+                tool_version_policy_token="plugin-version-unavailable:v1",
+            ))],
+            expected_base="task/issue-39",
+            current_gate_version="changed-path-stale:v1",
+            current_tool_versions={"task-github": "unknown"},
+            current_drift_surface_hash="surface-1",
+            current_tool_version_policy_token="plugin-version-unavailable:v1",
+            expected_pr_heads={40: "head-1"},
+        )
+
+        self.assertEqual(result["target_paths"], [])
+        self.assertEqual(result["reused"], [40])
+
+    def test_scoped_gate_planner_falls_back_on_drift_surface_mismatch(self):
+        result = orchestrator_ops.scoped_changed_path_stale_targets(
+            parent_paths=[],
+            children=[child_with_evidence(40, ["child.py"])],
+            expected_base="task/issue-39",
+            current_gate_version="changed-path-stale:v1",
+            current_tool_versions={"task-github": "0.15.0"},
+            current_drift_surface_hash="surface-2",
+            expected_pr_heads={40: "head-1"},
+        )
+
+        self.assertEqual(result["target_paths"], ["child.py"])
+        self.assertEqual(result["fallback"][0]["reason"], "drift_surface_hash_mismatch")
+
+    def test_scoped_gate_planner_falls_back_on_parent_overlap(self):
+        result = orchestrator_ops.scoped_changed_path_stale_targets(
+            parent_paths=["child.py"],
+            children=[child_with_evidence(40, ["child.py"])],
+            expected_base="task/issue-39",
+            current_gate_version="changed-path-stale:v1",
+            current_tool_versions={"task-github": "0.15.0"},
+            current_drift_surface_hash="surface-1",
+            expected_pr_heads={40: "head-1"},
+        )
+
+        self.assertEqual(result["target_paths"], ["child.py"])
+        self.assertEqual(result["fallback"][0]["reason"], "parent_overlap")
+
+    def test_project_child_merge_evidence_accepts_v2_ff_merged_shape(self):
+        projected = orchestrator_ops.project_child_merge_evidence({
+            "number": 40,
+            "ff_merged": {"base": "task/issue-39", "sha_range": "aaa..bbb"},
+        })
+
+        self.assertEqual(projected["kind"], "ff_merged")
+        self.assertEqual(projected["base"], "task/issue-39")
+        self.assertEqual(projected["sha_range"], "aaa..bbb")
+        self.assertTrue(projected["parent_contains_child"])
 
 
 class MergeEdgeGearTests(unittest.TestCase):

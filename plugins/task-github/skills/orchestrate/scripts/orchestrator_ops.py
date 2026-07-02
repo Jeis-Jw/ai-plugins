@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
 
 GEARS = ("micro", "normal", "major")
@@ -266,6 +268,236 @@ def child_merge_evidence(children: list[dict[str, Any]], *, expected_base: str) 
     if missing:
         return {"ok": False, "stop_reason": "state_mismatch", "missing": missing}
     return {"ok": True, "missing": []}
+
+
+def canonical_path_list(paths: Any) -> list[str]:
+    out: set[str] = set()
+    for raw in paths or []:
+        path = str(raw).strip().replace("\\", "/")
+        while path.startswith("./"):
+            path = path[2:]
+        path = path.strip("/")
+        if path:
+            out.add(path)
+    return sorted(out)
+
+
+def path_list_hash(paths: Any) -> str:
+    payload = json.dumps(canonical_path_list(paths), ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def drift_surface_hash_matches(*, evidence_hash: str | None, current_hash: str | None) -> bool:
+    return bool(evidence_hash) and evidence_hash == current_hash
+
+
+def _evidence_for_issue(source: dict[str, Any] | None, number: int) -> dict[str, Any] | None:
+    if not isinstance(source, dict):
+        return None
+    value = source.get(str(number), source.get(number))
+    return dict(value) if isinstance(value, dict) else None
+
+
+def project_child_merge_evidence(
+    child: dict[str, Any],
+    *,
+    merge_evidence: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    number = int(child["number"])
+    projected = _evidence_for_issue(merge_evidence, number)
+    if projected is None and isinstance(child.get("merge_evidence"), dict):
+        projected = dict(child["merge_evidence"])
+    if projected is not None:
+        projected.setdefault("kind", projected.get("type", "merge"))
+        return projected
+
+    pr = child.get("merged_pr")
+    if isinstance(pr, dict):
+        return {
+            "kind": "merged_pr",
+            "pr": pr.get("number") or pr.get("pr"),
+            "base": _pr_field(pr, "base", "baseRefName"),
+            "head_sha": _pr_field(pr, "head_sha", "headRefOid"),
+            "merge_commit_sha": _pr_field(pr, "merge_commit_sha", "mergeCommitOid"),
+            "parent_contains_child": True,
+        }
+
+    ff = child.get("ff_merged")
+    if isinstance(ff, dict):
+        return {
+            "kind": "ff_merged",
+            "base": _pr_field(ff, "base", "baseRefName"),
+            "sha_range": ff.get("sha_range"),
+            "parent_contains_child": bool(ff.get("sha_range")),
+        }
+
+    if child.get("closed_no_pr") is True:
+        return {"kind": "closed_no_pr", "parent_contains_child": True}
+    return None
+
+
+def _project_gate_evidence(
+    child: dict[str, Any],
+    *,
+    gate_evidence: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    number = int(child["number"])
+    projected = _evidence_for_issue(gate_evidence, number)
+    if projected is None and isinstance(child.get("gate_evidence"), dict):
+        projected = dict(child["gate_evidence"])
+    return projected
+
+
+def _fallback_paths(child: dict[str, Any], gate: dict[str, Any] | None = None) -> list[str]:
+    if gate and gate.get("changed_paths") is not None:
+        return canonical_path_list(gate.get("changed_paths"))
+    return canonical_path_list(child.get("changed_paths"))
+
+
+def _uncanonical_paths(value: Any) -> bool:
+    return list(value or []) != canonical_path_list(value)
+
+
+def _head_pin(gate: dict[str, Any]) -> str | None:
+    if gate.get("pr_head_sha"):
+        return str(gate["pr_head_sha"])
+    pr_head = gate.get("pr_head")
+    if isinstance(pr_head, dict):
+        value = _pr_field(pr_head, "head_sha", "headRefOid", "oid")
+        return str(value) if value else None
+    return None
+
+
+def _tool_version_reason(
+    evidence_versions: Any,
+    current_versions: dict[str, str],
+    *,
+    evidence_policy_token: str | None,
+    current_policy_token: str | None,
+) -> str | None:
+    if not isinstance(evidence_versions, dict):
+        return "missing_tool_versions"
+    for name, expected in sorted(current_versions.items()):
+        actual = evidence_versions.get(name)
+        if actual == expected and actual != "unknown":
+            continue
+        if (
+            actual == "unknown"
+            and expected == "unknown"
+            and evidence_policy_token
+            and evidence_policy_token == current_policy_token
+        ):
+            continue
+        if actual is None:
+            return "missing_tool_version"
+        return "tool_version_mismatch"
+    return None
+
+
+def validate_child_gate_evidence(
+    child: dict[str, Any],
+    *,
+    expected_base: str,
+    current_gate_version: str,
+    current_tool_versions: dict[str, str],
+    current_drift_surface_hash: str,
+    expected_pr_head_sha: str | None = None,
+    current_tool_version_policy_token: str | None = None,
+    merge_evidence: dict[str, Any] | None = None,
+    gate_evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    merge = project_child_merge_evidence(child, merge_evidence=merge_evidence)
+    gate = _project_gate_evidence(child, gate_evidence=gate_evidence)
+    paths = _fallback_paths(child, gate)
+
+    if not merge:
+        return {"ok": False, "reason": "missing_merge_evidence", "paths": paths}
+    if merge.get("kind") != "closed_no_pr":
+        if _pr_field(merge, "base", "baseRefName") != expected_base:
+            return {"ok": False, "reason": "base_mismatch", "paths": paths}
+        if merge.get("parent_contains_child") is not True and merge.get("sha_range_in_parent") is not True:
+            return {"ok": False, "reason": "parent_inclusion_missing", "paths": paths}
+
+    if not gate:
+        return {"ok": False, "reason": "missing_gate_evidence", "paths": paths}
+    if _uncanonical_paths(gate.get("changed_paths")) or _uncanonical_paths(gate.get("checked_paths")):
+        return {"ok": False, "reason": "noncanonical_paths", "paths": paths}
+    if gate.get("changed_paths_hash") != path_list_hash(gate.get("changed_paths")):
+        return {"ok": False, "reason": "changed_paths_hash_mismatch", "paths": paths}
+    if gate.get("checked_paths_hash") != path_list_hash(gate.get("checked_paths")):
+        return {"ok": False, "reason": "checked_paths_hash_mismatch", "paths": paths}
+    if gate.get("gate_version") != current_gate_version:
+        return {"ok": False, "reason": "gate_version_mismatch", "paths": paths}
+
+    version_reason = _tool_version_reason(
+        gate.get("tool_versions"),
+        current_tool_versions,
+        evidence_policy_token=gate.get("tool_version_policy_token"),
+        current_policy_token=current_tool_version_policy_token,
+    )
+    if version_reason:
+        return {"ok": False, "reason": version_reason, "paths": paths}
+
+    if not drift_surface_hash_matches(
+        evidence_hash=gate.get("drift_surface_hash"),
+        current_hash=current_drift_surface_hash,
+    ):
+        return {"ok": False, "reason": "drift_surface_hash_mismatch", "paths": paths}
+    if gate.get("changed_path_stale_issues") or gate.get("changed-path-stale_issues"):
+        return {"ok": False, "reason": "changed_path_stale_issues", "paths": paths}
+    if expected_pr_head_sha is not None and _head_pin(gate) != expected_pr_head_sha:
+        return {"ok": False, "reason": "pr_head_pin_mismatch", "paths": paths}
+    return {"ok": True, "paths": paths, "merge_evidence": merge, "gate_evidence": gate}
+
+
+def scoped_changed_path_stale_targets(
+    *,
+    parent_paths: list[str],
+    children: list[dict[str, Any]],
+    expected_base: str,
+    current_gate_version: str,
+    current_tool_versions: dict[str, str],
+    current_drift_surface_hash: str,
+    expected_pr_heads: dict[int, str] | None = None,
+    current_tool_version_policy_token: str | None = None,
+    merge_evidence: dict[str, Any] | None = None,
+    gate_evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    parent = canonical_path_list(parent_paths)
+    target_paths: set[str] = set(parent)
+    reused: list[int] = []
+    fallback: list[dict[str, Any]] = []
+    parent_set = set(parent)
+
+    for child in children:
+        number = int(child["number"])
+        result = validate_child_gate_evidence(
+            child,
+            expected_base=expected_base,
+            current_gate_version=current_gate_version,
+            current_tool_versions=current_tool_versions,
+            current_drift_surface_hash=current_drift_surface_hash,
+            expected_pr_head_sha=(expected_pr_heads or {}).get(number),
+            current_tool_version_policy_token=current_tool_version_policy_token,
+            merge_evidence=merge_evidence,
+            gate_evidence=gate_evidence,
+        )
+        paths = canonical_path_list(result.get("paths"))
+        reason = result.get("reason")
+        if result.get("ok") and parent_set.intersection(paths):
+            reason = "parent_overlap"
+        if reason:
+            target_paths.update(paths)
+            fallback.append({"issue": number, "reason": reason, "paths": paths})
+        else:
+            reused.append(number)
+
+    return {
+        "target_paths": sorted(target_paths),
+        "reused": reused,
+        "fallback": fallback,
+        "full_fallback": bool(fallback),
+    }
 
 
 def resolve_review_tool(

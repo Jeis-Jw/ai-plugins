@@ -31,8 +31,23 @@ def _now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def _empty_github_reads() -> dict[str, Any]:
+    return {"count": 0, "reasons": [], "entries": []}
+
+
 def _default() -> dict[str, Any]:
-    return {"version": 2, "spawned": [], "failed": [], "issues": {}, "prs": {}, "events": []}
+    return {
+        "version": 3,
+        "spawned": [],
+        "failed": [],
+        "issues": {},
+        "prs": {},
+        "events": [],
+        "github_reads": _empty_github_reads(),
+        "read_decisions": [],
+        "merge_evidence": {},
+        "gate_evidence": {},
+    }
 
 
 def _int_list(value: Any) -> list[int]:
@@ -41,12 +56,41 @@ def _int_list(value: Any) -> list[int]:
     return sorted(int(issue) for issue in value or [])
 
 
+def _normalise_github_reads(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return _empty_github_reads()
+    entries = list(value.get("entries") or [])
+    reasons = list(value.get("reasons") or [])
+    if not reasons:
+        reasons = [str(entry.get("reason")) for entry in entries if entry.get("reason")]
+    try:
+        count = int(value.get("count", 0))
+    except (TypeError, ValueError):
+        count = 0
+    count = max(count, len(entries), len(reasons))
+    return {"count": count, "reasons": reasons, "entries": entries}
+
+
+def _ensure_v3(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        version = int(payload.get("version", 0))
+    except (TypeError, ValueError):
+        version = 0
+    if version < 3:
+        payload["version"] = 3
+    payload["github_reads"] = _normalise_github_reads(payload.get("github_reads"))
+    payload.setdefault("read_decisions", [])
+    payload.setdefault("merge_evidence", {})
+    payload.setdefault("gate_evidence", {})
+    return payload
+
+
 def load_ledger(path: str | Path) -> dict[str, Any]:
     ledger_path = Path(path)
     if not ledger_path.exists():
         return _default()
     payload = json.loads(ledger_path.read_text(encoding="utf-8"))
-    payload.setdefault("version", 2)
+    payload = _ensure_v3(payload)
     payload["spawned"] = _int_list(payload.get("spawned"))
     payload["failed"] = _int_list(payload.get("failed"))
     payload.setdefault("issues", {})
@@ -96,6 +140,59 @@ def record_snapshot(path: str | Path, tree: dict[str, Any]) -> dict[str, Any]:
     return write_ledger(path, payload)
 
 
+def record_github_read(
+    path: str | Path,
+    *,
+    reason: str,
+    operation: str,
+    root: int | None = None,
+    detail: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if not reason:
+        raise ValueError("github read reason is required")
+    payload = load_ledger(path)
+    reads = payload["github_reads"]
+    entry: dict[str, Any] = {"at": _now(), "reason": reason, "operation": operation}
+    if root is not None:
+        entry["root"] = int(root)
+    if detail:
+        entry["detail"] = dict(detail)
+    reads["entries"].append(entry)
+    reads["reasons"].append(reason)
+    reads["count"] = len(reads["entries"])
+    return write_ledger(path, payload)
+
+
+def record_read_decision(
+    path: str | Path,
+    *,
+    source: str,
+    mode: str,
+    root: int | None = None,
+    result: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload = load_ledger(path)
+    entry: dict[str, Any] = {"at": _now(), "source": source, "mode": mode}
+    if root is not None:
+        entry["root"] = int(root)
+    if result is not None:
+        entry["result"] = dict(result)
+    payload["read_decisions"].append(entry)
+    return write_ledger(path, payload)
+
+
+def record_merge_evidence(path: str | Path, issue: int, evidence: dict[str, Any]) -> dict[str, Any]:
+    payload = load_ledger(path)
+    payload["merge_evidence"][str(int(issue))] = {"at": _now(), **dict(evidence)}
+    return write_ledger(path, payload)
+
+
+def record_gate_evidence(path: str | Path, issue: int, evidence: dict[str, Any]) -> dict[str, Any]:
+    payload = load_ledger(path)
+    payload["gate_evidence"][str(int(issue))] = {"at": _now(), **dict(evidence)}
+    return write_ledger(path, payload)
+
+
 def _issue(payload: dict[str, Any], number: int) -> dict[str, Any]:
     key = str(int(number))
     issue = payload.setdefault("issues", {}).setdefault(key, {"number": int(number), "labels": [], "children": []})
@@ -140,6 +237,25 @@ def apply_event(payload: dict[str, Any], event: dict[str, Any]) -> None:
             _add_label(issue, "in-review")
         elif kind == "pr_merged":
             issue["state"] = "close_expected"
+            merged_pr = {
+                "number": event.get("pr"),
+                "base": event.get("base"),
+                "head": event.get("head"),
+            }
+            for key in ("head_sha", "merge_commit_sha"):
+                if event.get(key):
+                    merged_pr[key] = event[key]
+            issue["merged_pr"] = merged_pr
+            payload.setdefault("merge_evidence", {})[str(int(issue_number))] = {
+                "kind": "merged_pr",
+                "issue": int(issue_number),
+                "pr": event.get("pr"),
+                "base": event.get("base"),
+                "head": event.get("head"),
+                "head_sha": event.get("head_sha"),
+                "merge_commit_sha": event.get("merge_commit_sha"),
+                "parent_contains_child": True,
+            }
             _remove_state_labels(issue)
         elif kind == "ff_merged":
             # micro/normal leaf/container merged to parent via local FF (no PR).
@@ -237,11 +353,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--head")
     parser.add_argument("--base")
     parser.add_argument("--sha-range", dest="sha_range")
+    parser.add_argument("--merge-evidence-json")
+    parser.add_argument("--gate-evidence-json")
     parser.add_argument("--json", action="store_true", dest="as_json")
     args = parser.parse_args(argv)
 
     try:
-        if args.event:
+        if args.merge_evidence_json or args.gate_evidence_json:
+            if args.issue is None:
+                raise ValueError("--issue is required with evidence JSON")
+            if args.merge_evidence_json:
+                payload = record_merge_evidence(args.path, args.issue, json.loads(args.merge_evidence_json))
+            else:
+                payload = record_gate_evidence(args.path, args.issue, json.loads(args.gate_evidence_json))
+        elif args.event:
             event = {"type": args.event}
             for key in ("issue", "pr", "head", "base", "sha_range"):
                 value = getattr(args, key)

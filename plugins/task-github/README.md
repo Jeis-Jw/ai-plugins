@@ -99,6 +99,8 @@ define:
 
 `orchestrate`는 시작/재개/오류 복구 때 GitHub snapshot을 `.task-github/orchestrate/{root}.json`에 reconcile하고, 평상시 tick은 ledger를 읽는다. 성공한 write는 `events[]`와 derived issue/PR state에 즉시 반영하므로 방금 merge/close한 상태를 확인하려고 tree를 다시 읽지 않는다. 최종 closeout과 CI/mergeability/reviewDecision처럼 외부 상태가 바뀌는 경계에서만 GitHub를 다시 조회한다.
 
+ledger v3는 비용 분석과 evidence reuse를 위해 `github_reads`, `read_decisions`, `merge_evidence`, `gate_evidence`를 분리한다. GitHub read는 시작/재개, 실패 복구, 긴 대기 후, pre-merge/mergeability/CI/reviewDecision 확인, final closeout 같은 boundary에서 reason과 함께 기록한다. parent/root PR gate는 전역 integrity strict를 항상 유지하되, child `gate_evidence`가 valid하면 `changed-path-stale` target에서 해당 child path를 제외한다. evidence가 없거나 base/head/version/drift hash/path hash/parent overlap 조건이 맞지 않으면 해당 child path는 fallback target에 포함한다.
+
 ## Orchestrate Gear Options
 
 기본값은 `micro = plan:x verify:o pr-review:x`, `normal = plan:o verify:o pr-review:x`, `major = plan:o verify:o pr-review:o`다. 우선순위는 commander 지시 > `.task-github.yml` `orchestrate.gear-options` > 기본값이다.
