@@ -12,6 +12,19 @@ import merge_preflight  # noqa: E402
 import orchestrator_ops  # noqa: E402
 
 
+def gate(paths, **overrides):
+    paths = orchestrator_ops.canonical_path_list(paths)
+    evidence = merge_preflight.build_gate_evidence(
+        changed_paths=paths,
+        checked_paths=paths,
+        drift_report={"issues": []},
+        pr_head_sha="head-1",
+        tool_versions={"task-github": "0.15.0"},
+    )
+    evidence.update(overrides)
+    return evidence
+
+
 class MergePreflightEvidenceTests(unittest.TestCase):
     def test_build_gate_evidence_has_u2_required_fields(self):
         evidence = merge_preflight.build_gate_evidence(
@@ -93,6 +106,67 @@ class MergePreflightEvidenceTests(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["stop_reason"], "mergeability_not_clean")
+
+    def test_scoped_gate_plan_reduces_child_paths_when_evidence_valid(self):
+        child_gate = gate(["child.py"])
+        ledger = {
+            "issues": {"1": {"children": [2]}, "2": {"number": 2}},
+            "merge_evidence": {
+                "2": {
+                    "kind": "merged_pr",
+                    "base": "task/issue-1",
+                    "parent_contains_child": True,
+                    "head_sha": "head-1",
+                }
+            },
+            "gate_evidence": {"2": child_gate},
+        }
+
+        plan = merge_preflight.scoped_gate_plan_from_ledger(
+            parent_issue=1,
+            expected_base="task/issue-1",
+            changed_paths=["parent.py", "child.py"],
+            ledger=ledger,
+            current_gate_version=merge_preflight.GATE_VERSION,
+            current_tool_versions={"task-github": "0.15.0"},
+            current_drift_surface_hashes={2: child_gate["drift_surface_hash"]},
+            expected_pr_heads={2: "head-1"},
+        )
+
+        self.assertEqual(plan["target_paths"], ["parent.py"])
+        self.assertLess(len(plan["target_paths"]), len(["parent.py", "child.py"]))
+        self.assertEqual(plan["reused"], [2])
+        self.assertEqual(plan["fallback"], [])
+
+    def test_scoped_gate_plan_falls_back_on_invalid_child_evidence(self):
+        child_gate = gate(["child.py"], tool_versions={"task-github": "0.14.0"})
+        ledger = {
+            "issues": {"1": {"children": [2]}, "2": {"number": 2}},
+            "merge_evidence": {
+                "2": {
+                    "kind": "merged_pr",
+                    "base": "task/issue-1",
+                    "parent_contains_child": True,
+                    "head_sha": "head-1",
+                }
+            },
+            "gate_evidence": {"2": child_gate},
+        }
+
+        plan = merge_preflight.scoped_gate_plan_from_ledger(
+            parent_issue=1,
+            expected_base="task/issue-1",
+            changed_paths=["parent.py", "child.py"],
+            ledger=ledger,
+            current_gate_version=merge_preflight.GATE_VERSION,
+            current_tool_versions={"task-github": "0.15.0"},
+            current_drift_surface_hashes={2: child_gate["drift_surface_hash"]},
+            expected_pr_heads={2: "head-1"},
+        )
+
+        self.assertEqual(plan["target_paths"], ["child.py", "parent.py"])
+        self.assertEqual(len(plan["target_paths"]), len(["parent.py", "child.py"]))
+        self.assertEqual(plan["fallback"][0]["reason"], "tool_version_mismatch")
 
 
 if __name__ == "__main__":
