@@ -20,6 +20,7 @@ $ARGUMENTS:
   (없음)        # 모드 A: 대화 맥락을 업무로 등록
   {N}           # 모드 B: 해당 이슈 open 후 분해 기준 요청
   {N} {기준}    # 모드 C: 기준에 따라 서브이슈로 분해
+  --review      # (모드 무관) co-design 확인 후·이슈생성 전 challenge review 게이트를 켠다(기본 off)
 ```
 
 ## 절차
@@ -62,6 +63,32 @@ fi
    - 트리가 2개 이상 리프면 **Topology Decision 섹션도 필수 포함**한다(아래 "트리 깊이 / 토폴로지 결정 게이트" 참조).
    - 기준이 비어 있으면 자동으로 보완하지 말고 `FLAG-to-human`으로 표시한 뒤 확인받는다.
    - 트리에 container(epic)가 있으면 확인안에 **Container Independence Check** 섹션(아래 §트리 깊이/토폴로지)을 포함한다.
+
+#### challenge review (기본 off, `--review`)
+co-design(위 4의 토폴로지 제안 확인, [[DEC-2026-07-02-190102]])가 **정착된 분해 제안**을 확정한 **뒤**, GitHub 이슈트리를 만들기 **전** 지점이다. 여기서 fresh-context 적대적 서브에이전트가 **분해 제안 문서**(이슈가 아직 없다 — PR도 아니다)를 감사한다. define이 이미 가르치는 분해 규칙의 **강제(enforcement) 층**이며, merge-edge-gear 작업을 낳은 과분해·가짜/전이 blocker·검증/문서 리프화 병리를 자동 감사한다([[DEC-2026-07-03-012207]]).
+
+- **(a) 기본 off.** `--review` 인자 또는 이번 실행의 명시적 사령관 지시가 있을 때만 켠다. 없으면 이 절 전체를 스킵하고 5로 간다.
+- **(b) 도구 해소 — 지시 > 설정(`define.review-tool`) > 하네스.** 순수 헬퍼 `orchestrator_ops.resolve_review_tool(enabled, directive_tool, config_tool)`가 `{"mode": "off"|"tool"|"harness", "tool": ...}`를 준다. `mode=="tool"`이면 `compose_tool_command(tool, define.review-command, extra=제안)`으로 relay 커맨드를 만든다(세 번째 인자 `extra`에 분해 제안 ref를 넘긴다). 설정은 `.task-github.yml`의 `define.review-tool`/`define.review-command`이며 `scripts/task_config.py`로 읽는다(orchestrate의 review-tool 패턴과 동형; unknown define 키 경고, `define.review-command`는 `define.review-tool`을 요구).
+- **(c) terminal=하네스 = 진짜 challenge.** 도구가 없으면(=harness) **fresh-context 적대적 challenge 서브에이전트**를 띄운다(refute 스탠스, default-reject). co-design 에이전트가 자기 제안을 다시 읽는 것이 **아니다**(그건 연극이다). 근거 기준: **4 절단규칙**(병렬 이득/위험 격리/정보 가치 경계/병렬 해금) + **blocker 직접의존만**(transitive·방어 금지) + **검증·문서·runbook 리프 금지**(완료조건 흡수) + **container=수요 있는 delivery lane** + **gear 정직성** + **위키 결정그래프**(제안 리프가 REJ/DEC로 회귀하는가 — `wiki recall`로 교차). 
+- **(d) target = 분해 제안 문서**(git PR이 아니다 — 이슈 생성 전의 제안). 그래서 **내장(built-in) 하네스가 주 경로**다. 외부 도구는 **제안 artifact를 받을 수 있을 때만** 쓴다 — session-review는 PR/git 지향이라 doc-review 모드 없이는 define의 자연스러운 reviewer가 아니다(`define.review-tool`을 session-review로 가리키는 것을 과대선전하지 말 것; 내장이 주 경로).
+- **(e) ONE 라운드.** co-design에 **이미 present인 사람**이 **blocking** 판정을 판결한다 — auto-loop 없음. severity bar: **blocking만 게이트**, advisory는 로그만.
+- **(f) complexity nudge(off-default 유지).** 제안 트리의 leaf 수/깊이가 임계를 넘는 복잡 신호가 뜨면(plan 시점 task-count warn 재사용) `--review` 권장 **비차단 warn**을 낸다. 여전히 기본 off이며, nudge는 최고가치 케이스(크고 복잡한 트리)를 조용히 스킵하지 않게만 한다.
+
+`resolve_review_tool` 호출 — 플러그인의 다른 곳과 같은 sys.path shim 패턴:
+```bash
+python3 - <<'PY'
+import sys
+sys.path.insert(0, "plugins/task-github/skills/orchestrate/scripts")
+import orchestrator_ops as ops
+# enabled = --review 또는 사령관 지시. directive/config_tool = 지시>설정 순.
+r = ops.resolve_review_tool(enabled=True, directive_tool=None, config_tool=None)  # → {"mode": "harness", "tool": None}
+if r["mode"] == "tool":
+    print(ops.compose_tool_command(r["tool"], None, extra="분해 제안"))  # tool relay 커맨드
+else:
+    print(r["mode"])  # "harness" = 내장 challenge 서브에이전트, "off" = 스킵
+PY
+```
+
 5. 이슈 생성 — 테스트된 배치 헬퍼 사용:
 ```bash
 python3 "${CLAUDE_SKILL_DIR}/scripts/create_issue_tree.py" \
@@ -274,6 +301,7 @@ fi
 - **container는 카테고리가 아니라 독립 delivery lane, `blocked_by`는 직접 의존·sibling-only** — container는 병렬 lane 격리 또는 직렬 staging/통합검증 지점이라는 수요가 만든다(리프 1개만 남으면 접는다; 깊이 제약 없음—깊이는 결과). `blocked_by`는 직접 선행조건만(transitive·방어적 선언 금지)이고, 다른 parent의 node에 걸리면 `cross_parent_dependency_detected`로 거부한다. 공유 선행조건은 선행 spec 리프를 sibling으로 승격해 해소하고, override가 불가피하면 `cross_parent_dependency_reason`을 명시한다.
 - **기어 라벨을 붙이지 않는다** — define은 구조 생성만. 리프 기어는 `start`가 판정하고, 컨테이너 기어는 merge edge에서 `orchestrate`가 자식 누적(`container_gear_promotion`)으로 결정한다(define은 컨테이너에 gear 라벨을 강제하지 않는다).
 - **plan 시점 태스크 과다는 STOP이 아니라 warn** — 리프·컨테이너 수가 많아 보여도 차단하지 않는다. 확인안에 신호를 남기고 사령관 확인으로 진행한다(개수 상한 없음).
+- **challenge review는 co-design 뒤·이슈생성 전, off-default, terminal=하네스** — `--review`/사령관 지시로만 켠다. 도구 해소는 지시>설정(`define.review-tool`)>하네스이며, 도구가 없으면 STOP이 아니라 내장 fresh-context 적대적 challenge 서브에이전트로 퇴각한다. 대상은 분해 제안 문서(PR 아님), ONE 라운드, blocking만 게이트([[DEC-2026-07-03-012207]]).
 - **task 노드는 업무(루트) 1:1** — 리프·서브이슈마다 만들지 않는다.
 - **Execution Contract는 루트 이슈 body 전용** — `schema_version` + stable keys를 가진 fenced block으로 materialize하고, contract 부재 시 context bundle은 `topology/gate/parent_branch=null`, `default_source=profile+gear`로 보고한다.
 - orchestrate 대상 tree는 dependency 생성 실패를 fallback comment로 숨기지 않고 `dep_create_failed`로 실패 처리한다.

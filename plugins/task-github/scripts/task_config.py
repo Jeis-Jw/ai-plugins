@@ -13,13 +13,14 @@ import sys
 from pathlib import Path
 from typing import Any
 
-TOP_KEYS = {"mode", "base_branch", "planning-tool", "verify-tool", "review-tool", "orchestrate"}
+TOP_KEYS = {"mode", "base_branch", "planning-tool", "verify-tool", "review-tool", "orchestrate", "define"}
 ORCH_KEYS = {"verify-command", "review-mode", "review-command", "gear-options", "max-workers"}
+DEFINE_KEYS = {"review-tool", "review-command"}
 GEARS = {"micro", "normal", "major"}
 GEAR_OPTION_KEYS = {"plan", "verify", "pr-review"}
 REVIEW_MODES = {"gear", "all", "skip"}
 MODES = {"solo", "team"}
-MAPPING_KEYS = {"orchestrate", "gear-options", *GEARS}
+MAPPING_KEYS = {"orchestrate", "define", "gear-options", *GEARS}
 
 
 def _strip_comment(line: str) -> str:
@@ -135,6 +136,16 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
         findings.append(_finding("verify_tool_required", "orchestrate.verify-command requires verify-tool"))
     if orchestrate.get("review-command") and not config.get("review-tool"):
         findings.append(_finding("review_tool_required", "orchestrate.review-command requires review-tool"))
+
+    define = config.get("define")
+    if define is not None:
+        if not isinstance(define, dict):
+            findings.append(_finding("bad_define", "define must be a mapping"))
+        else:
+            for key in sorted(set(define) - DEFINE_KEYS):
+                findings.append(_finding("unknown_define_key", f"unknown define key: {key}", "warning"))
+            if define.get("review-command") and not define.get("review-tool"):
+                findings.append(_finding("define_review_tool_required", "define.review-command requires define.review-tool"))
     return findings
 
 
@@ -163,6 +174,9 @@ def render_default_config(*, base_branch: str = "main") -> str:
         "      plan: true\n"
         "      verify: true\n"
         "      pr-review: true\n"
+        "define:\n"
+        "  review-tool:\n"       # 비면 --review 시 내장 challenge(harness). 지정하면 그 도구로 relay.
+        "  review-command:\n"
     )
 
 
