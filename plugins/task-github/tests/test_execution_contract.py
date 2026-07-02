@@ -195,7 +195,59 @@ class TreeShapeTests(unittest.TestCase):
         spec = {"root": self._root("stacked"), "children": [_leaf("a"), _leaf("b")]}
         validated = create_issue_tree.validate_spec(spec)
         self.assertTrue(validated["warnings"])
-        self.assertIn("epic", validated["warnings"][0])
+        self.assertEqual(validated["warnings"][0]["code"], "stacked_without_epics")
+        self.assertIn("epic", validated["warnings"][0]["message"])
+
+    def test_flat_single_signal_does_not_warn(self):
+        # 6 leaves but a single path cluster ("apps/api") → only leaf_count fires.
+        spec = {
+            "root": self._root("flat"),
+            "children": [_leaf(f"L{i}", paths=[f"apps/api/{i}.py"]) for i in range(6)],
+        }
+        validated = create_issue_tree.validate_spec(spec)
+        self.assertEqual(validated["warnings"], [])
+
+    def test_flat_maybe_understructured_warns_on_two_signals(self):
+        # leaf_count>=6 AND path_clusters>=3 (auth/wallet/qr/ops).
+        spec = {
+            "root": self._root("flat"),
+            "children": [
+                _leaf("AUTH-1", paths=["apps/auth/a.py"]),
+                _leaf("AUTH-2", paths=["apps/auth/b.py"]),
+                _leaf("WALLET-1", paths=["apps/wallet/a.py"]),
+                _leaf("WALLET-2", paths=["apps/wallet/b.py"]),
+                _leaf("QR-1", paths=["apps/qr/a.py"]),
+                _leaf("OPS-1", paths=["apps/ops/a.py"]),
+            ],
+        }
+        validated = create_issue_tree.validate_spec(spec)
+        self.assertEqual(len(validated["warnings"]), 1)
+        warning = validated["warnings"][0]
+        self.assertEqual(warning["code"], "flat_maybe_understructured")
+        self.assertEqual(
+            warning["suggested_epics"],
+            ["apps/auth", "apps/ops", "apps/qr", "apps/wallet"],
+        )
+
+    def test_flat_cross_cluster_dependency_signal(self):
+        # Only 4 leaves / 2 clusters (below leaf_count and cluster thresholds),
+        # but 2 cross-cluster blocked_by edges plus the cluster signal (>=... no,
+        # 2 clusters < 3) — combine cross_cluster_deps with domain keyword repeats
+        # to reach the 2-signal threshold.
+        spec = {
+            "root": self._root("flat"),
+            "children": [
+                _leaf("BE-1", paths=["apps/api/a.py"]),
+                _leaf("BE-2", paths=["apps/api/b.py"]),
+                _leaf("FE-1", paths=["apps/mobile/a.py"], blocked_by=["BE-1"]),
+                _leaf("FE-2", paths=["apps/mobile/b.py"], blocked_by=["BE-2"]),
+            ],
+        }
+        for child in spec["children"]:
+            child["title"] = "backend" if child["key"].startswith("BE") else "mobile"
+        validated = create_issue_tree.validate_spec(spec)
+        self.assertEqual(len(validated["warnings"]), 1)
+        self.assertEqual(validated["warnings"][0]["code"], "flat_maybe_understructured")
 
     def test_unknown_parent_rejected(self):
         spec = {"root": self._root(), "children": [_leaf("a", parent="ghost")]}
