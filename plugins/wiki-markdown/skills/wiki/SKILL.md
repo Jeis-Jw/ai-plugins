@@ -1,6 +1,6 @@
 ---
 name: wiki
-description: Manage an AI-native project wiki — capture intents, decisions, rejected alternatives, trial-error lessons, observations, current state (SSOT) and operating runbooks as a decision graph; query it; refresh integrity. Use whenever the user wants to record what was decided / why, retrieve related context before a decision, file an observation for later classification, retire or supersede a record, or run a wiki integrity check. Filesystem-primary, deterministic CLI — minimal tokens to stay consistent.
+description: Manage an AI-native project wiki — capture intents, decisions, rejected alternatives, trial-error lessons, observations, current state (SSOT) and operating runbooks as a decision graph; query it; refresh integrity. Use whenever the user wants to record what was decided / why, retrieve related context before a decision, ask what was recently decided / built / changed or the project's current state / history (recall the graph — don't answer from git log or memory alone), file an observation for later classification, retire or supersede a record, or run a wiki integrity check. Filesystem-primary, deterministic CLI — minimal tokens to stay consistent.
 ---
 
 # Wiki
@@ -22,6 +22,7 @@ Core loop: **`recall` before deciding, `capture` after deciding** (mechanism in 
 - **Record durable knowledge**: "log this decision / intent / why we rejected X / this trap"; "found something, can't classify yet" → `observation`.
 - **Document state/procedure**: current architecture → `ssot`; deploy/run procedure → `runbook`.
 - **Retrieve before acting**: "what did we decide about X?", "related intents?", "tried before?", "who superseded this?".
+- **Answer state/history questions**: "what changed recently?", "what did we do / build / decide lately?", "current state of X?" → `recall`/`--pack` the decision + task graph; the wiki holds the *why*, git log only the *what*. Don't answer these from git log or a session memory summary alone.
 - **Save/resume discussion**: "save this discussion" → `snapshot save`; "load previous context" → `snapshot load`.
 - **Integrity/drift**: "check the wiki", "stale facts?", "broken links?", "what does this code change affect?".
 - **Plan a unit of work** (work-definition/handoff bridge) → `task`.
