@@ -3,7 +3,7 @@ title: Knowledge Capture 감사 어휘가 3계층에 중복 정의됨
 created_at: 2026-06-02
 summary: task-github 사후 리뷰에서 recorded/proposed/none 어휘가 rules/knowledge-capture.md·agent-operating-model §1.1·DESIGN §13.1.1 3곳에 중복돼 이미 문구가 어긋난 drift를 발견. 해소: 플러그인이 위키 없이도 산출하는 어휘이므로 메커니즘(rules/knowledge-capture.md)을 정본으로 단일화하고, policy는 의무 규정+포인터, DESIGN은 포인터로 격하. policy를 정본으로 삼는 안은 graceful-degradation(불변식 20) 위반이라 기각. 리뷰 종합 판정은 '취지 충실'.
 tags: [task-github, knowledge-capture, doc-drift, review]
-verified_at: 2026-06-12
+verified_at: 2026-07-03
 affects_paths: [plugins/task-github/rules/knowledge-capture.md, wiki/ssot/agent-operating-model.md, plugins/task-github/DESIGN.md]
 supersedes: [OBS-2026-06-02-195745-knowledge-capture-감사-어휘가-3계층에-중복-정의됨]
 relations:
@@ -25,6 +25,10 @@ relations:
 ## 현재 처리
 
 어휘와 타입 판정의 정본을 `plugins/task-github/rules/knowledge-capture.md`로 단일화했다. `wiki/ssot/agent-operating-model.md`는 "비 trivial 작업은 감사한다"는 policy 의무와 포인터만 보유하고, `plugins/task-github/DESIGN.md`는 mechanism/policy 경계를 설명하는 참조용 포인터로 격하했다. 이전 observation `OBS-2026-06-02-195745-...`는 policy를 정본으로 보는 방향이라 이 record가 supersede한다.
+
+## 재검증
+
+2026-07-03 task-github 0.15.1 변경 이력 추가 후에도 Knowledge Capture Audit 어휘 정본은 `plugins/task-github/rules/knowledge-capture.md`에 남아 있고, `DESIGN.md`는 변경 이력/참조 역할만 수행함을 확인했다.
 
 ## 후속 분류 조건
 

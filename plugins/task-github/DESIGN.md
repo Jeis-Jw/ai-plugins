@@ -844,6 +844,13 @@ python3 <wiki-cli> init    # ./wiki/ vault 생성 (task 타입 지원 버전 필
 
 ## 20. 변경 이력 (v2 → v3)
 
+### v0.15.1 — closeout preflight evidence 재사용
+
+- `merge_preflight.py`가 PR view/status를 `preflight_evidence`로 ledger에 기록한다. 포함 범위는 PR 번호, head/base, body/labels, mergeability, CI/check, reviewDecision, head SHA다.
+- `closeout.py`는 같은 PR/head의 fresh evidence만 PR view 입력으로 재사용한다. TTL 만료, 필드 누락, status 실패, PR/head 불일치, ledger 읽기 실패는 기존 GitHub 조회로 fallback한다.
+- 실제 merge는 `gh pr merge --match-head-commit <head_sha>`를 사용해 preflight 이후 head drift를 GitHub merge boundary에서 차단한다.
+- closeout read decision은 ledger `read_decisions`에 남기고, fallback PR 조회는 `github_reads`에 reason과 함께 기록한다.
+
 ### v0.15.0 — define challenge review 게이트
 
 - `task-github:define`에 co-design **뒤**·이슈 트리 생성 **전** challenge review 게이트 추가([[DEC-2026-07-03-012207]]). fresh-context 대심 서브에이전트가 분해 **제안 문서**(PR 아님)를 4개 cut-rule + 위키 결정 그래프 회귀 여부로 감사한다. 기본 OFF, `--review`(또는 사령관 지시)로 켠다. 1라운드·severity bar(blocking만 게이트)·사령관이 blocking 심판·auto-loop 없음.

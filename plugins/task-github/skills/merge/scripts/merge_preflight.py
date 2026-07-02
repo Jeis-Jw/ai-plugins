@@ -15,9 +15,24 @@ SCRIPTS = Path(__file__).resolve().parents[2] / "orchestrate" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 import orchestrator_ops  # type: ignore  # noqa: E402
-from orchestrate_ledger import load_ledger, record_gate_evidence, record_github_read  # type: ignore  # noqa: E402
+from orchestrate_ledger import (  # type: ignore  # noqa: E402
+    load_ledger,
+    record_gate_evidence,
+    record_github_read,
+    record_preflight_evidence,
+)
 
 GATE_VERSION = "changed-path-stale:v1"
+PREFLIGHT_REUSE_COVERS = ("mergeability", "ci_check", "review_decision", "head_sha")
+PREFLIGHT_CLOSEOUT_VIEW_FIELDS = (
+    "number",
+    "headRefName",
+    "headRefOid",
+    "baseRefName",
+    "state",
+    "body",
+    "labels",
+)
 REQUIRED_GATE_FIELDS = (
     "changed_paths",
     "changed_paths_hash",
@@ -49,6 +64,48 @@ def _stable_hash(payload: Any) -> str:
 def parse_linked_issue(pr_body: str) -> int | None:
     match = LINKED_ISSUE_RE.search(pr_body or "")
     return int(match.group(1)) if match else None
+
+
+def decode_diff_path(raw: str) -> str:
+    """Decode git-style quoted path lines from `gh pr diff --name-only`."""
+    if not (len(raw) >= 2 and raw[0] == '"' and raw[-1] == '"'):
+        return raw
+    text = raw[1:-1]
+    out = bytearray()
+    i = 0
+    escapes = {
+        "a": 7,
+        "b": 8,
+        "t": 9,
+        "n": 10,
+        "v": 11,
+        "f": 12,
+        "r": 13,
+        '"': ord('"'),
+        "\\": ord("\\"),
+    }
+    while i < len(text):
+        ch = text[i]
+        if ch != "\\":
+            out.extend(ch.encode("utf-8"))
+            i += 1
+            continue
+        i += 1
+        if i >= len(text):
+            out.append(ord("\\"))
+            break
+        esc = text[i]
+        if esc in "01234567":
+            digits = [esc]
+            i += 1
+            while i < len(text) and len(digits) < 3 and text[i] in "01234567":
+                digits.append(text[i])
+                i += 1
+            out.append(int("".join(digits), 8))
+            continue
+        out.append(escapes.get(esc, ord(esc)))
+        i += 1
+    return out.decode("utf-8")
 
 
 def plugin_tool_versions(plugin_root: Path | None = None) -> tuple[dict[str, str], str | None]:
@@ -138,6 +195,20 @@ def validate_pr_status(view: dict[str, Any], *, expected_head_oid: str | None = 
             return {"ok": False, "stop_reason": "ci_check_pending", "check": item.get("name")}
         return {"ok": False, "stop_reason": "ci_check_failed", "check": item.get("name")}
     return {"ok": True, "headRefOid": head_oid}
+
+
+def build_preflight_evidence(view: dict[str, Any], status: dict[str, Any]) -> dict[str, Any]:
+    reusable_view = {field: view.get(field) for field in PREFLIGHT_CLOSEOUT_VIEW_FIELDS}
+    return {
+        "pr": int(view["number"]),
+        "covers": list(PREFLIGHT_REUSE_COVERS),
+        "status": dict(status),
+        "view": reusable_view,
+        "mergeStateStatus": view.get("mergeStateStatus"),
+        "reviewDecision": view.get("reviewDecision"),
+        "isDraft": view.get("isDraft"),
+        "statusCheckRollup": list(view.get("statusCheckRollup") or []),
+    }
 
 
 def _ledger_issue(ledger: dict[str, Any], number: int) -> dict[str, Any]:
@@ -249,7 +320,7 @@ def run_preflight(
         "view",
         str(pr),
         "--json",
-        "number,title,headRefName,headRefOid,baseRefName,state,isDraft,mergeStateStatus,reviewDecision,statusCheckRollup,body",
+        "number,title,headRefName,headRefOid,baseRefName,state,isDraft,mergeStateStatus,reviewDecision,statusCheckRollup,body,labels",
     ], code="pr_view_failed"))
     if orchestrate_ledger:
         record_github_read(
@@ -269,7 +340,11 @@ def run_preflight(
 
     tools, policy_token = plugin_tool_versions()
     issue = parse_linked_issue(view.get("body") or "")
-    changed_paths = [line for line in gh(["pr", "diff", str(pr), "--name-only"], code="pr_diff_failed").splitlines() if line]
+    changed_paths = [
+        decode_diff_path(line)
+        for line in gh(["pr", "diff", str(pr), "--name-only"], code="pr_diff_failed").splitlines()
+        if line
+    ]
     scoped_plan = None
     checked_paths = orchestrator_ops.canonical_path_list(changed_paths)
     if orchestrate_ledger and issue is not None:
@@ -309,12 +384,14 @@ def run_preflight(
 
     if orchestrate_ledger and issue is not None:
         record_gate_evidence(orchestrate_ledger, issue, evidence)
+        record_preflight_evidence(orchestrate_ledger, pr, build_preflight_evidence(view, status))
     return {
         "ok": True,
         "pr": pr,
         "issue": issue,
         "headRefOid": view["headRefOid"],
         "gate_evidence": evidence,
+        "preflight_evidence": build_preflight_evidence(view, status),
         "scoped_gate_plan": scoped_plan,
     }
 
