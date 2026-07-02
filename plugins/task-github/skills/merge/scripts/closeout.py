@@ -1,19 +1,17 @@
 #!/usr/bin/env python3
 """Deterministic post-gate merge closeout for task-github's `merge` skill.
 
-git/gh ONLY — never mutates wiki. Quality gates (integrity/drift) run in the
-skill BEFORE this and are passed as evidence for local mode; `wiki complete`
-runs in the skill AFTER, using the `task_to_complete` this script emits. Keeping
-wiki mutation out makes the script portable and keeps the merge/no-merge
-decision with the agent.
+git/gh ONLY — never mutates wiki. `wiki complete` runs in the skill AFTER, using
+the `task_to_complete` this script emits. Keeping wiki mutation out makes the
+script portable and keeps the merge/no-merge decision with the agent.
 
-PR sequence: resolve PR → dependency recheck → label cleanup → merge →
-sync+branch cleanup → downstream advisory → root-close detection.
-Local sequence: dependency recheck → temp worktree merge simulation →
-required_checks/drift/integrity validation → local merge → issue close →
-optional stacked-local Integration Ledger → root-close detection.
-`--dry-run` does only the read-only steps and reports the plan; it never merges,
-relabels, or deletes.
+All merges go through `gh pr merge` (remote): leaf PRs and container/epic
+merge-up PRs alike. Sequence: resolve PR → dependency recheck → label cleanup →
+merge → checkout-free base sync + branch cleanup → downstream advisory →
+root-close detection. The base sync never checks out the base branch, so the
+operator's primary worktree HEAD stays put during orchestration
+(DEC-2026-07-02-212109). `--dry-run` does only the read-only steps and reports
+the plan; it never merges, relabels, or deletes.
 """
 
 from __future__ import annotations
@@ -21,12 +19,10 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import shlex
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import List, Optional
 
 STATE_LABELS = ("in-review", "in-progress", "changes-requested")
 # Unicode-safe: the slug may contain Korean. Stop at whitespace or bracket so a
@@ -36,10 +32,6 @@ WIKI_CONTEXT_RE = re.compile(
     r"(?ims)^##\s+Wiki Context\s*\n(?P<body>.*?)(?=^##\s+|\Z)",
 )
 LINKED_ISSUE_RE = re.compile(r"(?i)\b(?:closes|fixes|resolves)\s+#(\d+)")
-LEDGER_MARKER = "<!-- task-github:integration-ledger:v1 -->"
-LEDGER_FENCE = "task-github-ledger"
-LEDGER_RE = re.compile(rf"```{LEDGER_FENCE}\s*\n(?P<body>.*?)\n```", re.DOTALL)
-HARD_LEAF_RISKS = {"irreversible", "db", "public-api", "security", "data-loss"}
 
 
 class CloseoutError(Exception):
@@ -72,39 +64,6 @@ def labels_to_remove(current: List[str]) -> List[str]:
     return [lbl for lbl in STATE_LABELS if lbl in have]
 
 
-def leaf_policy_requirements(policy: dict | None) -> dict:
-    """Return the minimum gates required before local leaf integration."""
-    raw_risk = (policy or {}).get("risk_class", "normal")
-    risk = str(raw_risk or "normal").strip().lower()
-    required = ["verify", "drift", "blocker"]
-    if risk == "major":
-        required.append("self-flow")
-    elif risk in HARD_LEAF_RISKS:
-        required.append("pr-or-hard-self-flow")
-    elif risk not in {"micro", "normal"}:
-        required.append("manual-risk-review")
-    return {"risk_class": risk, "required_gates": required}
-
-
-def leaf_policy_failures(policy: dict | None, contract: dict | None) -> list[dict]:
-    requirements = leaf_policy_requirements(policy)
-    gates = set(requirements["required_gates"])
-    policy = policy or {}
-    contract = contract or {}
-    failures = []
-    self_flow_verified = contract.get("self_flow_verified") or policy.get("self_flow_verified")
-    hard_self_flow_verified = (
-        contract.get("hard_self_flow_verified") or policy.get("hard_self_flow_verified")
-    )
-    if "self-flow" in gates and not self_flow_verified:
-        failures.append({"code": "self_flow_required", "risk_class": requirements["risk_class"]})
-    if "pr-or-hard-self-flow" in gates and not (
-        contract.get("closeout_mode") == "pr" or hard_self_flow_verified
-    ):
-        failures.append({"code": "hard_self_flow_required", "risk_class": requirements["risk_class"]})
-    return failures
-
-
 def _drift_failed(report: dict | None) -> bool:
     if not report:
         return False
@@ -135,70 +94,6 @@ def _command_key(command) -> str:
     if isinstance(command, list):
         return json.dumps(command, ensure_ascii=False, separators=(",", ":"))
     return str(command)
-
-
-def evaluate_merge_simulation(
-    *,
-    required_checks: list[str] | None,
-    check_results: list[dict] | None,
-    drift_report: dict | None,
-    integrity_report: dict | None,
-) -> dict:
-    """Validate required checks + drift + integrity for local closeout."""
-    required = list(required_checks or [])
-    results = list(check_results or [])
-    by_command = {_command_key(item.get("command")): item for item in results}
-    failed = []
-    if not required:
-        failed.append({"code": "required_checks_empty"})
-    for command in required:
-        result = by_command.get(_command_key(command))
-        if result is None:
-            failed.append({"code": "required_check_missing", "command": command})
-        elif int(result.get("returncode", 1)) != 0:
-            failed.append({
-                "code": "required_check_failed",
-                "command": command,
-                "returncode": result.get("returncode"),
-            })
-    if not _has_drift_evidence(drift_report):
-        failed.append({"code": "drift_evidence_missing"})
-    elif drift_report.get("skipped") is not True and _drift_failed(drift_report):
-        failed.append({"code": "changed_path_stale", "report": drift_report})
-    if not _has_integrity_evidence(integrity_report):
-        failed.append({"code": "integrity_evidence_missing"})
-    elif integrity_report.get("skipped") is not True and _integrity_failed(integrity_report):
-        failed.append({"code": "integrity_failed", "report": integrity_report})
-    return {
-        "ok": not failed,
-        "required_checks": required,
-        "check_results": results,
-        "drift": drift_report,
-        "integrity": integrity_report,
-        "failed": failed,
-    }
-
-
-def render_integration_ledger_comment(event: dict) -> str:
-    payload = {"schema_version": 1, **event}
-    body = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return f"{LEDGER_MARKER}\n```{LEDGER_FENCE}\n{body}\n```"
-
-
-def parse_integration_ledger_events(comments: Iterable[dict]) -> list[dict]:
-    events = []
-    for comment in comments or []:
-        body = str(comment.get("body") or "")
-        if LEDGER_MARKER not in body:
-            continue
-        for match in LEDGER_RE.finditer(body):
-            try:
-                payload = json.loads(match.group("body"))
-            except json.JSONDecodeError:
-                continue
-            if payload.get("schema_version") == 1:
-                events.append(payload)
-    return events
 
 
 # ── gh/git plumbing ────────────────────────────────────────────────────────
@@ -272,71 +167,6 @@ def _detect_root_task(owner: str, repo: str, issue: int) -> tuple[Optional[int],
                   code="issue_view_failed")
         task = extract_task_id(body)
     return root, closed, task
-
-
-def run_required_checks(commands: list[list[str]], *, cwd: str) -> list[dict]:
-    results = []
-    for command in commands or []:
-        result = subprocess.run(
-            command,
-            cwd=cwd,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        results.append({
-            "command": command,
-            "returncode": result.returncode,
-            "stdout": result.stdout[-4000:],
-            "stderr": result.stderr[-4000:],
-        })
-    return results
-
-
-def run_merge_simulation(
-    *,
-    head: str,
-    parent_branch: str,
-    required_checks: list[str],
-    drift_report: dict | None,
-    integrity_report: dict | None,
-) -> dict:
-    tmp = tempfile.mkdtemp(prefix="task-github-merge-sim-")
-    check_results: list[dict] = []
-    try:
-        _run(["git", "worktree", "add", "--detach", tmp, parent_branch],
-             code="simulation_worktree_failed")
-        _run(["git", "-C", tmp, "merge", "--no-commit", "--no-ff", head],
-             code="simulation_merge_failed")
-        check_results = run_required_checks(required_checks, cwd=tmp)
-        report = evaluate_merge_simulation(
-            required_checks=required_checks,
-            check_results=check_results,
-            drift_report=drift_report,
-            integrity_report=integrity_report,
-        )
-        report["worktree"] = tmp
-        return report
-    finally:
-        subprocess.run(
-            ["git", "worktree", "remove", "--force", tmp],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-
-
-def _sha(ref: str) -> str:
-    return _run(["git", "rev-parse", "--short", ref], code="git_failed")
-
-
-def _local_labels_to_remove(issue_view: dict) -> list[str]:
-    return labels_to_remove([l["name"] for l in issue_view.get("labels", [])])
-
-
-def _append_ledger(owner: str, repo: str, root: int, event: dict) -> None:
-    body = render_integration_ledger_comment(event)
-    gh(["issue", "comment", str(root), "--body", body], code="ledger_failed")
 
 
 def issue_close_failure_is_ok(message: str) -> bool:
@@ -424,91 +254,6 @@ def _record_orchestrate_events(path: str | None, events: list[dict]) -> str | No
     return None
 
 
-def run_local_closeout(
-    *,
-    issue: int,
-    head: str,
-    parent_branch: str,
-    dry_run: bool,
-    required_checks: list[str],
-    drift_report: dict | None,
-    integrity_report: dict | None,
-    contract: dict | None,
-) -> dict:
-    owner, repo = _repo()
-    open_blockers = _open_blockers(owner, repo, issue)
-    if open_blockers:
-        raise CloseoutError("open_blockers",
-                            "linked issue has open blocked_by: " + "; ".join(open_blockers))
-    root, root_closed_before, _ = _detect_root_task(owner, repo, issue)
-    issue_view = json.loads(gh(["issue", "view", str(issue), "--json", "labels,body"]))
-    issue_label_removals = _local_labels_to_remove(issue_view)
-    downstream = _blocking(owner, repo, issue)
-    policy = leaf_policy_requirements((contract or {}).get("leaf_policy"))
-    policy_failures = leaf_policy_failures((contract or {}).get("leaf_policy"), contract)
-    if policy_failures:
-        raise CloseoutError("leaf_policy_failed", json.dumps(policy_failures, ensure_ascii=False))
-    simulation = run_merge_simulation(
-        head=head,
-        parent_branch=parent_branch,
-        required_checks=required_checks,
-        drift_report=drift_report,
-        integrity_report=integrity_report,
-    )
-    if not simulation["ok"]:
-        raise CloseoutError("merge_simulation_failed", json.dumps(simulation, ensure_ascii=False))
-
-    base_result = {
-        "ok": True,
-        "dry_run": dry_run,
-        "mode": "local",
-        "issue": issue,
-        "root": root,
-        "head": head,
-        "parent_branch": parent_branch,
-        "root_closed": root_closed_before,
-        "task_to_complete": None,
-        "downstream": downstream,
-        "merged": False,
-        "issue_labels_to_remove": issue_label_removals,
-        "leaf_policy": policy,
-        "merge_simulation": simulation,
-    }
-    if dry_run:
-        base_result["would_merge"] = f"git checkout {parent_branch} && git merge --no-ff {head}"
-        return base_result
-
-    _run(["git", "checkout", parent_branch], code="git_failed")
-    _run(["git", "merge", "--no-ff", head, "-m",
-          f"merge(task-github): local closeout issue #{issue}"], code="local_merge_failed")
-    for lbl in issue_label_removals:
-        gh(["issue", "edit", str(issue), "--remove-label", lbl], code="label_failed")
-    gh(["issue", "close", str(issue), "--comment",
-        f"task-github local closeout: merged `{head}` into `{parent_branch}`."],
-       code="issue_close_failed")
-    root, root_closed, task = _detect_root_task(owner, repo, issue)
-    event = {
-        "leaf": issue,
-        "sha": _sha("HEAD"),
-        "checks": simulation["check_results"],
-        "drift": drift_report,
-        "downstream": downstream,
-    }
-    topology = (contract or {}).get("topology")
-    mode = (contract or {}).get("closeout_mode")
-    if topology == "stacked" and mode == "local":
-        _append_ledger(owner, repo, root, event)
-    base_result.update({
-        "dry_run": False,
-        "root": root,
-        "root_closed": root_closed,
-        "task_to_complete": task if root_closed else None,
-        "merged": True,
-        "ledger_event": event if topology == "stacked" and mode == "local" else None,
-    })
-    return base_result
-
-
 def run_pr_closeout(pr: int, *, dry_run: bool, orchestrate_ledger: str | None = None) -> dict:
     owner, repo = _repo()
     view = json.loads(gh(["pr", "view", str(pr), "--json",
@@ -591,8 +336,21 @@ def run_pr_closeout(pr: int, *, dry_run: bool, orchestrate_ledger: str | None = 
         sync_warnings.append(warning)
 
     # Local sync is best-effort: the merge already landed on the remote, so a
-    # failure here must not abort (and must not hide the result above).
-    for cmd in (["git", "checkout", view["baseRefName"]], ["git", "pull"], ["git", "push", "origin", "--delete", head]):
+    # failure here must not abort (and must not hide the result above). Never
+    # `git checkout` the base branch — refresh the local base ref via fetch so
+    # the operator's primary worktree HEAD stays where it was during
+    # orchestration (DEC-2026-07-02-212109). Fetch refuses to update a
+    # checked-out branch, so when base IS the current HEAD, pull in place.
+    base = view["baseRefName"]
+    current = subprocess.run(
+        ["git", "symbolic-ref", "--short", "-q", "HEAD"],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    ).stdout.strip()
+    base_sync = (
+        ["git", "pull", "--ff-only"] if base == current
+        else ["git", "fetch", "origin", f"{base}:{base}"]
+    )
+    for cmd in (base_sync, ["git", "push", "origin", "--delete", head]):
         warning = _run_warning(cmd)
         if warning:
             sync_warnings.append(warning)
@@ -604,66 +362,17 @@ def run_pr_closeout(pr: int, *, dry_run: bool, orchestrate_ledger: str | None = 
     return result
 
 
-def _load_json_file(path: str | None) -> dict | None:
-    if not path:
-        return None
-    with open(path, encoding="utf-8") as fp:
-        return json.load(fp)
-
-
-def _normalize_contract_check(item) -> list[str]:
-    if isinstance(item, dict):
-        item = item.get("argv")
-    if isinstance(item, list) and item and all(isinstance(part, str) and part for part in item):
-        return list(item)
-    raise CloseoutError(
-        "unsafe_required_check",
-        "required_checks from Execution Contract must be argv arrays, not shell strings",
-    )
-
-
-def contract_required_checks(contract: dict | None, extras: list[str]) -> list[list[str]]:
-    checks = []
-    if isinstance(contract, dict) and isinstance(contract.get("required_checks"), list):
-        checks.extend(_normalize_contract_check(item) for item in contract["required_checks"])
-    checks.extend(shlex.split(item) for item in extras or [])
-    return checks
-
-
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--mode", choices=("pr", "local"), default="pr")
-    parser.add_argument("--pr", type=int)
-    parser.add_argument("--issue", type=int)
-    parser.add_argument("--head", "--branch", dest="head")
-    parser.add_argument("--parent-branch", default="main")
-    parser.add_argument("--contract-json")
-    parser.add_argument("--required-check", action="append", default=[])
-    parser.add_argument("--drift-json")
-    parser.add_argument("--integrity-json")
+    parser.add_argument("--pr", type=int, required=True)
     parser.add_argument("--orchestrate-ledger")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--json", action="store_true", dest="as_json")
     args = parser.parse_args(argv)
     try:
-        if args.mode == "pr":
-            if args.pr is None:
-                raise CloseoutError("bad_args", "--pr is required in --mode pr")
-            result = run_pr_closeout(args.pr, dry_run=args.dry_run, orchestrate_ledger=args.orchestrate_ledger)
-        else:
-            if args.issue is None or not args.head:
-                raise CloseoutError("bad_args", "--issue and --head are required in --mode local")
-            contract = _load_json_file(args.contract_json)
-            result = run_local_closeout(
-                issue=args.issue,
-                head=args.head,
-                parent_branch=args.parent_branch,
-                dry_run=args.dry_run,
-                required_checks=contract_required_checks(contract, args.required_check),
-                drift_report=_load_json_file(args.drift_json),
-                integrity_report=_load_json_file(args.integrity_json),
-                contract=contract,
-            )
+        result = run_pr_closeout(
+            args.pr, dry_run=args.dry_run, orchestrate_ledger=args.orchestrate_ledger
+        )
     except CloseoutError as exc:
         payload = {"ok": False, "error_code": exc.code, "message": exc.message}
         print(json.dumps(payload, ensure_ascii=False) if args.as_json else f"error: {exc.message}",
@@ -673,10 +382,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(json.dumps(result, ensure_ascii=False))
     else:
         if result.get("merged"):
-            if result.get("mode") == "local":
-                print(f"merged {result['head']} into {result['parent_branch']} (issue #{result['issue']})")
-            else:
-                print(f"merged PR #{result['pr']} (issue #{result['issue']})")
+            print(f"merged PR #{result['pr']} (issue #{result['issue']})")
             if result.get("task_to_complete"):
                 print(f"root closed → run: wiki complete {result['task_to_complete']}")
         else:

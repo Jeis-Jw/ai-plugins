@@ -72,10 +72,10 @@ python3 plugins/task-github/skills/orchestrate/scripts/ready_leaves.py \
 
 1. `ok:false` → `stop_reason` 브리핑 후 종료. 부분 ready-set 스폰 금지.
 2. `stuck[]` → STOP. prior run 또는 failed worker는 자동 재시도하지 않는다.
-3. `container_done` → PR/close 증거 guard 후 컨테이너 브랜치를 base로 머지.
-   - 부모 이슈 있음: `task/issue-{container}` → `task/issue-{parent}` merge + 컨테이너 close.
-   - 부모 이슈 없음: `task/issue-{container}` → `.task-github.yml base_branch` merge + 루트 close + wiki task done 처리.
-4. `done_parents[]` → 각 부모를 base로 merge+close하고 re-tick. 같은 tick의 ready는 버린다.
+3. `container_done` → PR/close 증거 guard 후 컨테이너 브랜치를 **PR로** base에 머지한다. epic/컨테이너 브랜치는 worker가 없어 PR이 자동 생성되지 않으므로 오케스트레이터가 직접 만들고, 리뷰 없이 즉시 머지한다(자식은 이미 리뷰·머지된 통합 PR). 모든 머지업이 `gh pr merge`(remote)라 오케스트레이션 중 메인 워크트리 HEAD가 trunk를 벗어나지 않는다([[DEC-2026-07-02-212109]]):
+   - 부모 이슈 있음: `gh pr create --base task/issue-{parent} --head task/issue-{container}` → `merge {PR}` → 컨테이너 close.
+   - 부모 이슈 없음: `gh pr create --base {base_branch} --head task/issue-{container}` → `merge {PR}` → 루트 close + wiki task done 처리.
+4. `done_parents[]` → 각 부모를 위와 같이 PR 생성→`merge`→close하고 re-tick. 같은 tick의 ready는 버린다.
 5. `review_waiting[]` → review-tool이 설정돼 있으면 reviewer-agent relay, 없으면 STOP(`human_gate_review`). 사람 리뷰/머지 후 재실행.
 6. `ready[]` → 최대 `--max-workers`개 work-agent에 위임.
 
@@ -223,6 +223,6 @@ conflict-agent 산출물은 [agents/conflict-resolver.md](../../agents/conflict-
 ## 불변식
 
 - 오케스트레이터는 직접 코딩하지 않는다.
-- 상태/gear label write는 worker/reviewer 소유다. 오케스트레이터는 issue close와 merge만 수행한다.
+- 상태/gear label write는 worker/reviewer 소유다. 오케스트레이터는 issue close, 컨테이너/epic 머지업 PR 생성, merge만 수행한다(코드 커밋은 worker 소유). 로컬 병합 경로는 없다 — 모든 머지가 PR이라 메인 워크트리 HEAD가 trunk 불변([[DEC-2026-07-02-212109]]).
 - decision/rejected/trial_error wiki capture는 자동 기록하지 않는다. 루트 완료 때 후보만 제시하고 사용자 확인을 받는다.
 - `--max-workers` 기본은 commander 지시 > `.task-github.yml orchestrate.max-workers` > 시스템 기본값(3) 순으로 정한다. ledger는 spawned/failed뿐 아니라 root snapshot, derived issue/PR state, events를 보관한다. 문제 발생 시 `--reconcile-github`로 GitHub SoT를 다시 덮어쓴다.

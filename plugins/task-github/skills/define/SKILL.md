@@ -81,7 +81,7 @@ spec 형식:
     "execution_contract": {
       "wiki_task": "{TASK-... 또는 null}",
       "topology": "flat|stacked",
-      "gate": "pr|local-merge",
+      "gate": "pr",
       "parent_branch": "main 또는 task/root-{ROOT}",
       "leaf_policy": {
         "risk_class": "micro|normal|major|irreversible|db|public-api|security|data-loss",
@@ -89,7 +89,7 @@ spec 형식:
         "hard_self_flow_verified": false
       },
       "required_checks": [["python3", "-m", "pytest", "plugins/task-github/tests/", "-q"]],
-      "closeout_mode": "pr|local"
+      "closeout_mode": "pr"
     }
   },
   "children": [

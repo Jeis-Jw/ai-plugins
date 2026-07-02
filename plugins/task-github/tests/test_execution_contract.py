@@ -15,11 +15,11 @@ class ExecutionContractTests(unittest.TestCase):
         block = context_bundle.render_execution_contract({
             "wiki_task": "TASK-2026-06-26-024108-task-github-개선",
             "topology": "stacked",
-            "gate": "local-merge",
+            "gate": "pr",
             "parent_branch": "task/root-10",
             "leaf_policy": {"risk_class": "normal"},
             "required_checks": [["python3", "-m", "pytest", "plugins/task-github/tests/", "-q"]],
-            "closeout_mode": "local",
+            "closeout_mode": "pr",
             "future_key": "ignored",
         })
 
@@ -27,7 +27,7 @@ class ExecutionContractTests(unittest.TestCase):
 
         self.assertEqual(parsed["schema_version"], 1)
         self.assertEqual(parsed["topology"], "stacked")
-        self.assertEqual(parsed["gate"], "local-merge")
+        self.assertEqual(parsed["gate"], "pr")
         self.assertEqual(parsed["parent_branch"], "task/root-10")
         self.assertNotIn("future_key", parsed)
         self.assertEqual(
@@ -64,9 +64,9 @@ class ExecutionContractTests(unittest.TestCase):
                 "body": "## Wiki Context\n[[TASK-2026-06-26-024108-task-github-개선]]",
                 "execution_contract": {
                     "topology": "stacked",
-                    "gate": "local-merge",
+                    "gate": "pr",
                     "parent_branch": "task/root-10",
-                    "closeout_mode": "local",
+                    "closeout_mode": "pr",
                 },
             },
             "children": [],
@@ -76,7 +76,7 @@ class ExecutionContractTests(unittest.TestCase):
 
         parsed = context_bundle.parse_execution_contract(validated["root"]["body"])
         self.assertEqual(parsed["topology"], "stacked")
-        self.assertEqual(parsed["gate"], "local-merge")
+        self.assertEqual(parsed["gate"], "pr")
 
     def test_strict_deps_preserved_in_plan(self):
         spec = {
@@ -138,8 +138,8 @@ class TreeShapeTests(unittest.TestCase):
         return {
             "title": "root",
             "body": "root body",
-            "execution_contract": {"topology": topology, "gate": "local-merge",
-                                   "parent_branch": "task/root-10", "closeout_mode": "local"},
+            "execution_contract": {"topology": topology, "gate": "pr",
+                                   "parent_branch": "task/root-10", "closeout_mode": "pr"},
         }
 
     def test_flat_spec_regresses_clean(self):
