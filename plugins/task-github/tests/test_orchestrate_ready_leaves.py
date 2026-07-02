@@ -221,6 +221,29 @@ class ReadyLeavesTests(unittest.TestCase):
         self.assertEqual(payload["read_decisions"][0]["source"], "ledger")
         self.assertEqual(payload["read_decisions"][0]["mode"], "from_ledger")
 
+    def test_record_preflight_evidence_is_keyed_by_pr(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = Path(tmp) / "ledger.json"
+
+            orchestrate_ledger.record_preflight_evidence(
+                ledger,
+                7,
+                {
+                    "pr": 7,
+                    "covers": ["mergeability", "ci_check", "review_decision", "head_sha"],
+                    "status": {"ok": True, "headRefOid": "head-1"},
+                    "view": {"number": 7, "headRefOid": "head-1"},
+                },
+            )
+
+            payload = orchestrate_ledger.load_ledger(ledger)
+
+        self.assertEqual(payload["version"], 3)
+        self.assertIn("7", payload["preflight_evidence"])
+        self.assertEqual(payload["preflight_evidence"]["7"]["view"]["headRefOid"], "head-1")
+
     def test_cli_missing_ledger_starts_empty(self):
         import io
         import tempfile

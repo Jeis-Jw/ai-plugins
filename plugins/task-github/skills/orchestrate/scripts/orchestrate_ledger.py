@@ -47,6 +47,7 @@ def _default() -> dict[str, Any]:
         "read_decisions": [],
         "merge_evidence": {},
         "gate_evidence": {},
+        "preflight_evidence": {},
     }
 
 
@@ -82,6 +83,7 @@ def _ensure_v3(payload: dict[str, Any]) -> dict[str, Any]:
     payload.setdefault("read_decisions", [])
     payload.setdefault("merge_evidence", {})
     payload.setdefault("gate_evidence", {})
+    payload.setdefault("preflight_evidence", {})
     return payload
 
 
@@ -190,6 +192,12 @@ def record_merge_evidence(path: str | Path, issue: int, evidence: dict[str, Any]
 def record_gate_evidence(path: str | Path, issue: int, evidence: dict[str, Any]) -> dict[str, Any]:
     payload = load_ledger(path)
     payload["gate_evidence"][str(int(issue))] = {"at": _now(), **dict(evidence)}
+    return write_ledger(path, payload)
+
+
+def record_preflight_evidence(path: str | Path, pr: int, evidence: dict[str, Any]) -> dict[str, Any]:
+    payload = load_ledger(path)
+    payload["preflight_evidence"][str(int(pr))] = {"at": _now(), **dict(evidence)}
     return write_ledger(path, payload)
 
 
@@ -355,11 +363,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--sha-range", dest="sha_range")
     parser.add_argument("--merge-evidence-json")
     parser.add_argument("--gate-evidence-json")
+    parser.add_argument("--preflight-evidence-json")
     parser.add_argument("--json", action="store_true", dest="as_json")
     args = parser.parse_args(argv)
 
     try:
-        if args.merge_evidence_json or args.gate_evidence_json:
+        if args.preflight_evidence_json:
+            if args.pr is None:
+                raise ValueError("--pr is required with preflight evidence JSON")
+            payload = record_preflight_evidence(args.path, args.pr, json.loads(args.preflight_evidence_json))
+        elif args.merge_evidence_json or args.gate_evidence_json:
             if args.issue is None:
                 raise ValueError("--issue is required with evidence JSON")
             if args.merge_evidence_json:

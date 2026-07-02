@@ -107,6 +107,42 @@ class MergePreflightEvidenceTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["stop_reason"], "mergeability_not_clean")
 
+    def test_decode_diff_path_decodes_git_quoted_utf8_octal(self):
+        raw = r'"wiki/context/observation/OBS-\352\260\220.md"'
+
+        self.assertEqual(
+            merge_preflight.decode_diff_path(raw),
+            "wiki/context/observation/OBS-감.md",
+        )
+
+    def test_build_preflight_evidence_keeps_closeout_view_and_status_covers(self):
+        view = {
+            "number": 7,
+            "title": "change",
+            "headRefName": "task/issue-7",
+            "headRefOid": "head-1",
+            "baseRefName": "main",
+            "state": "OPEN",
+            "body": "Closes #7",
+            "labels": [{"name": "in-review"}],
+            "isDraft": False,
+            "mergeStateStatus": "CLEAN",
+            "reviewDecision": "APPROVED",
+            "statusCheckRollup": [{"name": "unit", "conclusion": "SUCCESS"}],
+        }
+        status = {"ok": True, "headRefOid": "head-1"}
+
+        evidence = merge_preflight.build_preflight_evidence(view, status)
+
+        self.assertEqual(evidence["pr"], 7)
+        self.assertEqual(evidence["view"]["headRefOid"], "head-1")
+        self.assertEqual(evidence["view"]["labels"], [{"name": "in-review"}])
+        self.assertEqual(evidence["status"], status)
+        self.assertEqual(
+            set(evidence["covers"]),
+            {"mergeability", "ci_check", "review_decision", "head_sha"},
+        )
+
     def test_scoped_gate_plan_reduces_child_paths_when_evidence_valid(self):
         child_gate = gate(["child.py"])
         ledger = {

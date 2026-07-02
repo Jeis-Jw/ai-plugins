@@ -99,7 +99,7 @@ define:
 
 `orchestrate`는 시작/재개/오류 복구 때 GitHub snapshot을 `.task-github/orchestrate/{root}.json`에 reconcile하고, 평상시 tick은 ledger를 읽는다. 성공한 write는 `events[]`와 derived issue/PR state에 즉시 반영하므로 방금 merge/close한 상태를 확인하려고 tree를 다시 읽지 않는다. 최종 closeout과 CI/mergeability/reviewDecision처럼 외부 상태가 바뀌는 경계에서만 GitHub를 다시 조회한다.
 
-ledger v3는 비용 분석과 evidence reuse를 위해 `github_reads`, `read_decisions`, `merge_evidence`, `gate_evidence`를 분리한다. GitHub read는 시작/재개, 실패 복구, 긴 대기 후, pre-merge/mergeability/CI/reviewDecision 확인, final closeout 같은 boundary에서 reason과 함께 기록한다. parent/root PR gate는 전역 integrity strict를 항상 유지하되, child `gate_evidence`가 valid하면 `changed-path-stale` target에서 해당 child path를 제외한다. evidence가 없거나 base/head/version/drift hash/path hash/parent overlap 조건이 맞지 않으면 해당 child path는 fallback target에 포함한다.
+ledger v3는 비용 분석과 evidence reuse를 위해 `github_reads`, `read_decisions`, `merge_evidence`, `gate_evidence`, `preflight_evidence`를 분리한다. GitHub read는 시작/재개, 실패 복구, 긴 대기 후, pre-merge/mergeability/CI/reviewDecision 확인, final closeout 같은 boundary에서 reason과 함께 기록한다. `merge_preflight.py`가 남긴 fresh `preflight_evidence`는 같은 PR/head, 짧은 TTL, status OK 조건에서 closeout의 PR view 입력으로 재사용된다. 실제 merge는 `--match-head-commit`으로 preflight 때 본 head SHA를 고정하므로 head drift가 있으면 GitHub merge가 실패한다. parent/root PR gate는 전역 integrity strict를 항상 유지하되, child `gate_evidence`가 valid하면 `changed-path-stale` target에서 해당 child path를 제외한다. evidence가 없거나 base/head/version/drift hash/path hash/parent overlap 조건이 맞지 않으면 해당 child path는 fallback target에 포함한다.
 
 ## Orchestrate Gear Options
 
@@ -131,6 +131,7 @@ ledger v3는 비용 분석과 evidence reuse를 위해 `github_reads`, `read_dec
 
 ## 변경 이력
 
+- `0.15.1`: closeout preflight evidence 재사용 — `merge_preflight.py`가 PR view/status를 `preflight_evidence`로 ledger에 기록하고, `closeout.py`는 같은 PR/head의 fresh evidence를 PR view 입력으로 재사용한다. TTL 만료·필드 누락·status 실패·PR/head 불일치면 기존 GitHub 조회로 fallback한다. 실제 merge에는 `--match-head-commit`을 붙여 preflight 이후 head drift를 차단한다.
 - `0.15.0`: define challenge review — co-design 뒤·이슈 트리 생성 전 적대 challenge 게이트([[DEC-2026-07-03-012207]]). 기본 off, `--review`로 on. 도구 우선순위 지시>설정(`define.review-tool`)>하네스(내장); `orchestrator_ops.resolve_review_tool`/`compose_tool_command`으로 해소·relay. 터미널=하네스(STOP 아님, co-design 자리라 내장 fresh-context refute 서브에이전트로 fallback). 대상=분해 제안(4 cut-reason + 위키 결정 그래프). 1 라운드·blocking만 게이트·사람 판정. 복잡도 넛지(트리 리프 수/깊이 초과 시 `--review` 권장, off 유지). 저-의존(하네스 fallback standalone, session-review hard dep 없음).
 - `0.14.0`: merge-edge gear — 세리머니(plan/verify/PR/review)를 리프가 아니라 부모로 합류하는 머지 엣지의 gear 속성으로 이동([[DEC-2026-07-02-224910]]). micro/normal 리프는 로컬 FF 머지(무PR, `ff_merge_command`)로 close 증거는 verify+SHA range; major만 PR+review. 컨테이너 gear는 자식 누적 승격(`container_gear_promotion`: micro×3→normal, normal×2→major)으로 결정. ledger `ff_merged` 이벤트 추가. all-PR([[DEC-2026-07-02-212109]])을 gear-gated로 부분 개정하되 메인-트리-HEAD-불변식 유지.
 - `0.13.0`: merge closeout를 all-PR로 통합 — local mode(`--mode local`)·local merge simulation·Integration Ledger 제거. epic/컨테이너 머지업도 PR화(`gh pr create`+`gh pr merge`)하고, 머지 후 base 갱신을 checkout→`git fetch`로 바꿔 오케스트레이션 중 메인 워크트리 HEAD가 trunk 불변([[DEC-2026-07-02-212109]]).
