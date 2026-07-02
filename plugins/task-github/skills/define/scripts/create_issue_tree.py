@@ -115,6 +115,13 @@ def validate_spec(spec: dict) -> dict:
         blocked_by = child.get("blocked_by", [])
         if not isinstance(blocked_by, list) or not all(isinstance(v, str) for v in blocked_by):
             raise IssueTreeError("bad_spec", f"{where}.blocked_by must be a string list")
+        cross_parent_reason = child.get("cross_parent_dependency_reason")
+        if cross_parent_reason is not None and (
+            not isinstance(cross_parent_reason, str) or not cross_parent_reason.strip()
+        ):
+            raise IssueTreeError(
+                "bad_spec", f"{where}.cross_parent_dependency_reason must be a non-empty string"
+            )
         child_out.append({
             "key": key,
             "title": _require_text(child, "title", where),
@@ -122,6 +129,7 @@ def validate_spec(spec: dict) -> dict:
             "parent": parent.strip() if isinstance(parent, str) else None,
             "affects_paths": child.get("affects_paths"),
             "blocked_by": blocked_by,
+            "cross_parent_dependency_reason": cross_parent_reason,
             "_where": where,
         })
 
@@ -172,6 +180,14 @@ def validate_spec(spec: dict) -> dict:
             if blocker == child["key"]:
                 raise IssueTreeError("self_dependency",
                                      f"{child['key']} cannot block itself")
+            blocker_parent = by_key[blocker]["parent"]
+            if blocker_parent != child["parent"] and not child["cross_parent_dependency_reason"]:
+                raise IssueTreeError(
+                    "cross_parent_dependency_detected",
+                    (f"{child['key']} blocked_by {blocker} crosses parent boundaries "
+                     f"(blocked_by는 기본적으로 sibling-only). tree를 재구성하거나 "
+                     f"{child['_where']}.cross_parent_dependency_reason으로 명시적 사유를 남기세요."),
+                )
 
     for idx, left in enumerate(child_out):
         for right in child_out[idx + 1:]:

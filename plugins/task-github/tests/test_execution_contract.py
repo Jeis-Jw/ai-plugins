@@ -121,7 +121,7 @@ class ExecutionContractTests(unittest.TestCase):
         self.assertFalse(any(args[:2] == ["issue", "comment"] for args in calls))
 
 
-def _leaf(key, parent=None, paths=None, blocked_by=None):
+def _leaf(key, parent=None, paths=None, blocked_by=None, cross_parent_dependency_reason=None):
     return {
         "key": key,
         "title": key,
@@ -129,6 +129,7 @@ def _leaf(key, parent=None, paths=None, blocked_by=None):
         "parent": parent,
         "affects_paths": paths or [f"{key}.py"],
         "blocked_by": blocked_by or [],
+        "cross_parent_dependency_reason": cross_parent_dependency_reason,
     }
 
 
@@ -178,7 +179,9 @@ class TreeShapeTests(unittest.TestCase):
         validated = create_issue_tree.validate_spec(spec)  # must not raise
         self.assertEqual(validated["epics"], ["BE"])
 
-    def test_cross_tree_blocked_by_resolves(self):
+    def test_cross_tree_blocked_by_rejected_without_reason(self):
+        # blocked_by는 기본적으로 sibling-only: 다른 parent(BE vs FE)의 leaf를
+        # 가로질러 걸면 tree 재설계(contract container)를 유도하도록 거부한다.
         spec = {
             "root": self._root(),
             "children": [
@@ -186,6 +189,23 @@ class TreeShapeTests(unittest.TestCase):
                 {"key": "FE", "title": "FE", "body": "fe", "parent": None},
                 _leaf("BE-PAY", parent="BE", paths=["api/pay.py"]),
                 _leaf("FE-PAY", parent="FE", paths=["mobile/pay.py"], blocked_by=["BE-PAY"]),
+            ],
+        }
+        with self.assertRaises(create_issue_tree.IssueTreeError) as ctx:
+            create_issue_tree.validate_spec(spec)
+        self.assertEqual(ctx.exception.error_code, "cross_parent_dependency_detected")
+
+    def test_cross_tree_blocked_by_resolves_with_explicit_reason(self):
+        spec = {
+            "root": self._root(),
+            "children": [
+                {"key": "BE", "title": "BE", "body": "be", "parent": None},
+                {"key": "FE", "title": "FE", "body": "fe", "parent": None},
+                _leaf("BE-PAY", parent="BE", paths=["api/pay.py"]),
+                _leaf(
+                    "FE-PAY", parent="FE", paths=["mobile/pay.py"], blocked_by=["BE-PAY"],
+                    cross_parent_dependency_reason="legacy tree predates contract-first split",
+                ),
             ],
         }
         validated = create_issue_tree.validate_spec(spec)

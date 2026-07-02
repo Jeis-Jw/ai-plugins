@@ -58,6 +58,7 @@ fi
 4. **진행 확인 (이슈 생성 게이트)** — 생성 구조(루트 이슈 + 연결할 작업정의 task 노드 + 결정/취지)를 사령관에게 보여주고 **"진행?" 확인**.
    - 확인안에는 [quality-gates.md](../../rules/quality-gates.md) G3 기준을 포함한다: 근거, 완료 기준, 검증, 영향 경로/파일, 관련 intent/decision.
    - 기준이 비어 있으면 자동으로 보완하지 말고 `FLAG-to-human`으로 표시한 뒤 확인받는다.
+   - 트리에 container(epic)가 있으면 확인안에 **Container Independence Check** 섹션(아래 §트리 깊이/토폴로지)을 포함한다.
 5. 이슈 생성 — 테스트된 배치 헬퍼 사용:
 ```bash
 python3 "${CLAUDE_SKILL_DIR}/scripts/create_issue_tree.py" \
@@ -120,18 +121,43 @@ spec 형식:
 | 코드 산출 + 병렬 트랙 ≥2 + 트랙별 경로 분리 | **트랙 = 서브트리(epic)** · `topology=stacked` · 트랙별 통합 브랜치 |
 | 단일 surface / 순차 / 문서 산출 | **평면(flat)** · `topology=flat` |
 
-- **서브트리(중간 노드/epic)는 child에 `parent` 키**로 만든다(값 = 부모 child의 `key`, 생략·null = 루트 직속). 헬퍼가 위상정렬로 root→epic→leaf를 한 번에 생성하고, `blocked_by`는 레벨을 넘어 동작한다. epic은 **브랜치 컨테이너**라 `affects_paths`·완료기준 게이트가 면제되고, 리프는 그대로 풀 게이트.
+- **서브트리(중간 노드/epic)는 child에 `parent` 키**로 만든다(값 = 부모 child의 `key`, 생략·null = 루트 직속). 헬퍼가 위상정렬로 root→epic→leaf를 한 번에 생성한다. epic은 **브랜치 컨테이너**라 `affects_paths`·완료기준 게이트가 면제되고, 리프는 그대로 풀 게이트.
 - **결정 시점 안내(사령관 확인안에 포함)**: "리프 PR base = 부모 브랜치. 트랙별 독립 브랜치를 원하면 트랙을 `parent`로 묶어 epic으로 둔다."
 - `topology=stacked`인데 epic이 0개(전 리프가 루트 직속)면 dry-run이 **경고**한다(트랙 격리 없음 — 의도면 `topology=flat`).
 
+#### `blocked_by`는 기본적으로 sibling-only
+container는 카테고리가 아니라 **독립 실행 가능한 work package**다. container가 unblock되면 내부 리프는 외부 dependency 없이 진행 가능해야 한다. 그래서 `blocked_by`는 **같은 parent를 가진 sibling끼리만** 건다(root 직속 container ↔ root 직속 container, 같은 container 내부 리프 ↔ 리프). 헬퍼가 `parent`가 다른 두 노드 사이 `blocked_by`를 감지하면 **`cross_parent_dependency_detected`로 거부**하고, override가 필요하면 해당 child에 `cross_parent_dependency_reason`(non-empty string)을 명시해야 통과한다.
+
+공유 약속(API contract 등)이 필요해서 다른 container의 리프에 의존하고 싶어지면, `blocked_by`를 걸지 말고 **contract container를 sibling으로 승격**한다:
+
 ```jsonc
-// 트랙 서브트리 예: BE/FE 각 epic, FE-PAY가 트랙을 넘어 BE-PAY에 의존
+// 나쁜 구조 — leaf가 다른 container 내부 leaf에 직접 의존 (cross_parent_dependency_detected)
 "children": [
-  {"key": "BE", "title": "[BE] 백엔드", "body": "백엔드 통합 트랙"},
-  {"key": "FE", "title": "[FE] 모바일", "body": "모바일 통합 트랙"},
+  {"key": "BE", "title": "[BE] 백엔드", "body": "..."},
+  {"key": "FE", "title": "[FE] 모바일", "body": "..."},
   {"key": "BE-PAY", "parent": "BE", "title": "...", "body": "완료 기준:...\n검증:...\n영향 경로: apps/api/pay/**", "affects_paths": ["apps/api/pay/**"]},
   {"key": "FE-PAY", "parent": "FE", "title": "...", "body": "완료 기준:...\n검증:...\n영향 경로: apps/mobile/pay/**", "affects_paths": ["apps/mobile/pay/**"], "blocked_by": ["BE-PAY"]}
 ]
+
+// 좋은 구조 — Contract container를 먼저 두고, 후속 container가 그것에 blocked_by
+"children": [
+  {"key": "CONTRACT", "title": "[Contract] API 계약", "body": "완료 기준:...\n검증:...\n영향 경로: docs/api-contract.md", "affects_paths": ["docs/api-contract.md"]},
+  {"key": "BE", "title": "[BE] 백엔드", "body": "...", "blocked_by": ["CONTRACT"]},
+  {"key": "FE", "title": "[FE] 모바일", "body": "...", "blocked_by": ["CONTRACT"]},
+  {"key": "BE-PAY", "parent": "BE", "title": "...", "body": "완료 기준:...\n검증:...\n영향 경로: apps/api/pay/**", "affects_paths": ["apps/api/pay/**"]},
+  {"key": "FE-PAY", "parent": "FE", "title": "...", "body": "완료 기준:...\n검증:...\n영향 경로: apps/mobile/pay/**", "affects_paths": ["apps/mobile/pay/**"]}
+]
+```
+`CONTRACT`가 leaf 1개뿐이어도, sibling container를 unblock하는 execution gate라면 container로 둘 수 있다. 다른 parent의 node가 필요해 보이는 순간 dependency를 추가하지 말고, sibling container 승격 / container boundary 재설계 / leaf 이동 / body checklist화 중 하나로 tree를 재검토한다.
+
+#### Container Independence Check (등록 전 확인안에 포함)
+```markdown
+## Container Independence Check
+- 각 container는 단순 카테고리가 아니라 독립 실행 가능한 work package인가?
+- container가 unblock되면 내부 leaf들이 외부 dependency 없이 진행 가능한가?
+- 다른 parent의 node에 `blocked_by`를 걸고 있지는 않은가?
+- cross-parent dependency가 필요해 보이는 경우, contract/spec container로 승격할 수 있는가?
+- leaf 크기는 PR/worktree 단위인가, 아니면 너무 작은 checklist 수준인가?
 ```
 6. **(위키 가용 시) 이슈 ↔ 작업정의 노드 연결** — task 노드는 3에서 이미 확보됨. 이제 이슈 번호를 task 노드에 **역링크**하고, 루트 이슈 본문에 task 노드를 기록한다. merge/done이 이 본문의 `[[TASK-...]]`를 읽어 완료 전이하므로 실제 ID를 박아야 한다([wiki-bridge.md](../../rules/wiki-bridge.md) §4):
 ```bash
@@ -176,6 +202,7 @@ fi
    - 각 하위 이슈의 `blocked_by` 목록도 함께 제시한다.
    - dependency가 없으면 병렬 가능으로 표시한다.
    - 예: `#B blocked_by #A` = B는 A 완료 뒤 시작.
+   - `blocked_by`는 sibling(같은 parent)끼리만 건다. 다른 container의 leaf가 필요해 보이면 contract container를 sibling으로 승격해 재구성한다(§트리 깊이/토폴로지의 sibling-only 규칙).
    - 하위 이슈마다 완료 기준, 검증 방법, 영향 경로/파일을 포함한다. path가 겹치는데 `blocked_by`가 없으면 [quality-gates.md](../../rules/quality-gates.md) G4에 따라 사령관 확인 또는 dependency 보완으로 승급한다.
    - brainstorm으로 나온 단위별 상세 설계(데이터 모델, DDL, API, 프롬프트 계약)는 **서브이슈 본문**에 둔다. 실행 중 새로 확정되는 장기 판단만 그때 `decision`/`observation`으로 캡처한다.
 2. 사령관 확인
@@ -193,6 +220,7 @@ fi
 - **자동 분해 금지** — 기준 없이 분해하지 않는다. 기준은 사령관이 준다.
 - **작업정의(위키 task)가 수행(이슈)보다 먼저** — 위키 가용 시 이슈 생성 전에 task 노드를 확보한다(있으면 링크, 없으면 capture; 다른 세션이 만들면 대기). 이슈 생성은 "진행" 확인으로 게이트하고, 연결은 `wiki relate --add-tasks`로 역링크한다.
 - 하위 작업 선후관계는 GitHub Issue dependency가 정본이다. `parallel`/`sequential` 라벨은 만들지 않는다.
+- **container는 카테고리가 아니라 실행 단위, `blocked_by`는 sibling-only** — 다른 parent의 node에 걸린 `blocked_by`는 `cross_parent_dependency_detected`로 거부한다. 공유 선행조건은 contract/spec container를 sibling으로 승격해 해소하고, override가 불가피하면 `cross_parent_dependency_reason`을 명시한다.
 - **기어 라벨을 붙이지 않는다** — define은 구조 생성만(기어는 start의 책임).
 - **task 노드는 업무(루트) 1:1** — 리프·서브이슈마다 만들지 않는다.
 - **Execution Contract는 루트 이슈 body 전용** — `schema_version` + stable keys를 가진 fenced block으로 materialize하고, contract 부재 시 context bundle은 `topology/gate/parent_branch=null`, `default_source=profile+gear`로 보고한다.
