@@ -122,9 +122,9 @@ plugins/task-github/
 
 공통 read-model은 `scripts/context_bundle.py`가 제공한다. 각 skill은 GitHub와 wiki를 자기 절차대로 읽은 뒤 그 JSON을 resolver에 넘긴다. resolver는 `gh`/wiki CLI를 직접 호출하지 않고, `issue/root/wiki_task/topology/gate/parent_branch/blockers/downstream/worktree_path` bundle과 링크 정합 결과만 만든다. 이 분리 때문에 task-github는 wiki가 없을 때도 동작하고, wiki는 GitHub 상태를 해석하지 않는다.
 
-root issue body에는 optional **Execution Contract** fenced block을 둔다. `schema_version: 1`과 stable keys(`wiki_task`, `topology`, `gate`, `parent_branch`, `leaf_policy`, `required_checks`, `closeout_mode`)만 해석하고 unknown key는 무시한다. contract는 root issue의 실행 방법(how)을 고정해 profile+gear 재추론 drift를 막는 장치이며, wiki TASK의 작업정의(why/what)를 대체하지 않는다. contract가 없으면 context bundle은 `topology/gate/parent_branch=null`, `default_source=profile+gear`를 출력한다. `required_checks`는 argv array만 허용한다(shell string 거부). all-PR 통합 이후 `gate`/`closeout_mode`는 `pr` 단일값이다([[DEC-2026-07-02-212109]]).
+root issue body에는 optional **Execution Contract** fenced block을 둔다. `schema_version: 1`과 stable keys(`wiki_task`, `topology`, `gate`, `parent_branch`, `leaf_policy`, `required_checks`, `closeout_mode`)만 해석하고 unknown key는 무시한다. contract는 root issue의 실행 방법(how)을 고정해 profile+gear 재추론 drift를 막는 장치이며, wiki TASK의 작업정의(why/what)를 대체하지 않는다. contract가 없으면 context bundle은 `topology/gate/parent_branch=null`, `default_source=profile+gear`를 출력한다. `required_checks`는 argv array만 허용한다(shell string 거부). all-PR 통합([[DEC-2026-07-02-212109]]) 이후 `gate`/`closeout_mode`는 `pr` 단일값이었으나, merge-edge-gear([[DEC-2026-07-02-224910]])로 머지 경로는 런타임 gear가 결정한다 — micro/normal 리프는 로컬 FF(무PR), major와 major로 승격된 컨테이너만 PR. contract의 `closeout_mode`는 major/PR 경로에만 적용되는 상한값으로 읽는다.
 
-`skills/merge/scripts/closeout.py`는 PR closeout 하나만 제공한다(`--pr {PR}`). 연결 Issue 추출→dependency 차단 재확인→PR+Issue 상태 라벨만 제거(gear 유지)→`gh pr merge --merge`(remote)→non-default base면 linked issue 직접 close→downstream 안내→base sync + branch cleanup. base sync는 로컬 `git checkout`을 하지 않고 `git fetch origin {base}:{base}`(base가 현재 HEAD면 `git pull --ff-only`)로 로컬 base ref만 갱신해, 오케스트레이션 중 사령관의 메인 워크트리 HEAD가 trunk를 벗어나지 않는다([[DEC-2026-07-02-212109]]). epic/컨테이너 브랜치는 worker가 없어 PR이 자동 생성되지 않으므로 orchestrate가 `gh pr create --base task/issue-{parent} --head task/issue-{container}`로 통합 PR을 만든 뒤 같은 closeout으로 넘긴다. PR 자체가 통합 로그이므로 별도 Integration Ledger는 만들지 않는다. merge 성공 뒤 sync/cleanup 실패는 `sync_warnings`로만 남긴다.
+`skills/merge/scripts/closeout.py`는 PR closeout 하나만 제공한다(`--pr {PR}`) — **PR 경로 전용**이다. merge-edge-gear([[DEC-2026-07-02-224910]])에서 micro/normal 리프는 PR 없이 `done`이 로컬 FF(`orchestrator_ops.ff_merge_command` = `git fetch . task/issue-{leaf}:task/issue-{parent}`)로 부모에 합류하므로 이 스크립트를 거치지 않는다. closeout이 다루는 것은 major 리프 PR과, 자신의 누적 gear(`orchestrator_ops.container_gear_promotion`)가 major인 컨테이너/epic 머지업 PR뿐이다. 절차: 연결 Issue 추출→dependency 차단 재확인→PR+Issue 상태 라벨만 제거(gear 유지)→`gh pr merge --merge`(remote)→non-default base면 linked issue 직접 close→downstream 안내→base sync + branch cleanup. base sync는 로컬 `git checkout`을 하지 않고 `git fetch origin {base}:{base}`(base가 현재 HEAD면 `git pull --ff-only`)로 로컬 base ref만 갱신해, 오케스트레이션 중 사령관의 메인 워크트리 HEAD가 trunk를 벗어나지 않는다([[DEC-2026-07-02-212109]] 불변식 유지). major 컨테이너 머지업은 worker가 없어 PR이 자동 생성되지 않으므로 orchestrate가 `gh pr create --base task/issue-{parent} --head task/issue-{container}`로 통합 PR을 만든 뒤 같은 closeout으로 넘긴다. sub-major 컨테이너는 orchestrate가 로컬 FF로 부모 ref를 forward하고 closeout을 거치지 않는다. merge 성공 뒤 sync/cleanup 실패는 `sync_warnings`로만 남긴다.
 
 ### 매니페스트 & 마켓플레이스 등록
 
@@ -489,7 +489,7 @@ flag는 block이 아니라 confirm 전 보완 신호다. 단, flag가 있는데 
 - **불변식**: review는 판정·라벨까지, 머지는 merge가. team은 `--auto-merge` 명시 필요(solo 자동 허용).
 
 ### 7.10 `merge` — PR 머지
-- **입력**: `{PR}`(all-PR 단일 경로). **동작**: 연결 Issue 추출→dependency 차단 재확인→PR+Issue **상태 라벨만 제거**(gear 유지)→`gh pr merge --merge`(remote)→non-default base면 Issue 직접 close→downstream 안내→base sync + 로컬/원격 branch 정리(best-effort warning). base sync는 checkout 없이 `git fetch origin {base}:{base}`로 로컬 base ref만 갱신해 메인 워크트리 HEAD가 trunk 불변([[DEC-2026-07-02-212109]]). epic/컨테이너 머지업은 orchestrate가 `gh pr create`로 PR을 만든 뒤 같은 경로로 닫는다(로컬 병합 경로 없음).
+- **입력**: `{PR}`(**major/PR 경로 전용**; micro/normal 리프는 `done`이 로컬 FF로 합류해 이 스킬을 안 거친다, [[DEC-2026-07-02-224910]]). **동작**: 연결 Issue 추출→dependency 차단 재확인→PR+Issue **상태 라벨만 제거**(gear 유지)→`gh pr merge --merge`(remote)→non-default base면 Issue 직접 close→downstream 안내→base sync + 로컬/원격 branch 정리(best-effort warning). base sync는 checkout 없이 `git fetch origin {base}:{base}`로 로컬 base ref만 갱신해 메인 워크트리 HEAD가 trunk 불변([[DEC-2026-07-02-212109]]). 컨테이너 머지업은 누적 gear(`container_gear_promotion`)가 major일 때만 orchestrate가 `gh pr create`로 PR을 만들어 이 경로로 닫고, sub-major 컨테이너는 로컬 FF로 forward한다.
 - **위키(핵심)**: 머지 전 `refresh --level integrity --strict` + diff `changed-path-stale` hard gate를 통과해야 한다. 게이트 통과 후 **`skills/merge/scripts/closeout.py`**(git/gh 전용, wiki mutation 없음)가 연결이슈 해석·blocker 재확인·라벨 정리·머지·브랜치 정리·downstream 안내·루트 닫힘 감지를 결정적으로 처리하고 `task_to_complete`를 방출한다(`--dry-run` 사전 검증). 이 머지로 **루트 이슈가 close되면**(업무 완료) 방출된 id로 연결 task 노드를 `complete`로 `done/` 전이([§6.5]). 단일 리프 업무면 그 이슈 close가 곧 업무 완료. 컨테이너 업무면 마지막 자식 close 시점.
 - **불변식**: `--merge` 방식. 상태 라벨 제거하되 `gear:*` 유지. Issue는 `Closes #N`으로 자동 close.
 
@@ -827,6 +827,14 @@ python3 <wiki-cli> init    # ./wiki/ vault 생성 (task 타입 지원 버전 필
 ---
 
 ## 20. 변경 이력 (v2 → v3)
+
+### v0.14.0 — merge-edge gear (세리머니를 머지 엣지로)
+
+- 세리머니(plan/verify/PR/review)를 리프 속성이 아니라 **부모로 합류하는 머지 엣지**의 gear 속성으로 이동([[DEC-2026-07-02-224910]]). micro/normal 리프 = 로컬 FF 머지(무PR), major 리프 = PR+review.
+- `orchestrator_ops`에 순수 헬퍼 추가: `container_gear_promotion`(자식 누적: max + micro×3→normal + normal×2→major), `gear_of_labels`, `ff_merge_command`(`git fetch . child:parent`, checkout 없는 FF refspec). `child_merge_evidence`가 `ff_merged{base,sha_range}` 증거를 수용.
+- `ready_leaves`의 `container_done`/`done_parents` 아이템이 누적 gear를 실어 나르고, `plan_tick merge_container`가 gear를 전달 → orchestrate가 major 컨테이너만 PR+review, sub-major는 로컬 FF forward. root 컨테이너는 trunk가 체크아웃돼 있어 sub-major라도 PR 경로.
+- ledger에 `ff_merged` 이벤트(`--sha-range`) 추가 — micro/normal의 close 증거(verify 리포트 + SHA range)를 컨테이너 머지업 evidence guard가 검증. `pr_merged`는 major/PR 경로 그대로.
+- all-PR 획일성([[DEC-2026-07-02-212109]])을 gear-gated PR로 **부분 개정**하되 메인-워크트리-HEAD-불변식은 유지(FF는 fetch refspec, 충돌은 리프 worktree에서 해소).
 
 ### v0.13.0 — all-PR closeout
 

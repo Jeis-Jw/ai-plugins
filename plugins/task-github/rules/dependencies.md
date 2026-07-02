@@ -54,6 +54,8 @@ gh api -X POST -H "X-GitHub-Api-Version: $API_VERSION" \
 
 관계 방향은 항상 **대상 이슈가 blocked_by를 갖는다**로 쓴다. 예: `#13 blocked_by #12`는 "#13은 #12가 끝나야 시작 가능"이다.
 
+`blocked_by`에는 **직접(direct) 의존만** 선언한다. 이슈는 자기가 직접 필요로 하는 이슈만 나열하며, 그 blocker의 조상까지 옮겨 적는 transitive 의존이나 "혹시 몰라" 넣는 방어적 blocker는 두지 않는다. 예: `#13 blocked_by #12`, `#12 blocked_by #11`이면 `#13`에 `#11`을 다시 걸지 않는다 — `#11`은 `#12`를 통해 이미 전이된다. 불필요한 blocker는 병렬 폭(parallel width)을 인위적 직렬 사슬로 무너뜨린다. 근거: [[DEC-2026-07-02-224910]].
+
 ---
 
 ## 5. 시작/종료 차단 체크

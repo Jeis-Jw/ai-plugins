@@ -141,6 +141,13 @@ def apply_event(payload: dict[str, Any], event: dict[str, Any]) -> None:
         elif kind == "pr_merged":
             issue["state"] = "close_expected"
             _remove_state_labels(issue)
+        elif kind == "ff_merged":
+            # micro/normal leaf/container merged to parent via local FF (no PR).
+            # Close evidence = the merged SHA range, so container merge-up can
+            # validate it (orchestrator_ops.child_merge_evidence).
+            issue["state"] = "close_expected"
+            issue["ff_merged"] = {"base": event.get("base"), "sha_range": event.get("sha_range")}
+            _remove_state_labels(issue)
 
     if event.get("pr") is not None:
         pr = payload.setdefault("prs", {}).setdefault(str(int(event["pr"])), {"number": int(event["pr"])})
@@ -224,18 +231,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--spawned", default="", help="comma/space-separated issues to mark active")
     parser.add_argument("--failed", default="", help="comma/space-separated issues to mark failed")
     parser.add_argument("--completed", default="", help="comma/space-separated issues to remove from active/failed")
-    parser.add_argument("--event", choices=("issue_started", "pr_created", "ci_green", "pr_merged", "issue_closed"))
+    parser.add_argument("--event", choices=("issue_started", "pr_created", "ci_green", "pr_merged", "ff_merged", "issue_closed"))
     parser.add_argument("--issue", type=int)
     parser.add_argument("--pr", type=int)
     parser.add_argument("--head")
     parser.add_argument("--base")
+    parser.add_argument("--sha-range", dest="sha_range")
     parser.add_argument("--json", action="store_true", dest="as_json")
     args = parser.parse_args(argv)
 
     try:
         if args.event:
             event = {"type": args.event}
-            for key in ("issue", "pr", "head", "base"):
+            for key in ("issue", "pr", "head", "base", "sha_range"):
                 value = getattr(args, key)
                 if value is not None:
                     event[key] = value

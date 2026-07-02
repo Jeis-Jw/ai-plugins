@@ -282,5 +282,73 @@ class OrchestratorOpsTests(unittest.TestCase):
         self.assertEqual(plan, {"action": "stop", "stop_reason": "api_failure"})
 
 
+class MergeEdgeGearTests(unittest.TestCase):
+    def test_gear_of_labels(self):
+        self.assertEqual(orchestrator_ops.gear_of_labels(["gear:normal", "in-review"]), "normal")
+        self.assertEqual(orchestrator_ops.gear_of_labels([{"name": "gear:major"}]), "major")
+        self.assertIsNone(orchestrator_ops.gear_of_labels(["in-progress"]))
+        self.assertIsNone(orchestrator_ops.gear_of_labels(None))
+
+    def test_container_gear_promotion_max_of_children(self):
+        self.assertEqual(orchestrator_ops.container_gear_promotion(["micro"]), "micro")
+        self.assertEqual(orchestrator_ops.container_gear_promotion(["gear:normal"]), "normal")
+        self.assertEqual(orchestrator_ops.container_gear_promotion(["micro", "major"]), "major")
+
+    def test_container_gear_promotion_accumulates(self):
+        # 3+ micro → normal
+        self.assertEqual(orchestrator_ops.container_gear_promotion(["micro", "micro", "micro"]), "normal")
+        self.assertEqual(orchestrator_ops.container_gear_promotion(["micro", "micro"]), "micro")
+        # 2+ normal → major
+        self.assertEqual(orchestrator_ops.container_gear_promotion(["normal", "normal"]), "major")
+        self.assertEqual(orchestrator_ops.container_gear_promotion(["normal"]), "normal")
+
+    def test_container_gear_promotion_defaults_unknown_to_micro(self):
+        self.assertEqual(orchestrator_ops.container_gear_promotion([]), "micro")
+        self.assertEqual(orchestrator_ops.container_gear_promotion([None, "weird"]), "micro")
+        # An unlabeled child must not inflate the container.
+        self.assertEqual(orchestrator_ops.container_gear_promotion([None, "normal"]), "normal")
+
+    def test_ff_merge_command(self):
+        self.assertEqual(
+            orchestrator_ops.ff_merge_command(child_branch="task/issue-4", parent_branch="task/issue-2"),
+            ["git", "fetch", ".", "task/issue-4:task/issue-2"],
+        )
+
+    def test_child_merge_evidence_accepts_ff_merged_with_sha_range(self):
+        children = [
+            {"number": 2, "ff_merged": {"base": "task/issue-1", "sha_range": "aaa..bbb"}},
+            {"number": 3, "closed_no_pr": True},
+        ]
+        result = orchestrator_ops.child_merge_evidence(children, expected_base="task/issue-1")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["missing"], [])
+
+    def test_child_merge_evidence_rejects_ff_merged_without_sha_range(self):
+        children = [{"number": 2, "ff_merged": {"base": "task/issue-1"}}]
+        result = orchestrator_ops.child_merge_evidence(children, expected_base="task/issue-1")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["missing"], [2])
+
+    def test_child_merge_evidence_rejects_ff_merged_wrong_base(self):
+        children = [{"number": 2, "ff_merged": {"base": "main", "sha_range": "aaa..bbb"}}]
+        result = orchestrator_ops.child_merge_evidence(children, expected_base="task/issue-1")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["missing"], [2])
+
+    def test_plan_tick_merge_container_carries_gear(self):
+        plan = orchestrator_ops.plan_tick(
+            {"ok": True, "container_done": {"number": 5, "gear": "major"}},
+            review_tool=None,
+        )
+        self.assertEqual(plan, {"action": "merge_container", "issue": 5, "gear": "major"})
+
+    def test_plan_tick_merge_container_omits_absent_gear(self):
+        plan = orchestrator_ops.plan_tick(
+            {"ok": True, "container_done": {"number": 5}},
+            review_tool=None,
+        )
+        self.assertEqual(plan, {"action": "merge_container", "issue": 5})
+
+
 if __name__ == "__main__":
     unittest.main()

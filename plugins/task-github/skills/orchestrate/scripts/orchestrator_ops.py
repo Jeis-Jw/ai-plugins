@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import Any
 
 GEARS = ("micro", "normal", "major")
+GEAR_RANK = {"micro": 0, "normal": 1, "major": 2}
 GEAR_OPTION_KEYS = ("plan", "verify", "pr-review")
 DEFAULT_GEAR_OPTIONS = {
     "micro": {"plan": False, "verify": True, "pr-review": False},
@@ -73,6 +74,60 @@ def _bool_option(value: Any) -> bool:
 def _gear_or_major(gear_label: str | None) -> str:
     gear = _gear_name(gear_label)
     return gear if gear in DEFAULT_GEAR_OPTIONS else "major"
+
+
+def _bare_gear(value: str | None) -> str:
+    """Normalize a gear value to a bare name, unknown/absent → 'micro'.
+
+    Unlike `_gear_or_major` (used for flow gating, where ambiguity → more
+    ceremony), promotion counts from the floor: an unlabeled child must not
+    inflate a container's gear.
+    """
+    gear = _gear_name(value) if value else None
+    return gear if gear in DEFAULT_GEAR_OPTIONS else "micro"
+
+
+def gear_of_labels(labels: Any) -> str | None:
+    """Bare gear name ('micro'|'normal'|'major') from a label list, else None."""
+    for label in labels or []:
+        name = label.get("name") if isinstance(label, dict) else label
+        gear = _gear_name(str(name)) if name else None
+        if gear in DEFAULT_GEAR_OPTIONS:
+            return gear
+    return None
+
+
+def container_gear_promotion(child_gears: list[str | None]) -> str:
+    """Cumulative container gear from child gears (DEC-2026-07-02-224910 §2).
+
+    Base = the highest child gear. Then accumulate: ≥3 micro children promote to
+    at least normal, ≥2 normal children promote to major. Unknown/absent child
+    gears count as micro. A container's own gear label is ignored — its gear is a
+    function of its children, decided fresh at the merge edge.
+    """
+    gears = [_bare_gear(g) for g in child_gears]
+    if not gears:
+        return "micro"
+    result = max(gears, key=lambda g: GEAR_RANK[g])
+    if sum(1 for g in gears if g == "micro") >= 3 and GEAR_RANK[result] < GEAR_RANK["normal"]:
+        result = "normal"
+    if sum(1 for g in gears if g == "normal") >= 2 and GEAR_RANK[result] < GEAR_RANK["major"]:
+        result = "major"
+    return result
+
+
+def ff_merge_command(*, child_branch: str, parent_branch: str) -> list[str]:
+    """Fast-forward the parent ref to the child branch without checkout
+    (DEC-2026-07-02-224910 §3, micro/normal merge edge).
+
+    `git fetch . <child>:<parent>` updates the parent ref in the shared git dir
+    via a self-fetch refspec: git rejects a non-fast-forward ref update and
+    refuses to touch a checked-out branch, so no worktree HEAD ever moves
+    (preserves DEC-2026-07-02-212109). On a non-FF rejection the caller
+    reverse-merges the parent into the child worktree, resolves the conflict
+    leaf-side, re-verifies, and retries.
+    """
+    return ["git", "fetch", ".", f"{child_branch}:{parent_branch}"]
 
 
 def _action_name(action: str) -> str:
@@ -185,9 +240,24 @@ def classify_pr_recovery(*, head: str, expected_base: str, prs: list[dict[str, A
 
 
 def child_merge_evidence(children: list[dict[str, Any]], *, expected_base: str) -> dict[str, Any]:
+    """Each child must show it landed on `expected_base`. Three valid shapes:
+
+    - ``closed_no_pr: True`` — closed with no code change (revert/no-op).
+    - ``merged_pr: {base}`` — major leaf/container merged via PR (DEC-…-212109).
+    - ``ff_merged: {base, sha_range}`` — micro/normal local FF merge, no PR
+      (DEC-…-224910 §3): the SHA range is the close evidence that replaces a
+      merged PR, so a bare flag is not enough — the range must be present.
+    """
     missing: list[int] = []
     for child in children:
         if child.get("closed_no_pr") is True:
+            continue
+        ff = child.get("ff_merged")
+        if (
+            isinstance(ff, dict)
+            and _pr_field(ff, "base", "baseRefName") == expected_base
+            and ff.get("sha_range")
+        ):
             continue
         pr = child.get("merged_pr")
         if isinstance(pr, dict) and _pr_field(pr, "base", "baseRefName") == expected_base:
@@ -277,7 +347,12 @@ def plan_tick(
 
     container_done = ready_state.get("container_done")
     if container_done:
-        return {"action": "merge_container", "issue": int(container_done["number"])}
+        action = {"action": "merge_container", "issue": int(container_done["number"])}
+        # Merge-edge ceremony follows the container's cumulative gear (computed by
+        # evaluate_tree), not its own label: major → PR+review, else local FF.
+        if container_done.get("gear"):
+            action["gear"] = container_done["gear"]
+        return action
 
     review_waiting = _numbers(ready_state.get("review_waiting"))
     if review_waiting:
