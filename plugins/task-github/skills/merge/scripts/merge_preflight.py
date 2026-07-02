@@ -191,6 +191,7 @@ def scoped_gate_plan_from_ledger(
     fallback: list[dict[str, Any]] = []
     hash_by_child = current_drift_surface_hashes or {}
     heads_by_child = expected_pr_heads or {}
+    child_expected_base = f"task/issue-{parent_issue}"
 
     for child in children:
         number = int(child["number"])
@@ -201,7 +202,7 @@ def scoped_gate_plan_from_ledger(
         plan = orchestrator_ops.scoped_changed_path_stale_targets(
             parent_paths=parent_paths,
             children=[child],
-            expected_base=expected_base,
+            expected_base=child_expected_base,
             current_gate_version=current_gate_version,
             current_tool_versions=current_tool_versions,
             current_drift_surface_hash=current_hash,

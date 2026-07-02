@@ -138,6 +138,35 @@ class MergePreflightEvidenceTests(unittest.TestCase):
         self.assertEqual(plan["reused"], [2])
         self.assertEqual(plan["fallback"], [])
 
+    def test_scoped_gate_plan_uses_parent_branch_for_root_pr_child_evidence(self):
+        child_gate = gate(["child.py"])
+        ledger = {
+            "issues": {"1": {"children": [2]}, "2": {"number": 2}},
+            "merge_evidence": {
+                "2": {
+                    "kind": "merged_pr",
+                    "base": "task/issue-1",
+                    "parent_contains_child": True,
+                    "head_sha": "head-1",
+                }
+            },
+            "gate_evidence": {"2": child_gate},
+        }
+
+        plan = merge_preflight.scoped_gate_plan_from_ledger(
+            parent_issue=1,
+            expected_base="main",
+            changed_paths=["parent.py", "child.py"],
+            ledger=ledger,
+            current_gate_version=merge_preflight.GATE_VERSION,
+            current_tool_versions={"task-github": "0.15.0"},
+            current_drift_surface_hashes={2: child_gate["drift_surface_hash"]},
+            expected_pr_heads={2: "head-1"},
+        )
+
+        self.assertEqual(plan["target_paths"], ["parent.py"])
+        self.assertEqual(plan["reused"], [2])
+
     def test_scoped_gate_plan_falls_back_on_invalid_child_evidence(self):
         child_gate = gate(["child.py"], tool_versions={"task-github": "0.14.0"})
         ledger = {
