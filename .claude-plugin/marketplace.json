@@ -15,7 +15,7 @@
       "name": "task-github",
       "source": "./plugins/task-github",
       "description": "GitHub 기반 자율 작업 프로토콜 — Issue 추적·Plan Mode·PR/local 검증 closeout을 wiki-markdown task 노드로 결정 그래프와 연계. 프로파일·기어·플로우 3축 분류, 14개 스킬, orchestrate 이슈트리 자동수행(브랜치트리 머지업·.task-github.yml config), PR 검증 서브에이전트.",
-      "version": "0.12.0"
+      "version": "0.12.1"
     },
     {
       "name": "session-review",
