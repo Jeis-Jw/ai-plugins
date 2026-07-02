@@ -14,7 +14,7 @@ GitHub가 SoT지만, 실행 중에는 `.task-github/orchestrate/{container}.json
 $ARGUMENTS:
   {container_issue}
   [--review gear|all|skip]   # 기본: .task-github.yml orchestrate.review-mode 또는 gear
-  [--max-workers N]          # v1 기본 1
+  [--max-workers N]          # 기본: .task-github.yml orchestrate.max-workers 또는 3
   [--pipeline]               # worker/review lane을 background dispatch하고 완료 이벤트마다 re-tick
 ```
 
@@ -24,7 +24,7 @@ $ARGUMENTS:
 2. `mode: solo`만 허용한다. `team`이면 STOP.
 3. `base_branch`는 필수다. GitHub default branch를 추론하지 않는다.
 4. reviewer/conflict 자동화는 `review-tool`/`review-command`와 conflict-agent 경로가 있을 때만 실행한다. 없으면 STOP으로 퇴각한다.
-5. flow option 우선순위는 commander 지시 > `.task-github.yml` `orchestrate.gear-options` > 시스템 기본값이다.
+5. flow option 우선순위는 commander 지시 > `.task-github.yml` `orchestrate.gear-options`/`orchestrate.max-workers` > 시스템 기본값이다. `max-workers`는 `review-mode`와 같은 우선순위 규칙을 따른다: commander가 `--max-workers`를 명시하면 그 값, 없으면 config의 `orchestrate.max-workers`, 그것도 없으면 시스템 기본값 3.
 
 설정 확인:
 
@@ -200,4 +200,4 @@ conflict-agent 산출물은 [agents/conflict-resolver.md](../../agents/conflict-
 - 오케스트레이터는 직접 코딩하지 않는다.
 - 상태/gear label write는 worker/reviewer 소유다. 오케스트레이터는 issue close와 merge만 수행한다.
 - decision/rejected/trial_error wiki capture는 자동 기록하지 않는다. 루트 완료 때 후보만 제시하고 사용자 확인을 받는다.
-- v1 `--max-workers 1` 기본. ledger는 spawned/failed뿐 아니라 root snapshot, derived issue/PR state, events를 보관한다. 문제 발생 시 `--reconcile-github`로 GitHub SoT를 다시 덮어쓴다.
+- `--max-workers` 기본은 commander 지시 > `.task-github.yml orchestrate.max-workers` > 시스템 기본값(3) 순으로 정한다. ledger는 spawned/failed뿐 아니라 root snapshot, derived issue/PR state, events를 보관한다. 문제 발생 시 `--reconcile-github`로 GitHub SoT를 다시 덮어쓴다.

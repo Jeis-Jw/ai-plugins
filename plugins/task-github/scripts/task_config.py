@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 TOP_KEYS = {"mode", "base_branch", "planning-tool", "verify-tool", "review-tool", "orchestrate"}
-ORCH_KEYS = {"verify-command", "review-mode", "review-command", "gear-options"}
+ORCH_KEYS = {"verify-command", "review-mode", "review-command", "gear-options", "max-workers"}
 GEARS = {"micro", "normal", "major"}
 GEAR_OPTION_KEYS = {"plan", "verify", "pr-review"}
 REVIEW_MODES = {"gear", "all", "skip"}
@@ -85,6 +85,15 @@ def _valid_bool(value: Any) -> bool:
     return str(value).strip().lower() in {"1", "0", "true", "false", "yes", "no", "on", "off", "o", "x"}
 
 
+def _valid_positive_int(value: Any) -> bool:
+    if value is None or value == "":
+        return True
+    try:
+        return int(str(value).strip()) > 0
+    except ValueError:
+        return False
+
+
 def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
     findings: list[dict[str, str]] = []
     unknown = sorted(set(config) - TOP_KEYS)
@@ -120,6 +129,8 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
                     findings.append(_finding("unknown_orchestrate_gear_option", f"unknown gear option: {gear}.{option}", "warning"))
                 elif not _valid_bool(value):
                     findings.append(_finding("bad_orchestrate_gear_option", f"{gear}.{option} must be boolean/o/x"))
+    if not _valid_positive_int(orchestrate.get("max-workers")):
+        findings.append(_finding("bad_orchestrate_max_workers", "orchestrate.max-workers must be a positive integer"))
     if orchestrate.get("verify-command") and not config.get("verify-tool"):
         findings.append(_finding("verify_tool_required", "orchestrate.verify-command requires verify-tool"))
     if orchestrate.get("review-command") and not config.get("review-tool"):
@@ -138,6 +149,7 @@ def render_default_config(*, base_branch: str = "main") -> str:
         "  verify-command:\n"
         "  review-mode: gear\n"
         "  review-command:\n"
+        "  max-workers:\n"
         "  gear-options:\n"
         "    micro:\n"
         "      plan: false\n"
