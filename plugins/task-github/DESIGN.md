@@ -122,9 +122,9 @@ plugins/task-github/
 
 공통 read-model은 `scripts/context_bundle.py`가 제공한다. 각 skill은 GitHub와 wiki를 자기 절차대로 읽은 뒤 그 JSON을 resolver에 넘긴다. resolver는 `gh`/wiki CLI를 직접 호출하지 않고, `issue/root/wiki_task/topology/gate/parent_branch/blockers/downstream/worktree_path` bundle과 링크 정합 결과만 만든다. 이 분리 때문에 task-github는 wiki가 없을 때도 동작하고, wiki는 GitHub 상태를 해석하지 않는다.
 
-root issue body에는 optional **Execution Contract** fenced block을 둔다. `schema_version: 1`과 stable keys(`wiki_task`, `topology`, `gate`, `parent_branch`, `leaf_policy`, `required_checks`, `closeout_mode`)만 해석하고 unknown key는 무시한다. contract는 root issue의 실행 방법(how)을 고정해 profile+gear 재추론 drift를 막는 장치이며, wiki TASK의 작업정의(why/what)를 대체하지 않는다. contract가 없으면 context bundle은 `topology/gate/parent_branch=null`, `default_source=profile+gear`를 출력한다. local closeout의 `required_checks`는 argv array만 실행한다.
+root issue body에는 optional **Execution Contract** fenced block을 둔다. `schema_version: 1`과 stable keys(`wiki_task`, `topology`, `gate`, `parent_branch`, `leaf_policy`, `required_checks`, `closeout_mode`)만 해석하고 unknown key는 무시한다. contract는 root issue의 실행 방법(how)을 고정해 profile+gear 재추론 drift를 막는 장치이며, wiki TASK의 작업정의(why/what)를 대체하지 않는다. contract가 없으면 context bundle은 `topology/gate/parent_branch=null`, `default_source=profile+gear`를 출력한다. `required_checks`는 argv array만 허용한다(shell string 거부). all-PR 통합 이후 `gate`/`closeout_mode`는 `pr` 단일값이다([[DEC-2026-07-02-212109]]).
 
-`skills/merge/scripts/closeout.py`는 `--mode pr|local`을 제공한다. PR mode는 GitHub PR merge closeout이고, merge 성공 뒤 local sync/branch cleanup 실패를 `sync_warnings`로만 남긴다. non-default base PR은 `Closes #N` 자동 close가 동작하지 않으므로 linked issue를 직접 close한다. local mode는 temp worktree merge simulation으로 parent branch 병합 가능성을 확인한 뒤 Execution Contract의 non-empty safe `required_checks`, drift evidence, integrity evidence를 모두 검증해야 실제 local merge를 수행한다. 위키 미가용은 명시적 skip evidence로만 통과한다. `topology=stacked` + `closeout_mode=local`인 leaf closeout은 root issue comment에 Integration Ledger(`task-github-ledger`)를 append-only로 남긴다. 이 ledger도 GitHub 실행 산출물이며 wiki TASK의 대체물이 아니다.
+`skills/merge/scripts/closeout.py`는 PR closeout 하나만 제공한다(`--pr {PR}`). 연결 Issue 추출→dependency 차단 재확인→PR+Issue 상태 라벨만 제거(gear 유지)→`gh pr merge --merge`(remote)→non-default base면 linked issue 직접 close→downstream 안내→base sync + branch cleanup. base sync는 로컬 `git checkout`을 하지 않고 `git fetch origin {base}:{base}`(base가 현재 HEAD면 `git pull --ff-only`)로 로컬 base ref만 갱신해, 오케스트레이션 중 사령관의 메인 워크트리 HEAD가 trunk를 벗어나지 않는다([[DEC-2026-07-02-212109]]). epic/컨테이너 브랜치는 worker가 없어 PR이 자동 생성되지 않으므로 orchestrate가 `gh pr create --base task/issue-{parent} --head task/issue-{container}`로 통합 PR을 만든 뒤 같은 closeout으로 넘긴다. PR 자체가 통합 로그이므로 별도 Integration Ledger는 만들지 않는다. merge 성공 뒤 sync/cleanup 실패는 `sync_warnings`로만 남긴다.
 
 ### 매니페스트 & 마켓플레이스 등록
 
@@ -489,7 +489,7 @@ flag는 block이 아니라 confirm 전 보완 신호다. 단, flag가 있는데 
 - **불변식**: review는 판정·라벨까지, 머지는 merge가. team은 `--auto-merge` 명시 필요(solo 자동 허용).
 
 ### 7.10 `merge` — PR 머지
-- **입력**: `{PR}` 또는 `--mode local --issue {N} --head {BRANCH}`. **동작**: PR mode는 연결 Issue 추출→dependency 차단 재확인→PR+Issue **상태 라벨만 제거**(gear 유지)→`gh pr merge --merge`→non-default base면 Issue 직접 close→downstream 안내→로컬/원격 branch 정리(best-effort warning). local mode는 temp worktree merge simulation→safe required checks/drift/integrity evidence 검증→leaf policy gate→parent branch local merge→Issue close→downstream 안내.
+- **입력**: `{PR}`(all-PR 단일 경로). **동작**: 연결 Issue 추출→dependency 차단 재확인→PR+Issue **상태 라벨만 제거**(gear 유지)→`gh pr merge --merge`(remote)→non-default base면 Issue 직접 close→downstream 안내→base sync + 로컬/원격 branch 정리(best-effort warning). base sync는 checkout 없이 `git fetch origin {base}:{base}`로 로컬 base ref만 갱신해 메인 워크트리 HEAD가 trunk 불변([[DEC-2026-07-02-212109]]). epic/컨테이너 머지업은 orchestrate가 `gh pr create`로 PR을 만든 뒤 같은 경로로 닫는다(로컬 병합 경로 없음).
 - **위키(핵심)**: 머지 전 `refresh --level integrity --strict` + diff `changed-path-stale` hard gate를 통과해야 한다. 게이트 통과 후 **`skills/merge/scripts/closeout.py`**(git/gh 전용, wiki mutation 없음)가 연결이슈 해석·blocker 재확인·라벨 정리·머지·브랜치 정리·downstream 안내·루트 닫힘 감지를 결정적으로 처리하고 `task_to_complete`를 방출한다(`--dry-run` 사전 검증). 이 머지로 **루트 이슈가 close되면**(업무 완료) 방출된 id로 연결 task 노드를 `complete`로 `done/` 전이([§6.5]). 단일 리프 업무면 그 이슈 close가 곧 업무 완료. 컨테이너 업무면 마지막 자식 close 시점.
 - **불변식**: `--merge` 방식. 상태 라벨 제거하되 `gear:*` 유지. Issue는 `Closes #N`으로 자동 close.
 
@@ -827,6 +827,13 @@ python3 <wiki-cli> init    # ./wiki/ vault 생성 (task 타입 지원 버전 필
 ---
 
 ## 20. 변경 이력 (v2 → v3)
+
+### v0.13.0 — all-PR closeout
+
+- `closeout.py`를 PR closeout 하나로 축소: `run_local_closeout`(로컬 `git checkout`+`git merge`), local merge simulation, `leaf_policy` 게이트, Integration Ledger 제거. `--mode` 플래그·local 전용 args 삭제.
+- epic/컨테이너 머지업을 PR화: orchestrate `container_done`이 `gh pr create --base parent --head container` 후 `gh pr merge`. 로컬 병합 경로 소멸.
+- PR closeout의 base sync를 checkout→`git fetch origin {base}:{base}`로 교체 → 오케스트레이션 중 메인 워크트리 HEAD가 trunk 불변([[DEC-2026-07-02-212109]]).
+- `gate`/`closeout_mode` contract 필드는 `pr` 단일값으로 정리(스키마 키는 유지).
 
 ### 20.1 v0.8.0
 

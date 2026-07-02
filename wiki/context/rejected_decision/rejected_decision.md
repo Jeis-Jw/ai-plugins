@@ -26,3 +26,4 @@ audience: [human, agent]
 - [[REJ-2026-06-02-120300-parallel-sequential-라벨로-하위-작업-실행-순서-표현]] — 하위 작업의 병렬/직렬 가능성을 parallel/sequential 라벨로 표시하는 방식. 혼합 DAG를 표현하기 어렵고 GitHub Issue dependencies와 중복되므로 반려.
 - [[REJ-2026-06-12-185220-gate-mvp를-llm-judge로-먼저-구축]] — 품질 gate MVP를 의미판정 LLM-judge로 우선 구축하는 안. in-stack judge 천장·판정 불안정·prompt 의존으로 반려, 정적 룰 v0를 먼저.
 - [[REJ-2026-06-17-002650-snapshot-3상태-누적-보존-모델]] — snapshot을 active/archived/promoted 3상태로 보존하고 기본 save를 append-only로 누적하며 --continues 체인을 두는 모델. 단일 active 휘발 모델에 반려.
+- [[REJ-2026-07-02-212018-local-closeout-mode-유지-worktree-격리-all-pr-통합-대신]] — 컨테이너 머지업을 로컬 git merge로 유지하되 temp worktree로 격리해 메인 트리 checkout만 회피하는 대안. 로컬 머지 machinery+불변식 guard 유지 부담으로 반려하고 all-PR 통합을 채택.

@@ -19,13 +19,13 @@ class StatusNextTests(unittest.TestCase):
             "blockers": [],
             "downstream": [],
             "topology": "stacked",
-            "gate": "local-merge",
+            "gate": "pr",
         }
 
         result = status_next.build_status(bundle)
 
         self.assertEqual(result["next_action"]["kind"], "reconcile")
-        self.assertEqual(result["mode"], {"topology": "stacked", "gate": "local-merge"})
+        self.assertEqual(result["mode"], {"topology": "stacked", "gate": "pr"})
 
     def test_ready_leaf_suggests_start(self):
         bundle = {

@@ -107,7 +107,7 @@ integration 전략은 매번 profile+gear에서 재추론하지 않고, root iss
 
 ````markdown
 ```task-github-execution
-{"schema_version":1,"wiki_task":"TASK-...","topology":"stacked","gate":"local-merge","parent_branch":"task/root-10","leaf_policy":{"risk_class":"normal"},"required_checks":[["python3","-m","pytest","plugins/task-github/tests/","-q"]],"closeout_mode":"local"}
+{"schema_version":1,"wiki_task":"TASK-...","topology":"stacked","gate":"pr","parent_branch":"task/root-10","leaf_policy":{"risk_class":"normal"},"required_checks":[["python3","-m","pytest","plugins/task-github/tests/","-q"]],"closeout_mode":"pr"}
 ```
 ````
 
@@ -126,28 +126,13 @@ unknown key는 parser가 무시한다. contract가 없으면 context bundle은 `
 
 ---
 
-## 6. Local / Stacked Closeout
+## 6. Closeout (all-PR)
 
-PR 없는 self-flow는 `closeout.py --mode local`을 쓴다. local mode는 편의 기능이 아니라 **검증된 로컬 머지**다.
+모든 머지는 PR 경로(`gh pr merge`, remote) 하나다. 리프 PR도, 컨테이너/epic 머지업 PR도 `closeout.py --pr {PR}`로 닫는다. 로컬 `git checkout`/`git merge` 경로는 없다 — 머지 후 base 브랜치 갱신도 `git fetch origin {base}:{base}`(base가 현재 HEAD면 `git pull --ff-only`)로 처리해, 오케스트레이션 중 사령관의 메인 워크트리 HEAD가 trunk를 벗어나지 않는다([[DEC-2026-07-02-212109]]).
 
-| leaf 위험 클래스 | 강제 게이트 |
-|---|---|
-| `micro` / `normal` | leaf verify + drift + blocker |
-| `major` | 위 항목 + self-flow (`leaf_policy.self_flow_verified=true`) |
-| `irreversible` / `db` / `public-api` / `security` / `data-loss` | 위 항목 + PR 또는 hard self-flow (`leaf_policy.hard_self_flow_verified=true`) |
+머지 전 hard gate(위키 가용 시 `refresh --level integrity --strict` + PR diff `changed-path-stale`)는 merge 스킬이 closeout **전에** 적용한다 — closeout 스크립트는 wiki를 모른다([merge](../skills/merge/SKILL.md) Step 2).
 
-local closeout은 반드시 temp worktree에서 parent branch 기준 merge simulation을 만든 뒤, Execution Contract의 `required_checks` + `changed-path-stale` evidence + integrity evidence가 모두 통과해야 parent branch에 실제 merge한다. `required_checks`는 argv array만 허용하고 shell string은 거부한다. 위키가 없는 workspace라 drift/integrity를 실행할 수 없으면 `{ "skipped": true, "reason": "wiki_unavailable" }` 같은 명시 evidence를 넘긴다. evidence가 없으면 실패다.
-
-Integration Ledger는 `topology=stacked` + `closeout_mode=local`에서만 root issue comment에 append-only로 남긴다:
-
-````markdown
-<!-- task-github:integration-ledger:v1 -->
-```task-github-ledger
-{"schema_version":1,"leaf":42,"sha":"abc123","checks":[],"drift":{"issues":[]},"downstream":[]}
-```
-````
-
-flat/PR 흐름은 PR 자체가 실행 로그이므로 GitHub root issue에 Integration Ledger comment를 만들지 않는다. orchestrate 실행 중 local write-through ledger는 별도이며 wiki task에 쓰지 않는다.
+epic/컨테이너 브랜치는 worker가 없어 PR이 자동 생성되지 않으므로, orchestrate가 `gh pr create --base task/issue-{parent} --head task/issue-{container}`로 통합 PR을 만든 뒤 리뷰 없이 즉시 머지한다(자식은 이미 리뷰·머지됨). PR 자체가 통합 로그라 별도 ledger를 만들지 않는다. (orchestrate 실행 중 `.task-github/orchestrate/{root}.json` write-through ledger는 run-state 추적용으로 별개이며 wiki task에 쓰지 않는다.)
 
 ---
 
