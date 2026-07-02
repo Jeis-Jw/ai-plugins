@@ -462,6 +462,48 @@ class MergeEdgeGearTreeTests(unittest.TestCase):
         self.assertEqual(payload["merge_evidence"]["4"]["pr"], 10)
         self.assertEqual(payload["gate_evidence"]["4"]["gate"], "changed-path-stale")
 
+    def test_ledger_pr_merged_event_records_parent_consumable_merge_evidence(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = Path(tmp) / "ledger.json"
+            orchestrate_ledger.record_event(ledger, {
+                "type": "pr_merged",
+                "issue": 4,
+                "pr": 10,
+                "head": "task/issue-4",
+                "base": "task/issue-2",
+                "head_sha": "head-1",
+                "merge_commit_sha": "merge-1",
+            })
+            payload = orchestrate_ledger.load_ledger(ledger)
+
+        self.assertEqual(payload["issues"]["4"]["merged_pr"]["base"], "task/issue-2")
+        self.assertEqual(payload["issues"]["4"]["merged_pr"]["number"], 10)
+        self.assertEqual(payload["merge_evidence"]["4"]["base"], "task/issue-2")
+        self.assertEqual(payload["merge_evidence"]["4"]["head_sha"], "head-1")
+
+    def test_cli_records_gate_evidence_json(self):
+        import io
+        import tempfile
+        from contextlib import redirect_stdout
+
+        evidence = {"gate_version": "changed-path-stale:v1", "changed_paths": ["a.py"]}
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = Path(tmp) / "ledger.json"
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = orchestrate_ledger.main([
+                    str(ledger),
+                    "--issue", "4",
+                    "--gate-evidence-json", json.dumps(evidence),
+                    "--json",
+                ])
+            payload = orchestrate_ledger.load_ledger(ledger)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(payload["gate_evidence"]["4"]["gate_version"], "changed-path-stale:v1")
+
 
 if __name__ == "__main__":
     unittest.main()

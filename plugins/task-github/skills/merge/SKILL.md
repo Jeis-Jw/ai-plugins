@@ -49,8 +49,16 @@ HYG=$(wiki refresh --level hygiene --json)  # 경고 surface (비차단)
 ```
 `refresh --level integrity --strict`가 비0 종료하거나, `changed-path-stale` 이슈가 있으면 머지하지 않는다(integrity 깨짐 + 코드-문서 drift만 차단). `HYG`의 hygiene 이슈(orphan/stale/tags 등)는 머지를 막지 않고 머지 후 보고로만 남긴다. stale 문서는 `verified_at` 갱신 또는 supersede 대상이며, 자동 변경하지 않고 사령관에게 보완 경로를 보고한다.
 
-### Step 3. closeout 스크립트로 머지 + 정리 (git/gh 결정적 시퀀스)
-게이트 통과 후, `closeout.py`가 연결이슈 해석·blocker 재확인·라벨 정리·머지·브랜치 정리·downstream 안내·루트 닫힘 감지를 한 번에 한다. wiki는 호출하지 않고 `task_to_complete`만 방출한다. 모든 머지는 `gh pr merge`(remote)이며 closeout은 로컬 `git checkout`을 하지 않는다 — 머지 후 base 브랜치 갱신은 `git fetch origin {base}:{base}`(base가 현재 HEAD면 `git pull --ff-only`)로 처리해 사령관의 메인 워크트리 HEAD가 trunk를 벗어나지 않는다([[DEC-2026-07-02-212109]]). merge 성공 뒤 base sync/branch cleanup 실패는 `sync_warnings`로만 보고한다.
+### Step 3. merge preflight evidence 기록
+게이트 통과 후 `merge_preflight.py`를 먼저 실행한다. 이 스크립트는 live PR head(`headRefOid`), mergeability, CI/check, reviewDecision을 한 번의 PR 조회 boundary에서 확인하고, 통과한 wiki gate 결과를 `gate_evidence`로 ledger에 기록한다. `headRefOid`가 기대값과 다르거나 required field가 빠지면 closeout으로 넘어가지 않는다.
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/scripts/merge_preflight.py" \
+  --pr {PR} --orchestrate-ledger ".task-github/orchestrate/{ROOT}.json" --json
+```
+
+### Step 4. closeout 스크립트로 머지 + 정리 (git/gh 결정적 시퀀스)
+preflight 통과 후, `closeout.py`가 연결이슈 해석·blocker 재확인·라벨 정리·머지·브랜치 정리·downstream 안내·루트 닫힘 감지를 한 번에 한다. wiki는 호출하지 않고 `task_to_complete`만 방출한다. 모든 머지는 `gh pr merge`(remote)이며 closeout은 로컬 `git checkout`을 하지 않는다 — 머지 후 base 브랜치 갱신은 `git fetch origin {base}:{base}`(base가 현재 HEAD면 `git pull --ff-only`)로 처리해 사령관의 메인 워크트리 HEAD가 trunk를 벗어나지 않는다([[DEC-2026-07-02-212109]]). merge 성공 뒤 base sync/branch cleanup 실패는 `sync_warnings`로만 보고한다. closeout은 merge fact만 기록하고 wiki gate를 다시 실행하지 않는다.
 
 ```bash
 # 1) dry-run으로 계획 확인 (머지·변경 없음, 읽기 전용)
@@ -70,9 +78,9 @@ RESULT=$(python3 "${CLAUDE_SKILL_DIR}/scripts/closeout.py" \
 ```
 `open_blockers`면 머지하지 않고 중단(에이전트가 사령관에 보고). `downstream` 배열은 머지 후 재검토 대상으로 안내한다.
 
-> 컨테이너/epic 머지업 **PR**도 major 리프 PR과 같은 경로다. 단, 컨테이너는 자신의 계산된 gear([orchestrator_ops.container_gear_promotion](../orchestrate/SKILL.md))가 major일 때만 PR을 만든다 — sub-major 컨테이너는 로컬 FF로 부모에 forward하고 이 스킬을 거치지 않는다. major 컨테이너 머지업은 worker가 없어 PR이 자동 생성되지 않으므로, **orchestrate가 `gh pr create --base task/issue-{parent} --head task/issue-{container}`로 PR을 먼저 만든 뒤** 이 closeout으로 넘긴다([orchestrate](../orchestrate/SKILL.md) container_done).
+> 컨테이너/epic 머지업 **PR**도 major 리프 PR과 같은 경로다. 단, 컨테이너는 자신의 계산된 gear([orchestrator_ops.container_gear_promotion](../orchestrate/SKILL.md))가 major일 때만 PR을 만든다 — sub-major 컨테이너는 로컬 FF로 부모에 forward하고 이 스킬을 거치지 않는다. major 컨테이너 머지업은 worker가 없어 PR이 자동 생성되지 않으므로, **orchestrate가 `gh pr create --base task/issue-{parent} --head task/issue-{container}`로 PR을 먼저 만든 뒤** preflight + closeout으로 넘긴다([orchestrate](../orchestrate/SKILL.md) container_done).
 
-### Step 4. (위키 가용 시) task 노드 done 전이
+### Step 5. (위키 가용 시) task 노드 done 전이
 `closeout.py` 출력의 `task_to_complete`가 비어있지 않으면(= 업무 루트 이슈가 이 머지로 close됨), 그 id로 task 노드를 done 전이한다:
 ```bash
 TASK=$(printf '%s' "$RESULT" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("task_to_complete") or "")')
@@ -80,7 +88,7 @@ TASK=$(printf '%s' "$RESULT" | python3 -c 'import json,sys; print(json.load(sys.
 ```
 GitHub 이슈/PR 흐름이 상태 정본이고 위키 done/는 투영이다([wiki-bridge.md](../../rules/wiki-bridge.md) §5). task 노드 ID는 루트 이슈 `## Wiki Context`가 정본이며 `closeout.py`가 루트 본문에서 추출한다(한글 슬러그 보존). 리프 머지로 루트가 아직 안 닫혔으면 `task_to_complete`는 비어 전이하지 않는다.
 
-### Step 5. Knowledge Capture Audit
+### Step 6. Knowledge Capture Audit
 최종 보고 전에 [knowledge-capture.md](../../rules/knowledge-capture.md)에 따라 감사한다.
 - 이 머지로 완료된 업무에서 새 observation/decision/trial_error 후보가 생겼는지 확인한다.
 - `blocking` downstream 안내가 운영상 새 교훈이나 runbook 변경을 요구하면 `proposed`로 보고한다.
