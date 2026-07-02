@@ -40,16 +40,17 @@
 
 > **★ 가장 중요한 분류**: 기어는 **영향 반경(파급력)** 으로만 판단한다. 크기(파일 수·커밋 수)는 근거가 아니다.
 
-| 기어 | 영향 반경 | 예시 | 기본 flow options |
-|------|----------|------|--------|
-| **micro** | 자기 파일 내부만 | 오타, 주석, 로컬 로직 | plan:x / verify:o / pr-review:x |
-| **normal** | 자기 서비스/모듈 내부 | 신규 기능, 일반 로직 | plan:o / verify:o / pr-review:x |
-| **major** | 외부 계약 변경 | API/DB/CLI/파일포맷/공개 IF | plan:o / verify:o / pr-review:o |
+| 기어 | 영향 반경 | 예시 | 기본 flow options | merge 경로 |
+|------|----------|------|--------|-----------|
+| **micro** | 자기 파일 내부만 | 오타, 주석, 로컬 로직 | plan:x / verify:o / pr-review:x | 로컬 FF (부모에 병합) |
+| **normal** | 자기 서비스/모듈 내부 | 신규 기능, 일반 로직 | plan:o / verify:o / pr-review:x | 로컬 FF (부모에 병합) |
+| **major** | 외부 계약 변경 | API/DB/CLI/파일포맷/공개 IF | plan:o / verify:o / pr-review:o | PR + review |
 
 판단 규칙:
 - **애매하면 상위 기어.** 잘못 판단 시 승격(강등 금지).
 - 여러 기어 섞이면 **가장 높은 기어**.
 - **라벨은 항상 micro/normal/major.** flow option도 gear별로 계산하며 `gear:full`은 없다.
+- **`pr-review:x`는 "리뷰 단계 없음"이 아니라 "단독 PR 없음"을 뜻한다** — micro/normal은 출력 PR을 만들지 않고 로컬 FF로 부모 브랜치에 병합한다. 리뷰 게이트는 merge edge의 기어(§3.1)에서 걸린다.
 
 ---
 
@@ -65,26 +66,34 @@
 
 - **plan**: 사령관 승인용 계획 작성.
 - **verify**: 작업 완료 조건 검증 리포트 작성.
-- **pr-review**: PR에 별도 review/pr-verifier gate 적용.
+- **pr-review**: **단독 PR을 만들고** 그 PR에 review/pr-verifier gate를 적용. `pr-review:x`는 단독 PR 없이 로컬 FF로 부모에 병합함을 뜻한다(리뷰 게이트 자체가 없다는 뜻이 아니다 — merge edge 기어에서 걸린다).
 
 우선순위는 **사령관 현재 지시 > `.task-github.yml` `orchestrate.gear-options` > 시스템 기본값**이다. 설정은 비어 있으면 기본값을 쓴다.
 
-### 3.1 출하 ceremony (PR 분할·리뷰 강도)
+### 3.1 출하 ceremony (PR을 언제 만드는가)
 
-**원칙: 사고는 분해, 출하는 묶음.** 설계는 명료성을 위해 잘게 쪼개 생각하되, PR 분할·리뷰 강도는 **설계결정 수가 아니라 파급력(기어)·롤백 단위**에 맞춘다. 설계 결정 하나가 곧 출하 사이클 하나가 되어선 안 된다.
+**원칙: 사고는 분해, 출하는 묶음.** 설계는 명료성을 위해 잘게 쪼개 생각하되, **PR을 만들지 말지**는 **설계결정 수가 아니라 파급력(기어)·롤백 단위**에 맞춘다. 설계 결정 하나가 곧 출하 사이클 하나가 되어선 안 된다.
 
-| 기어 | PR 분할 | 리뷰 강도 |
-|------|---------|-----------|
-| **micro** | 형제 PR에 동승 가능(단독 PR 불필요) | 경량 self-check / verify |
-| **normal** | 같은 테마·무차단의존 변경은 **한 PR로 묶음** | self-flow 1라운드 **또는** PR-gate |
-| **major / 비가역** | **격리 PR** | 적대적 — self-flow(+PR-gate), 필요 시 다중 라운드 |
+ceremony는 리프의 속성이 아니라 **merge edge**(노드가 부모에 합류하는 방식)의 속성이며, 기어로 게이트된다:
 
+| 기어 | 출력 PR | merge 방식 | 리뷰 강도 |
+|------|---------|-----------|-----------|
+| **micro** | 없음 | 로컬 FF로 부모에 병합 | 경량 self-check / verify |
+| **normal** | 없음 | 로컬 FF로 부모에 병합 | self-flow 1라운드 **또는** verify |
+| **major / 비가역** | **있음(격리 PR)** | PR + review 후 머지 | 적대적 — self-flow(+PR-gate), 필요 시 다중 라운드 |
+
+- **micro/normal은 출력 PR을 만들지 않는다.** 리프 워크트리(`.worktrees/issue-N`)의 브랜치(`task/issue-N`, base = 부모 브랜치)를 로컬 FF로 부모에 전진시킨다. major(또는 major로 승격된 컨테이너)만 출력 PR + 적대적 리뷰를 거쳐 머지한다.
+- **컨테이너 기어는 자식들의 누적 승격**(`container_gear_promotion`)으로 계산한다. base = 자식 중 최고 기어, 이후 누적: micro 자식 ≥3 → normal 이상, normal 자식 ≥2 → major. 자식 기어 미상/부재는 micro로 센다. **컨테이너 자신의 라벨은 무시**하고 merge edge에서 자식으로부터 새로 계산한다. 컨테이너 merge-up은 **자신의 계산된 기어**를 적용한다 — major(또는 승격된) 컨테이너는 통합 PR + 리뷰, sub-major 컨테이너는 로컬 FF 전진. normal×2→major·micro×3→normal이므로 작은 작업이 누적되면 **트렁크에 닿기 전 반드시 리뷰 게이트를 통과**한다.
+- **trunk 엣지는 항상 PR.** 부모가 trunk인 리프/컨테이너(root 직속)는 기어와 무관하게 PR 경로를 탄다 — trunk가 사령관의 메인 워크트리에 체크아웃돼 있어 로컬 FF(`git fetch . …:trunk`)가 거부되기 때문이다(git이 checked-out 브랜치 갱신을 막음 = [[DEC-2026-07-02-212109]] 불변식의 근거). 로컬 FF는 부모가 `task/issue-*`(순수 ref, 미체크아웃)일 때만 가능하다.
+- **같은 테마·기어 혼합 작업은 merge edge에서 최고 기어를 따른다** (§2와 동일): 같은 테마라도 micro+major를 묶어 리뷰를 낮추지 않는다.
+- **충돌은 항상 리프 쪽에서 해소**한다: 부모를 리프 워크트리로 reverse-merge → 리프 쪽 해소 → 재검증 → 재시도. 오퍼레이터의 main 워크트리에서 해소하지 않으며, main 워크트리 HEAD는 트렁크를 떠나지 않는다(FF는 checkout이 아니라 fetch refspec이다).
 - **묶음 상한:** 한 번에 리뷰 가능한 diff + **단일 롤백 단위**까지만. 한 변경을 되돌릴 때 무관한 변경까지 되돌려야 하면 **분리**한다(롤백 입도가 진짜 제약, 테마 아님).
-- **차단 의존**의 정의: [quality-gates.md](quality-gates.md) G4의 경로 겹침(touched/affects 겹침 + 미선언 dependency) + GitHub `blocked_by`(§5). 같은 PR이면 함께 머지되므로 의존이 분리 사유가 아니다.
+- **차단 의존**의 정의: [quality-gates.md](quality-gates.md) G4의 경로 겹침(touched/affects 겹침 + 미선언 dependency) + GitHub `blocked_by`(§5).
 - **항상 분리(묶지 않음):** 비가역(`gh pr merge`)·외부계약/마이그레이션 변경, 독립 롤백이 필요한 변경, 격리 추론이 필요한 보안·데이터성 변경.
-- **기어 혼합 시 가장 높은 기어가 지배** (§2와 동일): 같은 테마라도 micro+major를 묶어 리뷰를 낮추지 않는다.
 - **묶음은 출하 효율을 위한 것이지, 형제 PR 리뷰에 미검증 변경을 끼워 넣는 통로가 아니다.**
 - **task-github 밖 변경(정책·DEC·문서 등)**도 같은 파급력 테스트(§2)로 **실효 기어**를 매기고 그에 맞는 ceremony를 적용한다. (예: 자동로드 운용정책 변경은 전 세션에 복리 전파 → major.)
+
+**close evidence:** micro/normal은 **verify 리포트 + 커밋 SHA range**로 종료한다(머지된 PR을 대체). major는 **머지된 PR**로 종료한다.
 
 ---
 

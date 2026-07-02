@@ -60,6 +60,7 @@ gh issue edit {N} --remove-label "in-progress" --add-label "in-review"
 > Issue와 PR의 전이가 비대칭이다: Issue는 `in-review`를 **달고**, PR은 라벨을 **떼어** 픽업 대기로 둔다(PR의 `in-review`는 review 스킬이 픽업 시 부착). 이 규약의 정본은 [workflow.md](../../rules/workflow.md) "상태 전이".
 
 ### Step 4. 워크트리 (소스 변경 시)
+**모든 리프(micro/normal/major)는 자기 워크트리에서 작업한다** — 기어와 무관하게 `.worktrees/issue-{N}` + 자기 브랜치 `task/issue-{N}`, base = parent branch. 컨테이너/epic 브랜치는 순수 ref일 뿐 워크트리·체크아웃이 없고 FF로만 전진한다(DEC-2026-07-02-224910). 즉 여기서 워크트리를 만드는 주체는 항상 리프다.
 ```bash
 touch .gitignore
 grep -qxF ".worktrees/" .gitignore || printf "\n.worktrees/\n" >> .gitignore
@@ -71,6 +72,7 @@ BASE_BRANCH=${BASE_BRANCH:-$(python3 plugins/task-github/scripts/task_config.py 
 git worktree add .worktrees/issue-{N} -b task/issue-{N} "$BASE_BRANCH"
 # .worktreeinclude 처리 + 잔재 점검 (git clean은 컨펌 후)
 ```
+> ORCHESTRATED + 빈 BASE_BRANCH는 위처럼 hard STOP이다(main fallback 금지). 리프 base는 parent branch여야 하며, 머지 세리머니(micro/normal 로컬 FF, major PR)는 리프가 아니라 **머지 엣지**의 속성이다 — 이 워크트리 자체는 세 기어 모두 동일하다.
 
 ### Step 5. 작업 수행
 - 계획 태스크 순차 실행
@@ -115,5 +117,6 @@ wiki capture observation \
 - 워크트리 미커밋 변경 보존.
 - 열린 `blocked_by`가 있으면 실행 금지.
 - 코드 변경 워크트리 생성은 run 책임이다(start에서 만들지 않는다).
+- 모든 리프는 자기 워크트리(`.worktrees/issue-{N}`) + `task/issue-{N}`(base=parent branch)에서 작업하고, 컨테이너/epic 브랜치는 워크트리 없는 순수 ref다. ORCHESTRATED + 빈 BASE_BRANCH는 hard STOP.
 - observation만 자동 캡처. decision/trial_error는 verify에서 확인 후 승격.
 - Knowledge Capture Audit 결과를 남긴다.

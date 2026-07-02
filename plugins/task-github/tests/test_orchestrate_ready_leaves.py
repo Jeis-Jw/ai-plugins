@@ -273,5 +273,57 @@ class ReadyLeavesTests(unittest.TestCase):
         self.assertEqual([child["number"] for child in tree["children"]], [2, 3])
 
 
+class MergeEdgeGearTreeTests(unittest.TestCase):
+    def test_container_done_carries_promoted_gear(self):
+        # 3 micro leaves → container gear promotes to normal.
+        tree = node(1, children=[
+            node(2, state="CLOSED", labels=["gear:micro"]),
+            node(3, state="CLOSED", labels=["gear:micro"]),
+            node(4, state="CLOSED", labels=["gear:micro"]),
+        ])
+
+        result = ready_leaves.evaluate_tree(tree)
+
+        self.assertIsNotNone(result["container_done"])
+        self.assertEqual(result["container_done"]["number"], 1)
+        self.assertEqual(result["container_done"]["gear"], "normal")
+
+    def test_done_parents_carry_effective_gear(self):
+        tree = node(1, children=[
+            node(2, children=[node(4, state="CLOSED", labels=["gear:major"])]),
+            node(3),
+        ])
+
+        result = ready_leaves.evaluate_tree(tree)
+
+        done = {entry["number"]: entry["gear"] for entry in result["done_parents"]}
+        self.assertEqual(done, {2: "major"})
+
+    def test_effective_gear_bubbles_depth_three(self):
+        # Two sub-containers each with 2 normal leaves → each promotes to major,
+        # so the root sees two major children → major.
+        tree = node(1, children=[
+            node(2, state="CLOSED", labels=["gear:normal"]),
+            node(3, state="CLOSED", labels=["gear:normal"]),
+        ])
+        self.assertEqual(ready_leaves._effective_gear(tree), "major")
+
+    def test_ledger_ff_merged_event_records_close_evidence(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = Path(tmp) / "ledger.json"
+            orchestrate_ledger.record_event(ledger, {
+                "type": "ff_merged",
+                "issue": 4,
+                "base": "task/issue-2",
+                "sha_range": "aaa..bbb",
+            })
+            payload = orchestrate_ledger.load_ledger(ledger)
+            issue = payload["issues"]["4"]
+            self.assertEqual(issue["state"], "close_expected")
+            self.assertEqual(issue["ff_merged"], {"base": "task/issue-2", "sha_range": "aaa..bbb"})
+
+
 if __name__ == "__main__":
     unittest.main()

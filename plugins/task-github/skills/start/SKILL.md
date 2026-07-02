@@ -41,6 +41,7 @@ echo "이슈 #$N"
 gh issue edit $N --add-assignee @me --add-label "in-progress" --add-label "gear:micro"
 ```
 > 라벨은 항상 `gear:micro|normal|major` 중 하나 — **`gear:full`은 존재하지 않는다.** flow option도 gear별로 계산한다(§task-protocol §1·§3).
+> **기어는 이제 머지 엣지도 고른다**(DEC-2026-07-02-224910): `micro`/`normal` → 부모로 로컬 FF 머지(PR 없음), `major` → PR + 리뷰 후 머지. 즉 정직한 파급력 기어 판단이 곧 ceremony/overhead를 직접 통제한다(같은 판단 기준은 그대로 유지).
 4. 다음 단계 권장 — micro이므로 `run {N}` 또는 직접 편집 후 `done {N}`. (micro 단발이라 대화 요약 코멘트·위키 task 노드 주입은 생략 — 그 맥락이 필요한 업무면 애초에 define 경로로 갔어야 한다.)
 
 ### 모드 B — 기존 이슈 점유

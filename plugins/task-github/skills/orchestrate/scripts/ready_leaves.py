@@ -10,6 +10,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+import orchestrator_ops
 from orchestrate_ledger import load_ledger, record_snapshot, tree_from_ledger
 
 STATE_LABELS = {"in-progress", "in-review", "changes-requested"}
@@ -61,6 +62,16 @@ def _is_leaf(node: dict[str, Any]) -> bool:
 def _complete_parent(node: dict[str, Any]) -> bool:
     summary = _summary(node)
     return _is_open(node) and summary.get("total", 0) > 0 and summary.get("completed") == summary.get("total")
+
+
+def _effective_gear(node: dict[str, Any]) -> str | None:
+    """A node's merge-edge gear: a leaf's own gear label, or a container's
+    cumulative promotion over its children's effective gears (bubbles up depth-N).
+    """
+    children = _children(node)
+    if not children:
+        return orchestrator_ops.gear_of_labels(node.get("labels"))
+    return orchestrator_ops.container_gear_promotion([_effective_gear(child) for child in children])
 
 
 def _blocker_numbers(node: dict[str, Any]) -> list[int]:
@@ -138,7 +149,9 @@ def evaluate_tree(
             blocked_nodes.append(blocked)
             continue
         if _complete_parent(node):
-            result["done_parents"].append(item(node))
+            entry = item(node)
+            entry["gear"] = _effective_gear(node)
+            result["done_parents"].append(entry)
             continue
         if not _is_open(node) or not _is_leaf(node):
             continue
@@ -160,7 +173,9 @@ def evaluate_tree(
     if result["stuck"]:
         return _stop(result, "stuck")
     if _complete_parent(tree) and not _blocker_numbers(tree):
-        result["container_done"] = item(tree)
+        entry = item(tree)
+        entry["gear"] = _effective_gear(tree)
+        result["container_done"] = entry
         return result
     if result["done_parents"]:
         return result
