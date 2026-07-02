@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 import orchestrator_ops
-from orchestrate_ledger import load_ledger, record_snapshot, tree_from_ledger
+from orchestrate_ledger import load_ledger, record_github_read, record_read_decision, record_snapshot, tree_from_ledger
 
 STATE_LABELS = {"in-progress", "in-review", "changes-requested"}
 REVIEW_LABELS = {"in-review", "changes-requested"}
@@ -281,6 +281,16 @@ def github_fetch_page(owner: str, repo: str) -> Callable[[int, str | None], dict
     return fetch
 
 
+def _decision_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    keys = ("ready", "blocked", "review_waiting", "stuck", "done_parents")
+    summary: dict[str, Any] = {"ok": payload.get("ok"), "stop_reason": payload.get("stop_reason")}
+    for key in keys:
+        summary[key] = [int(item["number"]) for item in payload.get(key) or []]
+    container_done = payload.get("container_done")
+    summary["container_done"] = int(container_done["number"]) if container_done else None
+    return summary
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("container", nargs="?", type=int)
@@ -289,6 +299,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ledger", help="persistent orchestrate ledger JSON; merged with --spawned/--failed")
     parser.add_argument("--from-ledger", help="evaluate from local ledger only; no GitHub read")
     parser.add_argument("--reconcile-github", help="refresh ledger from GitHub, then evaluate")
+    parser.add_argument("--read-reason", help="reason for GitHub reads written to the orchestrate ledger")
     parser.add_argument("--fixture-json", help="read a tree fixture instead of calling gh")
     parser.add_argument("--json", action="store_true", dest="as_json")
     args = parser.parse_args(argv)
@@ -311,6 +322,9 @@ def main(argv: list[str] | None = None) -> int:
             tree = collect_tree(args.container, github_fetch_page(owner, repo))
             if ledger_path:
                 ledger = record_snapshot(ledger_path, tree)
+                operation = "reconcile_github" if args.reconcile_github else "container_fetch"
+                reason = args.read_reason or ("session_start" if args.reconcile_github else "compat_container_fetch")
+                ledger = record_github_read(ledger_path, reason=reason, operation=operation, root=args.container)
 
         spawned = parse_number_set(args.spawned)
         failed = parse_number_set(args.failed)
@@ -319,6 +333,14 @@ def main(argv: list[str] | None = None) -> int:
             spawned |= ledger_number_set(ledger, "spawned")
             failed |= ledger_number_set(ledger, "failed")
         payload = evaluate_tree(tree, spawned_set=spawned, failed_set=failed)
+        if args.from_ledger:
+            record_read_decision(
+                args.from_ledger,
+                source="ledger",
+                mode="from_ledger",
+                root=tree.get("number"),
+                result=_decision_summary(payload),
+            )
     except Exception as exc:  # CLI boundary: never silently degrade to ready=[]
         payload = {**_base_result(), "ok": False, "stop_reason": "api_failure", "message": str(exc)}
     print(json.dumps(payload, ensure_ascii=False) if args.as_json else json.dumps(payload, ensure_ascii=False, indent=2))
