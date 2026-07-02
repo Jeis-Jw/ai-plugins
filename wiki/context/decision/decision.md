@@ -40,3 +40,4 @@ audience: [human, agent]
 - [[DEC-2026-06-19-190302-ceremony를-파급력-gear-에-비례시킨다]] — PR 분할·리뷰 강도를 설계결정 수가 아니라 기어·롤백 단위에 맞춘다. mechanism=task-protocol §3.1, principle=agent-policy 스캐폴드(CLAUDE/AGENTS 재렌더).
 - [[DEC-2026-06-25-182926-wiki-markdown-개선-agent-facing-표면-재설계-우선-unit-a-b-c-closeout]] — wiki 운용 마찰 본체는 신규기능이 아니라 SKILL/CLI 표면이 실체와 drift한 것 — 표면 재설계를 P0로, discard/projection/stale/closeout을 소수 추가
 - [[DEC-2026-06-26-190009-orchestrate-v2-브랜치트리-에이전트-분해-공통플로우-재정의-task-github-yml]] — 이슈트리 자동수행 orchestrate를 공통 플로우(worktree·PR 필수) 위 브랜치트리 머지업 + 전문 에이전트 분해로 설계. 정본 작업정의=TASK-2026-06-26-190656 (설계 r5).
+- [[DEC-2026-07-02-190102-define은-topology-판단을-제안-게이트에-필수-포함]] — define이 issue tree를 제안할 때 what(작업 목록)뿐 아니라 how(branch/integration topology)를 필수 판단한다. 확인안에 Topology Decision 섹션 의무화, flat under-structuring 정적 휴리스틱 경고, 조건 충족 시 flat/stacked 2안 비교. vertical slice는 product goal이 하나라는 뜻이지 tree가 flat이어야 한다는 뜻이 아니다 — ownership/path/integration branch가 갈리면 stacked 우선 검토.
