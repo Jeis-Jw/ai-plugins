@@ -85,12 +85,42 @@ orchestrate:
             ["bad_orchestrate_gear_option", "unknown_orchestrate_gear"],
         )
 
+    def test_validate_max_workers(self):
+        findings = task_config.validate_config({
+            "mode": "solo",
+            "base_branch": "main",
+            "orchestrate": {"review-mode": "gear", "max-workers": "0"},
+        })
+        self.assertEqual([f["code"] for f in findings], ["bad_orchestrate_max_workers"])
+
+        findings = task_config.validate_config({
+            "mode": "solo",
+            "base_branch": "main",
+            "orchestrate": {"review-mode": "gear", "max-workers": "not-a-number"},
+        })
+        self.assertEqual([f["code"] for f in findings], ["bad_orchestrate_max_workers"])
+
+        findings = task_config.validate_config({
+            "mode": "solo",
+            "base_branch": "main",
+            "orchestrate": {"review-mode": "gear", "max-workers": "3"},
+        })
+        self.assertEqual(findings, [])
+
+        findings = task_config.validate_config({
+            "mode": "solo",
+            "base_branch": "main",
+            "orchestrate": {"review-mode": "gear"},
+        })
+        self.assertEqual(findings, [])
+
     def test_scaffold_contains_required_keys(self):
         text = task_config.render_default_config(base_branch="main")
 
         cfg = task_config.parse_config(text)
 
         self.assertEqual(task_config.validate_config(cfg), [])
+        self.assertIn("max-workers", cfg["orchestrate"])
         self.assertIn("verify-command", cfg["orchestrate"])
         self.assertIn("review-command", cfg["orchestrate"])
         self.assertTrue(cfg["orchestrate"]["gear-options"]["major"]["pr-review"])
