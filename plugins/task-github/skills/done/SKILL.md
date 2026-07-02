@@ -62,7 +62,11 @@ gh issue edit {N} --remove-label "in-progress" --add-label "in-review"
 4. Push + PR — **PR 번호를 변수로 확보**. orchestrate에서는 PR base가 부모 브랜치다:
 ```bash
 git push -u origin task/issue-{N}
-# orchestrate가 부모 브랜치를 주입. standalone은 .task-github.yml base_branch를 쓰고, 없으면 main.
+# orchestrate가 부모 브랜치를 BASE_BRANCH로 주입. standalone은 .task-github.yml base_branch를 쓰고, 없으면 main.
+if [ "$ORCHESTRATED" = "true" ] && [ -z "$BASE_BRANCH" ]; then
+  gh issue comment {N} --body "[중단] orchestrated mode: BASE_BRANCH(expected PR base) 없음. PR 생성 전 STOP, main fallback 금지."
+  exit 1
+fi
 BASE_BRANCH=${BASE_BRANCH:-$(python3 plugins/task-github/scripts/task_config.py get base_branch 2>/dev/null || echo main)}
 PR=$(gh pr create --base "$BASE_BRANCH" --title "{type}: {요약} (#{N})" --body "Closes #{N}
 

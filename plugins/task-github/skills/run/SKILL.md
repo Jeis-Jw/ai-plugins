@@ -63,6 +63,10 @@ gh issue edit {N} --remove-label "in-progress" --add-label "in-review"
 ```bash
 touch .gitignore
 grep -qxF ".worktrees/" .gitignore || printf "\n.worktrees/\n" >> .gitignore
+if [ "$ORCHESTRATED" = "true" ] && [ -z "$BASE_BRANCH" ]; then
+  gh issue comment {N} --body "[중단] orchestrated mode: BASE_BRANCH(expected PR base) 없음. main fallback 금지."
+  exit 1
+fi
 BASE_BRANCH=${BASE_BRANCH:-$(python3 plugins/task-github/scripts/task_config.py get base_branch 2>/dev/null || echo main)}  # orchestrate는 parent branch 주입, standalone은 .task-github.yml base_branch(없으면 main).
 git worktree add .worktrees/issue-{N} -b task/issue-{N} "$BASE_BRANCH"
 # .worktreeinclude 처리 + 잔재 점검 (git clean은 컨펌 후)

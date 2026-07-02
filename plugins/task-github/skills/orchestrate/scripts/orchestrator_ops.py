@@ -22,6 +22,34 @@ def issue_base_branch(*, parent_number: int | None, base_branch: str) -> str:
     return issue_branch(parent_number) if parent_number is not None else base_branch
 
 
+def ensure_branch_chain(
+    number: int, *, parents: dict[int, int | None], base_branch: str
+) -> list[dict[str, Any]]:
+    """Return the ancestor chain for `number` in root-first order.
+
+    Each entry is {"issue": N, "branch": task/issue-N, "base": <parent branch or trunk>}.
+    Callers ensure/push branches in this order before spawning a leaf worker.
+    """
+    chain: list[int] = []
+    current: int | None = number
+    seen: set[int] = set()
+    while current is not None:
+        if current in seen:
+            raise ValueError(f"parent cycle detected at issue #{current}")
+        seen.add(current)
+        chain.append(current)
+        current = parents.get(current)
+    chain.reverse()
+    return [
+        {
+            "issue": issue,
+            "branch": issue_branch(issue),
+            "base": issue_base_branch(parent_number=parents.get(issue), base_branch=base_branch),
+        }
+        for issue in chain
+    ]
+
+
 def _gear_name(label: str | None) -> str | None:
     if not label:
         return None

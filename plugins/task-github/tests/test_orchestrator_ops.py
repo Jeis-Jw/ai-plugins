@@ -14,6 +14,26 @@ class OrchestratorOpsTests(unittest.TestCase):
         self.assertEqual(orchestrator_ops.issue_base_branch(parent_number=7, base_branch="main"), "task/issue-7")
         self.assertEqual(orchestrator_ops.issue_base_branch(parent_number=None, base_branch="main"), "main")
 
+    def test_ensure_branch_chain_root_only(self):
+        chain = orchestrator_ops.ensure_branch_chain(81, parents={81: None}, base_branch="main")
+        self.assertEqual(chain, [{"issue": 81, "branch": "task/issue-81", "base": "main"}])
+
+    def test_ensure_branch_chain_multi_level(self):
+        parents = {83: 82, 82: 81, 81: None}
+        chain = orchestrator_ops.ensure_branch_chain(83, parents=parents, base_branch="main")
+        self.assertEqual(
+            chain,
+            [
+                {"issue": 81, "branch": "task/issue-81", "base": "main"},
+                {"issue": 82, "branch": "task/issue-82", "base": "task/issue-81"},
+                {"issue": 83, "branch": "task/issue-83", "base": "task/issue-82"},
+            ],
+        )
+
+    def test_ensure_branch_chain_detects_cycle(self):
+        with self.assertRaises(ValueError):
+            orchestrator_ops.ensure_branch_chain(1, parents={1: 2, 2: 1}, base_branch="main")
+
     def test_review_policy(self):
         self.assertFalse(orchestrator_ops.review_required("gear", "gear:micro"))
         self.assertFalse(orchestrator_ops.review_required("gear", "gear:normal"))
