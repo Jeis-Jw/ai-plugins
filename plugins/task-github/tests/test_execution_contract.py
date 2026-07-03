@@ -380,6 +380,32 @@ class ChallengeReviewGateTests(unittest.TestCase):
             )
             self.assertTrue(create_issue_tree.review_required_from_config(config_path))
 
+    def test_review_required_from_config_rejects_invalid_config(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".task-github.yml"
+            config_path.write_text(
+                "mode: solo\nbase_branch: main\norchestrate:\n  review-mode: gear\n"
+                "define:\n  review-required: maybe\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(create_issue_tree.IssueTreeError) as ctx:
+                create_issue_tree.review_required_from_config(config_path)
+            self.assertEqual(ctx.exception.error_code, "config_invalid")
+
+    def test_review_required_from_config_rejects_bad_define_shape(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".task-github.yml"
+            config_path.write_text(
+                "mode: solo\nbase_branch: main\norchestrate:\n  review-mode: gear\n"
+                "define: yes\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(create_issue_tree.IssueTreeError) as ctx:
+                create_issue_tree.review_required_from_config(config_path)
+            self.assertEqual(ctx.exception.error_code, "config_invalid")
+
     def test_review_required_from_config_defaults_false_when_absent(self):
         self.assertFalse(
             create_issue_tree.review_required_from_config(Path("/nonexistent/.task-github.yml"))

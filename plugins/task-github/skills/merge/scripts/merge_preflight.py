@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import date
 import json
 import re
 import subprocess
@@ -23,6 +24,7 @@ from orchestrate_ledger import (  # type: ignore  # noqa: E402
 )
 
 GATE_VERSION = "changed-path-stale:v1"
+DRIFT_SURFACE_TYPES = {"observation", "runbook", "ssot", "trial_error"}
 PREFLIGHT_REUSE_COVERS = ("mergeability", "ci_check", "review_decision", "head_sha")
 PREFLIGHT_CLOSEOUT_VIEW_FIELDS = (
     "number",
@@ -59,6 +61,135 @@ def _stable_hash(payload: Any) -> str:
     import hashlib
 
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _strip_yaml_comment(value: str) -> str:
+    quote = None
+    out = []
+    for ch in value:
+        if ch in {"'", '"'}:
+            quote = None if quote == ch else ch if quote is None else quote
+        if ch == "#" and quote is None:
+            break
+        out.append(ch)
+    return "".join(out).strip()
+
+
+def _yaml_scalar(raw: str) -> str:
+    value = _strip_yaml_comment(raw)
+    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+        return value[1:-1]
+    return value
+
+
+def _yaml_value(raw: str) -> Any:
+    value = _strip_yaml_comment(raw)
+    if value.startswith("[") and value.endswith("]"):
+        inner = value[1:-1].strip()
+        if not inner:
+            return []
+        return [_yaml_scalar(part) for part in inner.split(",") if _yaml_scalar(part)]
+    return _yaml_scalar(value)
+
+
+def _frontmatter(text: str) -> dict[str, Any]:
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return {}
+    try:
+        end = next(index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---")
+    except StopIteration:
+        return {}
+    data: dict[str, Any] = {}
+    current_key: str | None = None
+    for raw in lines[1:end]:
+        line = raw.rstrip()
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if current_key and stripped.startswith("- "):
+            value = _yaml_scalar(stripped[2:])
+            if value:
+                data.setdefault(current_key, []).append(value)
+            continue
+        if ":" not in stripped:
+            current_key = None
+            continue
+        key, raw_value = stripped.split(":", 1)
+        key = key.strip()
+        if raw_value.strip() == "":
+            data[key] = []
+            current_key = key
+        else:
+            data[key] = _yaml_value(raw_value)
+            current_key = None
+    return data
+
+
+def _active_wiki_doc(path: Path, vault: Path) -> bool:
+    try:
+        rel = path.relative_to(vault)
+    except ValueError:
+        return False
+    parts = set(rel.parts)
+    return "retired" not in parts and "done" not in parts
+
+
+def _wiki_doc_type(path: Path, vault: Path) -> str:
+    rel = tuple(part for part in path.relative_to(vault).parts if part not in {"retired", "done"})
+    if not rel:
+        return ""
+    if rel[0] in {"runbook", "ssot"}:
+        return rel[0]
+    if rel[0] == "context" and len(rel) >= 2:
+        return rel[1]
+    return ""
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
+
+
+def drift_surface_entries(wiki_vault: Path = Path("wiki")) -> list[dict[str, Any]]:
+    """Return the wiki frontmatter surface that can affect changed-path-stale.
+
+    The gate depends on active docs' type, affects_paths, verified_at and the
+    current date. Body text is intentionally excluded so wording-only wiki edits
+    do not invalidate child closeout evidence.
+    """
+    vault = Path(wiki_vault)
+    if not vault.is_dir():
+        return [{"wiki_vault": "missing"}]
+    entries: list[dict[str, Any]] = []
+    for path in sorted(vault.rglob("*.md")):
+        if not _active_wiki_doc(path, vault):
+            continue
+        fm = _frontmatter(path.read_text(encoding="utf-8"))
+        doc_type = _wiki_doc_type(path, vault)
+        affects_paths = orchestrator_ops.canonical_path_list(_string_list(fm.get("affects_paths")))
+        verified_at = str(fm.get("verified_at") or "").strip()
+        if doc_type not in DRIFT_SURFACE_TYPES or not affects_paths:
+            continue
+        entries.append({
+            "path": str(path.relative_to(vault)),
+            "type": doc_type,
+            "affects_paths": affects_paths,
+            "verified_at": verified_at,
+            "superseded_by": str(fm.get("superseded_by") or "").strip(),
+        })
+    return entries
+
+
+def compute_drift_surface_hash(wiki_vault: Path = Path("wiki")) -> str:
+    return _stable_hash({
+        "gate_version": GATE_VERSION,
+        "as_of": date.today().isoformat(),
+        "surface": drift_surface_entries(wiki_vault),
+    })
 
 
 def parse_linked_issue(pr_body: str) -> int | None:
@@ -128,6 +259,7 @@ def build_gate_evidence(
     pr_head_sha: str,
     tool_versions: dict[str, str],
     gate_version: str = GATE_VERSION,
+    drift_surface_hash: str | None = None,
     tool_version_policy_token: str | None = None,
 ) -> dict[str, Any]:
     changed = orchestrator_ops.canonical_path_list(changed_paths)
@@ -138,7 +270,7 @@ def build_gate_evidence(
         "changed_paths_hash": orchestrator_ops.path_list_hash(changed),
         "checked_paths": checked,
         "checked_paths_hash": orchestrator_ops.path_list_hash(checked),
-        "drift_surface_hash": _stable_hash({
+        "drift_surface_hash": drift_surface_hash or _stable_hash({
             "gate_version": gate_version,
             "changed_paths": changed,
             "checked_paths": checked,
@@ -229,6 +361,7 @@ def scoped_gate_plan_from_ledger(
     current_gate_version: str,
     current_tool_versions: dict[str, str],
     current_drift_surface_hashes: dict[int, str] | None = None,
+    current_drift_surface_hash: str | None = None,
     expected_pr_heads: dict[int, str] | None = None,
     current_tool_version_policy_token: str | None = None,
 ) -> dict[str, Any]:
@@ -268,7 +401,7 @@ def scoped_gate_plan_from_ledger(
         number = int(child["number"])
         gate = child.get("gate_evidence") or {}
         merge = child.get("merge_evidence") or {}
-        current_hash = hash_by_child.get(number) or gate.get("drift_surface_hash") or ""
+        current_hash = hash_by_child.get(number) or current_drift_surface_hash or ""
         expected_head = heads_by_child.get(number) or merge.get("head_sha") or gate.get("pr_head_sha")
         plan = orchestrator_ops.scoped_changed_path_stale_targets(
             parent_paths=parent_paths,
@@ -304,9 +437,105 @@ def gh(args: list[str], *, code: str = "gh_failed") -> str:
     return _run(["gh", *args], code=code)
 
 
+def wiki_cli_path() -> Path:
+    candidates = [
+        Path("plugins/wiki-markdown/skills/wiki/scripts/wiki_cli.py"),
+        Path(__file__).resolve().parents[4] / "wiki-markdown" / "skills" / "wiki" / "scripts" / "wiki_cli.py",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
 def _wiki(args: list[str], *, code: str) -> dict[str, Any]:
-    out = _run(["python3", "plugins/wiki-markdown/skills/wiki/scripts/wiki_cli.py", *args], code=code)
+    path = wiki_cli_path()
+    if not path.exists():
+        raise PreflightError("wiki_cli_missing", f"wiki CLI not found: {path}")
+    out = _run(["python3", str(path), *args], code=code)
     return json.loads(out or "{}")
+
+
+def collect_wiki_gate_reports(
+    checked_paths: list[str],
+    *,
+    wiki_vault: Path = Path("wiki"),
+    drift_surface_hash: str | None = None,
+    integrity: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    vault = Path(wiki_vault)
+    surface_hash = drift_surface_hash or compute_drift_surface_hash(vault)
+    checked = orchestrator_ops.canonical_path_list(checked_paths)
+    if not vault.is_dir():
+        skipped = {"ok": True, "issues": [], "skipped": True, "reason": "wiki_vault_missing"}
+        return {
+            "wiki_available": False,
+            "integrity": dict(skipped),
+            "drift": dict(skipped),
+            "drift_surface_hash": surface_hash,
+        }
+
+    integrity_report = integrity or _wiki(
+        ["refresh", "--vault", str(vault), "--level", "integrity", "--strict", "--json"],
+        code="wiki_integrity_failed",
+    )
+    if checked:
+        drift = _wiki([
+            "refresh",
+            "--vault",
+            str(vault),
+            "--check",
+            "changed-path-stale",
+            "--changed-path",
+            ",".join(checked),
+            "--json",
+        ], code="wiki_drift_failed")
+    else:
+        drift = {"ok": True, "issues": [], "skipped": True, "reason": "valid_child_evidence_reused"}
+    return {
+        "wiki_available": True,
+        "integrity": integrity_report,
+        "drift": drift,
+        "drift_surface_hash": surface_hash,
+    }
+
+
+def run_ff_gate(
+    *,
+    issue: int,
+    changed_paths: list[str],
+    head_sha: str,
+    orchestrate_ledger: str | None = None,
+    wiki_vault: Path = Path("wiki"),
+) -> dict[str, Any]:
+    tools, policy_token = plugin_tool_versions()
+    checked_paths = orchestrator_ops.canonical_path_list(changed_paths)
+    reports = collect_wiki_gate_reports(checked_paths, wiki_vault=wiki_vault)
+    integrity = reports["integrity"]
+    if integrity.get("issues") or integrity.get("ok") is False:
+        return {"ok": False, "stop_reason": "wiki_integrity_failed", "integrity": integrity, "issue": issue}
+
+    evidence = build_gate_evidence(
+        changed_paths=changed_paths,
+        checked_paths=checked_paths,
+        drift_report=reports["drift"],
+        pr_head_sha=head_sha,
+        tool_versions=tools,
+        drift_surface_hash=reports["drift_surface_hash"],
+        tool_version_policy_token=policy_token,
+    )
+    required = validate_required_gate_evidence(evidence)
+    if not required.get("ok"):
+        return {"ok": False, **required, "issue": issue}
+    if orchestrate_ledger:
+        record_gate_evidence(orchestrate_ledger, issue, evidence)
+    return {
+        "ok": True,
+        "issue": issue,
+        "head_sha": head_sha,
+        "gate_evidence": evidence,
+        "wiki_reports": reports,
+    }
 
 
 def run_preflight(
@@ -315,6 +544,7 @@ def run_preflight(
     orchestrate_ledger: str | None = None,
     expected_head_oid: str | None = None,
 ) -> dict[str, Any]:
+    wiki_vault = Path("wiki")
     view = json.loads(gh([
         "pr",
         "view",
@@ -334,7 +564,9 @@ def run_preflight(
     if not status.get("ok"):
         return {"ok": False, **status, "pr": pr}
 
-    integrity = _wiki(["refresh", "--level", "integrity", "--strict", "--json"], code="wiki_integrity_failed")
+    drift_surface_hash = compute_drift_surface_hash(wiki_vault)
+    wiki_reports = collect_wiki_gate_reports([], wiki_vault=wiki_vault, drift_surface_hash=drift_surface_hash)
+    integrity = wiki_reports["integrity"]
     if integrity.get("issues") or integrity.get("ok") is False:
         return {"ok": False, "stop_reason": "wiki_integrity_failed", "integrity": integrity, "pr": pr}
 
@@ -356,26 +588,24 @@ def run_preflight(
             ledger=ledger,
             current_gate_version=GATE_VERSION,
             current_tool_versions=tools,
+            current_drift_surface_hash=drift_surface_hash,
             current_tool_version_policy_token=policy_token,
         )
         checked_paths = scoped_plan["target_paths"]
-    if checked_paths:
-        drift = _wiki([
-            "refresh",
-            "--check",
-            "changed-path-stale",
-            "--changed-path",
-            ",".join(checked_paths),
-            "--json",
-        ], code="wiki_drift_failed")
-    else:
-        drift = {"issues": [], "skipped": True, "reason": "valid_child_evidence_reused"}
+    wiki_reports = collect_wiki_gate_reports(
+        checked_paths,
+        wiki_vault=wiki_vault,
+        drift_surface_hash=drift_surface_hash,
+        integrity=integrity,
+    )
+    drift = wiki_reports["drift"]
     evidence = build_gate_evidence(
         changed_paths=changed_paths,
         checked_paths=checked_paths,
         drift_report=drift,
         pr_head_sha=view["headRefOid"],
         tool_versions=tools,
+        drift_surface_hash=drift_surface_hash,
         tool_version_policy_token=policy_token,
     )
     required = validate_required_gate_evidence(evidence)
@@ -398,17 +628,44 @@ def run_preflight(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--pr", type=int, required=True)
+    parser.add_argument("--pr", type=int)
+    parser.add_argument("--ff-gate", action="store_true", help="record gate_evidence for a micro/normal FF closeout")
+    parser.add_argument("--issue", type=int, help="issue number for --ff-gate")
+    parser.add_argument("--changed-path", action="append", default=[], dest="changed_paths",
+                        help="changed path for --ff-gate; repeat or comma-separate")
+    parser.add_argument("--head-sha", help="HEAD SHA for --ff-gate")
+    parser.add_argument("--wiki-vault", default="wiki")
     parser.add_argument("--orchestrate-ledger")
     parser.add_argument("--expected-head-oid")
     parser.add_argument("--json", action="store_true", dest="as_json")
     args = parser.parse_args(argv)
     try:
-        result = run_preflight(
-            args.pr,
-            orchestrate_ledger=args.orchestrate_ledger,
-            expected_head_oid=args.expected_head_oid,
-        )
+        if args.ff_gate:
+            if args.issue is None:
+                parser.error("--issue is required with --ff-gate")
+            if not args.head_sha:
+                parser.error("--head-sha is required with --ff-gate")
+            changed_paths = [
+                part.strip()
+                for raw in args.changed_paths
+                for part in raw.split(",")
+                if part.strip()
+            ]
+            result = run_ff_gate(
+                issue=args.issue,
+                changed_paths=changed_paths,
+                head_sha=args.head_sha,
+                orchestrate_ledger=args.orchestrate_ledger,
+                wiki_vault=Path(args.wiki_vault),
+            )
+        else:
+            if args.pr is None:
+                parser.error("--pr is required unless --ff-gate is used")
+            result = run_preflight(
+                args.pr,
+                orchestrate_ledger=args.orchestrate_ledger,
+                expected_head_oid=args.expected_head_oid,
+            )
     except PreflightError as exc:
         result = {"ok": False, "stop_reason": exc.code, "message": exc.message}
     print(json.dumps(result, ensure_ascii=False) if args.as_json else json.dumps(result, ensure_ascii=False, indent=2))

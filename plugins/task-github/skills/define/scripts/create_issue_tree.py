@@ -157,8 +157,17 @@ def review_required_from_config(config_path: Path) -> bool:
     """Read `define.review-required` from `.task-github.yml` (absent file/key = False)."""
     if not config_path.exists():
         return False
-    config = task_config.load_config(config_path)
-    return _bool_option((config.get("define") or {}).get("review-required"))
+    try:
+        config = task_config.load_config(config_path)
+    except (OSError, ValueError) as exc:
+        raise IssueTreeError("config_invalid", f"failed to read task-github config: {exc}") from exc
+    findings = task_config.validate_config(config)
+    errors = [finding for finding in findings if finding.get("severity") == "error"]
+    if errors:
+        codes = ", ".join(finding["code"] for finding in errors)
+        raise IssueTreeError("config_invalid", f"invalid task-github config: {codes}")
+    define = config.get("define") or {}
+    return _bool_option(define.get("review-required"))
 
 
 def _check_challenge_review(spec: dict, *, review_required: bool) -> None:

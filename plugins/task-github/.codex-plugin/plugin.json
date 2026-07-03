@@ -1,6 +1,6 @@
 {
   "name": "task-github",
-  "version": "0.15.2",
+  "version": "0.15.3",
   "description": "GitHub-based autonomous task protocol with wiki-markdown task-node integration.",
   "author": {
     "name": "Jinwuk-Lee",
@@ -23,7 +23,7 @@
       "Use $start to claim and load an issue.",
       "Use $status to inspect current task state.",
       "Use $orchestrate to run a GitHub issue tree in solo mode.",
-      "Use $done or $merge to close out work through PR or local mode."
+      "Use $done or $merge to close out work through gear-gated PR or FF merge paths."
     ]
   }
 }

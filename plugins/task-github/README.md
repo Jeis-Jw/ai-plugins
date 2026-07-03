@@ -91,9 +91,10 @@ co-design(정착된 분해 제안 / 사령관 확인 게이트, [[DEC-2026-07-02
 define:
   review-tool:      # 비우면 하네스(내장 challenge). 채우면 그 도구로 relay.
   review-command:   # 선택 인자; define.review-tool이 있어야 함
+  review-required: false  # true면 spec.challenge_review.verdict==approved 없이는 이슈 생성 거부
 ```
 
-알 수 없는 `define` 키는 경고하고, `define.review-command`는 `define.review-tool`을 요구한다.
+알 수 없는 `define` 키는 경고하고, `define.review-command`는 `define.review-tool`을 요구한다. `define.review-required`는 boolean이어야 하며, invalid config는 define helper가 fail-closed로 중단한다.
 
 ## Orchestrate Ledger
 
@@ -131,6 +132,8 @@ ledger v3는 비용 분석과 evidence reuse를 위해 `github_reads`, `read_dec
 
 ## 변경 이력
 
+- `0.15.3`: 0.14~0.15 계열 hardening — wiki vault가 없는 consumer repo에서는 merge preflight가 `vault_missing`으로 죽지 않고 명시적 skip evidence를 남긴다. child `gate_evidence` 재사용은 `changed-path-stale`에 영향을 주는 active wiki frontmatter surface(`type`/`affects_paths`/`verified_at`/as-of date) hash가 현재와 같을 때만 허용한다. micro/normal FF 경로도 `merge_preflight.py --ff-gate`로 `gate_evidence`를 ledger에 기록한다. `define.review-required`는 `.task-github.yml` 검증을 통과한 boolean만 신뢰하며 invalid config는 이슈 생성을 막는다.
+- `0.15.2`: define challenge review 코드 강제 — `.task-github.yml` `define.review-required=true`면 `create_issue_tree.py`가 spec의 `challenge_review.verdict=="approved"` 없이는 dry-run 포함 이슈 트리 생성을 거부한다. 프롬프트 준수에 기대던 review 필수화를 agent-independent precondition으로 올렸다.
 - `0.15.1`: closeout preflight evidence 재사용 — `merge_preflight.py`가 PR view/status를 `preflight_evidence`로 ledger에 기록하고, `closeout.py`는 같은 PR/head의 fresh evidence를 PR view 입력으로 재사용한다. TTL 만료·필드 누락·status 실패·PR/head 불일치면 기존 GitHub 조회로 fallback한다. 실제 merge에는 `--match-head-commit`을 붙여 preflight 이후 head drift를 차단한다.
 - `0.15.0`: define challenge review — co-design 뒤·이슈 트리 생성 전 적대 challenge 게이트([[DEC-2026-07-03-012207]]). 기본 off, `--review`로 on. 도구 우선순위 지시>설정(`define.review-tool`)>하네스(내장); `orchestrator_ops.resolve_review_tool`/`compose_tool_command`으로 해소·relay. 터미널=하네스(STOP 아님, co-design 자리라 내장 fresh-context refute 서브에이전트로 fallback). 대상=분해 제안(4 cut-reason + 위키 결정 그래프). 1 라운드·blocking만 게이트·사람 판정. 복잡도 넛지(트리 리프 수/깊이 초과 시 `--review` 권장, off 유지). 저-의존(하네스 fallback standalone, session-review hard dep 없음).
 - `0.14.0`: merge-edge gear — 세리머니(plan/verify/PR/review)를 리프가 아니라 부모로 합류하는 머지 엣지의 gear 속성으로 이동([[DEC-2026-07-02-224910]]). micro/normal 리프는 로컬 FF 머지(무PR, `ff_merge_command`)로 close 증거는 verify+SHA range; major만 PR+review. 컨테이너 gear는 자식 누적 승격(`container_gear_promotion`: micro×3→normal, normal×2→major)으로 결정. ledger `ff_merged` 이벤트 추가. all-PR([[DEC-2026-07-02-212109]])을 gear-gated로 부분 개정하되 메인-트리-HEAD-불변식 유지.

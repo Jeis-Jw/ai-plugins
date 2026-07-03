@@ -109,7 +109,7 @@ ceremony는 리프의 속성이 아니라 **merge edge**(노드가 부모에 합
 
 `orchestrate`는 별도 레이어가 아니라 L1~L3 공통 플로우를 GitHub 이슈트리 위에서 반복 구동하는 solo 전용 조율 스킬이다.
 
-- **분해 challenge 게이트(선택, 기본 off)**: co-design 이후·이슈 트리 생성 이전에, `define --review`로 분해 **제안**(git PR 아님)을 cut-reason 4종·blocker-direct·위키 결정 그래프에 대해 적대적으로 감사한다 — §3.1이 가르치는 분해 규칙의 **강제 계층**. 도구는 `define.review-tool`(우선순위 **지시 > 설정 > 하네스**)로 정하며, 도구 부재 시 halt가 아니라 신규 컨텍스트 challenge 서브에이전트(하네스 내장)로 폴백한다. 메커니즘은 [define/SKILL.md](../skills/define/SKILL.md) 참조. 근거는 [[DEC-2026-07-03-012207]].
+- **분해 challenge 게이트(선택, 기본 off)**: co-design 이후·이슈 트리 생성 이전에, `define --review`로 분해 **제안**(git PR 아님)을 cut-reason 4종·blocker-direct·위키 결정 그래프에 대해 적대적으로 감사한다 — §3.1이 가르치는 분해 규칙의 **강제 계층**. 도구는 `define.review-tool`(우선순위 **지시 > 설정 > 하네스**)로 정하며, 도구 부재 시 halt가 아니라 신규 컨텍스트 challenge 서브에이전트(하네스 내장)로 폴백한다. `.task-github.yml` `define.review-required=true`면 이슈 생성 헬퍼가 `challenge_review.verdict=="approved"`를 코드 precondition으로 강제한다. 메커니즘은 [define/SKILL.md](../skills/define/SKILL.md) 참조. 근거는 [[DEC-2026-07-03-012207]].
 
 ---
 

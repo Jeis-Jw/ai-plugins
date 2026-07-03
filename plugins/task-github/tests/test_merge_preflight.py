@@ -1,4 +1,6 @@
 import sys
+import json
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -44,6 +46,92 @@ class MergePreflightEvidenceTests(unittest.TestCase):
         self.assertEqual(evidence["pr_head_sha"], "head-1")
         self.assertEqual(evidence["tool_versions"], {"task-github": "0.15.0"})
         self.assertTrue(evidence["drift_surface_hash"])
+
+    def test_build_gate_evidence_uses_supplied_drift_surface_hash(self):
+        evidence = merge_preflight.build_gate_evidence(
+            changed_paths=["a.py"],
+            checked_paths=["a.py"],
+            drift_report={"issues": []},
+            pr_head_sha="head-1",
+            tool_versions={"task-github": "0.15.0"},
+            drift_surface_hash="surface-1",
+        )
+
+        self.assertEqual(evidence["drift_surface_hash"], "surface-1")
+
+    def test_drift_surface_hash_tracks_wiki_affects_paths_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp) / "wiki"
+            obs = vault / "context" / "observation" / "OBS-1.md"
+            obs.parent.mkdir(parents=True)
+            obs.write_text(
+                "---\n"
+                "type: observation\n"
+                "affects_paths:\n"
+                "  - src/a.py\n"
+                "verified_at: 2026-07-01\n"
+                "---\n"
+                "old body\n",
+                encoding="utf-8",
+            )
+            first = merge_preflight.compute_drift_surface_hash(vault)
+
+            obs.write_text(
+                "---\n"
+                "type: observation\n"
+                "affects_paths:\n"
+                "  - src/a.py\n"
+                "verified_at: 2026-07-02\n"
+                "---\n"
+                "old body\n",
+                encoding="utf-8",
+            )
+            second = merge_preflight.compute_drift_surface_hash(vault)
+            self.assertNotEqual(first, second)
+
+            obs.write_text(
+                "---\n"
+                "type: observation\n"
+                "affects_paths:\n"
+                "  - src/a.py\n"
+                "verified_at: 2026-07-02\n"
+                "---\n"
+                "changed body only\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(second, merge_preflight.compute_drift_surface_hash(vault))
+
+    def test_wiki_gate_reports_skip_when_vault_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            reports = merge_preflight.collect_wiki_gate_reports(
+                ["src/a.py"],
+                wiki_vault=Path(tmp) / "missing-wiki",
+            )
+
+        self.assertTrue(reports["integrity"]["skipped"])
+        self.assertEqual(reports["integrity"]["reason"], "wiki_vault_missing")
+        self.assertTrue(reports["drift"]["skipped"])
+        self.assertEqual(reports["drift"]["issues"], [])
+        self.assertTrue(reports["drift_surface_hash"])
+
+    def test_ff_gate_evidence_records_gate_without_pr(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = Path(tmp) / "orchestrate.json"
+            result = merge_preflight.run_ff_gate(
+                issue=4,
+                changed_paths=["b.py", "./a.py"],
+                head_sha="head-ff",
+                orchestrate_ledger=str(ledger),
+                wiki_vault=Path(tmp) / "missing-wiki",
+            )
+
+            self.assertTrue(result["ok"])
+            payload = json.loads(ledger.read_text(encoding="utf-8"))
+            evidence = payload["gate_evidence"]["4"]
+            self.assertEqual(evidence["changed_paths"], ["a.py", "b.py"])
+            self.assertEqual(evidence["checked_paths"], ["a.py", "b.py"])
+            self.assertEqual(evidence["pr_head_sha"], "head-ff")
+            self.assertEqual(evidence["changed_path_stale_issues"], [])
 
     def test_required_gate_evidence_missing_field_is_stop(self):
         evidence = merge_preflight.build_gate_evidence(
@@ -173,6 +261,34 @@ class MergePreflightEvidenceTests(unittest.TestCase):
         self.assertLess(len(plan["target_paths"]), len(["parent.py", "child.py"]))
         self.assertEqual(plan["reused"], [2])
         self.assertEqual(plan["fallback"], [])
+
+    def test_scoped_gate_plan_falls_back_without_current_surface_hash(self):
+        child_gate = gate(["child.py"])
+        ledger = {
+            "issues": {"1": {"children": [2]}, "2": {"number": 2}},
+            "merge_evidence": {
+                "2": {
+                    "kind": "merged_pr",
+                    "base": "task/issue-1",
+                    "parent_contains_child": True,
+                    "head_sha": "head-1",
+                }
+            },
+            "gate_evidence": {"2": child_gate},
+        }
+
+        plan = merge_preflight.scoped_gate_plan_from_ledger(
+            parent_issue=1,
+            expected_base="task/issue-1",
+            changed_paths=["parent.py", "child.py"],
+            ledger=ledger,
+            current_gate_version=merge_preflight.GATE_VERSION,
+            current_tool_versions={"task-github": "0.15.0"},
+            expected_pr_heads={2: "head-1"},
+        )
+
+        self.assertEqual(plan["target_paths"], ["child.py", "parent.py"])
+        self.assertEqual(plan["fallback"][0]["reason"], "drift_surface_hash_mismatch")
 
     def test_scoped_gate_plan_uses_parent_branch_for_root_pr_child_evidence(self):
         child_gate = gate(["child.py"])
