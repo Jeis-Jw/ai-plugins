@@ -27,3 +27,4 @@ audience: [human, agent]
 - [[REJ-2026-06-12-185220-gate-mvp를-llm-judge로-먼저-구축]] — 품질 gate MVP를 의미판정 LLM-judge로 우선 구축하는 안. in-stack judge 천장·판정 불안정·prompt 의존으로 반려, 정적 룰 v0를 먼저.
 - [[REJ-2026-06-17-002650-snapshot-3상태-누적-보존-모델]] — snapshot을 active/archived/promoted 3상태로 보존하고 기본 save를 append-only로 누적하며 --continues 체인을 두는 모델. 단일 active 휘발 모델에 반려.
 - [[REJ-2026-07-02-212018-local-closeout-mode-유지-worktree-격리-all-pr-통합-대신]] — 컨테이너 머지업을 로컬 git merge로 유지하되 temp worktree로 격리해 메인 트리 checkout만 회피하는 대안. 로컬 머지 machinery+불변식 guard 유지 부담으로 반려하고 all-PR 통합을 채택.
+- [[REJ-2026-07-03-182352-solo-경량-브랜치-토폴로지-신모드]] — 경로분리 리프를 컨테이너 브랜치·FF 머지업·gear→PR 승격 세리머니 없이 피처브랜치→단일 통합 PR(또는 리프별 직접 PR)로 두는 solo 전용 경량 토폴로지. copymachine Wave1 피드백(B)이 제안. 반려.
