@@ -25,6 +25,8 @@ $ARGUMENTS: {N}
 - **실질(MUST) 미충족**: 보완 방법 파악 → `run` 복귀 → CHANGES_REQUESTED
 - **형식(SHOULD) 미충족**: "제안"으로만, 판정 영향 없음
 
+> **빌드 통과 ≠ 동작.** build/lint/self-grep은 컴파일만 보증한다 — 런타임 크래시(예: SDK가 특정 env에서 throw)나 렌더 오류는 "빌드 성공, 화면 블랙"으로 구조적으로 빠져나간다. UI/앱형 유닛은 **런타임 증거**를 실질 조건으로 요구한다: 헤드리스 렌더 + 콘솔 에러 스캔, HTTP 200/응답 형태, 또는 최소 프리뷰 스모크. 이런 유닛은 `required_checks`(Execution Contract)에 런타임 스모크를 1개 포함해 verify 게이트가 build-only로 통과하지 않게 한다.
+
 dependency 상태도 실질 조건으로 기록한다. 열린 `blocked_by`가 있으면 프로토콜 위반이므로 통과 판정을 내리지 않는다:
 ```bash
 read OWNER REPO < <(gh repo view --json owner,name --jq '"\(.owner.login) \(.name)"')

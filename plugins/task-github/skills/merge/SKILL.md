@@ -53,19 +53,21 @@ HYG=$(wiki refresh --level hygiene --json)  # 경고 surface (비차단)
 게이트 통과 후 `merge_preflight.py`를 먼저 실행한다. 이 스크립트는 live PR head(`headRefOid`), mergeability, CI/check, reviewDecision을 한 번의 PR 조회 boundary에서 확인하고, 통과한 wiki gate 결과를 `gate_evidence`로 ledger에 기록한다. wiki vault가 없으면 integrity/drift를 명시적 skip evidence로 남기고 계속한다. 또한 같은 PR/head closeout에서 재사용할 수 있도록 PR view/status를 `preflight_evidence`로 기록한다. `headRefOid`가 기대값과 다르거나 required field가 빠지면 closeout으로 넘어가지 않는다. parent/root PR이면 ledger의 child `merge_evidence`/`gate_evidence`를 소비해 valid child path를 `changed-path-stale` target에서 제외한다. child evidence 재사용은 현재 wiki drift surface hash가 child evidence의 hash와 같을 때만 가능하며, invalid/missing/overlap/hash-mismatch child path는 fallback target으로 검사한다.
 
 ```bash
-python3 "${CLAUDE_SKILL_DIR}/scripts/merge_preflight.py" \
+python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/skills/merge/scripts/merge_preflight.py" \
   --pr {PR} --orchestrate-ledger ".task-github/orchestrate/{ROOT}.json" --json
 ```
+
+**base 신선도 복구 (B-lite).** preflight가 `mergeability_not_clean`에 `mergeStateStatus: BEHIND`를 실어 STOP하면, PR이 base보다 뒤처져 있다는 뜻이다 — 그대로 머지하면 base가 앞서 넣은 변경(다른 파일의 정정 등)을 **되돌릴 수 있다**(장기 wave에서 rationale-커밋-main-직행 정책 탓에 컨테이너/통합 PR이 main과 발산하는 것은 구조적으로 보장된다). dead-STOP 대신 복구한다: `gh pr update-branch {PR}`로 base를 당긴 뒤 preflight를 재실행한다. `update-branch`가 충돌하면 **리프측 역머지** 규칙을 따르고(오퍼레이터 메인 워크트리에서 풀지 않는다 — [[DEC-2026-07-02-212109]], [orchestrate](../orchestrate/SKILL.md) §Recovery Guards), 자동 경로가 없으면 STOP.
 
 ### Step 4. closeout 스크립트로 머지 + 정리 (git/gh 결정적 시퀀스)
 preflight 통과 후, `closeout.py`가 연결이슈 해석·blocker 재확인·라벨 정리·머지·브랜치 정리·downstream 안내·루트 닫힘 감지를 한 번에 한다. wiki는 호출하지 않고 `task_to_complete`만 방출한다. orchestrate ledger가 있으면 closeout은 같은 PR/head의 fresh `preflight_evidence`를 PR view 입력으로 재사용한다. TTL 만료·필드 누락·status 실패·PR/head 불일치면 기존처럼 GitHub PR view로 fallback한다. 모든 머지는 `gh pr merge`(remote)이며, preflight 재사용 여부와 무관하게 `--match-head-commit`으로 확인된 head SHA를 고정한다. closeout은 로컬 `git checkout`을 하지 않는다 — 머지 후 base 브랜치 갱신은 `git fetch origin {base}:{base}`(base가 현재 HEAD면 `git pull --ff-only`)로 처리해 사령관의 메인 워크트리 HEAD가 trunk를 벗어나지 않는다([[DEC-2026-07-02-212109]]). merge 성공 뒤 base sync/branch cleanup 실패는 `sync_warnings`로만 보고한다. closeout은 merge fact만 기록하고 wiki gate를 다시 실행하지 않는다.
 
 ```bash
 # 1) dry-run으로 계획 확인 (머지·변경 없음, 읽기 전용)
-python3 "${CLAUDE_SKILL_DIR}/scripts/closeout.py" --pr {PR} --dry-run --json
+python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/skills/merge/scripts/closeout.py" --pr {PR} --dry-run --json
 
 # 2) 확인되면 실제 실행
-RESULT=$(python3 "${CLAUDE_SKILL_DIR}/scripts/closeout.py" --pr {PR} --json) || {
+RESULT=$(python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/skills/merge/scripts/closeout.py" --pr {PR} --json) || {
   printf '%s\n' "$RESULT"   # error_code: open_blockers / no_linked_issue / merge_failed ...
   exit 1
 }
@@ -73,7 +75,7 @@ printf '%s\n' "$RESULT"
 ```
 orchestrate 중이면 ledger를 같이 넘긴다:
 ```bash
-RESULT=$(python3 "${CLAUDE_SKILL_DIR}/scripts/closeout.py" \
+RESULT=$(python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/skills/merge/scripts/closeout.py" \
   --pr {PR} --orchestrate-ledger ".task-github/orchestrate/{ROOT}.json" --json)
 ```
 기본 preflight reuse TTL은 180초다. 더 오래 지난 evidence는 읽기 비용보다 안전성을 우선해 GitHub 조회로 fallback한다(`--preflight-ttl-seconds`로 조정 가능).

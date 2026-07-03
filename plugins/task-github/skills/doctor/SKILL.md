@@ -8,7 +8,7 @@ description: task-github 운영 전제와 wiki TASK↔GitHub ROOT linkage를 진
 prereq snapshot과 context bundle을 입력으로 받아 진단만 한다.
 
 ```bash
-python3 plugins/task-github/scripts/doctor.py --input /tmp/task-github-doctor.json --json
+python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/doctor.py" --input /tmp/task-github-doctor.json --json
 ```
 
 진단 항목:
@@ -25,7 +25,7 @@ python3 plugins/task-github/scripts/doctor.py --input /tmp/task-github-doctor.js
 config 진단은 helper를 쓴다:
 
 ```bash
-python3 plugins/task-github/scripts/task_config.py validate --json
+python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/task_config.py" validate --json
 ```
 
 ## 불변식

@@ -36,11 +36,15 @@ dependency API 조회가 실패하면 자동 종료하지 않고 사령관에게
 ### BASE_BRANCH 확보 (모든 기어 공통 — 경로 판단·드리프트·머지 전에 먼저)
 orchestrate에서는 부모 브랜치가 base다. orchestrated에서 BASE_BRANCH가 비면 절대 진행하지 않고 STOP(main fallback 금지). 이후 모든 diff/머지는 이 값을 base로 쓴다:
 ```bash
-if [ "$ORCHESTRATED" = "true" ] && [ -z "$BASE_BRANCH" ]; then
-  gh issue comment {N} --body "[중단] orchestrated mode: BASE_BRANCH(expected merge base) 없음. 머지/PR 전 STOP, main fallback 금지."
-  exit 1
+# orchestrated 필수 계약: BASE_BRANCH(머지 base) + LEDGER(ff_merged/gate_evidence 기록처).
+# 둘 중 하나라도 비면 STOP — ledger/게이트 스텝의 조용한 스킵을 코드로 막는다(cache 설치 회귀 방지).
+if [ "$ORCHESTRATED" = "true" ]; then
+  [ -z "$BASE_BRANCH" ] && { gh issue comment {N} --body "[중단] orchestrated: BASE_BRANCH(expected merge base) 없음. 머지/PR 전 STOP, main fallback 금지."; exit 1; }
+  [ -z "$LEDGER" ] && { gh issue comment {N} --body "[중단] orchestrated: LEDGER(ledger 절대경로) 없음. gate_evidence/ff_merged 기록 불가 — 조용한 스킵 금지."; exit 1; }
 fi
-BASE_BRANCH=${BASE_BRANCH:-$(python3 plugins/task-github/scripts/task_config.py get base_branch 2>/dev/null || echo main)}
+# 스크립트 루트 해소(cache/vendored/Codex 공통): TASK_GITHUB_ROOT(핸드오프 주입/명시) > CLAUDE_PLUGIN_ROOT. 미해소면 STOP.
+[ -f "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/task_config.py" ] || { echo "[중단] task-github 플러그인 루트 미해소 — TASK_GITHUB_ROOT 또는 CLAUDE_PLUGIN_ROOT 필요."; exit 1; }
+BASE_BRANCH=${BASE_BRANCH:-$(python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/task_config.py" get base_branch 2>/dev/null || echo main)}
 ```
 
 ### 경로 판단
@@ -59,7 +63,7 @@ git diff "$BASE_BRANCH"...HEAD --name-only 2>/dev/null || git status --short
 
 ```bash
 GEAR=$(gh issue view {N} --json labels --jq '[.labels[].name]' \
-  | python3 -c 'import json,sys; from pathlib import Path; sys.path.insert(0,"plugins/task-github/skills/orchestrate/scripts"); import orchestrator_ops as o; print(o.gear_of_labels(json.load(sys.stdin)) or "normal")')
+  | TG="${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}" python3 -c 'import json,os,sys; sys.path.insert(0, os.environ["TG"]+"/skills/orchestrate/scripts"); import orchestrator_ops as o; print(o.gear_of_labels(json.load(sys.stdin)) or "normal")')
 # 머지 경로: major이거나 부모가 trunk(체크아웃돼 로컬 FF 불가)면 PR(A-2), 아니면 로컬 FF(A-1)
 case "$BASE_BRANCH" in task/issue-*) PARENT_IS_TASK=1 ;; *) PARENT_IS_TASK=0 ;; esac
 if [ "$GEAR" = "major" ] || [ "$PARENT_IS_TASK" = "0" ]; then ROUTE=pr; else ROUTE=ff; fi
@@ -89,7 +93,7 @@ FILES=$(git diff --name-only "$BASE_BRANCH"...HEAD | paste -sd,)
 HEAD_SHA=$(git rev-parse HEAD)
 FF_GATE_ARGS=(--ff-gate --issue {N} --head-sha "$HEAD_SHA" --changed-path "$FILES" --json)
 [ "$ORCHESTRATED" = "true" ] && FF_GATE_ARGS+=(--orchestrate-ledger "$LEDGER")
-python3 plugins/task-github/skills/merge/scripts/merge_preflight.py "${FF_GATE_ARGS[@]}" || exit 1
+python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/skills/merge/scripts/merge_preflight.py" "${FF_GATE_ARGS[@]}" || exit 1
 
 # git fetch . task/issue-{N}:{BASE_BRANCH} — checkout 없이 부모 ref 전진
 git fetch . task/issue-{N}:"$BASE_BRANCH" || {
@@ -116,7 +120,7 @@ gh issue close {N}
 ```
 **gear:* 라벨 유지.** ORCHESTRATED에서는 ledger에 `ff_merged` 이벤트 기록:
 ```bash
-[ "$ORCHESTRATED" = "true" ] && python3 skills/orchestrate/scripts/orchestrate_ledger.py "$LEDGER" \
+[ "$ORCHESTRATED" = "true" ] && python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/skills/orchestrate/scripts/orchestrate_ledger.py" "$LEDGER" \
   --event ff_merged --issue {N} --base "$BASE_BRANCH" --sha-range "$SHA_RANGE"
 ```
 
@@ -211,6 +215,19 @@ fi
 - 작업 중 자동 캡처한 observation이 있으면 `recorded`와 OBS ID를 보고한다.
 - decision/rejected_decision/trial_error/ssot/runbook 후보가 있으면 제목·요약·태그·관계와 함께 `proposed`로 보고한다.
 - 없으면 `none`과 이유를 보고한다.
+
+### (orchestrated) run-notes append — 다음 형제 워커에 상속
+`RUN_NOTES`가 있으면, 이번 작업에서 얻은 **재사용 가능한 사실**(검증한 SDK/API 형태, env quirk, 발견한 버그와 회피법)을 append한다. 다음 형제 워커가 Step 1.5에서 읽어 재도출을 피한다. advisory 스크래치일 뿐이라 wiki 캡처를 대체하지 않는다(장기 판단은 위 Audit에서 별도 승격 제안):
+```bash
+[ -n "$RUN_NOTES" ] && cat >> "$RUN_NOTES" <<EOF
+
+## #{N} ($(date -u +%FT%TZ))
+- {검증한 사실 / env quirk / 버그·회피법 — 다음 워커가 재도출 안 하도록}
+EOF
+```
+
+### mechanism friction 보고 (F)
+최종 보고 끝에 **워크플로 자체의 마찰**을 한 줄로 남긴다 — 미해소 스크립트 경로, 스킵한 게이트/스텝, 수동 보정한 ledger 이벤트, 재도출한 지식이 있었는지. 없으면 `none`. (제품 지식 아닌 메커니즘 회고 채널 — consumer wiki에 넣지 않는다.)
 
 ## 불변식
 - 머지 세리머니는 머지 엣지의 속성이고 기어로 게이팅(DEC-2026-07-02-224910): **micro/normal = 로컬 FF 머지(PR 없음)**, **major = PR + 리뷰**. major는 직렬 체인 안이라도 자기 브랜치 + PR을 가진다.

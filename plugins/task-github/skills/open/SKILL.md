@@ -87,7 +87,7 @@ gh pr list --search "{N}" --json number,title,state,headRefName
 ### Step 5.5. Context bundle 생성
 위에서 읽은 issue/root/dependency/wiki JSON을 공통 resolver에 넣어 같은 read-model로 접는다:
 ```bash
-python3 plugins/task-github/scripts/context_bundle.py --input snapshot.json
+python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/context_bundle.py" --input snapshot.json
 ```
 `open`은 이 bundle의 `integrity.errors`를 읽기 전용으로 브리핑만 한다. 불일치를 발견해도 자동 `relate`/`complete`/`reopen`을 호출하지 않는다.
 

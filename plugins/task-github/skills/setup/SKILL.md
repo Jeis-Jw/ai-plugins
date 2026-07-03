@@ -31,7 +31,7 @@ git remote -v 2>/dev/null
 git init
 touch .gitignore
 grep -qxF ".worktrees/" .gitignore || printf "\n.worktrees/\n" >> .gitignore
-python3 plugins/task-github/scripts/task_config.py scaffold --base-branch main --json
+python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/task_config.py" scaffold --base-branch main --json
 git add .
 git commit -m "chore: 초기 환경 설정 — 자율 작업 프로토콜 및 슬래시 명령 구성"
 ```

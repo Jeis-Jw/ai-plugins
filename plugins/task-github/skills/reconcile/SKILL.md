@@ -9,10 +9,10 @@ context bundle의 `integrity.errors`를 복구 계획으로 변환한다.
 
 ```bash
 # dry-run plan
-python3 plugins/task-github/scripts/reconcile.py --bundle /tmp/task-github-context.json --json
+python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/reconcile.py" --bundle /tmp/task-github-context.json --json
 
 # apply gate 통과 후에만 mutation
-python3 plugins/task-github/scripts/reconcile.py --bundle /tmp/task-github-context.json --apply --json
+python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/reconcile.py" --bundle /tmp/task-github-context.json --apply --json
 ```
 
 지원 action:

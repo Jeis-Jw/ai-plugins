@@ -4,6 +4,25 @@
 
 ---
 
+## 0. 스크립트 경로 해소 (Claude Code · Codex 공통)
+
+스킬의 python 스크립트/CLI 경로는 **레포-vendored 상대경로를 하드코딩하지 않는다**(`plugins/task-github/...`는 cache 설치·Codex·리프 워크트리에서 존재하지 않아 조용한 스킵을 유발한다). 모든 호출부는 플러그인 루트를 아래 순서로 인라인 해소한다:
+
+```bash
+python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/<name>.py" ...
+python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/skills/<skill>/scripts/<name>.py" ...
+```
+
+- `TASK_GITHUB_ROOT` — 명시 override(절대경로). orchestrate 핸드오프가 worker에 주입하고, 사용자/하네스도 지정할 수 있다. **항상 최우선**.
+- `CLAUDE_PLUGIN_ROOT` — Claude Code가 스킬 실행 시 자동 설정하는 플러그인 루트.
+- **Codex 등 둘 다 없는 하네스**: 이 스킬이 로드된 플러그인 루트로 `TASK_GITHUB_ROOT`를 지정한다(session-review와 동일 규약).
+- Bash 툴은 호출마다 새 셸이라 env가 블록 간 유지되지 않으므로, 각 호출부가 위 파라미터 확장을 **인라인**으로 다시 쓴다(블록 간 변수 대입에 기대지 않는다). heredoc은 `python3 - "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}" <<'PY'`로 argv[1]에 루트를 넘긴다.
+- **해소 실패는 fail-loud STOP**이다 — 게이트/ledger 스텝을 조용히 스킵하지 않는다. 예: `[ -f "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/task_config.py" ] || { echo "[중단] 루트 미해소"; exit 1; }`.
+
+회귀 방지: `tests/test_skill_path_portability.py`가 skills/rules 마크다운에 `plugins/task-github/` 리터럴이나 `CLAUDE_SKILL_DIR` 사용이 남으면 실패한다.
+
+---
+
 ## 1. 라벨 체계
 
 라벨은 **2계열**로 나뉜다.
@@ -108,7 +127,7 @@ integration 전략은 매번 profile+gear에서 재추론하지 않고, root iss
 
 ````markdown
 ```task-github-execution
-{"schema_version":1,"wiki_task":"TASK-...","topology":"stacked","gate":"pr","parent_branch":"task/root-10","leaf_policy":{"risk_class":"normal"},"required_checks":[["python3","-m","pytest","plugins/task-github/tests/","-q"]],"closeout_mode":"pr"}
+{"schema_version":1,"wiki_task":"TASK-...","topology":"stacked","gate":"pr","parent_branch":"task/root-10","leaf_policy":{"risk_class":"normal"},"required_checks":[["pytest","-q"]],"closeout_mode":"pr"}
 ```
 ````
 
@@ -140,7 +159,7 @@ unknown key는 parser가 무시한다. contract가 없으면 context bundle은 `
 **리프 머지업**
 - micro/normal 리프: 리프 워크트리에서 verify를 마친 뒤 `orchestrator_ops.ff_merge_command(child_branch=, parent_branch=)`가 내는 `git fetch . task/issue-{leaf}:task/issue-{parent}`로 부모 ref를 FF한다. PR을 만들지 않는다. close 증거는 **verify 리포트 + 커밋 SHA range**(머지된 PR을 대체). ledger에는 `ff_merged` 이벤트를 기록한다:
   ```bash
-  python3 skills/orchestrate/scripts/orchestrate_ledger.py {LEDGER} --event ff_merged --issue {N} --base task/issue-{parent} --sha-range {A..B}
+  python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/skills/orchestrate/scripts/orchestrate_ledger.py" {LEDGER} --event ff_merged --issue {N} --base task/issue-{parent} --sha-range {A..B}
   ```
   이 이벤트는 issue state를 `close_expected`로 두고 `ff_merged` 증거를 남긴다. `orchestrator_ops.child_merge_evidence`는 자식별로 세 가지 close 증거를 받는다: `closed_no_pr`(no-code no-op close) / `merged_pr:{base}`(major, PR 머지) / `ff_merged:{base, sha_range}`(micro/normal 로컬 FF — `sha_range`는 머지된 PR을 대신하는 필수 필드).
 - major 리프: PR 경로 그대로다. `closeout.py --pr {PR}`로 닫고, ledger에는 `pr_merged` 이벤트를 남긴다. close 증거는 머지된 PR.
@@ -155,6 +174,10 @@ unknown key는 parser가 무시한다. contract가 없으면 context bundle은 `
 - sub-major 컨테이너: 리프와 동일하게 `ff_merge_command`가 내는 fetch refspec으로 컨테이너 브랜치를 부모로 로컬 FF 전진시킨다. PR 없음.
 
 (orchestrate 실행 중 `.task-github/orchestrate/{root}.json` write-through ledger는 run-state 추적용으로 별개이며 wiki task에 쓰지 않는다.)
+
+**웨이브 동결 (머지업 개시 후)**
+
+컨테이너 머지업이 시작되면 그 웨이브의 리프/컨테이너 브랜치는 **동결**된다 — 통합 PR/FF가 진행 중일 때 리프에 늦은 커밋을 밀어넣으면 통합이 그 커밋을 앞질러 머지돼 trunk에서 누락되는 near-miss가 난다. 머지업 개시 전 orchestrate는 pending-work 스캔으로 **미커밋** 리프 워크트리를 STOP(`pending_work`)으로 잡는다(커밋된 미통합 작업은 `child_merge_evidence`가 이미 게이트하므로 여기선 uncommitted만 본다; [orchestrate](../skills/orchestrate/SKILL.md) container_done). 머지업 개시 뒤 발견한 수정은 그 웨이브에 끼워넣지 않고 **새 micro 이슈**로 뒤따른다(별도 FF/PR로 trunk에 합류).
 
 **메인 워크트리 HEAD 불변식 ([[DEC-2026-07-02-212109]], 유지)**
 

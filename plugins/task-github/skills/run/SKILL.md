@@ -21,6 +21,13 @@ $ARGUMENTS: {N}
 - 계획 있음 → 태스크 목록 기준
 - 계획 없음 → 완료 조건 기준 (`plan:false` flow)
 
+### Step 1.5. (orchestrated) run-notes 읽기 — 재도출 금지
+`RUN_NOTES`가 주입돼 있으면(orchestrate 핸드오프), **작업 시작 전 먼저 읽는다.** 이 파일은 오케스트레이터가 시드한 gotcha와, **앞선 형제 워커가 남긴 검증된 사실**(안정 API 형태, env quirk, 발견된 버그)의 advisory 스크래치다(SoT 아님 — 상태는 ledger 소관). 여기 이미 있는 사실은 **재도출·재검증하지 않고 그대로 상속**한다:
+```bash
+[ -n "$RUN_NOTES" ] && [ -f "$RUN_NOTES" ] && cat "$RUN_NOTES"
+```
+> 목적: fan-out에서 형제 워커가 같은 SDK API·env·버그를 각자 재학습하는 낭비를 없앤다. 발견은 `done`에서 이 파일에 append한다.
+
 ### Step 2. dependency 차단 재확인
 `start`를 우회해 `run`이 직접 호출될 수 있으므로 열린 blocker를 다시 확인한다:
 ```bash
@@ -68,7 +75,7 @@ if [ "$ORCHESTRATED" = "true" ] && [ -z "$BASE_BRANCH" ]; then
   gh issue comment {N} --body "[중단] orchestrated mode: BASE_BRANCH(expected PR base) 없음. main fallback 금지."
   exit 1
 fi
-BASE_BRANCH=${BASE_BRANCH:-$(python3 plugins/task-github/scripts/task_config.py get base_branch 2>/dev/null || echo main)}  # orchestrate는 parent branch 주입, standalone은 .task-github.yml base_branch(없으면 main).
+BASE_BRANCH=${BASE_BRANCH:-$(python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/task_config.py" get base_branch 2>/dev/null || echo main)}  # orchestrate는 parent branch 주입, standalone은 .task-github.yml base_branch(없으면 main).
 git worktree add .worktrees/issue-{N} -b task/issue-{N} "$BASE_BRANCH"
 # .worktreeinclude 처리 + 잔재 점검 (git clean은 컨펌 후)
 ```

@@ -8,7 +8,7 @@ description: Issue/root context bundle을 읽어 ready/blocked/review/bridge mis
 `open`과 같은 조회를 수행한 뒤 `scripts/context_bundle.py`로 만든 bundle을 `status_next.py`에 넣어 요약한다.
 
 ```bash
-python3 plugins/task-github/scripts/status_next.py --bundle /tmp/task-github-context.json --json
+python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/status_next.py" --bundle /tmp/task-github-context.json --json
 ```
 
 ## 출력

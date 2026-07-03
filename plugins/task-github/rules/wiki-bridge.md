@@ -21,7 +21,7 @@
 
 ## 2. 호출 (invocation)
 
-위키는 `wiki-markdown` 플러그인의 **`wiki` 스킬**로 구동한다. 같은 세션에 두 플러그인이 있으면, task-github 스킬은 필요한 위키 작업을 **`wiki` 스킬에 위임**한다(자기 `${CLAUDE_SKILL_DIR}`로 CLI 경로를 해석하므로 task-github는 설치 위치에 결합되지 않는다).
+위키는 `wiki-markdown` 플러그인의 **`wiki` 스킬**로 구동한다. 같은 세션에 두 플러그인이 있으면, task-github 스킬은 필요한 위키 작업을 **`wiki` 스킬에 위임**한다(위임받은 `wiki` 스킬이 자기 플러그인 루트로 CLI 경로를 해석하므로 task-github는 위키 설치 위치에 결합되지 않는다).
 
 위키 CLI는 결정적이다 — JSON 출력 + exit code로 분기한다(파싱 불필요):
 - 성공: `{"ok": true, ...}` / exit 0
@@ -111,7 +111,7 @@ wiki refresh --check decision-quality,task-quality --json
 실제 스킬은 아래 원리를 직접 복붙하지 않고, 가능하면 공통 resolver를 쓴다:
 
 ```bash
-python3 plugins/task-github/scripts/context_bundle.py --input snapshot.json
+python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/context_bundle.py" --input snapshot.json
 ```
 
 입력 snapshot은 skill이 이미 읽은 GitHub issue/root/dependency JSON과, 위키가 가용할 때 `recall --read`로 얻은 task record를 담는다. 출력은 `open`/`start`/`done`/`merge`/`status`가 공유하는 context bundle이다:

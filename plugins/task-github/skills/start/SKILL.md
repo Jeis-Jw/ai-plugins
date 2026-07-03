@@ -84,7 +84,7 @@ gh issue edit {N} --add-assignee @me --add-label "in-progress"
 
 점유 직전/직후 브리핑은 공통 context bundle을 우선 사용한다:
 ```bash
-python3 plugins/task-github/scripts/context_bundle.py --input snapshot.json
+python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/context_bundle.py" --input snapshot.json
 ```
 `blockers`/`downstream`/`wiki_task`/`worktree_path`는 이후 `plan`/`run`에 넘기는 세션 컨텍스트의 기준 shape다. `integrity.errors`가 있으면 점유 전 보고하고, 링크 복구가 필요하면 별도 reconcile 지시를 받는다.
 
