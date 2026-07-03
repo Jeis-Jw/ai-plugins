@@ -8,10 +8,10 @@ description: Manage an AI-native project wiki — capture intents, decisions, re
 Drives one stdlib Python CLI, `wiki_cli.py`, against a local vault (default `wiki/`). Exit codes and `--json` are deterministic — branch on results without re-parsing prose.
 
 ```bash
-python3 "${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py" <subcommand> [args]
+python3 "${WIKI_MARKDOWN_ROOT:-$CLAUDE_PLUGIN_ROOT}/skills/wiki/scripts/wiki_cli.py" <subcommand> [args]
 ```
 
-`${CLAUDE_SKILL_DIR}` is this skill's installed dir (substitute the absolute path in other harnesses).
+`CLAUDE_PLUGIN_ROOT` is this plugin's root, auto-set by Claude Code during skill execution. Harnesses that don't set it (Codex, cache-install edge cases) export `WIKI_MARKDOWN_ROOT` to this plugin's absolute root instead — it always wins. Do **not** use `${CLAUDE_SKILL_DIR}`: it is unset in cache installs and on Codex, so the path collapses to `/scripts/wiki_cli.py` and every wiki call fails with "path not found".
 
 > **This page is the runtime cheat-sheet.** The exhaustive contract — every field, all 13 refresh checks, the full exit-code matrix, YAML subset, NFC rules — lives in [`references/wiki-protocol.md`](references/wiki-protocol.md). Load it only when you need a detail not here.
 
@@ -43,7 +43,7 @@ The wiki is a **durable context/decision layer, not a runtime-debug companion**.
 
 ```bash
 # 0. Init (idempotent). ($CLI is shorthand for this cheat-sheet's examples.)
-CLI="${CLAUDE_SKILL_DIR}/scripts/wiki_cli.py"
+CLI="${WIKI_MARKDOWN_ROOT:-$CLAUDE_PLUGIN_ROOT}/skills/wiki/scripts/wiki_cli.py"
 python3 "$CLI" init
 
 # 1. Capture WITH body in ONE call — fill §8 sections inline via --sec-<flag>.
