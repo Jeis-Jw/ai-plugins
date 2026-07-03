@@ -20,6 +20,7 @@ TASK_GITHUB_DIR = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(TASK_GITHUB_DIR / "scripts"))
 
 import context_bundle  # noqa: E402
+import task_config  # noqa: E402
 
 
 API_VERSION = "2026-03-10"
@@ -145,7 +146,54 @@ def _detect_flat_understructuring(topology: str | None, leaves: List[dict], root
     }
 
 
-def validate_spec(spec: dict) -> dict:
+def _bool_option(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    return text in {"1", "true", "yes", "on", "o"}
+
+
+def review_required_from_config(config_path: Path) -> bool:
+    """Read `define.review-required` from `.task-github.yml` (absent file/key = False)."""
+    if not config_path.exists():
+        return False
+    config = task_config.load_config(config_path)
+    return _bool_option((config.get("define") or {}).get("review-required"))
+
+
+def _check_challenge_review(spec: dict, *, review_required: bool) -> None:
+    """Refuse to build a tree when challenge review is required but absent/blocking.
+
+    `review_required` comes from `.task-github.yml`'s `define.review-required`
+    (the persistent, agent-independent source of truth) OR'd with an explicit
+    `spec.challenge_review.required` (spec can only opt further IN, never out —
+    the config check below still runs regardless of what the spec claims). This
+    turns the challenge-review gate (DEC-2026-07-03-012207) from a SKILL.md
+    instruction the executing agent could silently skip into a hard precondition
+    the script itself enforces.
+    """
+    cr = spec.get("challenge_review")
+    if cr is not None and not isinstance(cr, dict):
+        raise IssueTreeError("bad_spec", "challenge_review must be an object")
+    if not review_required:
+        return
+    if not isinstance(cr, dict):
+        raise IssueTreeError(
+            "challenge_review_missing",
+            "define.review-required=true인데 spec.challenge_review가 없습니다 — "
+            "challenge review(적대적 서브에이전트 감사) 없이 이슈 생성 불가",
+        )
+    verdict = cr.get("verdict")
+    if verdict != "approved":
+        raise IssueTreeError(
+            "challenge_review_blocked",
+            f"challenge review verdict={verdict!r} — blocking 없이 approved여야 이슈 생성 가능. "
+            f"findings={cr.get('findings')!r}",
+        )
+
+
+def validate_spec(spec: dict, *, review_required: bool = False) -> dict:
+    _check_challenge_review(spec, review_required=review_required)
     root = spec.get("root")
     if not isinstance(root, dict):
         raise IssueTreeError("bad_spec", "root must be an object")
@@ -302,6 +350,7 @@ def validate_spec(spec: dict) -> dict:
         "strict_deps": bool(spec.get("strict_deps")),
         "epics": sorted(epic_keys),
         "warnings": warnings,
+        "challenge_review": spec.get("challenge_review"),
     }
 
 
@@ -319,6 +368,7 @@ def build_plan(spec: dict) -> dict:
         "dependencies": dependencies,
         "strict_deps": bool(spec.get("strict_deps")),
         "epics": spec.get("epics", []),
+        "challenge_review": spec.get("challenge_review"),
         "warnings": spec.get("warnings", []),
     }
 
@@ -501,6 +551,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--strict-deps", action="store_true")
     parser.add_argument("--json", action="store_true", dest="as_json")
+    parser.add_argument("--task-config", default=".task-github.yml",
+                         help="path to .task-github.yml (for define.review-required)")
     return parser
 
 
@@ -515,7 +567,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        spec = validate_spec(read_spec(Path(args.spec)))
+        review_required = review_required_from_config(Path(args.task_config))
+        spec = validate_spec(read_spec(Path(args.spec)), review_required=review_required)
         spec["strict_deps"] = bool(spec.get("strict_deps") or args.strict_deps)
         payload = build_plan(spec) if args.dry_run else execute(spec)
     except IssueTreeError as exc:

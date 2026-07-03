@@ -15,7 +15,7 @@ from typing import Any
 
 TOP_KEYS = {"mode", "base_branch", "planning-tool", "verify-tool", "review-tool", "orchestrate", "define"}
 ORCH_KEYS = {"verify-command", "review-mode", "review-command", "gear-options", "max-workers"}
-DEFINE_KEYS = {"review-tool", "review-command"}
+DEFINE_KEYS = {"review-tool", "review-command", "review-required"}
 GEARS = {"micro", "normal", "major"}
 GEAR_OPTION_KEYS = {"plan", "verify", "pr-review"}
 REVIEW_MODES = {"gear", "all", "skip"}
@@ -146,6 +146,8 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
                 findings.append(_finding("unknown_define_key", f"unknown define key: {key}", "warning"))
             if define.get("review-command") and not define.get("review-tool"):
                 findings.append(_finding("define_review_tool_required", "define.review-command requires define.review-tool"))
+            if not _valid_bool(define.get("review-required")):
+                findings.append(_finding("bad_define_review_required", "define.review-required must be a boolean"))
     return findings
 
 
@@ -177,6 +179,7 @@ def render_default_config(*, base_branch: str = "main") -> str:
         "define:\n"
         "  review-tool:\n"       # 비면 --review 시 내장 challenge(harness). 지정하면 그 도구로 relay.
         "  review-command:\n"
+        "  review-required: false\n"  # true면 create_issue_tree.py가 challenge_review.verdict==approved 없이는 이슈 생성을 거부한다.
     )
 
 

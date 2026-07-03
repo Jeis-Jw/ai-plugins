@@ -339,5 +339,52 @@ class TreeShapeTests(unittest.TestCase):
         self.assertEqual(parents["BE-AUTH"], f"ND-{be_number}")  # grandchild → epic node
 
 
+class ChallengeReviewGateTests(unittest.TestCase):
+    def _root(self):
+        return {"title": "root", "body": "root body"}
+
+    def _minimal_spec(self, challenge_review=None):
+        spec = {"root": self._root(), "children": [_leaf("A")]}
+        if challenge_review is not None:
+            spec["challenge_review"] = challenge_review
+        return spec
+
+    def test_review_not_required_ignores_missing_challenge_review(self):
+        validated = create_issue_tree.validate_spec(self._minimal_spec(), review_required=False)
+        self.assertIsNone(validated["challenge_review"])
+
+    def test_review_required_rejects_missing_challenge_review(self):
+        with self.assertRaises(create_issue_tree.IssueTreeError) as ctx:
+            create_issue_tree.validate_spec(self._minimal_spec(), review_required=True)
+        self.assertEqual(ctx.exception.error_code, "challenge_review_missing")
+
+    def test_review_required_rejects_non_approved_verdict(self):
+        spec = self._minimal_spec({"verdict": "blocking", "findings": ["too much surface"]})
+        with self.assertRaises(create_issue_tree.IssueTreeError) as ctx:
+            create_issue_tree.validate_spec(spec, review_required=True)
+        self.assertEqual(ctx.exception.error_code, "challenge_review_blocked")
+
+    def test_review_required_accepts_approved_verdict(self):
+        spec = self._minimal_spec({"verdict": "approved", "findings": []})
+        validated = create_issue_tree.validate_spec(spec, review_required=True)
+        self.assertEqual(validated["challenge_review"]["verdict"], "approved")
+
+    def test_review_required_from_config_reads_define_section(self, tmp_path=None):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".task-github.yml"
+            config_path.write_text(
+                "mode: solo\nbase_branch: main\norchestrate:\n  review-mode: gear\n"
+                "define:\n  review-required: true\n",
+                encoding="utf-8",
+            )
+            self.assertTrue(create_issue_tree.review_required_from_config(config_path))
+
+    def test_review_required_from_config_defaults_false_when_absent(self):
+        self.assertFalse(
+            create_issue_tree.review_required_from_config(Path("/nonexistent/.task-github.yml"))
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
