@@ -528,5 +528,97 @@ class MergeEdgeGearTreeTests(unittest.TestCase):
         self.assertEqual(payload["gate_evidence"]["4"]["gate_version"], "changed-path-stale:v1")
 
 
+class LedgerHardeningTests(unittest.TestCase):
+    """Wave 2 (#10) closeout regressions: crash-on-non-dict, CLOSED->close_expected thrash,
+    and re-record wiping a prior writer's merge_evidence."""
+
+    def test_load_ledger_rejects_non_dict_top_level(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = Path(tmp) / "ledger.json"
+            ledger.write_text("[1, 2, 3]", encoding="utf-8")  # bare list from a stale/foreign writer
+            with self.assertRaises(ValueError) as ctx:
+                orchestrate_ledger.load_ledger(ledger)
+            self.assertIn("malformed", str(ctx.exception))
+            # the corrupt file is left untouched — not silently overwritten with a default
+            self.assertEqual(ledger.read_text(encoding="utf-8"), "[1, 2, 3]")
+
+    def test_reconcile_snapshot_recovers_from_corrupt_ledger(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = Path(tmp) / "ledger.json"
+            ledger.write_text("[1, 2, 3]", encoding="utf-8")  # corrupt local state
+            # record_snapshot is the --reconcile-github rebuild path — it must NOT brick on a
+            # corrupt ledger (that's the very thing reconcile exists to recover).
+            orchestrate_ledger.record_snapshot(ledger, node(1, children=[node(2)]))
+            payload = orchestrate_ledger.load_ledger(ledger)
+            self.assertEqual(payload["root"], 1)
+            self.assertIn("2", payload["issues"])
+
+    def test_pr_merged_does_not_regress_closed_issue(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = Path(tmp) / "ledger.json"
+            orchestrate_ledger.record_snapshot(ledger, node(1, children=[node(2)]))
+            orchestrate_ledger.record_event(ledger, {"type": "issue_closed", "issue": 2})
+            # a late/duplicate merge event must not pull a CLOSED issue back to close_expected
+            orchestrate_ledger.record_event(
+                ledger, {"type": "pr_merged", "issue": 2, "pr": 20, "base": "main", "head": "task/issue-2"}
+            )
+            payload = orchestrate_ledger.load_ledger(ledger)
+            self.assertEqual(payload["issues"]["2"]["state"], "CLOSED")
+
+    def test_ff_merged_does_not_regress_closed_issue(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = Path(tmp) / "ledger.json"
+            orchestrate_ledger.record_snapshot(ledger, node(1, children=[node(2)]))
+            orchestrate_ledger.record_event(ledger, {"type": "issue_closed", "issue": 2})
+            orchestrate_ledger.record_event(
+                ledger, {"type": "ff_merged", "issue": 2, "base": "task/issue-1", "sha_range": "a..b"}
+            )
+            payload = orchestrate_ledger.load_ledger(ledger)
+            self.assertEqual(payload["issues"]["2"]["state"], "CLOSED")
+
+    def test_merge_evidence_preserves_prior_writer_keys(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = Path(tmp) / "ledger.json"
+            orchestrate_ledger.record_snapshot(ledger, node(1, children=[node(2)]))
+            # orchestrator records rich evidence first
+            orchestrate_ledger.record_merge_evidence(
+                ledger, 2, {"kind": "merged_pr", "pr": 20, "orchestrator_note": "keep-me"}
+            )
+            # a worker's pr_merged event later re-records — must NOT delete orchestrator_note
+            orchestrate_ledger.record_event(
+                ledger, {"type": "pr_merged", "issue": 2, "pr": 20, "base": "main", "head": "task/issue-2"}
+            )
+            evidence = orchestrate_ledger.load_ledger(ledger)["merge_evidence"]["2"]
+            self.assertEqual(evidence["orchestrator_note"], "keep-me")
+            self.assertEqual(evidence["base"], "main")
+
+    def test_merge_evidence_sparse_rerecord_keeps_non_none(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = Path(tmp) / "ledger.json"
+            orchestrate_ledger.record_snapshot(ledger, node(1, children=[node(2)]))
+            orchestrate_ledger.record_event(
+                ledger,
+                {"type": "pr_merged", "issue": 2, "pr": 20, "base": "main", "head": "task/issue-2", "head_sha": "deadbeef"},
+            )
+            # a sparser re-record (no head_sha) must not null out the established head_sha
+            orchestrate_ledger.record_event(
+                ledger, {"type": "pr_merged", "issue": 2, "pr": 20, "base": "main", "head": "task/issue-2"}
+            )
+            evidence = orchestrate_ledger.load_ledger(ledger)["merge_evidence"]["2"]
+            self.assertEqual(evidence["head_sha"], "deadbeef")
+
+
 if __name__ == "__main__":
     unittest.main()

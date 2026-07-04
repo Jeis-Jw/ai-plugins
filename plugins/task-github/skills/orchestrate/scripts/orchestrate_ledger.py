@@ -87,11 +87,26 @@ def _ensure_v3(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-def load_ledger(path: str | Path) -> dict[str, Any]:
+def load_ledger(path: str | Path, *, reset_on_corrupt: bool = False) -> dict[str, Any]:
     ledger_path = Path(path)
     if not ledger_path.exists():
         return _default()
-    payload = json.loads(ledger_path.read_text(encoding="utf-8"))
+    try:
+        payload = json.loads(ledger_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError(f"top-level {type(payload).__name__}, expected object")
+    except (json.JSONDecodeError, ValueError) as exc:
+        # A corrupt/non-object ledger (e.g. a bare list from a stale/foreign writer) used to crash
+        # with `'list' object has no attribute 'get'` mid-closeout; the recovery then rewrote a
+        # fresh default and silently dropped the orchestrator's merge_evidence.
+        if reset_on_corrupt:
+            # full rebuild-from-GitHub (record_snapshot / --reconcile-github): the corrupt local
+            # content is unsalvageable, so start clean instead of bricking the documented recovery.
+            return _default()
+        # read/append paths: fail loud and DON'T overwrite — caller treats a LEDGER error as STOP.
+        raise ValueError(
+            f"ledger {ledger_path} is malformed ({exc}); reconcile GitHub first — do not overwrite it"
+        ) from exc
     payload = _ensure_v3(payload)
     payload["spawned"] = _int_list(payload.get("spawned"))
     payload["failed"] = _int_list(payload.get("failed"))
@@ -133,7 +148,9 @@ def _snapshot_issue(node: dict[str, Any], *, parent: int | None, issues: dict[st
 
 
 def record_snapshot(path: str | Path, tree: dict[str, Any]) -> dict[str, Any]:
-    payload = load_ledger(path)
+    # --reconcile-github rebuild: overwrite the tree from GitHub SoT. Must survive a corrupt local
+    # ledger — this IS the documented recovery for one, so it can't refuse to load it.
+    payload = load_ledger(path, reset_on_corrupt=True)
     issues: dict[str, Any] = {}
     _snapshot_issue(tree, parent=None, issues=issues)
     payload["root"] = int(tree["number"])
@@ -224,6 +241,21 @@ def _remove_state_labels(issue: dict[str, Any]) -> None:
     issue["labels"] = [item for item in issue.get("labels", []) if item not in STATE_LABELS]
 
 
+def _merge_evidence(payload: dict[str, Any], issue: int, evidence: dict[str, Any]) -> None:
+    """Merge (not replace) merge_evidence for an issue.
+
+    A re-applied event must not delete keys another writer (the orchestrator) already recorded,
+    nor null out an existing non-None field with a sparser re-record. Only non-None new values,
+    or keys absent from the existing entry, are written.
+    """
+    store = payload.setdefault("merge_evidence", {})
+    existing = dict(store.get(str(int(issue))) or {})
+    for key, value in evidence.items():
+        if value is not None or key not in existing:
+            existing[key] = value
+    store[str(int(issue))] = existing
+
+
 def apply_event(payload: dict[str, Any], event: dict[str, Any]) -> None:
     kind = event.get("type")
     issue_number = event.get("issue")
@@ -244,7 +276,11 @@ def apply_event(payload: dict[str, Any], event: dict[str, Any]) -> None:
             _remove_label(issue, "in-progress")
             _add_label(issue, "in-review")
         elif kind == "pr_merged":
-            issue["state"] = "close_expected"
+            # Idempotent: a re-applied merge event must not regress a CLOSED issue back to
+            # close_expected (the thrash the orchestrator saw), and must not wipe evidence
+            # keys a prior writer (e.g. the orchestrator) already recorded — merge, don't replace.
+            if issue.get("state") != "CLOSED":
+                issue["state"] = "close_expected"
             merged_pr = {
                 "number": event.get("pr"),
                 "base": event.get("base"),
@@ -254,23 +290,32 @@ def apply_event(payload: dict[str, Any], event: dict[str, Any]) -> None:
                 if event.get(key):
                     merged_pr[key] = event[key]
             issue["merged_pr"] = merged_pr
-            payload.setdefault("merge_evidence", {})[str(int(issue_number))] = {
-                "kind": "merged_pr",
-                "issue": int(issue_number),
-                "pr": event.get("pr"),
-                "base": event.get("base"),
-                "head": event.get("head"),
-                "head_sha": event.get("head_sha"),
-                "merge_commit_sha": event.get("merge_commit_sha"),
-                "parent_contains_child": True,
-            }
+            _merge_evidence(
+                payload,
+                int(issue_number),
+                {
+                    "kind": "merged_pr",
+                    "issue": int(issue_number),
+                    "pr": event.get("pr"),
+                    "base": event.get("base"),
+                    "head": event.get("head"),
+                    "head_sha": event.get("head_sha"),
+                    "merge_commit_sha": event.get("merge_commit_sha"),
+                    "parent_contains_child": True,
+                },
+            )
             _remove_state_labels(issue)
         elif kind == "ff_merged":
             # micro/normal leaf/container merged to parent via local FF (no PR).
             # Close evidence = the merged SHA range, so container merge-up can
-            # validate it (orchestrator_ops.child_merge_evidence).
-            issue["state"] = "close_expected"
-            issue["ff_merged"] = {"base": event.get("base"), "sha_range": event.get("sha_range")}
+            # validate it (orchestrator_ops.child_merge_evidence). Same no-regress rule as pr_merged.
+            if issue.get("state") != "CLOSED":
+                issue["state"] = "close_expected"
+            ff = dict(issue.get("ff_merged") or {})
+            for key, value in {"base": event.get("base"), "sha_range": event.get("sha_range")}.items():
+                if value is not None or key not in ff:
+                    ff[key] = value
+            issue["ff_merged"] = ff
             _remove_state_labels(issue)
 
     if event.get("pr") is not None:

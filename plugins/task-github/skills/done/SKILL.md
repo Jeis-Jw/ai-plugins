@@ -104,6 +104,8 @@ git fetch . task/issue-{N}:"$BASE_BRANCH" || {
 }
 git push origin "$BASE_BRANCH"
 ```
+**부모 브랜치를 checkout하지 말 것.** 로컬 FF는 반드시 `git fetch . task/issue-{N}:{BASE_BRANCH}`(비체크아웃 ref 갱신)로만 한다. `git checkout {BASE_BRANCH}; git merge --ff-only`로 우회하면 부모가 이 워크트리(또는 메인 워크트리)에 체크아웃돼, 이후 다른 리프의 self-fetch refspec FF가 전부 거부되고 메인 워크트리 HEAD가 trunk를 이탈한다([[DEC-2026-07-02-212109]] 불변식 위반, Wave 2 #15 관찰). ref 갱신은 원자적이라 병렬 리프의 non-FF 경합도 자연 직렬화된다 — checkout 기반이 유일한 오염원이다.
+
 충돌은 **항상 리프-side**(리프 worktree의 역머지)에서 해결한다 — 오퍼레이터 main worktree에서 해결하지 않는다.
 
 close 증거 = verify 리포트 + 커밋 SHA range(`git rev-parse`로 범위 산출), close:

@@ -137,6 +137,10 @@ $ORCH_ENV task-github:done {N}
 
 **재도출·재서술 금지 지시(핸드오프 프롬프트에 명시).** worker를 spawn하는 프롬프트에 다음을 박는다: *"위 env + 이슈 본문 + 위키 컨텍스트 + run-notes가 스펙 전부다. run-notes/주입 DEC/SSOT에 이미 있는 사실(검증된 API·env·버그)은 재도출·재검증하지 말고 상속하라. 표준 플로우(start→run→done)는 네 스킬이 안다 — 여기서 다시 지시하지 않는다."* 오케스트레이터가 이슈마다 env·플로우·빌드스펙을 장문으로 재작성하면 토큰이 배가되고 스텝 누락 위험이 생긴다.
 
+**도메인 스펙(공식·값·알고리즘)을 핸드오프 산문에 재서술 금지 — 이슈 본문이 정본이다.** 오케스트레이터 산문이 이슈 본문과 어긋나면 드리프트가 생긴다(Wave 2 #14: 산문 "Mifflin-St Jeor" vs 이슈 본문 "Harris-Benedict" — worker가 올바르게 본문을 따랐으나 산문은 낭비+오도). env 블록 + "이슈 본문이 정본" 지시만 남기고 이슈가 소유한 것을 되풀이하지 않는다.
+
+**worker 최종 리턴은 평문(plain text).** spawn 프롬프트에 명시한다: *"최종 보고는 평문으로 반환하라 — 구조화 tool-call로 턴을 끝내지 말 것."* 대형·특수문자(한글 파일명 등) 출력이 구조화 리턴 파서를 깨 실제 작업이 끝났는데도 리턴만 트렁케이트되는 사례가 있었다(Wave 2 #13: 63 tool_use로 작업 완료, 구조화 리턴만 2회 파싱 실패). `done`은 부작용(FF·close·ledger 기록)을 **리턴 성형 전에** 완료·flush해, 리턴이 깨져도 상태가 SoT+ledger에 남게 한다.
+
 work-agent는 start에서 gear를 판단/보고한다. 오케스트레이터는 gear label을 쓰지 않고
 보고값을 review/merge 정책 판단에만 읽는다.
 
@@ -253,6 +257,8 @@ review-tool이 있으면 `compose_tool_command(review-tool, orchestrate.review-c
 `approved`는 merge로, `changes-requested`는 `worker_feedback_handoff()`로 work-agent 재spawn한다.
 round cap을 넘으면 STOP(`human_gate_review`).
 
+**CRITICAL — 리뷰어/검증자 relay는 punt 금지.** review-tool relay agent(및 통합리뷰·verify 서브에이전트)는 **인라인으로 리뷰하고 자기 최종 메시지로 판정(approved/changes-requested)을 반환**한다. 백그라운드 서브에이전트를 spawn하고 자기 턴을 끝내지 말 것 — 자식 완료 알림은 **최상위 오케스트레이터만** 받으므로, spawn-후-punt한 relay는 판정을 영영 relay하지 못하고 자식 판정이 트랜스크립트에 갇힌다(Wave 2 #10 관찰: 백그라운드 relay가 중첩 백그라운드 리뷰어를 낳고 "완료"로 반환, approved 판정이 유실됨). 백그라운드 spawn-후-재호출(re-tick) 패턴은 **최상위 오케스트레이터 전용**이고, dispatch된 worker/reviewer lane은 **리프**(일하고 데이터 반환)여야 한다. 리뷰어가 꼭 팬아웃해야 하면 자기 턴 안에서 자식을 await한 뒤 판정을 반환한다 — 턴을 끝내며 자식 완료를 기대하지 말 것. (여기서 "인라인"=relay lane 자신의 턴 안이라는 뜻이다. 오케스트레이터가 그 lane을 background로 띄우는지 foreground로 부르는지는 §루프의 background-lane dispatch 규칙 + `plan_tick`이 이미 정한다 — 이 규칙은 그 결정을 되돌리지 않고, dispatch된 lane이 판정을 **자기 최종 메시지로** 반환하게만 한다.)
+
 `pr-review:false`인 작업은 worker verification + CI success + mergeState CLEAN이면 review 없이 merge한다. `pr-review:true`인 작업도 review 요청 전에 완료조건/런타임 evidence를 먼저 sanity check하고, 불가능하면 scope split/follow-up/blocker를 만든 뒤 review한다.
 
 ## Recovery Guards
@@ -262,6 +268,7 @@ round cap을 넘으면 STOP(`human_gate_review`).
 - parent/container 완료는 `subIssuesSummary.completed`만 믿지 않는다.
   `orchestrator_ops.child_merge_evidence(children, expected_base=...)`가 각 child의 세 close 증거 중 하나를 요구한다: `closed_no_pr`(no-code no-op close), `merged_pr:{base}`(major, PR merged), `ff_merged:{base, sha_range}`(micro/normal 로컬 FF — `sha_range`가 merged PR을 대체하는 필수 증거).
 - 충돌은 **항상 리프측에서** 해소한다. 로컬 FF가 non-FF로 거부되거나 `gh pr merge`가 충돌하면, 부모를 리프 워크트리로 reverse-merge해 리프측에서 `conflict_action`/conflict-agent로 해소·재검증한 뒤 재시도한다 — 오케스트레이터의 메인 워크트리에서 해소하지 않는다. 의미적 모호 충돌 또는 자동 경로 없음은 STOP(`merge_conflict`)이다. FF는 fetch refspec일 뿐 checkout이 아니므로 메인 워크트리 HEAD는 trunk를 벗어나지 않는다([[DEC-2026-07-02-212109]] 불변식 유지).
+- **파싱 실패 리턴 ≠ worker 실패.** worker의 최종 리턴이 파싱 실패해도 실패로 단정하지 말고 SoT를 조사한다(이슈 상태·브랜치·리프 워크트리·ledger 이벤트). 이미 완료된 단계는 재실행하지 말고 미완 단계만 마무리한다 — worker가 push는 마쳤는데 ledger 기록 직전 리턴만 깨질 수 있다(Wave 2 #13: SoT 조사로 일 안 날리고 수동 closeout으로 마무리). ledger가 non-dict로 깨져 있으면(load STOP) `--reconcile-github`로 GitHub SoT를 다시 덮고, **reconcile 먼저 → evidence 재기록 나중 → container_done 체크** 순서를 고정한다(reconcile가 뒤에 오면 evidence를 또 날린다).
 
 helper 기준:
 
