@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from datetime import date
 import json
+import os
 import re
 import subprocess
 import sys
@@ -437,15 +438,50 @@ def gh(args: list[str], *, code: str = "gh_failed") -> str:
     return _run(["gh", *args], code=code)
 
 
-def wiki_cli_path() -> Path:
-    candidates = [
-        Path("plugins/wiki-markdown/skills/wiki/scripts/wiki_cli.py"),
-        Path(__file__).resolve().parents[4] / "wiki-markdown" / "skills" / "wiki" / "scripts" / "wiki_cli.py",
-    ]
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    return candidates[0]
+def _version_key(name: str) -> tuple[int, ...]:
+    """Numeric sort key for a version dir name; '0.9.0' < '0.12.0' (string sort mis-orders)."""
+    parts = []
+    for token in name.split("."):
+        digits = ""
+        for ch in token:
+            if not ch.isdigit():
+                break
+            digits += ch
+        parts.append(int(digits) if digits else 0)
+    return tuple(parts)
+
+
+def wiki_cli_path(here: Path | None = None) -> Path:
+    """Resolve wiki-markdown's CLI, which is a *sibling* plugin of task-github.
+
+    Two real layouts: monorepo dev (`<repo>/plugins/{task-github,wiki-markdown}/skills/...`,
+    non-versioned) and marketplace cache (`<root>/{task-github,wiki-markdown}/<version>/skills/...`,
+    versioned — pick the newest). A stray `task-github/wiki-markdown` symlink (a worker's old
+    workaround pinning an old version) sits exactly where the monorepo sibling would, so families
+    named `task-github` are skipped.
+    """
+    rel = "skills/wiki/scripts/wiki_cli.py"
+    env_file = os.environ.get("WIKI_CLI_PATH")  # ponytail: escape hatch for non-standard installs / future registry
+    if env_file and Path(env_file).is_file():
+        return Path(env_file)
+    here = (here or Path(__file__)).resolve()
+    for idx in (4, 5):  # monorepo dev: parents[4]=plugins/ ; cache: parents[5]=<marketplace>/
+        try:
+            family = here.parents[idx]
+        except IndexError:
+            continue
+        if family.name == "task-github":  # never resolve wiki through the task-github/wiki-markdown symlink
+            continue
+        wm = family / "wiki-markdown"
+        if not wm.is_dir():
+            continue
+        direct = wm / rel  # monorepo dev: non-versioned
+        if direct.is_file():
+            return direct
+        hits = sorted(wm.glob(f"*/{rel}"), key=lambda p: _version_key(p.parents[3].name), reverse=True)
+        if hits:  # cache: newest version dir
+            return hits[0]
+    return Path("plugins/wiki-markdown") / rel  # sentinel for the missing-CLI error path
 
 
 def _wiki(args: list[str], *, code: str) -> dict[str, Any]:

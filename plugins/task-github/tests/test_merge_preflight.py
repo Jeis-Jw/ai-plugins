@@ -1,3 +1,4 @@
+import os
 import sys
 import json
 import tempfile
@@ -348,6 +349,70 @@ class MergePreflightEvidenceTests(unittest.TestCase):
         self.assertEqual(plan["target_paths"], ["child.py", "parent.py"])
         self.assertEqual(len(plan["target_paths"]), len(["parent.py", "child.py"]))
         self.assertEqual(plan["fallback"][0]["reason"], "tool_version_mismatch")
+
+
+class WikiCliPathTests(unittest.TestCase):
+    """Resolve wiki-markdown's sibling CLI across monorepo dev + versioned cache layouts.
+
+    Regression guard for v0.16.1: the old `parents[4]` + non-versioned path resolved neither
+    real layout, so orchestrated FF closeouts hard-STOPped with `wiki_cli_missing` and a worker
+    bridged it with a `task-github/wiki-markdown` symlink that silently pinned an old version.
+    """
+
+    @staticmethod
+    def _touch(path: Path) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# wiki_cli\n", encoding="utf-8")
+        return path
+
+    def _here(self, plugin_dir: Path) -> Path:
+        # synthetic __file__ under <plugin_dir>/skills/merge/scripts/
+        return plugin_dir / "skills" / "merge" / "scripts" / "merge_preflight.py"
+
+    def setUp(self):
+        self._saved_env = os.environ.pop("WIKI_CLI_PATH", None)
+
+    def tearDown(self):
+        if self._saved_env is not None:
+            os.environ["WIKI_CLI_PATH"] = self._saved_env
+        else:
+            os.environ.pop("WIKI_CLI_PATH", None)
+
+    def test_monorepo_dev_layout_non_versioned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            wiki = self._touch(root / "plugins" / "wiki-markdown" / "skills" / "wiki" / "scripts" / "wiki_cli.py")
+            here = self._here(root / "plugins" / "task-github")
+            self.assertEqual(merge_preflight.wiki_cli_path(here).resolve(), wiki.resolve())
+
+    def test_cache_layout_picks_newest_version(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "jeis-ai-plugins"
+            for ver in ("0.9.0", "0.12.0", "0.19.2"):
+                self._touch(root / "wiki-markdown" / ver / "skills" / "wiki" / "scripts" / "wiki_cli.py")
+            here = self._here(root / "task-github" / "0.16.1")
+            got = merge_preflight.wiki_cli_path(here).resolve()
+            # 0.19.2 wins numerically — string sort would wrongly pick 0.9.0
+            self.assertEqual(got, (root / "wiki-markdown" / "0.19.2" / "skills" / "wiki" / "scripts" / "wiki_cli.py").resolve())
+
+    def test_ignores_task_github_wiki_markdown_symlink(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "jeis-ai-plugins"
+            self._touch(root / "wiki-markdown" / "0.12.0" / "skills" / "wiki" / "scripts" / "wiki_cli.py")
+            self._touch(root / "wiki-markdown" / "0.19.2" / "skills" / "wiki" / "scripts" / "wiki_cli.py")
+            # the pathological worker bridge: task-github/wiki-markdown -> wiki-markdown/0.12.0
+            (root / "task-github").mkdir(parents=True, exist_ok=True)
+            (root / "task-github" / "wiki-markdown").symlink_to(root / "wiki-markdown" / "0.12.0")
+            here = self._here(root / "task-github" / "0.16.1")
+            got = merge_preflight.wiki_cli_path(here).resolve()
+            self.assertEqual(got, (root / "wiki-markdown" / "0.19.2" / "skills" / "wiki" / "scripts" / "wiki_cli.py").resolve())
+
+    def test_env_override_wins(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            override = self._touch(Path(tmp) / "custom" / "wiki_cli.py")
+            os.environ["WIKI_CLI_PATH"] = str(override)
+            here = self._here(Path(tmp) / "plugins" / "task-github")  # no sibling wiki-markdown at all
+            self.assertEqual(merge_preflight.wiki_cli_path(here), override)
 
 
 if __name__ == "__main__":
