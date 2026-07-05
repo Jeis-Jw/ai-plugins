@@ -147,12 +147,30 @@ def _snapshot_issue(node: dict[str, Any], *, parent: int | None, issues: dict[st
         _snapshot_issue(child, parent=number, issues=issues)
 
 
+def _preserve_ledger_issue_state(new_issue: dict[str, Any], old_issue: dict[str, Any] | None) -> None:
+    if not isinstance(old_issue, dict):
+        return
+    for key in (
+        "pr", "merged_pr", "ff_merged", "closed_no_pr",
+        "ready_for_closeout", "closeout_started", "closeout_failed", "closeout_done",
+    ):
+        if key in old_issue:
+            new_issue[key] = old_issue[key]
+    if new_issue.get("state") == "OPEN" and old_issue.get("state") in {
+        "closeout_ready", "closeout_started", "closeout_failed", "close_expected",
+    }:
+        new_issue["state"] = old_issue["state"]
+
+
 def record_snapshot(path: str | Path, tree: dict[str, Any]) -> dict[str, Any]:
     # --reconcile-github rebuild: overwrite the tree from GitHub SoT. Must survive a corrupt local
     # ledger — this IS the documented recovery for one, so it can't refuse to load it.
     payload = load_ledger(path, reset_on_corrupt=True)
+    old_issues = dict(payload.get("issues") or {})
     issues: dict[str, Any] = {}
     _snapshot_issue(tree, parent=None, issues=issues)
+    for number, issue in issues.items():
+        _preserve_ledger_issue_state(issue, old_issues.get(number))
     payload["root"] = int(tree["number"])
     payload["snapshot_at"] = _now()
     payload["issues"] = issues
@@ -331,8 +349,8 @@ def apply_event(payload: dict[str, Any], event: dict[str, Any]) -> None:
             _remove_state_labels(issue)
         elif kind == "closeout_started":
             issue["state"] = "closeout_started"
-            started = dict(issue.get("closeout_started") or {})
-            for key in ("base", "head", "head_sha", "mode", "pr"):
+            started = dict(issue.get("closeout_started") or issue.get("ready_for_closeout") or {})
+            for key in ("base", "head", "head_sha", "mode", "pr", "gear", "review_skipped"):
                 if event.get(key) is not None:
                     started[key] = event[key]
             started["at"] = event.get("at")
@@ -353,8 +371,8 @@ def apply_event(payload: dict[str, Any], event: dict[str, Any]) -> None:
             _remove_state_labels(issue)
         elif kind == "closeout_failed":
             issue["state"] = "closeout_failed"
-            failed = dict(issue.get("closeout_failed") or {})
-            for key in ("base", "head", "head_sha", "mode", "pr", "reason", "message"):
+            failed = dict(issue.get("closeout_failed") or issue.get("closeout_started") or issue.get("ready_for_closeout") or {})
+            for key in ("base", "head", "head_sha", "mode", "pr", "gear", "review_skipped", "reason", "message"):
                 if event.get(key) is not None:
                     failed[key] = event[key]
             failed["at"] = event.get("at")
@@ -447,8 +465,13 @@ def compact_summary(payload: dict[str, Any], *, events_tail: int = 5) -> dict[st
             if issue.get("state") != state:
                 continue
             item = {"issue": int(issue["number"])}
-            source = issue.get("ready_for_closeout") or issue.get("closeout_started") or issue.get("closeout_failed") or {}
-            for key in ("base", "head", "head_sha", "mode", "pr", "reason"):
+            if state == "closeout_started":
+                source = issue.get("closeout_started") or issue.get("ready_for_closeout") or {}
+            elif state == "closeout_failed":
+                source = issue.get("closeout_failed") or issue.get("closeout_started") or issue.get("ready_for_closeout") or {}
+            else:
+                source = issue.get("ready_for_closeout") or {}
+            for key in ("base", "head", "head_sha", "mode", "pr", "gear", "review_skipped", "reason"):
                 if source.get(key) is not None:
                     item[key] = source[key]
             out.append(item)

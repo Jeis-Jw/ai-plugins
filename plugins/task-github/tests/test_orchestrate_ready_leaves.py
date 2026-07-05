@@ -592,6 +592,57 @@ class MergeEdgeGearTreeTests(unittest.TestCase):
         self.assertEqual(summary["ready_for_closeout"][0]["mode"], "pr")
         self.assertEqual(summary["ready_for_closeout"][0]["pr"], 22)
 
+    def test_reconcile_snapshot_preserves_closeout_queue_state(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = Path(tmp) / "ledger.json"
+            tree = node(1, children=[node(2)])
+            orchestrate_ledger.record_snapshot(ledger, tree)
+            orchestrate_ledger.record_event(ledger, {
+                "type": "ready_for_pr_closeout",
+                "issue": 2,
+                "pr": 22,
+                "base": "task/issue-1",
+                "head": "task/issue-2",
+                "head_sha": "head-2",
+            })
+            orchestrate_ledger.record_snapshot(ledger, tree)
+            payload = orchestrate_ledger.load_ledger(ledger)
+
+        issue = payload["issues"]["2"]
+        self.assertEqual(issue["state"], "closeout_ready")
+        self.assertEqual(issue["ready_for_closeout"]["mode"], "pr")
+        self.assertEqual(issue["ready_for_closeout"]["pr"], 22)
+
+    def test_closeout_started_and_failed_preserve_skip_metadata(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = Path(tmp) / "ledger.json"
+            orchestrate_ledger.record_snapshot(ledger, node(1, children=[node(2)]))
+            orchestrate_ledger.record_event(ledger, {
+                "type": "ready_for_closeout",
+                "issue": 2,
+                "base": "task/issue-1",
+                "head": "task/issue-2",
+                "gear": "major",
+                "review_skipped": True,
+            })
+            orchestrate_ledger.record_event(ledger, {"type": "closeout_started", "issue": 2})
+            orchestrate_ledger.record_event(ledger, {
+                "type": "closeout_failed",
+                "issue": 2,
+                "reason": "network",
+            })
+            payload = orchestrate_ledger.load_ledger(ledger)
+            summary = orchestrate_ledger.compact_summary(payload)
+
+        failed = payload["issues"]["2"]["closeout_failed"]
+        self.assertEqual(failed["gear"], "major")
+        self.assertTrue(failed["review_skipped"])
+        self.assertEqual(summary["failed_closeout"][0]["reason"], "network")
+
     def test_resume_closeout_requeues_failed_issue(self):
         import tempfile
 

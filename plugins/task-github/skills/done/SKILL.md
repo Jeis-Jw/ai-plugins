@@ -114,7 +114,7 @@ fi
 
 충돌은 **항상 리프-side**(리프 worktree의 역머지)에서 해결한다 — 오퍼레이터 main worktree에서 해결하지 않는다.
 
-Standalone(non-ORCHESTRATED) FF 경로에서는 close 증거 = verify 리포트 + 커밋 SHA range(`git rev-parse`로 범위 산출), close까지 여기서 수행한다. ORCHESTRATED에서는 아래 close/ledger 스텝은 closeout lane의 책임이다:
+Standalone(non-ORCHESTRATED) FF 경로에서는 close 증거 = verify 리포트 + 커밋 SHA range(`git rev-parse`로 범위 산출), close와 `ff_merged` 기록까지 여기서 수행한다. ORCHESTRATED에서는 아래 스텝을 실행하지 않는다. closeout lane이 `BASE_BRANCH` lock을 잡은 뒤 FF/close/ledger 기록을 수행한다:
 ```bash
 BEFORE=$(git rev-parse "origin/$BASE_BRANCH@{1}" 2>/dev/null || git merge-base task/issue-{N} "$BASE_BRANCH")
 AFTER=$(git rev-parse task/issue-{N})
@@ -126,9 +126,9 @@ SHA range: $SHA_RANGE"
 gh issue edit {N} --remove-label "in-progress" --remove-label "in-review" --remove-label "changes-requested"
 gh issue close {N}
 ```
-**gear:* 라벨 유지.** ORCHESTRATED에서는 ledger에 `ff_merged` 이벤트 기록:
+**gear:* 라벨 유지.** Standalone에서 ledger가 있을 때만 `ff_merged` 이벤트 기록:
 ```bash
-[ "$ORCHESTRATED" = "true" ] && python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/skills/orchestrate/scripts/orchestrate_ledger.py" "$LEDGER" \
+[ "$ORCHESTRATED" != "true" ] && [ -n "$LEDGER" ] && python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/skills/orchestrate/scripts/orchestrate_ledger.py" "$LEDGER" \
   --event ff_merged --issue {N} --base "$BASE_BRANCH" --sha-range "$SHA_RANGE"
 ```
 
