@@ -107,14 +107,14 @@ GitHub sub-issue는 업무 분해 구조이고, 작업 선후관계는 GitHub Is
 | 커밋 type | `feat`/`fix`/`docs`/`refactor`/`test`/`chore` |
 | 커밋 원칙 | 원자적(1커밋=1논리변경), WIP 금지 |
 
-코드 변경 작업은 워크트리를 사용한다. **모든 리프**는 자기 워크트리(`.worktrees/issue-{N}`) + 자기 브랜치(`task/issue-{N}`, base=부모 브랜치)를 갖는다. **컨테이너 브랜치는 순수 ref**다 — 워크트리도 체크아웃도 없이 FF로만 전진한다([[DEC-2026-07-02-224910]]). orchestrate에서 리프 base는 parent issue 브랜치, 루트는 `.task-github.yml base_branch`다.
+코드 변경 작업은 워크트리를 사용한다. **모든 리프**는 자기 워크트리(`.worktrees/issue-{N}`) + 자기 브랜치(`task/issue-{N}`, base=부모 브랜치)를 갖는다. **컨테이너/부모 브랜치는 순수 ref**다 — 워크트리도 체크아웃도 없이 closeout lane이 FF로만 전진한다([[DEC-2026-07-02-224910]]). orchestrate에서 리프 base는 parent issue 브랜치, 루트는 `.task-github.yml base_branch`다.
 ```bash
 touch .gitignore
 grep -qxF ".worktrees/" .gitignore || printf "\n.worktrees/\n" >> .gitignore
 git worktree add .worktrees/issue-{N} -b task/issue-{N} <base-branch>
 git worktree remove .worktrees/issue-{N} && git branch -d task/issue-{N}
 ```
-- micro/normal 리프는 로컬 FF(§6) 직후 워크트리를 정리한다(major 리프는 PR 머지 후 정리).
+- 리프 워크트리는 issue closeout 이후 정리한다. review 없는 edge는 closeout lane의 로컬 FF 이후, review 있는 edge는 PR merge 이후 정리한다.
 - `.worktreeinclude` 파일이 있으면 gitignore된 파일(`.env` 등)을 워크트리로 복사.
 - 워크트리 생성 전 대상 프로젝트 `.gitignore`에 `.worktrees/`가 없으면 추가한다.
 - 진입 후 `git status --short`로 잔재 점검 — 있으면 `git clean -fd` **제안만**(자동 실행 금지).
@@ -148,21 +148,21 @@ unknown key는 parser가 무시한다. contract가 없으면 context bundle은 `
 
 ## 6. gear-gated merge
 
-머지 의식(ceremony)은 리프의 속성이 아니라 **머지 엣지**(노드가 부모에 합류하는 방식)의 속성이고, 기어가 게이트한다([[DEC-2026-07-02-224910]]). all-PR 획일성은 gear-gated로 완화됐다 — micro/normal은 이제 로컬 FF(PR 없음), major만 PR이다.
+머지 의식(ceremony)은 리프의 속성이 아니라 **머지 엣지**(노드가 부모에 합류하는 방식)의 속성이고, review 필요 여부가 transport를 게이트한다([[DEC-2026-07-02-224910]]). micro/normal은 review 없이 로컬 FF closeout, major는 기본적으로 PR+review다. 단, orchestrate `--review=skip`이면 major도 verify 후 로컬 FF closeout으로 가되 gear와 skip 근거를 ledger/report에 남긴다.
 
 | 머지 엣지 기어 | 절차 | 머지 방식 |
 |------|------|-----------|
 | `micro` | run만 | 부모로 로컬 FF(PR 없음) |
 | `normal` | plan+run+verify | 부모로 로컬 FF(PR 없음) |
-| `major` | plan+run+verify | PR + 리뷰 후 머지 |
+| `major` | plan+run+verify | PR + 리뷰 후 머지 (`--review=skip`이면 로컬 FF closeout) |
 
 **리프 머지업**
-- micro/normal 리프: 리프 워크트리에서 verify를 마친 뒤 `orchestrator_ops.ff_merge_command(child_branch=, parent_branch=)`가 내는 `git fetch . task/issue-{leaf}:task/issue-{parent}`로 부모 ref를 FF한다. PR을 만들지 않는다. close 증거는 **verify 리포트 + 커밋 SHA range**(머지된 PR을 대체). ledger에는 `ff_merged` 이벤트를 기록한다:
+- review 불필요 edge(micro/normal, 또는 `--review=skip`의 major): worker는 구현/검증/커밋 뒤 부모 ref를 직접 전진시키지 않고 `ready_for_closeout` ledger 이벤트를 기록한다. closeout one-shot lane이 `BASE_BRANCH`별 lock을 잡고 `orchestrator_ops.ff_merge_command(child_branch=, parent_branch=)`가 내는 `git fetch . task/issue-{leaf}:task/issue-{parent}`로 부모 ref를 FF한다. close 증거는 **verify 리포트 + 커밋 SHA range**(머지된 PR을 대체). ledger에는 `ready_for_closeout` 이후 `ff_merged`/`closeout_done` 이벤트를 기록한다:
   ```bash
-  python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/skills/orchestrate/scripts/orchestrate_ledger.py" {LEDGER} --event ff_merged --issue {N} --base task/issue-{parent} --sha-range {A..B}
+  python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/skills/orchestrate/scripts/orchestrate_ledger.py" {LEDGER} --event ready_for_closeout --issue {N} --base task/issue-{parent} --head task/issue-{N} --head-sha {HEAD_SHA}
   ```
-  이 이벤트는 issue state를 `close_expected`로 두고 `ff_merged` 증거를 남긴다. `orchestrator_ops.child_merge_evidence`는 자식별로 세 가지 close 증거를 받는다: `closed_no_pr`(no-code no-op close) / `merged_pr:{base}`(major, PR 머지) / `ff_merged:{base, sha_range}`(micro/normal 로컬 FF — `sha_range`는 머지된 PR을 대신하는 필수 필드).
-- major 리프: PR 경로 그대로다. `closeout.py --pr {PR}`로 닫고, ledger에는 `pr_merged` 이벤트를 남긴다. close 증거는 머지된 PR.
+  closeout lane의 `ff_merged` 이벤트는 issue state를 `close_expected`로 두고 `ff_merged` 증거를 남긴다. `orchestrator_ops.child_merge_evidence`는 자식별로 세 가지 close 증거를 받는다: `closed_no_pr`(no-code no-op close) / `merged_pr:{base}`(review 필요 PR 머지) / `ff_merged:{base, sha_range}`(로컬 FF — `sha_range`는 머지된 PR을 대신하는 필수 필드).
+- review 필요 edge(기본 major): PR 경로 그대로다. PR 생성/리뷰 대기 동안 parent lock을 잡지 않고, 승인 후 merge 순간만 closeout lane이 `BASE_BRANCH` lock을 잡는다. `closeout.py --pr {PR}`로 닫고, ledger에는 `pr_merged` 이벤트를 남긴다. close 증거는 머지된 PR.
 
 머지 전 hard gate(위키 가용 시 `refresh --level integrity --strict` + PR diff `changed-path-stale`)는 merge 스킬이 closeout **전에** 적용한다 — closeout 스크립트는 wiki를 모른다([merge](../skills/merge/SKILL.md) Step 2).
 
@@ -170,8 +170,8 @@ unknown key는 parser가 무시한다. contract가 없으면 context bundle은 `
 
 컨테이너의 머지업 기어는 자기 라벨이 아니라 **자식들에 대한 누적 승격**으로 매 머지 엣지에서 새로 계산한다 — `orchestrator_ops.container_gear_promotion(child_gears)`. 베이스는 자식 기어의 최대치(micro<normal<major)이고, 여기서 micro 3개↑는 최소 normal로, normal 2개↑는 major로 승격한다(알 수 없는/없는 자식 기어는 micro로 셈, 컨테이너 자기 gear 라벨은 무시). 따라서 normal×2→major, micro×3→normal이라 작은 작업의 누적은 **trunk에 닿기 전 반드시 리뷰 게이트를 한 번 통과**한다. (`ready_leaves`의 `container_done`/`done_parents` 항목과 `plan_tick`의 `merge_container` 액션은 이 누적 실효 기어를 `gear` 필드로 실어 나른다.)
 
-- major(또는 major로 승격된) 컨테이너: epic/컨테이너 브랜치는 worker가 없어 PR이 자동 생성되지 않으므로, orchestrate가 `gh pr create --base task/issue-{parent} --head task/issue-{container}`로 통합 PR을 만들고 리뷰를 거친 뒤 머지한다(자식은 이미 리뷰·머지됨). PR 자체가 통합 로그라 별도 ledger를 만들지 않는다.
-- sub-major 컨테이너: 리프와 동일하게 `ff_merge_command`가 내는 fetch refspec으로 컨테이너 브랜치를 부모로 로컬 FF 전진시킨다. PR 없음.
+- review 필요 컨테이너(major 또는 major로 승격된 컨테이너): epic/컨테이너 브랜치는 worker가 없어 PR이 자동 생성되지 않으므로, orchestrate가 `gh pr create --base task/issue-{parent} --head task/issue-{container}`로 통합 PR을 만들고 리뷰를 거친 뒤 머지한다(자식은 이미 리뷰·머지됨). PR 자체가 통합 로그라 별도 ledger를 만들지 않는다.
+- review 불필요 컨테이너: 리프와 동일하게 closeout lane이 `ff_merge_command`가 내는 fetch refspec으로 컨테이너 브랜치를 부모로 로컬 FF 전진시킨다. PR 없음.
 
 (orchestrate 실행 중 `.task-github/orchestrate/{root}.json` write-through ledger는 run-state 추적용으로 별개이며 wiki task에 쓰지 않는다.)
 
@@ -181,7 +181,7 @@ unknown key는 parser가 무시한다. contract가 없으면 context bundle은 `
 
 **메인 워크트리 HEAD 불변식 ([[DEC-2026-07-02-212109]], 유지)**
 
-오케스트레이션 중 사령관의 메인 워크트리 HEAD는 trunk를 벗어나지 않는다. FF가 fetch refspec(체크아웃이 아님)이라서다 — git은 non-FF ref 업데이트를 거부하고 체크아웃된 브랜치를 건드리길 거부하므로 어떤 워크트리 HEAD도 움직이지 않는다. 충돌(non-FF 거부)은 **항상 리프 워크트리 쪽에서** 해소한다: 호출자가 부모를 리프 워크트리로 역머지(reverse-merge)해 leaf-side에서 resolve하고, 재검증 후 재시도한다 — 사령관의 메인 워크트리에서 충돌을 풀지 않는다. 이번 변경은 [[DEC-2026-07-02-212109]]을 **부분 개정**한다: all-PR 획일성만 gear-gated PR로 완화하고(micro/normal은 로컬 FF, PR 없음), 메인-트리-HEAD-불변식은 그대로 둔다. 병렬 형제가 같은 부모를 두고 경합하는 경우도 별도 PR 경로가 아니라 fetch-refspec FF + 리프측 역머지로 처리한다.
+오케스트레이션 중 사령관의 메인 워크트리 HEAD는 trunk를 벗어나지 않는다. FF가 fetch refspec(체크아웃이 아님)이라서다 — git은 non-FF ref 업데이트를 거부하고 체크아웃된 브랜치를 건드리길 거부하므로 어떤 워크트리 HEAD도 움직이지 않는다. 충돌(non-FF 거부)은 **항상 리프 워크트리 쪽에서** 해소한다: 호출자가 부모를 리프 워크트리로 역머지(reverse-merge)해 leaf-side에서 resolve하고, 재검증 후 재시도한다 — 사령관의 메인 워크트리에서 충돌을 풀지 않는다. 이번 변경은 [[DEC-2026-07-02-212109]]을 **부분 개정**한다: all-PR 획일성은 review-required edge만 PR로 완화하고(review-free edge는 로컬 FF, PR 없음), 메인-트리-HEAD-불변식은 그대로 둔다. 병렬 형제가 같은 부모를 두고 경합하는 경우도 별도 PR 경로가 아니라 `BASE_BRANCH`별 closeout lane + fetch-refspec FF + 리프측 역머지로 처리한다.
 
 ---
 

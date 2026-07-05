@@ -172,7 +172,7 @@ class OrchestratorOpsTests(unittest.TestCase):
     def test_review_verdict_actions(self):
         self.assertEqual(
             orchestrator_ops.review_verdict_action({"verdict": "approved"}, round_number=1, round_cap=3),
-            {"action": "merge"},
+            {"action": "ready_for_pr_closeout"},
         )
         self.assertEqual(
             orchestrator_ops.review_verdict_action(
@@ -266,6 +266,77 @@ class OrchestratorOpsTests(unittest.TestCase):
         self.assertEqual(plan["issues"], [2, 3])
         self.assertTrue(plan["ledger_required"])
         self.assertEqual(plan["retick_on"], "worker_completion")
+
+    def test_plan_tick_dispatches_one_closeout_per_base(self):
+        plan = orchestrator_ops.plan_tick(
+            {
+                "ok": True,
+                "closeout_ready": [
+                    {"number": 2, "base": "task/issue-1", "at": "2026-07-05T00:00:01Z"},
+                    {"number": 3, "base": "task/issue-1", "at": "2026-07-05T00:00:02Z"},
+                    {"number": 4, "base": "task/issue-9", "mode": "pr", "pr": 44, "at": "2026-07-05T00:00:03Z"},
+                ],
+            },
+            review_tool=None,
+            max_workers=3,
+        )
+
+        self.assertEqual(plan["action"], "dispatch_closeout_workers")
+        self.assertEqual(plan["issues"], [2, 4])
+        self.assertEqual(plan["base_branches"], {2: "task/issue-1", 4: "task/issue-9"})
+        self.assertEqual(plan["closeout_modes"], {2: "ff", 4: "pr"})
+        self.assertEqual(plan["prs"], {4: 44})
+
+    def test_plan_tick_skips_base_with_running_closeout(self):
+        plan = orchestrator_ops.plan_tick(
+            {
+                "ok": True,
+                "closeout_ready": [
+                    {"number": 2, "base": "task/issue-1", "at": "2026-07-05T00:00:01Z"},
+                    {"number": 4, "base": "task/issue-9", "at": "2026-07-05T00:00:03Z"},
+                ],
+                "closeout_running": [{"number": 8, "base": "task/issue-1"}],
+            },
+            review_tool=None,
+            max_workers=3,
+        )
+
+        self.assertEqual(plan["action"], "dispatch_closeout_workers")
+        self.assertEqual(plan["issues"], [4])
+
+    def test_plan_tick_closeout_failed_keeps_issue_numbers(self):
+        plan = orchestrator_ops.plan_tick(
+            {
+                "ok": False,
+                "stop_reason": "closeout_failed",
+                "closeout_failed": [{"number": 2}],
+            },
+            review_tool=None,
+        )
+
+        self.assertEqual(plan, {"action": "stop", "stop_reason": "closeout_failed", "issues": [2]})
+
+    def test_plan_tick_pipelines_closeout_and_ready_workers(self):
+        plan = orchestrator_ops.plan_tick(
+            {
+                "ok": True,
+                "closeout_ready": [
+                    {"number": 2, "base": "task/issue-1", "at": "2026-07-05T00:00:01Z"},
+                ],
+                "ready": [
+                    {"number": 3},
+                    {"number": 4},
+                ],
+            },
+            review_tool=None,
+            max_workers=2,
+        )
+
+        self.assertEqual(plan["action"], "pipeline")
+        self.assertEqual(plan["actions"][0]["action"], "dispatch_closeout_workers")
+        self.assertEqual(plan["actions"][0]["issues"], [2])
+        self.assertEqual(plan["actions"][1]["action"], "dispatch_background_workers")
+        self.assertEqual(plan["actions"][1]["issues"], [3, 4])
 
     def test_plan_tick_pipeline_reviews_and_spawns_without_barrier(self):
         plan = orchestrator_ops.plan_tick(

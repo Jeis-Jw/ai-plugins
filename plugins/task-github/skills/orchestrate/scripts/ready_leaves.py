@@ -26,6 +26,9 @@ def item(node: dict[str, Any], *, reason: str | None = None) -> dict[str, Any]:
     }
     if reason:
         out["reason"] = reason
+    for field in ("ready_for_closeout", "closeout_started", "closeout_failed"):
+        if isinstance(node.get(field), dict):
+            out.update(node[field])
     return out
 
 
@@ -92,6 +95,9 @@ def _base_result() -> dict[str, Any]:
         "blocked": [],
         "review_waiting": [],
         "stuck": [],
+        "closeout_ready": [],
+        "closeout_running": [],
+        "closeout_failed": [],
         "done_parents": [],
         "container_done": None,
     }
@@ -141,6 +147,16 @@ def evaluate_tree(
     blocked_nodes: list[dict[str, Any]] = []
 
     for node in descendants:
+        state = node.get("state")
+        if state == "closeout_failed":
+            result["closeout_failed"].append(item(node, reason=(node.get("closeout_failed") or {}).get("reason") or "closeout_failed"))
+            continue
+        if state == "closeout_started":
+            result["closeout_running"].append(item(node))
+            continue
+        if state == "closeout_ready":
+            result["closeout_ready"].append(item(node))
+            continue
         labels = set(node.get("labels") or [])
         blockers = _blocker_numbers(node)
         if blockers:
@@ -172,12 +188,16 @@ def evaluate_tree(
     # then review gate, then ready work.
     if result["stuck"]:
         return _stop(result, "stuck")
+    if result["closeout_failed"]:
+        return _stop(result, "closeout_failed")
     if _complete_parent(tree) and not _blocker_numbers(tree):
         entry = item(tree)
         entry["gear"] = _effective_gear(tree)
         result["container_done"] = entry
         return result
     if result["done_parents"]:
+        return result
+    if result["closeout_ready"] or result["closeout_running"]:
         return result
     if result["review_waiting"]:
         return _stop(result, "human_gate_review")
@@ -282,7 +302,10 @@ def github_fetch_page(owner: str, repo: str) -> Callable[[int, str | None], dict
 
 
 def _decision_summary(payload: dict[str, Any]) -> dict[str, Any]:
-    keys = ("ready", "blocked", "review_waiting", "stuck", "done_parents")
+    keys = (
+        "ready", "blocked", "review_waiting", "stuck", "done_parents",
+        "closeout_ready", "closeout_running", "closeout_failed",
+    )
     summary: dict[str, Any] = {"ok": payload.get("ok"), "stop_reason": payload.get("stop_reason")}
     for key in keys:
         summary[key] = [int(item["number"]) for item in payload.get(key) or []]

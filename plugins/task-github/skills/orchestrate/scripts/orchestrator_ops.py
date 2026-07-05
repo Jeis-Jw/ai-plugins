@@ -543,7 +543,7 @@ def review_verdict_action(
 ) -> dict[str, Any]:
     verdict = str(review_result.get("verdict") or "").lower()
     if verdict == "approved":
-        return {"action": "merge"}
+        return {"action": "ready_for_pr_closeout"}
     if verdict == "changes-requested":
         if round_number >= round_cap:
             return {"action": "stop", "stop_reason": "human_gate_review"}
@@ -578,6 +578,32 @@ def _numbers(items: list[dict[str, Any]] | None) -> list[int]:
     return [int(item["number"]) for item in items or []]
 
 
+def _base_key(item: dict[str, Any]) -> str | None:
+    return item.get("base") or item.get("base_branch")
+
+
+def select_closeout_jobs(
+    ready: list[dict[str, Any]] | None,
+    running: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Pick at most one closeout job per BASE_BRANCH.
+
+    The ledger is the queue; closeout agents are one-shot jobs. Running bases
+    are locked, and ready items for unlocked bases are selected FIFO by their
+    ledger timestamp.
+    """
+    locked = {_base_key(item) for item in running or [] if _base_key(item)}
+    selected: list[dict[str, Any]] = []
+    selected_bases: set[str] = set()
+    for item in sorted(ready or [], key=lambda value: str(value.get("at") or "")):
+        base = _base_key(item)
+        if not base or base in locked or base in selected_bases:
+            continue
+        selected.append(item)
+        selected_bases.add(base)
+    return selected
+
+
 def plan_tick(
     ready_state: dict[str, Any],
     *,
@@ -594,6 +620,12 @@ def plan_tick(
     # stuck tick with a completed parent would auto-merge instead of STOP (부분진행금지 위반).
     if ready_state.get("stuck"):
         return {"action": "stop", "stop_reason": ready_state.get("stop_reason") or "stuck"}
+    if ready_state.get("closeout_failed"):
+        return {
+            "action": "stop",
+            "stop_reason": "closeout_failed",
+            "issues": _numbers(ready_state.get("closeout_failed")),
+        }
     if ready_state.get("ok") is False and ready_state.get("stop_reason") not in (None, "human_gate_review"):
         return {"action": "stop", "stop_reason": ready_state.get("stop_reason")}
 
@@ -608,6 +640,39 @@ def plan_tick(
         # evaluate_tree), not its own label: major → PR+review, else local FF.
         if container_done.get("gear"):
             action["gear"] = container_done["gear"]
+        return action
+
+    closeout_jobs = select_closeout_jobs(
+        ready_state.get("closeout_ready"),
+        ready_state.get("closeout_running"),
+    )
+    if closeout_jobs:
+        action = {
+            "action": "dispatch_closeout_workers",
+            "issues": _numbers(closeout_jobs),
+            "base_branches": {int(item["number"]): _base_key(item) for item in closeout_jobs},
+            "closeout_modes": {int(item["number"]): item.get("mode", "ff") for item in closeout_jobs},
+            "prs": {int(item["number"]): item.get("pr") for item in closeout_jobs if item.get("pr") is not None},
+            "ledger_update": "closeout_started",
+            "ledger_required": True,
+            "retick_on": "closeout_completion",
+        }
+        ready = _numbers(ready_state.get("ready"))
+        if pipeline and ready:
+            return {
+                "action": "pipeline",
+                "actions": [
+                    action,
+                    {
+                        "action": "dispatch_background_workers",
+                        "issues": ready[:max(1, max_workers)],
+                        "ledger_update": "spawned",
+                        "retick_on": "worker_completion",
+                    },
+                ],
+                "ledger_required": True,
+                "retick_on": "any_lane_completion",
+            }
         return action
 
     review_waiting = _numbers(ready_state.get("review_waiting"))

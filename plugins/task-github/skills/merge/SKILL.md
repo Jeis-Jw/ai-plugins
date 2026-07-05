@@ -7,18 +7,18 @@ description: PR을 머지하고 라벨·브랜치를 정리한다. 루트 이슈
 
 PR 머지 + GitHub/로컬 정리. review와 분리되어 검증 없이/검증 후 둘 다에서 사용.
 
-**이 스킬(`closeout.py`)은 PR 경로 전용이다.** 세리머니는 노드 속성이 아니라 **머지 엣지** 속성이고 gear로 게이트된다([[DEC-2026-07-02-224910]]):
-- **micro/normal 리프는 PR이 없다** — done에서 부모 브랜치로 로컬 FF 머지하므로(NO PR) 이 스킬에 **도달하지 않는다**. close 근거는 검증 리포트 + 커밋 SHA 범위(머지된 PR을 대체).
-- 이 스킬은 **major 리프 PR**과, **컨테이너/epic 머지업 PR**(컨테이너의 계산된 gear가 major일 때만)을 처리한다.
-- 컨테이너가 PR을 만들어야 하는 시점(즉 언제 major로 승격되는지)은 [orchestrator_ops.container_gear_promotion](../orchestrate/SKILL.md) 규칙이 정본이다: base = children 최댓값(micro<normal<major), 그 위에 micro 3개↑→normal 승격, normal 2개↑→major 승격. 컨테이너 자신의 gear 라벨은 무시하고 children으로부터 매 머지 엣지마다 새로 계산한다.
-- micro/normal close-candidate가 이 경로로 라우팅되면 **오류다** — 로컬 FF 경로(done)로 되돌린다.
+**이 스킬(`closeout.py`)은 PR 경로 전용이다.** 세리머니는 노드 속성이 아니라 **머지 엣지** 속성이고 review 필요 여부로 게이트된다([[DEC-2026-07-02-224910]]):
+- **review-free edge는 PR이 없다** — worker가 `ready_for_closeout`을 기록하고, orchestrator의 `BASE_BRANCH`별 closeout lane이 로컬 FF로 부모 브랜치에 합류시킨다. close 근거는 검증 리포트 + 커밋 SHA 범위(머지된 PR을 대체).
+- 이 스킬은 **review-required 리프 PR**과, **review-required 컨테이너/epic 머지업 PR**을 처리한다.
+- 컨테이너가 PR을 만들어야 하는 시점은 [orchestrator_ops.container_gear_promotion](../orchestrate/SKILL.md)으로 계산한 gear와 현재 review mode가 함께 결정한다. 기본 `gear` mode에서는 major로 승격되면 PR이고, `--review=skip`이면 FF closeout으로 간다.
+- review-free close-candidate가 이 경로로 라우팅되면 **오류다** — `ready_for_closeout`/로컬 FF closeout 경로로 되돌린다.
 
 ## 입력
 
 ```
 $ARGUMENTS:
-  {PR_NUMBER}    # 머지할 PR. major 리프 PR과 컨테이너/epic 머지업 PR(gear major) 모두 같은 경로.
-                 # micro/normal 리프는 PR이 없어 여기 오지 않는다.
+  {PR_NUMBER}    # 머지할 PR. review-required 리프 PR과 컨테이너/epic 머지업 PR 모두 같은 경로.
+                 # review-free edge는 PR이 없어 여기 오지 않는다.
 ```
 
 ## 절차
@@ -81,7 +81,7 @@ RESULT=$(python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/skills/merge/scripts/
 기본 preflight reuse TTL은 180초다. 더 오래 지난 evidence는 읽기 비용보다 안전성을 우선해 GitHub 조회로 fallback한다(`--preflight-ttl-seconds`로 조정 가능).
 `open_blockers`면 머지하지 않고 중단(에이전트가 사령관에 보고). `downstream` 배열은 머지 후 재검토 대상으로 안내한다.
 
-> 컨테이너/epic 머지업 **PR**도 major 리프 PR과 같은 경로다. 단, 컨테이너는 자신의 계산된 gear([orchestrator_ops.container_gear_promotion](../orchestrate/SKILL.md))가 major일 때만 PR을 만든다 — sub-major 컨테이너는 로컬 FF로 부모에 forward하고 이 스킬을 거치지 않는다. major 컨테이너 머지업은 worker가 없어 PR이 자동 생성되지 않으므로, **orchestrate가 `gh pr create --base task/issue-{parent} --head task/issue-{container}`로 PR을 먼저 만든 뒤** preflight + closeout으로 넘긴다([orchestrate](../orchestrate/SKILL.md) container_done).
+> 컨테이너/epic 머지업 **PR**도 review-required 리프 PR과 같은 경로다. 단, 컨테이너는 자신의 계산된 gear([orchestrator_ops.container_gear_promotion](../orchestrate/SKILL.md))와 review mode가 PR을 요구할 때만 PR을 만든다. review-free 컨테이너는 로컬 FF로 부모에 forward하고 이 스킬을 거치지 않는다. review-required 컨테이너 머지업은 worker가 없어 PR이 자동 생성되지 않으므로, **orchestrate가 `gh pr create --base task/issue-{parent} --head task/issue-{container}`로 PR을 먼저 만든 뒤** preflight + closeout으로 넘긴다([orchestrate](../orchestrate/SKILL.md) container_done).
 
 ### Step 5. (위키 가용 시) task 노드 done 전이
 `closeout.py` 출력의 `task_to_complete`가 비어있지 않으면(= 업무 루트 이슈가 이 머지로 close됨), 그 id로 task 노드를 done 전이한다:
@@ -98,9 +98,9 @@ GitHub 이슈/PR 흐름이 상태 정본이고 위키 done/는 투영이다([wik
 - 후보가 없으면 `none`과 이유를 보고한다.
 
 ## 불변식 (PR 경로)
-- 이 불변식은 **PR 경로**(major 리프 + major 컨테이너 머지업)에만 적용된다. micro/normal 리프의 로컬 FF 머지는 done/orchestrate 소관이며 여기 오지 않는다.
+- 이 불변식은 **PR 경로**(review-required 리프 + review-required 컨테이너 머지업)에만 적용된다. review-free 로컬 FF 머지는 done/orchestrate closeout lane 소관이며 여기 오지 않는다.
 - `--merge`(머지 커밋) 방식.
-- 이 스킬의 머지는 `gh pr merge`(remote) 하나다. 여기서는 로컬 `git checkout`/`git merge`를 하지 않는다 — 머지 후 base 갱신도 `git fetch origin {base}:{base}`로 처리해 메인 워크트리 HEAD가 trunk 불변([[DEC-2026-07-02-212109]]). (micro/normal 로컬 FF는 이 경로 밖에서 fetch refspec으로 처리되며, 이 역시 메인 워크트리 HEAD를 옮기지 않는다.)
+- 이 스킬의 머지는 `gh pr merge`(remote) 하나다. 여기서는 로컬 `git checkout`/`git merge`를 하지 않는다 — 머지 후 base 갱신도 `git fetch origin {base}:{base}`로 처리해 메인 워크트리 HEAD가 trunk 불변([[DEC-2026-07-02-212109]]). (review-free 로컬 FF는 이 경로 밖에서 fetch refspec으로 처리되며, 이 역시 메인 워크트리 HEAD를 옮기지 않는다.)
 - 상태 라벨 제거하되 `gear:*` 유지.
 - 열린 `blocked_by`가 있으면 머지 금지. 머지 후 `blocking` downstream을 안내.
 - 위키가 가용하면 `refresh --level integrity --strict`와 PR diff `changed-path-stale`를 통과해야 머지한다(integrity + drift만 차단; hygiene은 경고).

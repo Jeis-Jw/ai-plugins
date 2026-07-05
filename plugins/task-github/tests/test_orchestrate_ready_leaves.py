@@ -8,6 +8,7 @@ sys.path.insert(0, str(TASK_GITHUB / "skills" / "orchestrate" / "scripts"))
 
 import ready_leaves  # noqa: E402
 import orchestrate_ledger  # noqa: E402
+import resume_closeout  # noqa: E402
 
 
 def node(number, *, state="OPEN", labels=None, blockers=None, children=None):
@@ -526,6 +527,114 @@ class MergeEdgeGearTreeTests(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         self.assertEqual(payload["gate_evidence"]["4"]["gate_version"], "changed-path-stale:v1")
+
+    def test_ready_for_closeout_event_is_queue_state_not_ready_work(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = Path(tmp) / "ledger.json"
+            orchestrate_ledger.record_snapshot(ledger, node(1, children=[node(2), node(3)]))
+            orchestrate_ledger.record_event(ledger, {
+                "type": "ready_for_closeout",
+                "issue": 2,
+                "base": "task/issue-1",
+                "head": "task/issue-2",
+                "head_sha": "head-2",
+            })
+            tree = orchestrate_ledger.tree_from_ledger(orchestrate_ledger.load_ledger(ledger))
+
+        result = ready_leaves.evaluate_tree(tree)
+        self.assertTrue(result["ok"])
+        self.assertEqual([item["number"] for item in result["closeout_ready"]], [2])
+        self.assertEqual(result["closeout_ready"][0]["base"], "task/issue-1")
+        self.assertEqual([item["number"] for item in result["ready"]], [3])
+
+    def test_ledger_summary_is_compact(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = Path(tmp) / "ledger.json"
+            orchestrate_ledger.record_snapshot(ledger, node(1, children=[node(2)]))
+            orchestrate_ledger.record_event(ledger, {
+                "type": "ready_for_closeout",
+                "issue": 2,
+                "base": "task/issue-1",
+                "head": "task/issue-2",
+            })
+            summary = orchestrate_ledger.compact_summary(orchestrate_ledger.load_ledger(ledger))
+
+        self.assertEqual(summary["ready_for_closeout"], [
+            {"issue": 2, "base": "task/issue-1", "head": "task/issue-2", "mode": "ff"}
+        ])
+        self.assertNotIn("issues", summary)
+
+    def test_ready_for_pr_closeout_event_queues_pr_metadata(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = Path(tmp) / "ledger.json"
+            orchestrate_ledger.record_snapshot(ledger, node(1, children=[node(2)]))
+            orchestrate_ledger.record_event(ledger, {
+                "type": "ready_for_pr_closeout",
+                "issue": 2,
+                "pr": 22,
+                "base": "task/issue-1",
+                "head": "task/issue-2",
+                "head_sha": "head-2",
+            })
+            payload = orchestrate_ledger.load_ledger(ledger)
+            tree = orchestrate_ledger.tree_from_ledger(payload)
+            result = ready_leaves.evaluate_tree(tree)
+            summary = orchestrate_ledger.compact_summary(payload)
+
+        self.assertEqual(result["closeout_ready"][0]["mode"], "pr")
+        self.assertEqual(result["closeout_ready"][0]["pr"], 22)
+        self.assertEqual(summary["ready_for_closeout"][0]["mode"], "pr")
+        self.assertEqual(summary["ready_for_closeout"][0]["pr"], 22)
+
+    def test_resume_closeout_requeues_failed_issue(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = Path(tmp) / "ledger.json"
+            orchestrate_ledger.record_snapshot(ledger, node(1, children=[node(2)]))
+            orchestrate_ledger.record_event(ledger, {
+                "type": "closeout_failed",
+                "issue": 2,
+                "base": "task/issue-1",
+                "head": "task/issue-2",
+                "reason": "network",
+            })
+
+            result = resume_closeout.resume(ledger, 2)
+            payload = orchestrate_ledger.load_ledger(ledger)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["state"], "closeout_ready")
+        self.assertEqual(payload["issues"]["2"]["ready_for_closeout"]["base"], "task/issue-1")
+
+    def test_resume_closeout_preserves_pr_mode(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = Path(tmp) / "ledger.json"
+            orchestrate_ledger.record_snapshot(ledger, node(1, children=[node(2)]))
+            orchestrate_ledger.record_event(ledger, {
+                "type": "closeout_failed",
+                "issue": 2,
+                "base": "task/issue-1",
+                "head": "task/issue-2",
+                "mode": "pr",
+                "pr": 22,
+                "reason": "network",
+            })
+
+            result = resume_closeout.resume(ledger, 2)
+            payload = orchestrate_ledger.load_ledger(ledger)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(payload["issues"]["2"]["ready_for_closeout"]["mode"], "pr")
+        self.assertEqual(payload["issues"]["2"]["ready_for_closeout"]["pr"], 22)
 
 
 class LedgerHardeningTests(unittest.TestCase):

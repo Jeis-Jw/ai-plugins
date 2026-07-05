@@ -317,6 +317,50 @@ def apply_event(payload: dict[str, Any], event: dict[str, Any]) -> None:
                     ff[key] = value
             issue["ff_merged"] = ff
             _remove_state_labels(issue)
+        elif kind in {"ready_for_closeout", "ready_for_pr_closeout"}:
+            issue["state"] = "closeout_ready"
+            closeout = dict(issue.get("ready_for_closeout") or {})
+            closeout["mode"] = "pr" if kind == "ready_for_pr_closeout" else closeout.get("mode", "ff")
+            for key in ("base", "head", "head_sha", "gear", "review_skipped", "pr"):
+                if event.get(key) is not None:
+                    closeout[key] = event[key]
+            closeout["at"] = event.get("at")
+            issue["ready_for_closeout"] = closeout
+            issue.pop("closeout_started", None)
+            issue.pop("closeout_failed", None)
+            _remove_state_labels(issue)
+        elif kind == "closeout_started":
+            issue["state"] = "closeout_started"
+            started = dict(issue.get("closeout_started") or {})
+            for key in ("base", "head", "head_sha", "mode", "pr"):
+                if event.get(key) is not None:
+                    started[key] = event[key]
+            started["at"] = event.get("at")
+            issue["closeout_started"] = started
+            _remove_state_labels(issue)
+        elif kind == "closeout_done":
+            if issue.get("state") != "CLOSED":
+                issue["state"] = "close_expected"
+            done = dict(issue.get("closeout_done") or {})
+            for key in ("base", "head", "head_sha", "sha_range", "mode", "pr"):
+                if event.get(key) is not None:
+                    done[key] = event[key]
+            done["at"] = event.get("at")
+            issue["closeout_done"] = done
+            issue.pop("ready_for_closeout", None)
+            issue.pop("closeout_started", None)
+            issue.pop("closeout_failed", None)
+            _remove_state_labels(issue)
+        elif kind == "closeout_failed":
+            issue["state"] = "closeout_failed"
+            failed = dict(issue.get("closeout_failed") or {})
+            for key in ("base", "head", "head_sha", "mode", "pr", "reason", "message"):
+                if event.get(key) is not None:
+                    failed[key] = event[key]
+            failed["at"] = event.get("at")
+            issue["closeout_failed"] = failed
+            issue.pop("closeout_started", None)
+            _remove_state_labels(issue)
 
     if event.get("pr") is not None:
         pr = payload.setdefault("prs", {}).setdefault(str(int(event["pr"])), {"number": int(event["pr"])})
@@ -394,26 +438,70 @@ def update_ledger(
     return write_ledger(path, payload)
 
 
+def compact_summary(payload: dict[str, Any], *, events_tail: int = 5) -> dict[str, Any]:
+    issues = payload.get("issues") or {}
+
+    def issue_items(state: str) -> list[dict[str, Any]]:
+        out = []
+        for issue in issues.values():
+            if issue.get("state") != state:
+                continue
+            item = {"issue": int(issue["number"])}
+            source = issue.get("ready_for_closeout") or issue.get("closeout_started") or issue.get("closeout_failed") or {}
+            for key in ("base", "head", "head_sha", "mode", "pr", "reason"):
+                if source.get(key) is not None:
+                    item[key] = source[key]
+            out.append(item)
+        return sorted(out, key=lambda item: (str(item.get("base", "")), item["issue"]))
+
+    reads = payload.get("github_reads") or {}
+    return {
+        "root": payload.get("root"),
+        "spawned": list(payload.get("spawned") or []),
+        "failed": list(payload.get("failed") or []),
+        "ready_for_closeout": issue_items("closeout_ready"),
+        "running_closeout": issue_items("closeout_started"),
+        "failed_closeout": issue_items("closeout_failed"),
+        "events_tail": list(payload.get("events") or [])[-max(0, events_tail):],
+        "github_reads": {
+            "count": int(reads.get("count") or 0),
+            "reasons_tail": list(reads.get("reasons") or [])[-max(0, events_tail):],
+        },
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("path", help="ledger JSON path, e.g. .task-github/orchestrate/1.json")
     parser.add_argument("--spawned", default="", help="comma/space-separated issues to mark active")
     parser.add_argument("--failed", default="", help="comma/space-separated issues to mark failed")
     parser.add_argument("--completed", default="", help="comma/space-separated issues to remove from active/failed")
-    parser.add_argument("--event", choices=("issue_started", "pr_created", "ci_green", "pr_merged", "ff_merged", "issue_closed"))
+    parser.add_argument("--event", choices=(
+        "issue_started", "pr_created", "ci_green", "pr_merged", "ff_merged", "issue_closed",
+        "ready_for_closeout", "ready_for_pr_closeout", "closeout_started", "closeout_done", "closeout_failed",
+    ))
     parser.add_argument("--issue", type=int)
     parser.add_argument("--pr", type=int)
     parser.add_argument("--head")
     parser.add_argument("--base")
+    parser.add_argument("--head-sha", dest="head_sha")
     parser.add_argument("--sha-range", dest="sha_range")
+    parser.add_argument("--gear")
+    parser.add_argument("--reason")
+    parser.add_argument("--message")
+    parser.add_argument("--review-skipped", action="store_true")
     parser.add_argument("--merge-evidence-json")
     parser.add_argument("--gate-evidence-json")
     parser.add_argument("--preflight-evidence-json")
+    parser.add_argument("--summary", action="store_true")
+    parser.add_argument("--events-tail", type=int, default=5)
     parser.add_argument("--json", action="store_true", dest="as_json")
     args = parser.parse_args(argv)
 
     try:
-        if args.preflight_evidence_json:
+        if args.summary:
+            payload = load_ledger(args.path)
+        elif args.preflight_evidence_json:
             if args.pr is None:
                 raise ValueError("--pr is required with preflight evidence JSON")
             payload = record_preflight_evidence(args.path, args.pr, json.loads(args.preflight_evidence_json))
@@ -426,10 +514,12 @@ def main(argv: list[str] | None = None) -> int:
                 payload = record_gate_evidence(args.path, args.issue, json.loads(args.gate_evidence_json))
         elif args.event:
             event = {"type": args.event}
-            for key in ("issue", "pr", "head", "base", "sha_range"):
+            for key in ("issue", "pr", "head", "base", "head_sha", "sha_range", "gear", "reason", "message"):
                 value = getattr(args, key)
                 if value is not None:
                     event[key] = value
+            if args.review_skipped:
+                event["review_skipped"] = True
             payload = record_event(args.path, event)
         else:
             payload = update_ledger(
@@ -442,7 +532,10 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"ok": False, "message": str(exc)}, ensure_ascii=False))
         return 1
 
-    if args.as_json:
+    if args.summary:
+        summary = compact_summary(payload, events_tail=args.events_tail)
+        print(json.dumps({"ok": True, "summary": summary}, ensure_ascii=False) if args.as_json else json.dumps(summary, ensure_ascii=False, indent=2))
+    elif args.as_json:
         print(json.dumps({"ok": True, **payload}, ensure_ascii=False))
     else:
         print(",".join(str(issue) for issue in payload["spawned"]))
