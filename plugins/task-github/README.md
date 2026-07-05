@@ -132,6 +132,7 @@ ledger v3는 비용 분석과 evidence reuse를 위해 `github_reads`, `read_dec
 
 ## 변경 이력
 
+- `0.18.1`: FF closeout edge primitive — review-free `ready_for_closeout` 처리에서 git/gh/test/ledger 연쇄를 `closeout_ff_edge.py` 한 번으로 감싸 compact JSON만 모델에 노출한다. 성공 ledger 기록은 closeout events와 completed 정리를 한 write로 적용한다.
 - `0.18.0`: orchestrate closeout lane — implementation worker 병렬성은 유지하고, `BASE_BRANCH`별 FIFO one-shot closeout lane으로 FF/PR merge 순간만 직렬화한다. worker는 review가 필요 없으면 `ready_for_closeout`을 기록하고, review가 필요한 edge는 PR/review log를 남긴 뒤 `ready_for_pr_closeout`으로 PR closeout에 들어간다. ledger에 `ready_for_closeout`/`ready_for_pr_closeout`/`closeout_started`/`closeout_done`/`closeout_failed` 이벤트와 compact `--summary` 출력, 실패 closeout 재큐잉 helper를 추가했다.
 - `0.15.3`: 0.14~0.15 계열 hardening — wiki vault가 없는 consumer repo에서는 merge preflight가 `vault_missing`으로 죽지 않고 명시적 skip evidence를 남긴다. child `gate_evidence` 재사용은 `changed-path-stale`에 영향을 주는 active wiki frontmatter surface(`type`/`affects_paths`/`verified_at`/as-of date) hash가 현재와 같을 때만 허용한다. micro/normal FF 경로도 `merge_preflight.py --ff-gate`로 `gate_evidence`를 ledger에 기록한다. `define.review-required`는 `.task-github.yml` 검증을 통과한 boolean만 신뢰하며 invalid config는 이슈 생성을 막는다.
 - `0.15.2`: define challenge review 코드 강제 — `.task-github.yml` `define.review-required=true`면 `create_issue_tree.py`가 spec의 `challenge_review.verdict=="approved"` 없이는 dry-run 포함 이슈 트리 생성을 거부한다. 프롬프트 준수에 기대던 review 필수화를 agent-independent precondition으로 올렸다.

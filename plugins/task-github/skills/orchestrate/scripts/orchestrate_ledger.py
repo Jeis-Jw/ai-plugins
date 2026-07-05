@@ -415,6 +415,19 @@ def record_events(path: str | Path, events: list[dict[str, Any]]) -> dict[str, A
     return write_ledger(path, payload)
 
 
+def record_closeout_success(path: str | Path, issue: int, events: list[dict[str, Any]]) -> dict[str, Any]:
+    payload = load_ledger(path)
+    issue = int(issue)
+    payload["spawned"] = [number for number in payload["spawned"] if int(number) != issue]
+    payload["failed"] = [number for number in payload["failed"] if int(number) != issue]
+    payload.setdefault("events", [])
+    for raw_event in [*events, {"type": "worker_completed", "issue": issue}]:
+        event = {"at": _now(), **raw_event}
+        payload["events"].append(event)
+        apply_event(payload, event)
+    return write_ledger(path, payload)
+
+
 def tree_from_ledger(payload: dict[str, Any], root: int | None = None) -> dict[str, Any]:
     issues = payload.get("issues") or {}
     root = int(root if root is not None else payload.get("root"))

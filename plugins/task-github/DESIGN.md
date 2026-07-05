@@ -845,6 +845,11 @@ python3 <wiki-cli> init    # ./wiki/ vault 생성 (task 타입 지원 버전 필
 
 ## 20. 변경 이력 (v2 → v3)
 
+### v0.18.1 — FF edge closeout primitive
+
+- review-free FF closeout을 `closeout_ff_edge.py` local primitive로 감싸 모델-visible git/gh/test/ledger 호출을 단일 compact JSON 결과로 줄인다. 기존 FF-only, reverse-merge-in-child, issue별 close 순서, GitHub SoT 원칙은 유지한다.
+- ledger closeout 성공 기록은 `ff_merged`/`issue_closed`/`closeout_done`/`worker_completed`를 한 번의 write로 적용해 중간 상태 노출을 줄인다.
+
 ### v0.18.0 — BASE_BRANCH closeout lane
 
 - orchestrate의 병렬 단위를 implementation worker와 merge target ref closeout으로 분리한다. worker는 계속 병렬로 구현/검증/커밋하고, `ready_for_closeout` 이후 FF/PR merge 순간만 `BASE_BRANCH`별 FIFO one-shot lane으로 직렬화한다.

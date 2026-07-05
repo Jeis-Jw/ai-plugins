@@ -106,7 +106,7 @@ python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/skills/orchestrate/scripts/rea
 
    FF 거부(non-FF) 시 오케스트레이터가 부모를 컨테이너 브랜치가 아닌 **리프 워크트리로** reverse-merge하도록 위임하고, 리프측에서 해소·재검증 후 재시도한다(§Recovery Guards).
 4. `done_parents[]` → 각 부모를 그 item의 computed gear와 review mode대로 위(review-required=PR→`merge`, review-free=`ff_merge_command`→push)와 같이 처리하고 close한 뒤 re-tick한다. 같은 tick의 ready는 버린다.
-5. `closeout_ready[]` → `BASE_BRANCH`별 FIFO closeout lane을 dispatch한다. 같은 base에 `closeout_started`가 있으면 새 closeout agent를 만들지 않고 pending으로 남긴다. 다른 base는 병렬 가능하다.
+5. `closeout_ready[]` → `BASE_BRANCH`별 FIFO closeout lane을 dispatch한다. 같은 base에 `closeout_started`가 있으면 새 closeout agent를 만들지 않고 pending으로 남긴다. 다른 base는 병렬 가능하다. review-free FF edge는 모델이 git/gh/ledger/test를 직접 쪼개 호출하지 않고 `closeout_ff_edge.py` 한 번으로 처리한다.
 6. `review_waiting[]` → review-tool이 설정돼 있으면 reviewer-agent relay, 없으면 STOP(`human_gate_review`). 사람 리뷰/머지 후 재실행.
 7. `ready[]` → 최대 `--max-workers`개 work-agent에 위임.
 
@@ -154,6 +154,17 @@ work-agent는 start에서 gear를 판단/보고한다. 오케스트레이터는 
   python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/skills/orchestrate/scripts/orchestrate_ledger.py" "$LEDGER" \
     --event ready_for_closeout --issue {N} --base task/issue-{parent} \
     --head task/issue-{N} --head-sha {HEAD_SHA} --json
+  ```
+  closeout 실행은 아래 local primitive로 감싼다. reverse-merge와 tests는 child worktree에서만 돌고, 메인 worktree에서는 checkout 없이 parent ref FF·push·GitHub issue close·ledger batch만 수행한다.
+  ```bash
+  python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/skills/orchestrate/scripts/closeout_ff_edge.py" \
+    --ledger "$LEDGER" \
+    --issue {N} \
+    --child task/issue-{N} \
+    --parent task/issue-{parent} \
+    --worktree "$(pwd)/.worktrees/issue-{N}" \
+    --test '{REQUIRED_CHECK_JSON}' \
+    --json
   ```
 - **review 필요 edge(기본 major 또는 `--review=all`)**: worker가 PR을 만들고 `review_waiting`으로 넘긴다. PR 생성/리뷰 대기 동안 parent lock을 잡지 않는다. 승인 후 reviewer/orchestrator가 `ready_for_pr_closeout`을 기록하고, PR merge 순간만 `BASE_BRANCH` closeout lane이 lock을 잡는다.
 
