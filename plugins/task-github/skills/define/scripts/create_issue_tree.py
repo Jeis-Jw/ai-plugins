@@ -13,6 +13,7 @@ import json
 import re
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Callable, Iterable, List
 
@@ -146,6 +147,104 @@ def _detect_flat_understructuring(topology: str | None, leaves: List[dict], root
     }
 
 
+def _verification_anchor(body: str) -> str | None:
+    """Normalized verification command from a leaf body's 검증/verify anchor."""
+    m = re.search(r"(?:검증|verification|verify|테스트|tests?)\s*[:：]\s*(.+)", body, re.I)
+    return m.group(1).strip().lower() if m else None
+
+
+# Tokens too generic to signal a shared theme — the pattern is "apply X to
+# surface N", so the surface verbs and build-generic nouns are noise; only the X
+# (a real feature name) discriminates "same theme, N surfaces" from "N unrelated
+# modules". Without stripping the generics, titles like "결제 모듈 구현" /
+# "검색 모듈 구현" would intersect on 모듈/구현 and falsely read as one theme.
+_THEME_STOPWORDS = {kw.lower() for kw in DOMAIN_KEYWORDS} | {
+    # surface/apply verbs
+    "apply", "적용", "적용한다", "add", "추가", "update", "갱신", "수정", "fix",
+    "refactor", "리팩터", "개선", "support", "지원", "처리", "구성", "설정",
+    # build-generic nouns
+    "module", "모듈", "implementation", "impl", "구현", "feature", "기능",
+    "component", "컴포넌트", "screen", "screens", "화면", "surface", "surfaces",
+    "page", "페이지", "work", "작업", "task", "app", "앱",
+    # filler
+    "the", "to", "for", "and", "with", "of", "in", "on",
+}
+
+
+def _title_theme_tokens(title: str) -> set:
+    """Significant lowercased tokens from a title, minus bracket tags/domain/stopwords."""
+    stripped = re.sub(r"\[[^\]]*\]", " ", title).lower()
+    tokens = re.findall(r"[a-z0-9가-힣]{2,}", stripped)
+    return {t for t in tokens if t not in _THEME_STOPWORDS}
+
+
+def _detect_siblings_maybe_phases(leaves: List[dict]) -> List[dict]:
+    """Reverse of flat-understructuring: same-theme sibling leaves fanning out
+    from one shared predecessor are phase candidates, not separate leaves.
+
+    Precondition (hard): >=3 same-parent leaves whose blocked_by is exactly one
+    common predecessor. Then warn only when a **shared title theme** (a real
+    feature name common to all fan leaves, after stripping surface verbs and
+    build-generic nouns) is corroborated by **at least one structural signal**
+    (single path cluster OR identical verification anchor).
+
+    The theme is load-bearing on purpose: the structural signals alone don't
+    discriminate "same theme, N surfaces" (the #119 pathology) from "N unrelated
+    modules after a contract" (cut-reason ④) — a monorepo shares one test
+    command and co-locates modules under one path prefix, so verification and
+    cluster coincide for unrelated work. Only a genuine shared feature name
+    separates them; the structural signal then guards against a coincidental
+    theme token in a truly scattered polyrepo. Independent modules named
+    "결제 모듈"/"검색 모듈" share no feature token once 모듈 is stripped, so they
+    stay silent even under one shared test command.
+    """
+    results: List[dict] = []
+    by_parent: dict = {}
+    for leaf in leaves:
+        by_parent.setdefault(leaf["parent"], []).append(leaf)
+
+    for parent in sorted(by_parent, key=lambda p: p or ""):
+        group = by_parent[parent]
+        if len(group) < 3:
+            continue
+        singly = [leaf for leaf in group if len(leaf["blocked_by"]) == 1]
+        counts = Counter(leaf["blocked_by"][0] for leaf in singly)
+        for predecessor, count in counts.items():
+            if count < 3:
+                continue
+            fan = [leaf for leaf in singly if leaf["blocked_by"][0] == predecessor]
+
+            token_sets = [_title_theme_tokens(leaf["title"]) for leaf in fan]
+            common = set.intersection(*token_sets) if token_sets else set()
+            if not common:
+                continue  # no shared feature name → cannot tell same-theme from unrelated
+
+            signals: List[str] = [f"shared_title_theme={sorted(common)}"]
+            clusters = sorted({_cluster_key(p) for leaf in fan for p in leaf["affects_paths"]})
+            if len(clusters) == 1:
+                signals.append(f"single_path_cluster={clusters[0]}")
+            anchors = {_verification_anchor(leaf["body"]) for leaf in fan}
+            if len(anchors) == 1 and None not in anchors:
+                signals.append("identical_verification")
+
+            if len(signals) < 2:  # theme present but no structural corroboration
+                continue
+
+            keys = [leaf["key"] for leaf in fan]
+            results.append({
+                "code": "siblings_maybe_phases",
+                "message": (
+                    f"{len(fan)}개 형제 리프({', '.join(keys)})가 공유 선행 노드 "
+                    f"{predecessor!r} 뒤로 같은 테마를 나눠 적용하는 fan-out으로 보입니다 — "
+                    f"별도 리프 대신 1개 리프 + phase 체크리스트가 세리머니(worktree·closeout·"
+                    f"머지엣지)를 아낍니다. 신호: {', '.join(signals)}."
+                ),
+                "suggested_merge": keys,
+                "shared_predecessor": predecessor,
+            })
+    return results
+
+
 def _bool_option(value) -> bool:
     if isinstance(value, bool):
         return value
@@ -173,13 +272,13 @@ def review_required_from_config(config_path: Path) -> bool:
 def _check_challenge_review(spec: dict, *, review_required: bool) -> None:
     """Refuse to build a tree when challenge review is required but absent/blocking.
 
-    `review_required` comes from `.task-github.yml`'s `define.review-required`
-    (the persistent, agent-independent source of truth) OR'd with an explicit
-    `spec.challenge_review.required` (spec can only opt further IN, never out —
-    the config check below still runs regardless of what the spec claims). This
-    turns the challenge-review gate (DEC-2026-07-03-012207) from a SKILL.md
-    instruction the executing agent could silently skip into a hard precondition
-    the script itself enforces.
+    `review_required` comes solely from `.task-github.yml`'s `define.review-required`
+    (the persistent, agent-independent source of truth, read by
+    `review_required_from_config`). The spec cannot opt the gate in or out — the
+    only field read off `spec.challenge_review` is `verdict`. This turns the
+    challenge-review gate (DEC-2026-07-03-012207) from a SKILL.md instruction the
+    executing agent could silently skip into a hard precondition the script
+    itself enforces.
     """
     cr = spec.get("challenge_review")
     if cr is not None and not isinstance(cr, dict):
@@ -349,6 +448,12 @@ def validate_spec(spec: dict, *, review_required: bool = False) -> dict:
         flat_warning = _detect_flat_understructuring(topology, leaves, root_out["body"])
         if flat_warning:
             warnings.append(flat_warning)
+
+    # Over-splitting is topology-independent: same-theme siblings fanning out from
+    # a shared predecessor are phase candidates whether the tree is flat or stacked.
+    warnings.extend(
+        _detect_siblings_maybe_phases([c for c in child_out if c["key"] not in epic_keys])
+    )
 
     for c in child_out:
         c.pop("_where", None)

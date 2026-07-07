@@ -86,6 +86,12 @@ git worktree add .worktrees/issue-{N} -b task/issue-{N} "$BASE_BRANCH"
 - 복잡/독립 태스크는 서브에이전트 위임
 - **원자적 커밋**: `{type}: {요약} (#{N}) — {Why}`
 
+#### Step 5.1. phase 리프 실행 (본문에 phase 체크리스트가 있으면)
+여러 표면을 한 리프로 재합침한 이슈(define §절단 원리 재합침)는 본문에 phase 체크리스트를 갖는다. 이때:
+- **phase별 원자적 커밋** — 각 phase 완료 시 커밋하고, 이슈 본문/코멘트의 체크박스를 갱신한다(중간 되돌림 지점).
+- **phase별 표면 검증 + 마지막 full-verify** — 앞 phase는 그 표면만 검증, 마지막 phase에서 전체(typecheck/test/export/스모크)를 1회 돌린다.
+- **phase별 세션 재진입 (compaction 방어).** 리프가 길어 한 세션에 다 담기 부담되면 phase 경계에서 워커 세션을 새로 이어받아도 된다 — **같은 이슈·브랜치(`task/issue-{N}`)·worktree를 그대로 유지**하고, 앞 phase에서 얻은 패턴·결정은 이슈 코멘트 또는 `RUN_NOTES`(orchestrated)로 승계한다. 세리머니(이슈·PR·closeout·머지엣지)는 **리프 1개분으로 1회 유지**된다 — 세션을 나눠도 새 이슈/브랜치/머지엣지를 만들지 않는다.
+
 ### Step 6. 예외 처리 (Issue 코멘트에 태그 기록)
 | 상황 | 태그 | 행동 |
 |------|------|------|

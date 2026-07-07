@@ -845,6 +845,14 @@ python3 <wiki-cli> init    # ./wiki/ vault 생성 (task 타입 지원 버전 필
 
 ## 20. 변경 이력 (v2 → v3)
 
+### v0.19.0 — 재합침 분해 게이트 (don't-split 프로브 + siblings_maybe_phases)
+
+- 절단 판정에 **헤드라인 질문**("이 조각을 다른 워커가 독립 점유해 끝까지 끌고 갈 수 있는가")과 **don't-split 프로브 3개**(검증 명령 동일 / 같은 shared component·기반 수정 = "N surfaces × same system"에서 공유 기반이 곧 write-set / 앞 조각 context 연속)를 추가한다. 사유①(병렬 이득)의 "독립 조각" 전제가 표면 디렉토리 분리에 속지 않도록 하는 정직성 검사다.
+- **겹침 처리 우선순위**를 명문화한다: same-theme write-set 겹침은 `blocked_by` 직렬화보다 **1리프 + phase 체크리스트 재합침**을 먼저 검토한다(직렬 리프 N개 = phase N개 + 세리머니 N배). quality-gates G4·challenge review 근거 기준·Container Independence Check에 반영.
+- `create_issue_tree.py`에 **`siblings_maybe_phases`** 비차단 dry-run 경고를 추가한다(`flat_maybe_understructured`의 역방향). 발동: 같은 parent의 리프 3+개가 **동일한 단일 선행 노드** 뒤로 fan-out하면서 **공통 title 테마(필수 판별자)** + **구조 신호(단일 경로 클러스터 | 동일 "검증:" anchor) 1개 이상**. 테마는 surface 동사·build-generic 명사(적용/구현/모듈/module/feature…)를 제거한 뒤 남은 실제 feature 이름의 교집합으로 본다 — 구조 신호만으로는 monorepo의 공유 test 명령·co-location 때문에 "같은 테마 N표면"과 "독립 모듈 N개"를 못 가른다. 공유 계약(사유④) 뒤 독립 모듈 fan-out은 공통 feature 테마가 없어 조용하다(각 신호는 mutation 테스트로 load-bearing 고정).
+- 재합침한 큰 리프의 실행 위생을 **phase 운영 규약**으로 흡수한다: phase별 원자적 커밋, phase별 체크포인트, 마지막 phase=full-verify 1회, compaction 우려 시 phase별 세션 재진입(같은 이슈·브랜치·worktree 유지, 세리머니 1회). `run` 스킬 Step 5.1에 phase 리프 실행 규약 추가.
+- 근거: 0.18.1 consumer dogfood #119(Lightning Santa) 회고 — 절단 원리가 존재하는 버전에서 same-theme 형제(#121/122/123) 과분해로 sibling merge conflict + 검증 3회 반복. 룰 부재가 아니라 판정 실패. DEC-2026-07-07-204311, REJ(실행단계 worker 묶기·3-of-5 산술) 반려.
+
 ### v0.18.1 — FF edge closeout primitive
 
 - review-free FF closeout을 `closeout_ff_edge.py` local primitive로 감싸 모델-visible git/gh/test/ledger 호출을 단일 compact JSON 결과로 줄인다. 기존 FF-only, reverse-merge-in-child, issue별 close 순서, GitHub SoT 원칙은 유지한다.

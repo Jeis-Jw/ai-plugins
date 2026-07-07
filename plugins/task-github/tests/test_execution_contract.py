@@ -269,6 +269,138 @@ class TreeShapeTests(unittest.TestCase):
         self.assertEqual(len(validated["warnings"]), 1)
         self.assertEqual(validated["warnings"][0]["code"], "flat_maybe_understructured")
 
+    def _santa_leaf(self, key, surface_paths, verify="pnpm typecheck && pnpm test && pnpm export",
+                    blocked_by=("SHELL",)):
+        # #119-shape leaf: shared feature theme ("Lightning Santa"), per-surface path.
+        return {
+            "key": key,
+            "title": f"Apply Lightning Santa to {key}",
+            "body": f"완료 기준: santa 적용\n검증: {verify}\n영향 경로: {surface_paths[0]}",
+            "parent": None,
+            "affects_paths": surface_paths,
+            "blocked_by": list(blocked_by),
+            "cross_parent_dependency_reason": None,
+        }
+
+    def _siblings_warning(self, validated):
+        return next((w for w in validated["warnings"]
+                     if w["code"] == "siblings_maybe_phases"), None)
+
+    def test_siblings_maybe_phases_warns_on_119_shape(self):
+        # SHELL prerequisite, then 3 same-theme surfaces fan out from it — all
+        # three signals present (shared theme + single cluster + identical verify).
+        spec = {
+            "root": self._root("flat"),
+            "children": [
+                _leaf("SHELL", paths=["apps/mobile/shell/index.ts"]),
+                self._santa_leaf("wallet", ["apps/mobile/wallet.tsx"]),
+                self._santa_leaf("store", ["apps/mobile/store.tsx"]),
+                self._santa_leaf("settings", ["apps/mobile/settings.tsx"]),
+            ],
+        }
+        warning = self._siblings_warning(create_issue_tree.validate_spec(spec))
+        self.assertIsNotNone(warning)
+        self.assertEqual(sorted(warning["suggested_merge"]), ["settings", "store", "wallet"])
+        self.assertEqual(warning["shared_predecessor"], "SHELL")
+
+    def test_siblings_theme_pins_via_cluster_only(self):
+        # Shared theme + single cluster, but DISTINCT verify per leaf → exactly 2
+        # signals. Pins both the theme (necessary) and single_path_cluster: drop
+        # either and it falls to 1 signal and goes silent.
+        spec = {
+            "root": self._root("flat"),
+            "children": [
+                _leaf("SHELL", paths=["apps/mobile/shell/index.ts"]),
+                self._santa_leaf("wallet", ["apps/mobile/wallet.tsx"], verify="test wallet"),
+                self._santa_leaf("store", ["apps/mobile/store.tsx"], verify="test store"),
+                self._santa_leaf("settings", ["apps/mobile/settings.tsx"], verify="test settings"),
+            ],
+        }
+        self.assertIsNotNone(self._siblings_warning(create_issue_tree.validate_spec(spec)))
+
+    def test_siblings_theme_pins_via_verification_only(self):
+        # Shared theme + identical verify, but DISTINCT path clusters → exactly 2
+        # signals. Pins the theme and identical_verification corroboration.
+        spec = {
+            "root": self._root("flat"),
+            "children": [
+                _leaf("SHELL", paths=["libs/shell/index.ts"]),
+                self._santa_leaf("wallet", ["apps/wallet/main.tsx"]),
+                self._santa_leaf("store", ["apps/store/main.tsx"]),
+                self._santa_leaf("settings", ["apps/settings/main.tsx"]),
+            ],
+        }
+        self.assertIsNotNone(self._siblings_warning(create_issue_tree.validate_spec(spec)))
+
+    def test_siblings_theme_alone_is_silent(self):
+        # Shared theme but NO structural corroboration (distinct clusters AND
+        # distinct verify) → 1 signal → silent. Pins the "theme + >=1 structural"
+        # rule: a theme collision alone must not fire.
+        spec = {
+            "root": self._root("flat"),
+            "children": [
+                _leaf("SHELL", paths=["libs/shell/index.ts"]),
+                self._santa_leaf("wallet", ["apps/wallet/main.tsx"], verify="test wallet"),
+                self._santa_leaf("store", ["apps/store/main.tsx"], verify="test store"),
+                self._santa_leaf("settings", ["apps/settings/main.tsx"], verify="test settings"),
+            ],
+        }
+        self.assertIsNone(self._siblings_warning(create_issue_tree.validate_spec(spec)))
+
+    def test_siblings_silent_on_independent_fanout(self):
+        # The F1 scenario: 3 genuinely independent modules fan out from one
+        # CONTRACT, sharing ONE monorepo test command (identical_verification
+        # would fire) — but their titles carry only build-generic nouns
+        # (모듈/구현), so after stopwords the theme intersection is EMPTY. Theme is
+        # load-bearing → silent, even though a structural signal is present.
+        def _module(key, feature, path):
+            return {
+                "key": key,
+                "title": f"{feature} 모듈 구현",
+                "body": f"완료 기준: x\n검증: npm test\n영향 경로: {path}",
+                "parent": None,
+                "affects_paths": [path],
+                "blocked_by": ["CONTRACT"],
+                "cross_parent_dependency_reason": None,
+            }
+
+        spec = {
+            "root": self._root("flat"),
+            "children": [
+                _leaf("CONTRACT", paths=["docs/api-contract.md"]),
+                _module("PAY", "결제", "src/payment/handler.py"),
+                _module("SEARCH", "검색", "src/search/index.py"),
+                _module("NOTIF", "알림", "src/notify/worker.py"),
+            ],
+        }
+        self.assertIsNone(self._siblings_warning(create_issue_tree.validate_spec(spec)))
+
+    def test_siblings_maybe_phases_needs_shared_predecessor(self):
+        # 3 same-theme leaves but no shared single predecessor → precondition
+        # fails → silent (does not collide with flat single-signal semantics).
+        spec = {
+            "root": self._root("flat"),
+            "children": [
+                self._santa_leaf("wallet", ["apps/mobile/wallet.tsx"], blocked_by=()),
+                self._santa_leaf("store", ["apps/mobile/store.tsx"], blocked_by=()),
+                self._santa_leaf("settings", ["apps/mobile/settings.tsx"], blocked_by=()),
+            ],
+        }
+        self.assertIsNone(self._siblings_warning(create_issue_tree.validate_spec(spec)))
+
+    def test_siblings_silent_on_fan_of_two(self):
+        # Fan of exactly 2 (< precondition of 3), all three signals present →
+        # silent. Pins the fan-size boundary against a count<3 → count<2 off-by-one.
+        spec = {
+            "root": self._root("flat"),
+            "children": [
+                _leaf("SHELL", paths=["apps/mobile/shell/index.ts"]),
+                self._santa_leaf("wallet", ["apps/mobile/wallet.tsx"]),
+                self._santa_leaf("store", ["apps/mobile/store.tsx"]),
+            ],
+        }
+        self.assertIsNone(self._siblings_warning(create_issue_tree.validate_spec(spec)))
+
     def test_unknown_parent_rejected(self):
         spec = {"root": self._root(), "children": [_leaf("a", parent="ghost")]}
         with self.assertRaises(create_issue_tree.IssueTreeError) as ctx:
