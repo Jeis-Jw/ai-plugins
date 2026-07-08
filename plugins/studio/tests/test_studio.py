@@ -154,10 +154,15 @@ def main() -> None:
         assert r["config"]["roles"]["critic"]["effort"] == "high", r
         assert r["config"]["defaults"]["model"] is None, r                  # blank → null → inherit
         assert r["config"]["rituals"]["brainstorm"]["diverge"]["effort"] == "low", r
-        #    bad effort value → validate is a hard error (exit 6)
+        #    bad effort value → hard error on BOTH validate and get (exit 6),
+        #    so a bad config can never reach the brokers via the producer's `get`
         (tmp / "bad.yml").write_text("defaults:\n  effort: turbo\n", encoding="utf-8")
         r = run(["config", "validate", "--path", str(tmp / "bad.yml")], tmp, expect=6)
         assert any("effort" in p["msg"] for p in r["problems"]), r
+        run(["config", "get", "--path", str(tmp / "bad.yml")], tmp, expect=6)
+        #    tab indentation is rejected (silently mis-parses otherwise) → exit 4
+        (tmp / "tabs.yml").write_text("roles:\n\tdev:\n\t\teffort: high\n", encoding="utf-8")
+        run(["config", "get", "--path", str(tmp / "tabs.yml")], tmp, expect=4)
         #    unknown model is a warning, not an error (still exit 0)
         (tmp / "warn.yml").write_text("defaults:\n  model: gpt\n", encoding="utf-8")
         r = run(["config", "validate", "--path", str(tmp / "warn.yml")], tmp)

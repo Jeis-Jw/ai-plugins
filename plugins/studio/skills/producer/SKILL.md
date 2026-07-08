@@ -102,7 +102,7 @@ run = 일감 × ritual × crew 조합의 **백그라운드 1회 실행**. 브로
 돌지는 `.studio.yml`이 정한다. 소집 직전 정책을 읽어 broker args에 실어 넘긴다:
 
 ```bash
-python3 "$STUDIO" config get --json   # → {config: {defaults, roles, rituals}}
+python3 "$STUDIO" config get   # JSON 무조건 출력 → {config: {defaults, roles, rituals}}
 ```
 그 `config`를 broker args의 `agentPolicy`로 넘긴다. 상황에 따라 동적으로 조일 때
 (예: 예산 잔액 부족)는 `overrides: {effort: "low"}`를 함께 넘긴다. 해석 우선순위는
@@ -130,7 +130,7 @@ python3 "$STUDIO" config get --json   # → {config: {defaults, roles, rituals}}
        agenda: "<이 run의 안건>",
        personas: [{name, role, prior, body}, ...],   // 서로 다른 prior 2개 이상
        criticRubric: "<rubric.md 내용>",
-       agentPolicy: <config get --json의 config>,     // model/effort 정책
+       agentPolicy: <config get의 config>,     // model/effort 정책
        overrides: {},                                 // 선택: 이 run만 강제 (예: {effort:"low"})
        maxRounds: 4, dryStop: 2
      }
@@ -155,7 +155,7 @@ Workflow 호출 (백그라운드):
     worktreePath: ".worktrees/track-<slug>",
     personas: { dev: {body}, qa: {body} },
     criticRubric: "<rubric.md 내용>",
-    agentPolicy: <config get --json의 config>,
+    agentPolicy: <config get의 config>,
     overrides: {},
     maxRounds: 3
   }

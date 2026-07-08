@@ -9,6 +9,8 @@ __pycache__/
 
 *.local.*
 
-# 워크스페이스 로컬 config (setup이 scaffold, 커밋 안 함 — 환경별)
+# 워크스페이스 로컬 config (setup/scaffold이 생성, 커밋 안 함 — 환경별)
 .task-github.yml
 .task-github/orchestrate/
+.studio.yml
+studio/

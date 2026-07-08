@@ -182,6 +182,10 @@ def parse_yaml_subset(text: str) -> dict:
         if not line.strip():
             continue
         indent = len(line) - len(line.lstrip(" "))
+        # tabs in the indent would count as 0 (lstrip only strips spaces) and
+        # silently collapse nesting — YAML bans tab indentation, so do we.
+        if "\t" in line[:len(line) - len(line.lstrip(" \t"))]:
+            raise ValueError(f"tab indentation not allowed (use spaces): {raw!r}")
         if ":" not in line:
             raise ValueError(f"invalid config line: {raw!r}")
         key, val = line.strip().split(":", 1)
@@ -234,17 +238,13 @@ def render_default_config() -> str:
         "  summarizer:\n"
         "    effort: low         # neutral compression; cheap is fine\n"
         "\n"
+        "# ritual layer = override a role FOR ONE STEP. Only meaningful where the\n"
+        "# step differs from the role (brainstorm has distinct steps); pairing steps\n"
+        "# are the roles themselves, so set those under roles: instead.\n"
         "rituals:\n"
         "  brainstorm:\n"
         "    diverge:\n"
-        "      effort: low       # blind opening proposals — cheap\n"
-        "    debate:\n"
-        "      effort: medium\n"
-        "  pairing:\n"
-        "    dev:\n"
-        "      effort: high\n"
-        "    qa:\n"
-        "      effort: high\n"
+        "      effort: low       # blind opening proposals are cheap; debate/critic inherit roles\n"
     )
 
 
@@ -266,9 +266,11 @@ def cmd_config(args: argparse.Namespace) -> None:
         fail(4, "parse", f"{path}: {e}")
 
     problems = _validate_config(cfg)
+    # both validate AND get hard-fail on error-severity problems, so a bad
+    # effort can never reach the brokers through the producer's `get` step.
+    if any(p["severity"] == "error" for p in problems):
+        fail(6, "invalid_config", "config has errors", problems=problems)
     if args.ccmd == "validate":
-        if any(p["severity"] == "error" for p in problems):
-            fail(6, "invalid_config", "config has errors", problems=problems)
         ok(path=str(path), problems=problems)
     ok(path=str(path), present=True, config=cfg, problems=problems)
 
