@@ -18,7 +18,9 @@ export const meta = {
 //     criticRubric: string,
 //     maxRounds?: number (default 3),
 //   }
-const A = args || {}
+// defensive: a stringified args (caller passed JSON text instead of an object)
+// would otherwise silently drop every field — parse it back.
+const A = typeof args === 'string' ? JSON.parse(args) : (args || {})
 const SPEC = A.taskSpec || '(no task spec)'
 const CRITERIA = A.acceptanceCriteria || []
 const WT = A.worktreePath
@@ -63,13 +65,17 @@ const DEV_SCHEMA = {
     summary: { type: 'string', description: 'what you implemented/changed this turn' },
     defended: {
       type: 'array',
-      description: 'each qa failure you fixed, with the test that now guards it',
+      description: 'each open qa failure you fixed, keyed by its id, with the test that now guards it',
       items: {
-        type: 'object', additionalProperties: false, required: ['failure_title', 'test_added'],
-        properties: { failure_title: { type: 'string' }, test_added: { type: 'string' }, how: { type: 'string' } },
+        type: 'object', additionalProperties: false, required: ['failure_id', 'test_added'],
+        properties: {
+          failure_id: { type: 'integer', description: 'the id of the open failure you defended (from the open-failures list)' },
+          test_added: { type: 'string' },
+          how: { type: 'string' },
+        },
       },
     },
-    unresolved: { type: 'array', items: { type: 'string' }, description: 'failures you could not fix this turn' },
+    unresolved: { type: 'array', items: { type: 'integer' }, description: 'ids of failures you could not fix this turn' },
   },
 }
 
@@ -93,8 +99,9 @@ const QA_SCHEMA = {
 
 const delta_log = []
 let round = 0
-let openFailures = []       // qa failures dev has not yet defended
-const defendedAll = []
+let openFailures = []       // qa failures dev has not yet defended; each has a stable id
+const defendedAll = []      // titles of defended failures (for the verdict prompt)
+let failureSeq = 0          // monotonic id source — join key between qa and dev
 
 phase('Build')
 for (round = 1; round <= MAX_ROUNDS; round++) {
@@ -103,8 +110,8 @@ for (round = 1; round <= MAX_ROUNDS; round++) {
     CONTEXT,
     round === 1
       ? 'Round 1. Implement the smallest thing that satisfies every acceptance criterion. Add tests for the criteria.'
-      : 'Defend against QA. For EACH open failure below, fix it and add a test that now passes and guards it.',
-    openFailures.length ? '\n--- open failures from QA ---\n' + JSON.stringify(openFailures, null, 2) : '',
+      : 'Defend against QA. For EACH open failure below, fix it and add a test that now passes and guards it. Reference each failure you fixed by its `id`.',
+    openFailures.length ? '\n--- open failures from QA (defend by id) ---\n' + JSON.stringify(openFailures, null, 2) : '',
     '\n--- you (dev) ---\n' + (DEV.body || ''),
   ].join('\n')
   const dev = await agent(devPrompt, {
@@ -114,16 +121,22 @@ for (round = 1; round <= MAX_ROUNDS; round++) {
     // implementing against the criteria is itself an artifact delta — otherwise
     // a clean build qa can't break would leave delta_log empty and read as theatre.
     if (dev.summary) delta_log.push({ round, changed_what: `implemented: ${dev.summary}`, anchor: 'artifact', evidence: dev.summary })
-    const defendedThisRound = new Set()
+    // JOIN BY ID, not title: dev and qa phrase a failure differently, so an
+    // exact-string join silently fails and a defended failure stays "open"
+    // forever (defended and open both grow → contradictory evidence). The id is
+    // the broker's own key, immune to either agent's wording.
+    const openById = new Map(openFailures.map(f => [f.id, f]))
+    const defendedIds = new Set()
     for (const d of dev.defended || []) {
-      defendedAll.push(d.failure_title)
-      defendedThisRound.add(d.failure_title)
-      delta_log.push({ round, changed_what: `defended: ${d.failure_title}`, anchor: 'repro-test', evidence: d.test_added })
+      const f = openById.get(d.failure_id)
+      if (!f) continue   // dev cited an id that isn't open — ignore, don't fabricate a defense
+      defendedIds.add(d.failure_id)
+      defendedAll.push(f.title)
+      delta_log.push({ round, changed_what: `defended: ${f.title}`, anchor: 'repro-test', evidence: d.test_added })
     }
-    // DEFAULT-OPEN: a reproduced failure stays open until it is explicitly
-    // defended. Never trust dev.unresolved to re-enumerate everything still
-    // broken — an omitted failure must not silently vanish.
-    openFailures = openFailures.filter(f => !defendedThisRound.has(f.title))
+    // DEFAULT-OPEN: a reproduced failure stays open until its id is explicitly
+    // defended — never inferred from unresolved or from title matching.
+    openFailures = openFailures.filter(f => !defendedIds.has(f.id))
   }
 
   // ---- qa turn: attack the current code -----------------------------------
@@ -131,7 +144,7 @@ for (round = 1; round <= MAX_ROUNDS; round++) {
   const qaPrompt = [
     CONTEXT,
     'Attack the current implementation in the worktree. Produce NEW reproducible failures only — each with an exact repro command/input. Do not repeat already-open failures.',
-    openFailures.length ? '\n--- already-open failures (do not repeat) ---\n' + JSON.stringify(openFailures.map(f => f.title)) : '',
+    openFailures.length ? '\n--- already-open failures (do not repeat) ---\n' + JSON.stringify(openFailures.map(f => ({ id: f.id, title: f.title }))) : '',
     '\n--- you (qa) ---\n' + (QA.body || ''),
   ].join('\n')
   const qa = await agent(qaPrompt, {
@@ -139,7 +152,7 @@ for (round = 1; round <= MAX_ROUNDS; round++) {
   })
   const newFailures = qa && qa.broke ? (qa.failures || []) : []
   for (const f of newFailures) {
-    openFailures.push(f)
+    openFailures.push({ id: failureSeq++, ...f })   // broker-assigned id = the join key
     delta_log.push({ round, changed_what: `reproduced failure: ${f.title}`, anchor: 'risk', evidence: f.repro })
   }
   log(`round ${round}: qa produced ${newFailures.length} new failure(s), ${openFailures.length} open`)
