@@ -50,6 +50,11 @@ VALID_ANCHORS = (
     "repro-test",
 )
 
+# agent policy config (.studio.yml)
+CONFIG_PATH_DEFAULT = ".studio.yml"
+KNOWN_MODELS = ("sonnet", "opus", "haiku", "fable")   # blank/omitted = inherit session
+KNOWN_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+
 
 # --------------------------------------------------------------------------- #
 # helpers
@@ -128,6 +133,171 @@ def write_board(ws: Path, board: dict) -> None:
 
 def load_board(ws: Path) -> dict:
     return read_json_block(ws / "board.md")
+
+
+# --------------------------------------------------------------------------- #
+# .studio.yml — minimal indented-YAML-subset parser (stdlib only)
+#
+# Supports arbitrary-key nested mappings and scalar leaves — enough for the
+# agent model/effort policy. An empty value opens a nested mapping only when the
+# next line is more-indented; otherwise it is a null leaf (e.g. `model:` = inherit).
+# No lists, no flow syntax — the config never needs them.
+# --------------------------------------------------------------------------- #
+def _strip_comment(line: str) -> str:
+    out, quote = [], None
+    for ch in line:
+        if quote:
+            if ch == quote:
+                quote = None
+        elif ch in "\"'":
+            quote = ch
+        elif ch == "#":
+            break
+        out.append(ch)
+    return "".join(out).rstrip()
+
+
+def _scalar(v: str) -> Any:
+    v = v.strip()
+    if (len(v) >= 2) and v[0] == v[-1] and v[0] in "\"'":
+        return v[1:-1]
+    low = v.lower()
+    if low in ("true", "yes"):
+        return True
+    if low in ("false", "no"):
+        return False
+    if low in ("null", "~", ""):
+        return None
+    try:
+        return int(v)
+    except ValueError:
+        return v
+
+
+def parse_yaml_subset(text: str) -> dict:
+    # collect (indent, key, rawvalue) for non-blank lines
+    rows = []
+    for raw in text.splitlines():
+        line = _strip_comment(raw)
+        if not line.strip():
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if ":" not in line:
+            raise ValueError(f"invalid config line: {raw!r}")
+        key, val = line.strip().split(":", 1)
+        rows.append((indent, key.strip(), val.strip()))
+
+    root: dict = {}
+    stack = [(-1, root)]
+
+    def next_indent(i: int) -> int | None:
+        return rows[i + 1][0] if i + 1 < len(rows) else None
+
+    for i, (indent, key, val) in enumerate(rows):
+        while indent <= stack[-1][0]:
+            stack.pop()
+        if not stack:
+            raise ValueError("config indentation underflow")
+        parent = stack[-1][1]
+        ni = next_indent(i)
+        if val == "" and ni is not None and ni > indent:
+            child: dict = {}
+            parent[key] = child
+            stack.append((indent, child))
+        else:
+            parent[key] = _scalar(val)
+    return root
+
+
+def render_default_config() -> str:
+    return (
+        "# .studio.yml — crew agent model/effort policy.\n"
+        "# Resolution (most→least specific): run-override > rituals.<ritual>.<step>\n"
+        "#   > roles.<role> > defaults > (omit ⇒ inherit the producer session).\n"
+        "# model: sonnet|opus|haiku|fable  (blank = inherit)   effort: low|medium|high|xhigh|max\n"
+        "\n"
+        "defaults:\n"
+        "  model:            # blank = inherit the session model (recommended default)\n"
+        "  effort: medium\n"
+        "\n"
+        "roles:\n"
+        "  planner-a:\n"
+        "    effort: medium\n"
+        "  planner-b:\n"
+        "    effort: medium\n"
+        "  dev:\n"
+        "    effort: high\n"
+        "  qa:\n"
+        "    effort: high\n"
+        "  critic:\n"
+        "    effort: high        # the anti-theatre judge — keep it sharp\n"
+        "  summarizer:\n"
+        "    effort: low         # neutral compression; cheap is fine\n"
+        "\n"
+        "rituals:\n"
+        "  brainstorm:\n"
+        "    diverge:\n"
+        "      effort: low       # blind opening proposals — cheap\n"
+        "    debate:\n"
+        "      effort: medium\n"
+        "  pairing:\n"
+        "    dev:\n"
+        "      effort: high\n"
+        "    qa:\n"
+        "      effort: high\n"
+    )
+
+
+def cmd_config(args: argparse.Namespace) -> None:
+    path = Path(args.path or CONFIG_PATH_DEFAULT)
+    if args.ccmd == "scaffold":
+        if path.exists() and not args.force:
+            fail(2, "exists", f"{path} already exists (use --force)")
+        path.write_text(render_default_config(), encoding="utf-8")
+        ok(path=str(path), created=True)
+    # get / validate both need to parse
+    if not path.is_file():
+        if args.ccmd == "get":
+            ok(path=str(path), present=False, config={})  # absent ⇒ all inherit
+        fail(3, "no_config", f"no config at {path} (run: studio.py config scaffold)")
+    try:
+        cfg = parse_yaml_subset(path.read_text(encoding="utf-8"))
+    except ValueError as e:
+        fail(4, "parse", f"{path}: {e}")
+
+    problems = _validate_config(cfg)
+    if args.ccmd == "validate":
+        if any(p["severity"] == "error" for p in problems):
+            fail(6, "invalid_config", "config has errors", problems=problems)
+        ok(path=str(path), problems=problems)
+    ok(path=str(path), present=True, config=cfg, problems=problems)
+
+
+def _validate_config(cfg: dict) -> list[dict]:
+    problems: list[dict] = []
+
+    def check_mefr(block: dict, where: str) -> None:
+        if not isinstance(block, dict):
+            problems.append({"severity": "error", "where": where, "msg": "must be a mapping"})
+            return
+        m = block.get("model")
+        if m not in (None, "") and m not in KNOWN_MODELS:
+            problems.append({"severity": "warning", "where": where, "msg": f"unknown model {m!r} (known: {', '.join(KNOWN_MODELS)})"})
+        e = block.get("effort")
+        if e not in (None, "") and e not in KNOWN_EFFORTS:
+            problems.append({"severity": "error", "where": where, "msg": f"bad effort {e!r} (must be {', '.join(KNOWN_EFFORTS)})"})
+
+    if "defaults" in cfg:
+        check_mefr(cfg["defaults"], "defaults")
+    for role, blk in (cfg.get("roles") or {}).items():
+        check_mefr(blk, f"roles.{role}")
+    for ritual, steps in (cfg.get("rituals") or {}).items():
+        if not isinstance(steps, dict):
+            problems.append({"severity": "error", "where": f"rituals.{ritual}", "msg": "must be a mapping of steps"})
+            continue
+        for step, blk in steps.items():
+            check_mefr(blk, f"rituals.{ritual}.{step}")
+    return problems
 
 
 # --------------------------------------------------------------------------- #
@@ -487,6 +657,17 @@ def build_parser() -> argparse.ArgumentParser:
     rr.add_argument("--id", help="override run id (else derived from output/clock)")
     rr.add_argument("--track", help="track slug this run belongs to (producer-owned)")
     rr.set_defaults(func=cmd_run_record)
+
+    sp = sub.add_parser("config", help="agent model/effort policy (.studio.yml)")
+    csub = sp.add_subparsers(dest="ccmd", required=True)
+    for name, helptext in (("scaffold", "write a default .studio.yml"),
+                           ("validate", "check the config"),
+                           ("get", "parse the config → JSON (for the producer to pass to brokers)")):
+        cp = csub.add_parser(name, help=helptext)
+        cp.add_argument("--path", help=f"config path (default {CONFIG_PATH_DEFAULT})")
+        if name == "scaffold":
+            cp.add_argument("--force", action="store_true")
+        cp.set_defaults(func=cmd_config)
 
     sp = sub.add_parser("board", help="read the operating board")
     sp.set_defaults(func=cmd_board)

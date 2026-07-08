@@ -19,7 +19,8 @@ dev↔qa 공방)이 **실제 품질을 만드는가**이며, 그 판정을 criti
 | 요소 | 위치 | 역할 |
 |---|---|---|
 | producer 스킬 | `skills/producer/` | 메인스레드 규약: 소집·중계·게이트, 직접 제작·판단 대리 금지 |
-| studio CLI | `scripts/studio.py` | 결정적 상태: init·mission validate·backlog KPI 강제·run record(예산 원장)·evidence 집계 |
+| studio CLI | `scripts/studio.py` | 결정적 상태: init·mission validate·backlog KPI 강제·run record(예산 원장)·evidence 집계·config(agent 정책) |
+| agent 정책 | `.studio.yml` (repo 루트, `config scaffold`로 생성) | crew 서브에이전트의 model/effort 층별 설정 |
 | 브로커 | `broker/brainstorm.workflow.js`, `broker/pairing.workflow.js` | ritual 실행체(Workflow) — transcript 릴레이, 순수 오케스트레이션(fs 없음) |
 | crew | `crew/*.md` | 페르소나 데이터(name·role·prior·requested_tools·activation) — init이 `studio/crew/`로 복사 |
 | critic rubric | `critic/rubric.md` | 검증 전용 계약 + anchor 규칙 |
@@ -31,6 +32,25 @@ dev↔qa 공방)이 **실제 품질을 만드는가**이며, 그 판정을 criti
 - **anchor**: delta가 실제로 닿는 대상 — `artifact | acceptance-criteria | risk | rejected-alternative | repro-test`. anchor 없는 delta는 delta가 아니다.
 - **dry**: 유효 delta 없는 라운드. dry 2회 = 폐회.
 - **theatre**: 팀 run인데 valid delta 0 → 연극 판정.
+
+## agent model/effort 정책 (`.studio.yml`)
+
+crew 서브에이전트가 어떤 모델·에포트로 돌지는 `.task-github.yml`과 같은 결의 repo
+루트 설정파일 `.studio.yml`로 정한다. 4층 해석 (most→least specific):
+
+```
+run override(overrides) > rituals.<ritual>.<step> > roles.<role> > defaults > omit(세션 상속)
+```
+
+blank/null은 다음 층으로 넘어가고, 아무 층도 안 정하면 producer 세션 모델·에포트를
+그대로 상속한다(하드코딩보다 안전한 기본값). producer가 `studio.py config get --json`으로
+읽어 broker args의 `agentPolicy`로 주입하고, 브로커가 각 `agent()` 호출에 적용한다.
+예: critic=high(연극 판정 날카롭게), summarizer=low(중립 압축은 싸게), diverge=low.
+
+```bash
+python3 plugins/studio/scripts/studio.py config scaffold   # .studio.yml 생성
+python3 plugins/studio/scripts/studio.py config validate    # effort/model 값 검증
+```
 
 ## 흐름
 

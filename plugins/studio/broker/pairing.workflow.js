@@ -31,6 +31,22 @@ if (!WT) {
   return { ritual: 'pairing', error: 'pairing needs a producer-prepared worktreePath (track isolation)', participants: ['dev', 'qa'] }
 }
 
+// --- agent model/effort policy (from .studio.yml via the producer) ----------
+// precedence: run override > rituals.pairing.<step> > roles.<role> > defaults
+// > omit (inherit the session). agentType stays 'general-purpose' regardless.
+const POLICY = A.agentPolicy || {}
+const OVERRIDE = A.overrides || {}
+function policyFor(role, step) {
+  const d = POLICY.defaults || {}
+  const r = (POLICY.roles || {})[role] || {}
+  const s = (((POLICY.rituals || {}).pairing || {})[step]) || {}
+  const pick = (k) => OVERRIDE[k] ?? s[k] ?? r[k] ?? d[k] ?? null
+  const opts = {}
+  const m = pick('model'); if (m) opts.model = m
+  const e = pick('effort'); if (e) opts.effort = e
+  return opts
+}
+
 const spentStart = budget.spent()
 const criteriaBlock = CRITERIA.length ? CRITERIA.map((c, i) => `  ${i + 1}. ${c}`).join('\n') : '  (none supplied)'
 
@@ -92,7 +108,7 @@ for (round = 1; round <= MAX_ROUNDS; round++) {
     '\n--- you (dev) ---\n' + (DEV.body || ''),
   ].join('\n')
   const dev = await agent(devPrompt, {
-    schema: DEV_SCHEMA, agentType: 'general-purpose', label: `dev:r${round}`, phase: round === 1 ? 'Build' : 'Attack',
+    schema: DEV_SCHEMA, agentType: 'general-purpose', label: `dev:r${round}`, phase: round === 1 ? 'Build' : 'Attack', ...policyFor('dev', 'dev'),
   })
   if (dev) {
     // implementing against the criteria is itself an artifact delta — otherwise
@@ -119,7 +135,7 @@ for (round = 1; round <= MAX_ROUNDS; round++) {
     '\n--- you (qa) ---\n' + (QA.body || ''),
   ].join('\n')
   const qa = await agent(qaPrompt, {
-    schema: QA_SCHEMA, agentType: 'general-purpose', label: `qa:r${round}`, phase: 'Attack',
+    schema: QA_SCHEMA, agentType: 'general-purpose', label: `qa:r${round}`, phase: 'Attack', ...policyFor('qa', 'qa'),
   })
   const newFailures = qa && qa.broke ? (qa.failures || []) : []
   for (const f of newFailures) {
@@ -150,7 +166,7 @@ const verdict = await agent([
   '\n--- defended (failure → test) ---\n' + JSON.stringify(defendedAll, null, 2),
   '\n--- still open ---\n' + JSON.stringify(openFailures.map(f => f.title), null, 2),
   '\n--- acceptance criteria ---\n' + criteriaBlock,
-].join('\n'), { schema: VERDICT_SCHEMA, label: 'critic:verdict', phase: 'Verdict' })
+].join('\n'), { schema: VERDICT_SCHEMA, label: 'critic:verdict', phase: 'Verdict', ...policyFor('critic', 'verdict') })
   || { alive: openFailures.length === 0, reason: 'critic unavailable; fell back to open-failure count', defended_count: defendedAll.length, open_count: openFailures.length }
 
 return {

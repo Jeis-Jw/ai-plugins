@@ -143,6 +143,29 @@ def main() -> None:
         assert r["aborted_runs"] == 1 and r["runs"] == 2, r
         assert r["theatre"] is False, r
 
+        # 9) config (.studio.yml) — scaffold, validate, parse, guards
+        cfg = tmp / ".studio.yml"
+        r = run(["config", "scaffold", "--path", str(cfg)], tmp)
+        assert r["ok"] and r["created"], r
+        run(["config", "scaffold", "--path", str(cfg)], tmp, expect=2)     # no clobber
+        r = run(["config", "validate", "--path", str(cfg)], tmp)
+        assert r["ok"] and not [p for p in r["problems"] if p["severity"] == "error"], r
+        r = run(["config", "get", "--path", str(cfg)], tmp)
+        assert r["config"]["roles"]["critic"]["effort"] == "high", r
+        assert r["config"]["defaults"]["model"] is None, r                  # blank → null → inherit
+        assert r["config"]["rituals"]["brainstorm"]["diverge"]["effort"] == "low", r
+        #    bad effort value → validate is a hard error (exit 6)
+        (tmp / "bad.yml").write_text("defaults:\n  effort: turbo\n", encoding="utf-8")
+        r = run(["config", "validate", "--path", str(tmp / "bad.yml")], tmp, expect=6)
+        assert any("effort" in p["msg"] for p in r["problems"]), r
+        #    unknown model is a warning, not an error (still exit 0)
+        (tmp / "warn.yml").write_text("defaults:\n  model: gpt\n", encoding="utf-8")
+        r = run(["config", "validate", "--path", str(tmp / "warn.yml")], tmp)
+        assert r["ok"] and any(p["severity"] == "warning" for p in r["problems"]), r
+        #    absent config → present False, everything inherits the session
+        r = run(["config", "get", "--path", str(tmp / "none.yml")], tmp)
+        assert r["present"] is False and r["config"] == {}, r
+
     print("all studio.py checks passed")
 
 

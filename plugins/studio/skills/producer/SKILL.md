@@ -98,6 +98,18 @@ run = 일감 × ritual × crew 조합의 **백그라운드 1회 실행**. 브로
 오케스트레이션이라 디스크를 못 읽는다 — 너가 페르소나·안건·rubric을 읽어 `args`로
 넘긴다. 이 스킬이 브로커 Workflow 호출을 지시하므로 Workflow 사용은 정당한 opt-in이다.
 
+**agent 정책 주입 (model/effort):** 브로커의 각 서브에이전트가 어떤 모델·에포트로
+돌지는 `.studio.yml`이 정한다. 소집 직전 정책을 읽어 broker args에 실어 넘긴다:
+
+```bash
+python3 "$STUDIO" config get --json   # → {config: {defaults, roles, rituals}}
+```
+그 `config`를 broker args의 `agentPolicy`로 넘긴다. 상황에 따라 동적으로 조일 때
+(예: 예산 잔액 부족)는 `overrides: {effort: "low"}`를 함께 넘긴다. 해석 우선순위는
+브로커가 강제한다: **run override(overrides) > rituals.<ritual>.<step> > roles.<role>
+> defaults > omit(세션 상속)**. blank/null은 다음 층으로 넘어간다 — 하드코딩보다
+상속이 안전한 기본값이다. `.studio.yml`이 없으면 전부 세션 상속.
+
 **소집 대상 선정 (페르소나 frontmatter를 실제로 읽어라):**
 - `activation: gated` 페르소나는 해당 게이트가 열리기 전까지 참석자에서 **제외**한다
   (MVP에서 리서치·디자인·마케팅이 여기 해당). `always`만 기본 소집한다.
@@ -118,6 +130,8 @@ run = 일감 × ritual × crew 조합의 **백그라운드 1회 실행**. 브로
        agenda: "<이 run의 안건>",
        personas: [{name, role, prior, body}, ...],   // 서로 다른 prior 2개 이상
        criticRubric: "<rubric.md 내용>",
+       agentPolicy: <config get --json의 config>,     // model/effort 정책
+       overrides: {},                                 // 선택: 이 run만 강제 (예: {effort:"low"})
        maxRounds: 4, dryStop: 2
      }
 ```
@@ -141,6 +155,8 @@ Workflow 호출 (백그라운드):
     worktreePath: ".worktrees/track-<slug>",
     personas: { dev: {body}, qa: {body} },
     criticRubric: "<rubric.md 내용>",
+    agentPolicy: <config get --json의 config>,
+    overrides: {},
     maxRounds: 3
   }
 ```
