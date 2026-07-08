@@ -1,0 +1,23 @@
+{
+  "name": "studio",
+  "version": "0.1.0",
+  "description": "Living agent team — a producer main thread convenes crew personas into background ritual runs; an independent critic filters theatre by delta evidence.",
+  "author": {
+    "name": "Jinwuk-Lee",
+    "url": "https://github.com/Jeis-Jw"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Studio",
+    "shortDescription": "Run a living agent team: producer convenes crew into ritual runs, critic filters theatre.",
+    "longDescription": "The owner gives a mission; the producer (main thread) decomposes it against KPIs, convenes crew personas into background ritual runs (brainstorm, pairing), and an independent critic verifies each run's deltas by an anchor rule so agreement-theatre is filtered out. State lives on disk (mission contract, board budget ledger, minutes); crew are convened fresh per turn with transcript relay. Owner gates cover mission changes, new epics, irreversible actions, and external publishing.",
+    "developerName": "Jinwuk-Lee",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write", "Workflow", "Validation"],
+    "defaultPrompt": [
+      "Use $producer to run a mission through the living agent team.",
+      "The producer convenes crew into background runs; it never makes artifacts itself.",
+      "Owner gates: mission contract, new epic, irreversible, external-publish, budget-raise."
+    ]
+  }
+}
