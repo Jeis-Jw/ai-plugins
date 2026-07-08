@@ -17,7 +17,9 @@ export const meta = {
 //     maxRounds?: number (default 4),
 //     dryStop?: number  (default 2),
 //   }
-const A = args || {}
+// defensive: a stringified args (caller passed JSON text instead of an object)
+// would otherwise silently yield zero personas — parse it back.
+const A = typeof args === 'string' ? JSON.parse(args) : (args || {})
 const AGENDA = A.agenda || '(no agenda provided)'
 const PERSONAS = (A.personas || []).filter(Boolean)
 const RUBRIC = A.criticRubric || 'Reject any delta whose changed_what has no concrete anchor.'
