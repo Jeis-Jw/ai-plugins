@@ -45,9 +45,11 @@ python3 plugins/studio/scripts/studio.py mode end
 ## 개념 (계약 층 — 은유 금지)
 
 - **run I/O 계약**: `{ritual, participants, synthesis, minority, delta_log[{round, changed_what, anchor, evidence, rejected_alternative}], verdict{alive,reason}, proposals, cost, aborted}`
+- **pairing integration 계약**: `{worktreePath, branch, changedFiles, verification, blockedChecks, readyForIntegration}`. `readyForIntegration:false`이면 producer는 직접 수정하지 않고 dev/fix → QA loop로 되돌린다.
 - **anchor**: delta가 실제로 닿는 대상 — `artifact | acceptance-criteria | risk | rejected-alternative | repro-test`. anchor 없는 delta는 delta가 아니다.
 - **dry**: 유효 delta 없는 라운드. dry 2회 = 폐회.
 - **theatre**: 팀 run인데 valid delta 0 → 연극 판정.
+- **integration**: QA pass 뒤 main 반영은 owner gate 후 integrator worker 또는 결정적 CLI가 수행한다. producer는 `git apply`/`apply_patch`로 직접 통합하지 않는다.
 
 ## agent model/effort 정책 (`.studio.yml`)
 
@@ -92,7 +94,9 @@ python3 plugins/studio/scripts/studio.py cast suggest implementation
    소집. 회의형(brainstorm)은 무제한 병렬, 작업형(pairing)은 producer가 준비한
    track 워크트리에서 격리 실행.
 5. 완료 회수 → `studio.py run record`(minutes + 예산 원장) → owner에 합성본+delta 보고.
-6. 검증(baseline): 같은 소형 미션을 솔로 vs 팀으로 돌려 `studio.py evidence`로
+6. post-QA 결함은 producer가 직접 고치지 않고 dev/fix worker → QA worker 재검증으로 되돌린다.
+7. `readyForIntegration:true`이면 owner에게 "QA pass. track 변경을 main에 반영할까요?"를 묻고, 승인 후에도 integrator worker/결정적 CLI에 맡긴다.
+8. 검증(baseline): 같은 소형 미션을 솔로 vs 팀으로 돌려 `studio.py evidence`로
    추가 delta를 센다. theatre면 리추얼 재설계.
 
 ## MVP crew
@@ -114,7 +118,7 @@ python3 plugins/studio/scripts/studio.py cast suggest implementation
 
 ## 상태
 
-v0.1.2 — MVP. 설계 정본은 이 repo 위키(INT/DEC studio) + `drafts/agent-team-concept.md`.
+v0.1.3 — MVP. 설계 정본은 이 repo 위키(INT/DEC studio) + `drafts/agent-team-concept.md`.
 검증 테스트: `python3 plugins/studio/tests/test_studio.py`.
 
 후순위(정의만, MVP 비활성): 마케팅/판매 운영 역할, 동적 채용(casting), standup/retro/demo

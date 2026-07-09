@@ -14,6 +14,7 @@ export const meta = {
 //     taskSpec: string,
 //     acceptanceCriteria: [string],   // FIXED for this run; changing = re-convene
 //     worktreePath: string,           // track worktree the agents operate inside
+//     branch?: string,                 // track branch, passed through for integration
 //     personas: { dev: {body}, qa: {body} },
 //     criticRubric: string,
 //     maxRounds?: number (default 3),
@@ -24,6 +25,7 @@ const A = typeof args === 'string' ? JSON.parse(args) : (args || {})
 const SPEC = A.taskSpec || '(no task spec)'
 const CRITERIA = A.acceptanceCriteria || []
 const WT = A.worktreePath
+const BRANCH = A.branch || null
 const DEV = (A.personas && A.personas.dev) || { body: 'You are the developer. Build the smallest thing that works.' }
 const QA = (A.personas && A.personas.qa) || { body: 'You are QA. Your job is to break it with a reproducible failure.' }
 const RUBRIC = A.criticRubric || ''
@@ -57,12 +59,26 @@ const CONTEXT = [
   'Acceptance criteria (FIXED — do not renegotiate; a change requires re-convening):',
   criteriaBlock,
   `Work ONLY inside this worktree: ${WT}`,
+  BRANCH ? `Track branch: ${BRANCH}` : '',
 ].join('\n')
 
 const DEV_SCHEMA = {
-  type: 'object', additionalProperties: false, required: ['summary', 'defended', 'unresolved'],
+  type: 'object', additionalProperties: false, required: ['summary', 'defended', 'unresolved', 'changedFiles', 'verification', 'blockedChecks'],
   properties: {
     summary: { type: 'string', description: 'what you implemented/changed this turn' },
+    changedFiles: { type: 'array', items: { type: 'string' }, description: 'repo-relative files changed in the track worktree' },
+    verification: {
+      type: 'array',
+      description: 'checks you actually ran',
+      items: {
+        type: 'object', additionalProperties: false, required: ['command', 'result'],
+        properties: {
+          command: { type: 'string' },
+          result: { type: 'string', description: 'pass/fail/blocked plus the short reason' },
+        },
+      },
+    },
+    blockedChecks: { type: 'array', items: { type: 'string' }, description: 'checks you could not run and why' },
     defended: {
       type: 'array',
       description: 'each open qa failure you fixed, keyed by its id, with the test that now guards it',
@@ -80,9 +96,21 @@ const DEV_SCHEMA = {
 }
 
 const QA_SCHEMA = {
-  type: 'object', additionalProperties: false, required: ['broke', 'failures'],
+  type: 'object', additionalProperties: false, required: ['broke', 'failures', 'verification', 'blockedChecks'],
   properties: {
     broke: { type: 'boolean', description: 'true if you produced at least one NEW reproducible failure' },
+    verification: {
+      type: 'array',
+      description: 'attack/check commands you actually ran',
+      items: {
+        type: 'object', additionalProperties: false, required: ['command', 'result'],
+        properties: {
+          command: { type: 'string' },
+          result: { type: 'string', description: 'pass/fail/blocked plus the short reason' },
+        },
+      },
+    },
+    blockedChecks: { type: 'array', items: { type: 'string' }, description: 'checks you could not run and why' },
     failures: {
       type: 'array',
       items: {
@@ -101,6 +129,9 @@ const delta_log = []
 let round = 0
 let openFailures = []       // qa failures dev has not yet defended; each has a stable id
 const defendedAll = []      // titles of defended failures (for the verdict prompt)
+const changedFiles = new Set()
+const verification = []
+const blockedChecks = []
 let failureSeq = 0          // monotonic id source — join key between qa and dev
 
 phase('Build')
@@ -111,6 +142,7 @@ for (round = 1; round <= MAX_ROUNDS; round++) {
     round === 1
       ? 'Round 1. Implement the smallest thing that satisfies every acceptance criterion. Add tests for the criteria.'
       : 'Defend against QA. For EACH open failure below, fix it and add a test that now passes and guards it. Reference each failure you fixed by its `id`.',
+    'Return repo-relative changedFiles, exact verification commands you ran, and blockedChecks. Use [] when none.',
     openFailures.length ? '\n--- open failures from QA (defend by id) ---\n' + JSON.stringify(openFailures, null, 2) : '',
     '\n--- you (dev) ---\n' + (DEV.body || ''),
   ].join('\n')
@@ -121,6 +153,9 @@ for (round = 1; round <= MAX_ROUNDS; round++) {
     // implementing against the criteria is itself an artifact delta — otherwise
     // a clean build qa can't break would leave delta_log empty and read as theatre.
     if (dev.summary) delta_log.push({ round, changed_what: `implemented: ${dev.summary}`, anchor: 'artifact', evidence: dev.summary })
+    for (const f of dev.changedFiles || []) changedFiles.add(f)
+    for (const v of dev.verification || []) verification.push(v)
+    for (const b of dev.blockedChecks || []) blockedChecks.push(b)
     // JOIN BY ID, not title: dev and qa phrase a failure differently, so an
     // exact-string join silently fails and a defended failure stays "open"
     // forever (defended and open both grow → contradictory evidence). The id is
@@ -144,6 +179,7 @@ for (round = 1; round <= MAX_ROUNDS; round++) {
   const qaPrompt = [
     CONTEXT,
     'Attack the current implementation in the worktree. Produce NEW reproducible failures only — each with an exact repro command/input. Do not repeat already-open failures.',
+    'Return exact attack/check commands you ran and blockedChecks. Use [] when none.',
     openFailures.length ? '\n--- already-open failures (do not repeat) ---\n' + JSON.stringify(openFailures.map(f => ({ id: f.id, title: f.title }))) : '',
     '\n--- you (qa) ---\n' + (QA.body || ''),
   ].join('\n')
@@ -151,6 +187,10 @@ for (round = 1; round <= MAX_ROUNDS; round++) {
     schema: QA_SCHEMA, agentType: 'general-purpose', label: `qa:r${round}`, phase: 'Attack', ...policyFor('qa', 'qa'),
   })
   const newFailures = qa && qa.broke ? (qa.failures || []) : []
+  if (qa) {
+    for (const v of qa.verification || []) verification.push(v)
+    for (const b of qa.blockedChecks || []) blockedChecks.push(b)
+  }
   for (const f of newFailures) {
     openFailures.push({ id: failureSeq++, ...f })   // broker-assigned id = the join key
     delta_log.push({ round, changed_what: `reproduced failure: ${f.title}`, anchor: 'risk', evidence: f.repro })
@@ -182,6 +222,8 @@ const verdict = await agent([
 ].join('\n'), { schema: VERDICT_SCHEMA, label: 'critic:verdict', phase: 'Verdict', ...policyFor('critic', 'verdict') })
   || { alive: openFailures.length === 0, reason: 'critic unavailable; fell back to open-failure count', defended_count: defendedAll.length, open_count: openFailures.length }
 
+const readyForIntegration = Boolean(verdict.alive && openFailures.length === 0 && blockedChecks.length === 0)
+
 return {
   ritual: 'pairing',
   participants: ['dev', 'qa'],
@@ -191,4 +233,10 @@ return {
   verdict,
   proposals: openFailures.map(f => `follow-up: resolve open failure "${f.title}"`),
   cost: { tokens: budget.spent() - spentStart, rounds: round },
+  worktreePath: WT,
+  branch: BRANCH,
+  changedFiles: [...changedFiles],
+  verification,
+  blockedChecks,
+  readyForIntegration,
 }

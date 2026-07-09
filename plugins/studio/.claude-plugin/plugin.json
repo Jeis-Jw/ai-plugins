@@ -1,5 +1,5 @@
 {
   "name": "studio",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "살아있는 에이전트 팀 — owner의 미션을 받아 producer(메인스레드)가 crew를 ritual run으로 소집하고, 독립 critic이 delta 증거로 연극을 걸러낸다. 소집형 fresh 에이전트 + transcript 릴레이, 결정적 상태 CLI(예산 원장·KPI 링크·delta 집계), brainstorm/pairing 브로커."
 }

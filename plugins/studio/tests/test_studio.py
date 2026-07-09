@@ -20,6 +20,10 @@ CLI = PLUGIN / "scripts" / "studio.py"
 JSON_BLOCK = re.compile(r"```json[ \t]*\n(.*?)\n```", re.DOTALL)
 
 
+def plugin_text(name: str) -> str:
+    return (PLUGIN / name).read_text(encoding="utf-8")
+
+
 def board_state(ws: Path) -> dict:
     return json.loads(JSON_BLOCK.search((ws / "board.md").read_text()).group(1))
 
@@ -218,6 +222,32 @@ def main() -> None:
 
         r = run(["cast", "suggest", "unknown-kind"], tmp, expect=6)
         assert r["error_code"] == "unknown_cast", r
+
+        # 11) producer contract — main thread may coordinate, not edit/integrate
+        producer = plugin_text("skills/producer/SKILL.md")
+        for phrase in (
+            "studio 규약은 Codex/Claude의 일반",
+            "`apply_patch`, `git apply`, 직접 파일 수정",
+            "track 변경을 main에 직접 반영",
+            "Workflow가 callable tool로 없으면 `multi_agent_v1`",
+            "producer의 역할은 **spawn / wait / record / report**뿐",
+            "QA pass. track 변경을 main에 반영할까요?",
+            "integrator worker",
+            "`readyForIntegration:false`이면",
+        ):
+            assert phrase in producer, phrase
+
+        # 12) pairing output carries the integration handoff contract
+        pairing = plugin_text("broker/pairing.workflow.js")
+        for phrase in (
+            "worktreePath: WT",
+            "branch: BRANCH",
+            "changedFiles: [...changedFiles]",
+            "verification,",
+            "blockedChecks,",
+            "readyForIntegration,",
+        ):
+            assert phrase in pairing, phrase
 
     print("all studio.py checks passed")
 

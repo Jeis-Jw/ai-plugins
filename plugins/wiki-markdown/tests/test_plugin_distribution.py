@@ -43,7 +43,7 @@ class PluginDistributionTests(unittest.TestCase):
         codex_marketplace = read_json(REPO / ".agents" / "plugins" / "marketplace.json")
         codex_marketplace_names = {plugin["name"] for plugin in codex_marketplace["plugins"]}
 
-        for name in ("wiki-markdown", "task-github", "session-review"):
+        for name in ("wiki-markdown", "task-github", "session-review", "studio"):
             plugin_root = REPO / "plugins" / name
             claude = read_json(plugin_root / ".claude-plugin" / "plugin.json")
             codex = read_json(plugin_root / ".codex-plugin" / "plugin.json")
