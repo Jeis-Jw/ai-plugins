@@ -51,7 +51,20 @@ def main() -> None:
         assert (ws / "backlog.md").is_file()
         assert (ws / "missions" / "TEMPLATE.md").is_file()
         crew = sorted(p.name for p in (ws / "crew").glob("*.md"))
-        assert crew == ["dev.md", "planner-a.md", "planner-b.md", "qa.md"], crew
+        assert crew == [
+            "architect.md",
+            "creator.md",
+            "curator.md",
+            "dev.md",
+            "planner-a.md",
+            "planner-b.md",
+            "product-designer.md",
+            "qa.md",
+            "researcher.md",
+            "reviewer.md",
+            "strategist.md",
+            "visual-designer.md",
+        ], crew
 
         # 2) init is not idempotent without --force (guards accidental clobber)
         run(["init"], tmp, expect=2)
@@ -87,6 +100,18 @@ def main() -> None:
         # 6) budget — total is settable via the CLI (enables the exhausted→paused gate)
         r = run(["budget", "--set-total", "100"], tmp)
         assert r["budget"]["total_tokens"] == 100, r
+
+        # 6a) mode — studio stays "on shift" until explicitly ended
+        r = run(["mode", "status"], tmp)
+        assert r["ok"] and r["mode"]["active"] is False, r
+        r = run(["mode", "start"], tmp)
+        assert r["ok"] and r["mode"]["active"] is True, r
+        assert board_state(ws)["studio_mode"]["active"] is True, board_state(ws)
+        r = run(["mode", "status"], tmp)
+        assert r["mode"]["active"] is True and r["mode"]["started_at"] == "20231114-221320", r
+        r = run(["mode", "end"], tmp)
+        assert r["ok"] and r["mode"]["active"] is False, r
+        assert board_state(ws)["studio_mode"]["active"] is False, board_state(ws)
 
         #    run record — one valid delta, one dry; budget ledger updates
         run_out = {
@@ -152,6 +177,8 @@ def main() -> None:
         assert r["ok"] and not [p for p in r["problems"] if p["severity"] == "error"], r
         r = run(["config", "get", "--path", str(cfg)], tmp)
         assert r["config"]["roles"]["critic"]["effort"] == "high", r
+        assert r["config"]["roles"]["architect"]["effort"] == "high", r
+        assert r["config"]["roles"]["creator"]["effort"] == "medium", r
         assert r["config"]["defaults"]["model"] is None, r                  # blank → null → inherit
         assert r["config"]["rituals"]["brainstorm"]["diverge"]["effort"] == "low", r
         #    bad effort value → hard error on BOTH validate and get (exit 6),
@@ -170,6 +197,27 @@ def main() -> None:
         #    absent config → present False, everything inherits the session
         r = run(["config", "get", "--path", str(tmp / "none.yml")], tmp)
         assert r["present"] is False and r["config"] == {}, r
+
+        # 10) cast suggest — producer can turn a work kind into concrete crew
+        r = run(["cast", "suggest", "idea"], tmp)
+        assert r["ok"] and r["kind"] == "idea", r
+        assert r["ritual"] == "brainstorm", r
+        assert r["crew"] == ["planner-a", "planner-b", "researcher", "critic"], r
+        assert r["participants"] == ["planner-a", "planner-b", "researcher"], r
+        assert r["critic"] is True, r
+        assert [p["name"] for p in r["personas"]] == r["participants"], r
+        assert r["personas"][2]["role"] == "자료수집", r
+        assert "근거 우선" in r["personas"][2]["prior"], r
+        assert r["missing"] == [], r
+
+        r = run(["cast", "suggest", "implementation"], tmp)
+        assert r["ritual"] == "pairing", r
+        assert r["crew"] == ["dev", "qa"], r
+        assert r["participants"] == ["dev", "qa"], r
+        assert r["critic"] is True, r
+
+        r = run(["cast", "suggest", "unknown-kind"], tmp, expect=6)
+        assert r["error_code"] == "unknown_cast", r
 
     print("all studio.py checks passed")
 

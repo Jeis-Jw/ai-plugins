@@ -55,6 +55,51 @@ CONFIG_PATH_DEFAULT = ".studio.yml"
 KNOWN_MODELS = ("sonnet", "opus", "haiku", "fable")   # blank/omitted = inherit session
 KNOWN_EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
+CASTS = {
+    "idea": {
+        "ritual": "brainstorm",
+        "crew": ["planner-a", "planner-b", "researcher", "critic"],
+        "tool_hints": ["wiki-markdown recall"],
+    },
+    "product-direction": {
+        "ritual": "brainstorm",
+        "crew": ["strategist", "planner-a", "planner-b", "product-designer", "critic"],
+        "tool_hints": ["wiki-markdown recall"],
+    },
+    "technical-design": {
+        "ritual": "brainstorm",
+        "crew": ["architect", "dev", "qa", "critic"],
+        "tool_hints": ["wiki-markdown recall"],
+    },
+    "ui-build": {
+        "ritual": "brainstorm",
+        "crew": ["product-designer", "visual-designer", "dev", "qa"],
+        "tool_hints": [],
+    },
+    "content": {
+        "ritual": "brainstorm",
+        "crew": ["strategist", "creator", "visual-designer", "reviewer"],
+        "tool_hints": [],
+    },
+    "implementation": {
+        "ritual": "pairing",
+        "crew": ["dev", "qa"],
+        "tool_hints": [],
+    },
+    "launch": {
+        "ritual": "brainstorm",
+        "crew": ["qa", "reviewer", "curator"],
+        "tool_hints": ["session-review when independent approval is needed"],
+    },
+}
+CAST_ALIASES = {
+    "direction": "product-direction",
+    "design": "technical-design",
+    "ui": "ui-build",
+    "build": "implementation",
+    "release": "launch",
+}
+
 
 # --------------------------------------------------------------------------- #
 # helpers
@@ -135,6 +180,33 @@ def load_board(ws: Path) -> dict:
     return read_json_block(ws / "board.md")
 
 
+def mode_state(board: dict) -> dict:
+    return board.setdefault(
+        "studio_mode",
+        {"active": False, "started_at": None, "ended_at": None},
+    )
+
+
+def read_persona(path: Path) -> dict:
+    text = path.read_text(encoding="utf-8")
+    if not text.startswith("---\n"):
+        fail(4, "bad_persona", f"persona missing frontmatter: {path}")
+    try:
+        _, frontmatter, body = text.split("---\n", 2)
+    except ValueError:
+        fail(4, "bad_persona", f"persona has malformed frontmatter: {path}")
+    meta = parse_yaml_subset(frontmatter)
+    return {
+        "name": meta.get("name") or path.stem,
+        "role": meta.get("role"),
+        "prior": meta.get("prior"),
+        "requested_tools": meta.get("requested_tools") or [],
+        "activation": meta.get("activation") or "always",
+        "body": body.strip(),
+        "path": str(path),
+    }
+
+
 # --------------------------------------------------------------------------- #
 # .studio.yml — minimal indented-YAML-subset parser (stdlib only)
 #
@@ -159,6 +231,9 @@ def _strip_comment(line: str) -> str:
 
 def _scalar(v: str) -> Any:
     v = v.strip()
+    if v.startswith("[") and v.endswith("]"):
+        inner = v[1:-1].strip()
+        return [x.strip().strip("\"'") for x in inner.split(",") if x.strip()]
     if (len(v) >= 2) and v[0] == v[-1] and v[0] in "\"'":
         return v[1:-1]
     low = v.lower()
@@ -225,14 +300,30 @@ def render_default_config() -> str:
         "  effort: medium\n"
         "\n"
         "roles:\n"
+        "  strategist:\n"
+        "    effort: medium\n"
+        "  researcher:\n"
+        "    effort: medium\n"
         "  planner-a:\n"
         "    effort: medium\n"
         "  planner-b:\n"
         "    effort: medium\n"
+        "  architect:\n"
+        "    effort: high\n"
+        "  product-designer:\n"
+        "    effort: medium\n"
+        "  visual-designer:\n"
+        "    effort: medium\n"
         "  dev:\n"
         "    effort: high\n"
+        "  creator:\n"
+        "    effort: medium\n"
         "  qa:\n"
         "    effort: high\n"
+        "  reviewer:\n"
+        "    effort: high\n"
+        "  curator:\n"
+        "    effort: medium\n"
         "  critic:\n"
         "    effort: high        # the anti-theatre judge — keep it sharp\n"
         "  summarizer:\n"
@@ -345,6 +436,7 @@ def cmd_init(args: argparse.Namespace) -> None:
         ws,
         {
             "schema": 1,
+            "studio_mode": {"active": False, "started_at": None, "ended_at": None},
             "budget": {"total_tokens": None, "per_run_default": None, "spent_tokens": 0},
             "tracks": [],
             "runs": [],
@@ -601,6 +693,30 @@ def cmd_board(args: argparse.Namespace) -> None:
     ok(board=load_board(ws))
 
 
+# --------------------------------------------------------------------------- #
+# mode — producer "on shift" state
+# --------------------------------------------------------------------------- #
+def cmd_mode(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    board = load_board(ws)
+    mode = mode_state(board)
+    if args.mcmd == "start":
+        if not mode.get("active"):
+            mode["active"] = True
+            mode["started_at"] = now_stamp()
+            mode["ended_at"] = None
+            write_board(ws, board)
+        ok(mode=mode)
+    if args.mcmd == "end":
+        if mode.get("active"):
+            mode["active"] = False
+            mode["ended_at"] = now_stamp()
+            write_board(ws, board)
+        ok(mode=mode)
+    ok(mode=mode)
+
+
 def cmd_evidence(args: argparse.Namespace) -> None:
     """Aggregate the delta evidence across recorded runs — the baseline tally.
 
@@ -621,6 +737,59 @@ def cmd_evidence(args: argparse.Namespace) -> None:
         runs=len(board.get("runs", [])),
         aborted_runs=aborted_runs,
         theatre=(total_valid == 0 and len(board.get("runs", [])) > aborted_runs),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# cast — deterministic default crew selection for the producer
+# --------------------------------------------------------------------------- #
+def _crew_dir_for_cast(ws: Path) -> Path:
+    live = ws / "crew"
+    return live if live.is_dir() else plugin_root() / "crew"
+
+
+def cmd_cast_list(args: argparse.Namespace) -> None:
+    ok(kinds=sorted(CASTS), aliases=CAST_ALIASES)
+
+
+def cmd_cast_suggest(args: argparse.Namespace) -> None:
+    kind = CAST_ALIASES.get(args.kind, args.kind)
+    spec = CASTS.get(kind)
+    if spec is None:
+        fail(
+            6,
+            "unknown_cast",
+            f"unknown cast kind: {args.kind}",
+            kinds=sorted(CASTS),
+            aliases=CAST_ALIASES,
+        )
+
+    crew_dir = _crew_dir_for_cast(workspace(args))
+    crew = list(spec["crew"])
+    participants = [name for name in crew if name != "critic"]
+    personas = []
+    missing = []
+    for name in participants:
+        path = crew_dir / f"{name}.md"
+        if not path.is_file():
+            missing.append(name)
+            continue
+        persona = read_persona(path)
+        if persona.get("activation") != "always":
+            continue
+        personas.append(persona)
+    if missing:
+        fail(6, "missing_crew", "cast references missing crew persona(s)", missing=missing)
+
+    ok(
+        kind=kind,
+        ritual=spec["ritual"],
+        crew=crew,
+        participants=[p["name"] for p in personas],
+        critic=("critic" in crew or spec["ritual"] in ("brainstorm", "pairing")),
+        personas=personas,
+        missing=[],
+        tool_hints=spec.get("tool_hints") or [],
     )
 
 
@@ -674,8 +843,26 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("board", help="read the operating board")
     sp.set_defaults(func=cmd_board)
 
+    sp = sub.add_parser("mode", help="studio on-shift mode")
+    mosub = sp.add_subparsers(dest="mcmd", required=True)
+    for name, helptext in (
+        ("start", "turn studio mode on"),
+        ("end", "turn studio mode off"),
+        ("status", "read studio mode"),
+    ):
+        mp = mosub.add_parser(name, help=helptext)
+        mp.set_defaults(func=cmd_mode)
+
     sp = sub.add_parser("evidence", help="tally delta evidence (baseline/theatre check)")
     sp.set_defaults(func=cmd_evidence)
+
+    sp = sub.add_parser("cast", help="producer crew casting policy")
+    casub = sp.add_subparsers(dest="castcmd", required=True)
+    cl = casub.add_parser("list", help="list supported cast kinds")
+    cl.set_defaults(func=cmd_cast_list)
+    cs = casub.add_parser("suggest", help="choose default crew for a work kind")
+    cs.add_argument("kind", help="one of: idea, product-direction, technical-design, ui-build, content, implementation, launch")
+    cs.set_defaults(func=cmd_cast_suggest)
 
     return p
 
