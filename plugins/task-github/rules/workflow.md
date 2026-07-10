@@ -97,7 +97,7 @@ python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py
   --artifact "$ARTIFACT" --run-state "$RUN_STATE"
 ```
 
-closeout 후 binding receipt schema v1을 방출한다. token 측정값이 없으면 `tokens:null`, `token_coverage:unavailable`이며 0이나 추정값으로 대체하지 않는다:
+closeout 후 binding receipt schema v1을 방출한다. token 측정값은 `exact`, 없으면 `tokens:null`, `token_coverage:unavailable`이며 0이나 추정값으로 대체하지 않는다:
 
 ```bash
 python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py" receipt \

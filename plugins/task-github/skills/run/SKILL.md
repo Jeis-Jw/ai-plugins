@@ -1,6 +1,6 @@
 ---
 name: run
-description: Issue 기반으로 작업을 수행한다. 계획이 있으면 그 태스크 목록을, 없으면 Issue 완료 조건을 기준으로 작업한다. 작업 중 발견한 관찰은 위키에 자동 기록한다. "task-github:run", "작업 수행해줘", "구현 시작해줘" 등의 요청에 실행하라.
+description: Issue 또는 record:none DefinitionArtifact local run을 수행한다. Issue 번호는 기존 경로, --artifact/--run-state는 pinned node를 GitHub Issue write 없이 실행한다. "task-github:run", "작업 수행해줘", "구현 시작해줘" 등의 요청에 실행하라.
 ---
 
 # run — 실행
@@ -10,10 +10,29 @@ description: Issue 기반으로 작업을 수행한다. 계획이 있으면 그 
 ## 입력
 
 ```
-$ARGUMENTS: {N}
+$ARGUMENTS: {N} | --artifact {PATH} --run-state {RUN_JSON}
 ```
 
 ## 절차
+
+### record:none DefinitionArtifact mode
+
+`--artifact/--run-state`가 있으면 먼저 `recover` 결과가 `started` 또는 재개 가능한 `running`인지 확인한다. run-state가 node를 이미 pin하므로 `--node`를 재입력하지 않는다. 출력의 stable branch/worktree가 없으면 주입된 `BASE_BRANCH`에서 만든 뒤 idempotent `run` 전이를 기록하고 artifact node 완료 조건을 실행한다:
+
+```bash
+python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py" recover \
+  --artifact {PATH} --run-state {RUN_JSON}
+read BRANCH WORKTREE < <(python3 -c 'import json,sys; i=json.load(open(sys.argv[1]))["identity"]; print(i["branch"], i["worktree"])' {RUN_JSON})
+if [ ! -d "$WORKTREE" ]; then
+  git show-ref --verify --quiet "refs/heads/$BRANCH" \
+    && git worktree add "$WORKTREE" "$BRANCH" \
+    || git worktree add "$WORKTREE" -b "$BRANCH" "$BASE_BRANCH"
+fi
+python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py" local-event \
+  --artifact {PATH} --run-state {RUN_JSON} --event run
+```
+
+helper가 revision/digest, local dependency, stable identity를 fail-closed로 검증한다. 이 모드에서는 아래 GitHub dependency/label/comment 절을 건너뛰고, 관찰은 위키에만 기록한다. 아래 `{N}` 절차는 변경 없는 legacy/projected Issue 경로다.
 
 ### Step 1. 작업 기준 확인 (세션 컨텍스트 우선)
 - plan이 컨텍스트에 있으면 그대로 사용 (재조회 금지)
@@ -128,8 +147,8 @@ wiki capture observation \
 ## 불변식
 - 원자적 커밋(1커밋=1논리변경, WIP 금지).
 - 워크트리 미커밋 변경 보존.
-- 열린 `blocked_by`가 있으면 실행 금지.
+- Issue mode는 열린 GitHub `blocked_by`, record:none mode는 helper가 보고한 local blocker가 있으면 실행 금지.
 - 코드 변경 워크트리 생성은 run 책임이다(start에서 만들지 않는다).
-- 모든 리프는 자기 워크트리(`.worktrees/issue-{N}`) + `task/issue-{N}`(base=parent branch)에서 작업하고, 컨테이너/epic 브랜치는 워크트리 없는 순수 ref다. ORCHESTRATED + 빈 BASE_BRANCH는 hard STOP.
+- Issue 리프는 `.worktrees/issue-{N}` + `task/issue-{N}`, record:none node는 run-state의 stable identity에서 작업한다. 컨테이너/epic 브랜치는 워크트리 없는 순수 ref다. ORCHESTRATED + 빈 BASE_BRANCH는 hard STOP.
 - observation만 자동 캡처. decision/trial_error는 verify에서 확인 후 승격.
 - Knowledge Capture Audit 결과를 남긴다.

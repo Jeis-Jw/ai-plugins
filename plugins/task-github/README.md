@@ -53,9 +53,9 @@ python3 plugins/task-github/skills/define/scripts/create_issue_tree.py \
 
 - `record:none|github`과 `delivery:local-ff|pull-request`는 독립 축이다.
 - `record:none`은 Issue write를 하지 않는다. policy상 PR이 필요한 경우 `record:none + delivery:pull-request`는 허용한다.
-- `record:github`은 full coverage 전 실행을 차단한다. partial projection은 동일 digest checkpoint에서 재개한다.
-- local lifecycle은 `local-start → run → verify → done → closeout`, `recover`로 재진입한다. branch/worktree는 stable node id 기반이라 revision 간 identity가 유지된다.
-- closeout receipt는 binding schema v1 필드(`schema`, `emitter`, `workflow`, `run_id`, 시간/비용/품질)를 방출한다. token 측정값이 없으면 `tokens:null`, `token_coverage:unavailable`이다.
+- `record:github`은 full coverage 전 실행을 차단한다. node marker와 node/edge intent checkpoint로 remote write 뒤 local 실패도 동일 Issue/dependency를 재사용한다. 전체 pagination scan은 incomplete node resume에서만 수행한다.
+- public `start → run → verify → done`은 `--artifact/--node|--run-state` record:none mode를 제공하고 `recover`로 재진입한다. branch/worktree는 stable node id 기반이라 revision 간 identity가 유지된다.
+- closeout receipt는 binding schema v1 필드(`schema`, `emitter`, `workflow`, `run_id`, 시간/비용/품질)를 방출한다. token 측정값은 `exact`, 없으면 `tokens:null`, `token_coverage:unavailable`이다.
 - 기존 `create_issue_tree.py --spec`와 `task/issue-{N}` 기반 Issue-first 흐름은 그대로 지원한다.
 
 ## 3축 분류

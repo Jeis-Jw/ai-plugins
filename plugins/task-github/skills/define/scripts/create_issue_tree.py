@@ -669,6 +669,17 @@ class GitHubProjectionProvider:
     def node_id(self, owner: str, repo: str, number: int) -> str:
         return issue_node_id(owner, repo, number)
 
+    def find_issue(self, owner: str, repo: str, marker: str) -> int | None:
+        return find_issue_by_marker(owner, repo, marker)
+
+    def issue_has_marker(self, owner: str, repo: str, number: int, marker: str) -> bool:
+        return issue_has_marker(owner, repo, number, marker)
+
+    def dependency_exists(
+        self, owner: str, repo: str, child_number: int, blocker_number: int
+    ) -> bool:
+        return dependency_exists(owner, repo, child_number, blocker_number)
+
     def create_root(self, root: dict) -> int:
         return create_root_issue(root)
 
@@ -683,6 +694,226 @@ class GitHubProjectionProvider:
         return add_dependency(
             owner, repo, child_number, blocker_number, strict=True
         )
+
+
+def projection_node_marker(artifact: dict, stable_node_id: str) -> str:
+    """Binding marker used to reconcile a remote create after a local failure."""
+    return (
+        "task-github-definition-node:v1:"
+        f"{artifact['definition_id']}:{artifact['revision']}:"
+        f"{artifact['digest']}:{stable_node_id}"
+    )
+
+
+def _with_projection_marker(issue_spec: dict, marker: str) -> dict:
+    marked = dict(issue_spec)
+    comment = f"<!-- {marker} -->"
+    body = marked["body"].rstrip()
+    marked["body"] = body if comment in body else f"{body}\n\n{comment}"
+    return marked
+
+
+def find_issue_by_marker(
+    owner: str,
+    repo: str,
+    marker: str,
+    *,
+    gh_func: Callable = gh,
+) -> int | None:
+    """Find exactly one Issue carrying a DefinitionArtifact node marker."""
+    raw = gh_func([
+        "api", "--paginate", "--slurp",
+        "-H", f"X-GitHub-Api-Version: {API_VERSION}",
+        f"repos/{owner}/{repo}/issues?state=all&per_page=100",
+    ])
+    try:
+        pages = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise IssueTreeError("projection_reconcile_failed", str(exc)) from exc
+    if not isinstance(pages, list):
+        raise IssueTreeError("projection_reconcile_failed", "issue reconciliation returned non-list JSON")
+    issues = [item for page in pages for item in page] if pages and all(
+        isinstance(page, list) for page in pages
+    ) else pages
+    matches = [
+        int(issue["number"])
+        for issue in issues
+        if isinstance(issue, dict)
+        and "pull_request" not in issue
+        and marker in str(issue.get("body") or "")
+    ]
+    if len(matches) > 1:
+        raise IssueTreeError(
+            "projection_marker_ambiguous",
+            f"multiple Issues carry projection marker {marker!r}: {matches}",
+        )
+    return matches[0] if matches else None
+
+
+def issue_has_marker(
+    owner: str,
+    repo: str,
+    number: int,
+    marker: str,
+    *,
+    gh_func: Callable = gh,
+) -> bool:
+    body = gh_func([
+        "api",
+        "-H", f"X-GitHub-Api-Version: {API_VERSION}",
+        f"repos/{owner}/{repo}/issues/{number}",
+        "--jq", ".body // \"\"",
+    ])
+    return marker in body
+
+
+def dependency_exists(
+    owner: str,
+    repo: str,
+    child_number: int,
+    blocker_number: int,
+    *,
+    gh_func: Callable = gh,
+) -> bool:
+    raw = gh_func([
+        "api",
+        "-H", f"X-GitHub-Api-Version: {API_VERSION}",
+        f"repos/{owner}/{repo}/issues/{child_number}/dependencies/blocked_by",
+    ])
+    try:
+        blockers = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise IssueTreeError("projection_reconcile_failed", str(exc)) from exc
+    if not isinstance(blockers, list):
+        raise IssueTreeError("projection_reconcile_failed", "dependency reconciliation returned non-list JSON")
+    return any(
+        isinstance(blocker, dict) and str(blocker.get("number")) == str(int(blocker_number))
+        for blocker in blockers
+    )
+
+
+def _materialize_projection_node(
+    *,
+    artifact: dict,
+    artifact_node: dict,
+    issue_spec: dict,
+    parent_node_id: str | None,
+    owner: str,
+    repo: str,
+    state: dict,
+    state_path: Path,
+    provider: GitHubProjectionProvider,
+    create: Callable[[dict], int],
+) -> None:
+    """Checkpoint intent, reconcile by marker, then finish one node binding."""
+    stable_id = artifact_node["node_id"]
+    marker = projection_node_marker(artifact, stable_id)
+    nodes = state["nodes"]
+    entry = nodes.get(stable_id)
+    if entry is not None and not isinstance(entry, dict):
+        raise IssueTreeError("projection_state_invalid", f"node checkpoint is invalid: {stable_id}")
+    if entry and entry.get("number") and entry.get("github_node_id"):
+        return
+
+    created_intent = entry is None
+    if created_intent:
+        entry = {
+            "key": artifact_node["key"],
+            "parent_node_id": parent_node_id,
+            "marker": marker,
+            "status": "create_intent",
+        }
+        nodes[stable_id] = entry
+        definition_artifact.write_json_atomic(state_path, state)
+    elif entry.get("marker") not in {None, marker}:
+        raise IssueTreeError("projection_state_invalid", f"node marker changed: {stable_id}")
+    elif entry.get("marker") is None:
+        # Old complete checkpoints were returned above. An old incomplete
+        # checkpoint without a marker cannot be resumed without duplicate risk.
+        raise IssueTreeError(
+            "projection_marker_missing",
+            f"incomplete legacy checkpoint has no reconciliation marker: {stable_id}",
+        )
+
+    checkpoint_number = entry.get("number")
+    if created_intent:
+        # This invocation durably wrote intent immediately before this branch,
+        # so no prior remote create exists to reconcile and no pagination read
+        # is needed on the normal full-projection path.
+        remote_number = create(_with_projection_marker(issue_spec, marker))
+    elif checkpoint_number is not None:
+        if not provider.issue_has_marker(owner, repo, checkpoint_number, marker):
+            raise IssueTreeError(
+                "projection_reconcile_failed",
+                f"checkpointed Issue #{checkpoint_number} no longer carries marker {marker!r}",
+            )
+        remote_number = checkpoint_number
+    else:
+        # A prior create may have succeeded before its number checkpoint. The
+        # stable marker makes this slow pagination scan resume-only.
+        remote_number = provider.find_issue(owner, repo, marker)
+        if remote_number is None:
+            remote_number = create(_with_projection_marker(issue_spec, marker))
+
+    # Persist the remote number before resolving GraphQL node id. If node_id or
+    # this checkpoint fails, the next run reconciles the marker and reuses it.
+    entry["number"] = remote_number
+    entry["status"] = "issue_created"
+    definition_artifact.write_json_atomic(state_path, state)
+    entry["github_node_id"] = provider.node_id(owner, repo, remote_number)
+    entry["status"] = "materialized"
+    definition_artifact.write_json_atomic(state_path, state)
+
+
+def _materialize_projection_dependency(
+    *,
+    edge_id: str,
+    child_node_id: str,
+    blocker_node_id: str,
+    child_number: int,
+    blocker_number: int,
+    owner: str,
+    repo: str,
+    state: dict,
+    state_path: Path,
+    provider: GitHubProjectionProvider,
+) -> None:
+    dependencies = state["dependencies"]
+    entry = dependencies.get(edge_id)
+    if entry is not None and not isinstance(entry, dict):
+        raise IssueTreeError("projection_state_invalid", f"dependency checkpoint is invalid: {edge_id}")
+    if entry and entry.get("materialized") is True:
+        return
+
+    created_intent = entry is None
+    if created_intent:
+        entry = {
+            "child": child_node_id,
+            "blocked_by": blocker_node_id,
+            "child_number": child_number,
+            "blocked_by_number": blocker_number,
+            "materialized": False,
+            "status": "add_intent",
+        }
+        dependencies[edge_id] = entry
+        definition_artifact.write_json_atomic(state_path, state)
+    elif (
+        entry.get("child_number") != child_number
+        or entry.get("blocked_by_number") != blocker_number
+    ):
+        raise IssueTreeError("projection_state_invalid", f"dependency numbers changed: {edge_id}")
+
+    if created_intent or not provider.dependency_exists(
+        owner, repo, child_number, blocker_number
+    ):
+        if not provider.add_dependency(owner, repo, child_number, blocker_number):
+            raise IssueTreeError(
+                "dep_create_failed",
+                f"GitHub dependency was not materialized: {edge_id}",
+            )
+    entry["materialized"] = True
+    entry["status"] = "materialized"
+    definition_artifact.write_json_atomic(state_path, state)
 
 
 def _new_projection_state(artifact: dict) -> dict:
@@ -760,68 +991,55 @@ def execute_projection(
     by_key = {child["key"]: child for child in artifact["children"]}
     root_id = artifact["root"]["node_id"]
     nodes = state["nodes"]
-    if root_id in nodes and not (
-        isinstance(nodes[root_id], dict)
-        and nodes[root_id].get("number")
-        and nodes[root_id].get("github_node_id")
-    ):
-        raise IssueTreeError("projection_state_invalid", "root projection checkpoint is incomplete")
-    if root_id not in nodes:
-        number = provider.create_root(spec["root"])
-        nodes[root_id] = {
-            "key": "root",
-            "number": number,
-            "github_node_id": provider.node_id(owner, repo, number),
-            "parent_node_id": None,
-        }
-        definition_artifact.write_json_atomic(state_path, state)
+    _materialize_projection_node(
+        artifact=artifact,
+        artifact_node=artifact["root"],
+        issue_spec=spec["root"],
+        parent_node_id=None,
+        owner=owner,
+        repo=repo,
+        state=state,
+        state_path=state_path,
+        provider=provider,
+        create=provider.create_root,
+    )
 
     for child_spec in _topo_order(spec["children"]):
         artifact_child = by_key[child_spec["key"]]
-        stable_id = artifact_child["node_id"]
-        if stable_id in nodes:
-            if not (
-                isinstance(nodes[stable_id], dict)
-                and nodes[stable_id].get("number")
-                and nodes[stable_id].get("github_node_id")
-            ):
-                raise IssueTreeError(
-                    "projection_state_invalid",
-                    f"node projection checkpoint is incomplete: {stable_id}",
-                )
-            continue
         parent_id = artifact_child["parent_node_id"]
         parent_github_id = nodes[parent_id]["github_node_id"]
-        number = provider.create_child(repo_id, parent_github_id, child_spec)
-        nodes[stable_id] = {
-            "key": artifact_child["key"],
-            "number": number,
-            "github_node_id": provider.node_id(owner, repo, number),
-            "parent_node_id": parent_id,
-        }
-        definition_artifact.write_json_atomic(state_path, state)
+        _materialize_projection_node(
+            artifact=artifact,
+            artifact_node=artifact_child,
+            issue_spec=child_spec,
+            parent_node_id=parent_id,
+            owner=owner,
+            repo=repo,
+            state=state,
+            state_path=state_path,
+            provider=provider,
+            create=lambda marked, parent_github_id=parent_github_id: provider.create_child(
+                repo_id, parent_github_id, marked
+            ),
+        )
 
-    dependencies = state["dependencies"]
     for child in artifact["children"]:
-        for blocker_key, blocker_id in zip(child["blocked_by"], child["blocked_by_node_ids"]):
+        for blocker_id in child["blocked_by_node_ids"]:
             edge_id = f"{child['node_id']}>{blocker_id}"
-            if dependencies.get(edge_id, {}).get("materialized") is True:
-                continue
             child_number = nodes[child["node_id"]]["number"]
             blocker_number = nodes[blocker_id]["number"]
-            if not provider.add_dependency(owner, repo, child_number, blocker_number):
-                raise IssueTreeError(
-                    "dep_create_failed",
-                    f"GitHub dependency was not materialized: {child['key']} blocked_by {blocker_key}",
-                )
-            dependencies[edge_id] = {
-                "child": child["node_id"],
-                "blocked_by": blocker_id,
-                "child_number": child_number,
-                "blocked_by_number": blocker_number,
-                "materialized": True,
-            }
-            definition_artifact.write_json_atomic(state_path, state)
+            _materialize_projection_dependency(
+                edge_id=edge_id,
+                child_node_id=child["node_id"],
+                blocker_node_id=blocker_id,
+                child_number=child_number,
+                blocker_number=blocker_number,
+                owner=owner,
+                repo=repo,
+                state=state,
+                state_path=state_path,
+                provider=provider,
+            )
 
     coverage = definition_artifact.projection_coverage(artifact, state)
     state["complete"] = coverage["complete"]

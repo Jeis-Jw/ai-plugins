@@ -600,9 +600,9 @@ def build_receipt(
     else:
         if not isinstance(tokens, int) or isinstance(tokens, bool) or tokens < 0:
             raise DefinitionError("bad_tokens", "tokens must be a non-negative integer or null")
-        coverage = token_coverage or "measured"
-        if coverage != "measured":
-            raise DefinitionError("bad_token_coverage", "known tokens require token_coverage=measured")
+        coverage = token_coverage or "exact"
+        if coverage != "exact":
+            raise DefinitionError("bad_token_coverage", "known tokens require token_coverage=exact")
     counters_out = {} if counters is None else counters
     quality_out = {} if quality is None else quality
     if not isinstance(counters_out, dict) or not isinstance(quality_out, dict):
@@ -704,7 +704,7 @@ def build_parser() -> argparse.ArgumentParser:
     receipt.add_argument("--run-state", required=True)
     receipt.add_argument("--workflow", default="task-github")
     receipt.add_argument("--tokens", type=int)
-    receipt.add_argument("--token-coverage", choices=("measured", "unavailable"))
+    receipt.add_argument("--token-coverage", choices=("exact", "unavailable"))
     receipt.add_argument("--counters", default="{}", help="JSON object")
     receipt.add_argument("--quality", default="{}", help="JSON object")
     receipt.add_argument("--out")

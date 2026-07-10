@@ -31,10 +31,10 @@
 `define`의 정본은 `DefinitionArtifact`다. stable definition/node id, `revision`, canonical `digest`, `previous_digest`를 가지며 실행 run은 이 세 revision binding을 pin한다. revision 파일은 append-only이고 기존 revision을 덮어쓰지 않는다.
 
 - `record:none`: GitHub Issue write 없음. `.task-github/local/`의 artifact/run state로 `start → run → verify → done → closeout`과 recovery를 수행한다.
-- `record:github`: root, 모든 descendant, 모든 dependency edge를 projection checkpoint에 materialize한다. 중간 실패 시 성공한 node/edge를 재사용해 resume하며 full coverage 전 실행을 차단한다.
+- `record:github`: root, 모든 descendant, 모든 dependency edge를 projection checkpoint에 materialize한다. node는 stable body marker + pre-create intent, edge는 pre-add intent를 먼저 기록한다. remote write 뒤 local checkpoint가 실패하면 resume에서 marker/blocked_by를 확인해 같은 Issue/edge를 재사용하며, 신규 projection에는 reconciliation GET을 부과하지 않는다.
 - `delivery:local-ff|pull-request`: record와 독립이다. 원격 작업 기록 없이도 policy상 필요한 PR delivery를 선택할 수 있다.
 - stable local identity: logical node id에서 `task/definition-*` / `.worktrees/definition-*`을 도출한다. legacy Issue-first는 `task/issue-{N}` identity와 `create_issue_tree.py --spec` 계약을 유지한다.
-- receipt: closeout 뒤 binding schema v1(`schema`, `emitter`, `workflow`, `run_id`, `started_at`, `finished_at`, `elapsed_ms`, `tokens`, `token_coverage`, `counters`, `quality`)을 방출한다. 미측정 token은 반드시 `null/unavailable`이다.
+- receipt: closeout 뒤 binding schema v1(`schema`, `emitter`, `workflow`, `run_id`, `started_at`, `finished_at`, `elapsed_ms`, `tokens`, `token_coverage`, `counters`, `quality`)을 방출한다. 측정 token은 `exact`, 미측정 token은 반드시 `null/unavailable`이다.
 
 ---
 
