@@ -13,4 +13,4 @@ __pycache__/
 .task-github.yml
 .task-github/orchestrate/
 .studio.yml
-/studio/
+/.studio/

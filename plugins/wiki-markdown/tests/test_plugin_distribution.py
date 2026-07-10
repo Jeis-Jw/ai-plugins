@@ -41,7 +41,9 @@ class PluginDistributionTests(unittest.TestCase):
             for plugin in claude_marketplace["plugins"]
         }
         codex_marketplace = read_json(REPO / ".agents" / "plugins" / "marketplace.json")
-        codex_marketplace_names = {plugin["name"] for plugin in codex_marketplace["plugins"]}
+        codex_marketplace_entries = {
+            plugin["name"]: plugin for plugin in codex_marketplace["plugins"]
+        }
 
         for name in ("wiki-markdown", "task-github", "session-review", "studio"):
             plugin_root = REPO / "plugins" / name
@@ -50,7 +52,18 @@ class PluginDistributionTests(unittest.TestCase):
 
             self.assertEqual(claude["version"], codex["version"])
             self.assertEqual(claude["version"], marketplace_versions[name])
-            self.assertIn(name, codex_marketplace_names)
+            self.assertIn(name, codex_marketplace_entries)
+            if name == "studio":
+                self.assertEqual(claude["version"], codex_marketplace_entries[name]["version"])
+
+    def test_studio_v2_runtime_and_distribution_surfaces_are_present(self):
+        studio = REPO / "plugins" / "studio"
+
+        self.assertTrue((studio / "scripts" / "studio.py").exists())
+        self.assertTrue((studio / "tests" / "test_broker_semantics.js").exists())
+        self.assertTrue((studio / "broker" / "brainstorm.workflow.js").exists())
+        self.assertTrue((studio / "broker" / "pairing.workflow.js").exists())
+        self.assertEqual(read_json(studio / ".claude-plugin" / "plugin.json")["version"], "0.2.0")
 
 
 if __name__ == "__main__":
