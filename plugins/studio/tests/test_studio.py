@@ -90,6 +90,16 @@ def main() -> None:
         bad.write_text('```json\n{"mission":"m","done_when":"d","budget":{"total_tokens":1},"gates":[],"autonomy":"a"}\n```\n', encoding="utf-8")
         r = run(["mission", "validate", ".studio/missions/bad.md"], tmp, expect=6)
         assert not r["ok"] and any("kpi" in p for p in r["problems"]), r
+        strict_bad = ws / "missions" / "strict-bad.md"
+        strict_bad.write_text(
+            '```json\n{"mission":"m","kpi":[{"id":"k1","goal":""}],'
+            '"done_when":"d","budget":{"total_tokens":1,"per_run_default":1},'
+            '"gates":[],"autonomy":"a","surprise":true}\n```\n',
+            encoding="utf-8",
+        )
+        r = run(["mission", "validate", str(strict_bad)], tmp, expect=6)
+        assert any("unknown key" in p for p in r["problems"]), r
+        assert any("goal" in p for p in r["problems"]), r
 
         # 5) backlog check — default item has (kpi: k1) → ok
         r = run(["backlog", "check"], tmp)
@@ -159,24 +169,73 @@ def main() -> None:
         r = run(["budget", "--set-total", "1000"], tmp)
         assert "mission_state" not in board_state(ws), board_state(ws)
 
-        # 6d) malformed run outputs hit the exit-code contract, not a crash
+        # 6d) budget reserve/dispatch/settle is fenced and idempotent
+        r = run(["budget", "reserve", "res-1", "--lease-id", "lease-1", "--tokens", "40"], tmp)
+        assert r["changed"] and r["reservation"]["status"] == "reserved", r
+        r = run(["budget", "reserve", "res-1", "--lease-id", "lease-1", "--tokens", "40"], tmp)
+        assert not r["changed"], r
+        run(["budget", "dispatch", "res-1", "--lease-id", "stale"], tmp, expect=6)
+        r = run(["budget", "dispatch", "res-1", "--lease-id", "lease-1"], tmp)
+        assert r["reservation"]["status"] == "dispatched", r
+        r = run(["budget", "dispatch", "res-1", "--lease-id", "lease-1"], tmp)
+        assert not r["changed"], r
+        r = run(["budget", "settle", "res-1", "--lease-id", "lease-1", "--tokens", "30"], tmp)
+        assert r["changed"] and r["spent_tokens"] == 180, r
+        r = run(["budget", "settle", "res-1", "--lease-id", "lease-1", "--tokens", "30"], tmp)
+        assert not r["changed"] and r["reservation"]["settled_tokens"] == 30, r
+
+        # 6e) malformed run outputs hit the exit-code contract, not a crash
         run(["run", "record", "--json", "-"], tmp, expect=4,
             stdin=json.dumps({"run_id": "z", "cost": {"tokens": "lots"}}))       # non-numeric cost
         run(["run", "record", "--json", "@/no/such/file.json"], tmp, expect=4)    # missing @file
         run(["run", "record", "--json", "-"], tmp, expect=4,
             stdin=json.dumps({"error": "brainstorm needs >=2 personas"}))         # broker error, not a run
+        r = run(["run", "record", "--json", "-"], tmp, expect=4,
+                stdin=json.dumps({"run_id": "../escape", "ritual": "brainstorm", "delta_log": []}))
+        assert r["error_code"] == "unsafe_id" and not (tmp / "escape.md").exists(), r
+        r = run(["run", "record", "--json", "-"], tmp, expect=6, stdin=json.dumps({
+            "run_id": "strict-delta", "ritual": "brainstorm", "cost": {"tokens": 0},
+            "delta_log": [{"round": 1, "changed_what": "claimed", "anchor": "artifact"}],
+        }))
+        assert r["error_code"] == "invalid_run_output" and any("evidence" in p for p in r["problems"]), r
+        r = run(["run", "record", "--json", "-"], tmp, expect=6, stdin=json.dumps({
+            "run_id": "false-ready", "ritual": "pairing", "cost": {"tokens": 0},
+            "delta_log": [{"round": 1, "changed_what": "implemented", "anchor": "artifact", "evidence": "diff"}],
+            "verdict": {"alive": True, "open_count": 0}, "changedFiles": [],
+            "verification": [], "blockedChecks": [], "readyForIntegration": True,
+        }))
+        assert any("changedFiles" in p for p in r["problems"]), r
 
         # 7) aborted run — deltas quarantined, not counted as evidence
         aborted_out = {"run_id": "RUN-test-brainstorm-2", "ritual": "brainstorm", "aborted": True,
                        "cost": {"tokens": 10},
-                       "delta_log": [{"round": 1, "changed_what": "x", "anchor": "risk"}]}
+                       "delta_log": [{"round": 1, "changed_what": "x", "anchor": "risk", "evidence": "repro"}]}
         r = run(["run", "record", "--json", "-"], tmp, stdin=json.dumps(aborted_out))
         assert r["ok"] and r["aborted"] and r["valid_deltas"] == 1, r
+
+        # 7a) concurrent run records serialize their board read-modify-write
+        concurrent = [
+            {"run_id": "RUN-concurrent-a", "ritual": "brainstorm", "cost": {"tokens": 7}, "delta_log": []},
+            {"run_id": "RUN-concurrent-b", "ritual": "brainstorm", "cost": {"tokens": 11}, "delta_log": []},
+        ]
+        env = {**os.environ, "STUDIO_ROOT": str(PLUGIN), "SOURCE_DATE_EPOCH": "1700000000"}
+        procs = [
+            subprocess.Popen(
+                [sys.executable, str(CLI), "run", "record", "--json", "-"],
+                cwd=tmp, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True,
+            )
+            for _ in concurrent
+        ]
+        results = [proc.communicate(json.dumps(payload)) for proc, payload in zip(procs, concurrent)]
+        assert all(proc.returncode == 0 for proc in procs), results
+        concurrent_ids = {r["run_id"] for r in board_state(ws)["runs"] if r["run_id"].startswith("RUN-concurrent")}
+        assert concurrent_ids == {"RUN-concurrent-a", "RUN-concurrent-b"}, board_state(ws)
 
         # 8) evidence tally — 1 valid delta from the non-aborted run
         r = run(["evidence"], tmp)
         assert r["ok"] and r["total_valid_deltas"] == 1, r
-        assert r["aborted_runs"] == 1 and r["runs"] == 2, r
+        assert r["aborted_runs"] == 1 and r["runs"] == 4, r
         assert r["theatre"] is False, r
 
         # 9) config (.studio.yml) — scaffold, validate, parse, guards

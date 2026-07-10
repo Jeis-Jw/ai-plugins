@@ -25,12 +25,15 @@ Every subcommand prints one JSON object and uses these exit codes:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
+import fcntl
 import json
 import os
 import re
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -42,12 +45,19 @@ BACKLOG_ITEM_RE = re.compile(r"^\s*[-*]\s+\[[ xX]\]\s+(.*)$")
 KPI_TAG_RE = re.compile(r"\(kpi:\s*([^)\s][^)]*)\)")
 
 MISSION_REQUIRED = ("mission", "kpi", "done_when", "budget", "gates", "autonomy")
+MISSION_ALLOWED = frozenset(MISSION_REQUIRED)
+MISSION_BUDGET_REQUIRED = frozenset(("total_tokens", "per_run_default"))
+MISSION_KPI_REQUIRED = frozenset(("id", "goal"))
+SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 VALID_ANCHORS = (
     "artifact",
     "acceptance-criteria",
     "risk",
     "rejected-alternative",
     "repro-test",
+)
+DELTA_ALLOWED = frozenset(
+    ("round", "changed_what", "anchor", "evidence", "rejected_alternative", "dry")
 )
 
 # agent policy config (.studio.yml)
@@ -148,6 +158,12 @@ def workspace(args: argparse.Namespace) -> Path:
     return Path(getattr(args, "workspace", None) or WORKSPACE_PATH_DEFAULT)
 
 
+def validate_safe_id(value: Any, field: str) -> str:
+    if not isinstance(value, str) or not SAFE_ID_RE.fullmatch(value) or value in (".", ".."):
+        fail(4, "unsafe_id", f"{field} must be a path-safe identifier, got {value!r}")
+    return value
+
+
 def require_workspace(ws: Path) -> None:
     if not ws.is_dir() or not (ws / "board.md").is_file():
         fail(
@@ -170,19 +186,53 @@ def read_json_block(path: Path) -> Any:
     return extract_json_block(path.read_text(encoding="utf-8"))
 
 
-def write_board(ws: Path, board: dict) -> None:
-    body = (
+def atomic_write_text(path: Path, body: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as tmp:
+            tmp.write(body)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        os.replace(tmp_name, path)
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp_name)
+
+
+def render_board(board: dict) -> str:
+    return (
         "# board — studio operating board\n\n"
         "> Machine state is the fenced json block below (the producer's source "
         "of truth for budget, tracks, and recorded runs). Edit via `studio.py`, "
         "not by hand.\n\n"
         "```json\n" + json.dumps(board, ensure_ascii=False, indent=2) + "\n```\n"
     )
-    (ws / "board.md").write_text(body, encoding="utf-8")
+
+
+def write_board(ws: Path, board: dict) -> None:
+    atomic_write_text(ws / "board.md", render_board(board))
 
 
 def load_board(ws: Path) -> dict:
     return read_json_block(ws / "board.md")
+
+
+@contextlib.contextmanager
+def board_transaction(ws: Path):
+    """Serialize read-modify-write and replace board.md atomically."""
+    lock_path = ws / ".board.lock"
+    with lock_path.open("a+", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        board = load_board(ws)
+        try:
+            yield board
+        except BaseException:
+            raise
+        else:
+            write_board(ws, board)
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
 def mode_state(board: dict) -> dict:
@@ -442,7 +492,12 @@ def cmd_init(args: argparse.Namespace) -> None:
         {
             "schema": 1,
             "studio_mode": {"active": False, "started_at": None, "ended_at": None},
-            "budget": {"total_tokens": None, "per_run_default": None, "spent_tokens": 0},
+            "budget": {
+                "total_tokens": None,
+                "per_run_default": None,
+                "spent_tokens": 0,
+                "reservations": {},
+            },
             "tracks": [],
             "runs": [],
         },
@@ -458,25 +513,115 @@ def cmd_init(args: argparse.Namespace) -> None:
 def cmd_budget(args: argparse.Namespace) -> None:
     ws = workspace(args)
     require_workspace(ws)
-    board = load_board(ws)
-    bud = board.setdefault("budget", {"spent_tokens": 0})
-    changed = {}
-    if args.set_total is not None:
-        if args.set_total < 0:
-            fail(2, "bad_budget", "total must be >= 0")
-        bud["total_tokens"] = args.set_total
-        changed["total_tokens"] = args.set_total
-    if args.set_per_run is not None:
-        if args.set_per_run < 0:
-            fail(2, "bad_budget", "per_run must be >= 0")
-        bud["per_run_default"] = args.set_per_run
-        changed["per_run_default"] = args.set_per_run
-    # clearing paused if we just raised the cap above spend
-    total = bud.get("total_tokens")
-    if total is not None and int(bud.get("spent_tokens") or 0) <= total:
-        board.pop("mission_state", None)
-    write_board(ws, board)
+    with board_transaction(ws) as board:
+        bud = board.setdefault("budget", {"spent_tokens": 0, "reservations": {}})
+        bud.setdefault("reservations", {})
+        changed = {}
+        if args.set_total is not None:
+            if args.set_total < 0:
+                fail(2, "bad_budget", "total must be >= 0")
+            bud["total_tokens"] = args.set_total
+            changed["total_tokens"] = args.set_total
+        if args.set_per_run is not None:
+            if args.set_per_run < 0:
+                fail(2, "bad_budget", "per_run must be >= 0")
+            bud["per_run_default"] = args.set_per_run
+            changed["per_run_default"] = args.set_per_run
+        # clearing paused if we just raised the cap above spend
+        total = bud.get("total_tokens")
+        if total is not None and int(bud.get("spent_tokens") or 0) <= total:
+            board.pop("mission_state", None)
     ok(budget=bud, changed=changed)
+
+
+def _budget_reservations(budget: dict) -> dict:
+    reservations = budget.setdefault("reservations", {})
+    if not isinstance(reservations, dict):
+        fail(4, "bad_budget", "budget.reservations must be an object")
+    return reservations
+
+
+def _active_reserved_tokens(reservations: dict) -> int:
+    return sum(
+        int(item.get("tokens") or 0)
+        for item in reservations.values()
+        if item.get("status") in ("reserved", "dispatched")
+    )
+
+
+def cmd_budget_lifecycle(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    reservation_id = validate_safe_id(args.reservation_id, "reservation_id")
+    lease_id = validate_safe_id(args.lease_id, "lease_id")
+
+    with board_transaction(ws) as board:
+        budget = board.setdefault("budget", {"spent_tokens": 0, "reservations": {}})
+        reservations = _budget_reservations(budget)
+        current = reservations.get(reservation_id)
+        changed = False
+
+        if args.lifecycle == "reserve":
+            if args.tokens is None or args.tokens < 0:
+                fail(2, "bad_budget", "reserve tokens must be >= 0")
+            desired = {
+                "reservation_id": reservation_id,
+                "lease_id": lease_id,
+                "tokens": args.tokens,
+                "status": "reserved",
+            }
+            if current is not None:
+                if (
+                    current.get("lease_id") == lease_id
+                    and current.get("tokens") == args.tokens
+                ):
+                    ok(reservation=current, changed=False)
+                fail(6, "reservation_conflict", f"reservation {reservation_id} already exists with different data")
+            total = budget.get("total_tokens")
+            committed = int(budget.get("spent_tokens") or 0) + _active_reserved_tokens(reservations)
+            if total is not None and committed + args.tokens > total:
+                fail(6, "budget_exceeded", "reservation would exceed total token budget")
+            reservations[reservation_id] = desired
+            current = desired
+            changed = True
+
+        else:
+            if current is None:
+                fail(4, "reservation_not_found", f"unknown reservation: {reservation_id}")
+            if current.get("lease_id") != lease_id:
+                fail(6, "stale_lease", f"reservation {reservation_id} is fenced by another lease")
+
+            if args.lifecycle == "dispatch":
+                if current.get("status") == "dispatched":
+                    ok(reservation=current, changed=False)
+                if current.get("status") != "reserved":
+                    fail(6, "invalid_budget_transition", f"cannot dispatch from {current.get('status')}")
+                current["status"] = "dispatched"
+                changed = True
+            elif args.lifecycle == "settle":
+                if args.tokens is None or args.tokens < 0:
+                    fail(2, "bad_budget", "settle tokens must be >= 0")
+                if current.get("status") == "settled":
+                    if current.get("settled_tokens") == args.tokens:
+                        ok(reservation=current, changed=False)
+                    fail(6, "reservation_conflict", "settled token count cannot change")
+                if current.get("status") != "dispatched":
+                    fail(6, "invalid_budget_transition", f"cannot settle from {current.get('status')}")
+                current["status"] = "settled"
+                current["settled_tokens"] = args.tokens
+                budget["spent_tokens"] = int(budget.get("spent_tokens") or 0) + args.tokens
+                changed = True
+            elif args.lifecycle == "release":
+                if current.get("status") == "released":
+                    ok(reservation=current, changed=False)
+                if current.get("status") not in ("reserved", "dispatched"):
+                    fail(6, "invalid_budget_transition", f"cannot release from {current.get('status')}")
+                current["status"] = "released"
+                changed = True
+            else:  # argparse guarantees this; keep the state machine explicit.
+                fail(2, "bad_budget_action", f"unknown lifecycle action: {args.lifecycle}")
+
+    ok(reservation=current, changed=changed, spent_tokens=budget.get("spent_tokens", 0))
 
 
 # --------------------------------------------------------------------------- #
@@ -491,21 +636,61 @@ def cmd_mission_validate(args: argparse.Namespace) -> None:
     except ValueError as e:
         fail(4, "parse", f"{path}: {e}")
 
-    missing = [k for k in MISSION_REQUIRED if k not in contract]
-    problems = list(missing and [f"missing key: {k}" for k in missing] or [])
+    if not isinstance(contract, dict):
+        fail(6, "invalid_mission", "mission contract must be an object", problems=["contract must be an object"])
+    problems = [f"missing key: {key}" for key in MISSION_REQUIRED if key not in contract]
+    problems += [f"unknown key: {key}" for key in sorted(set(contract) - MISSION_ALLOWED)]
+
+    for key in ("mission", "done_when", "autonomy"):
+        if key in contract and (not isinstance(contract[key], str) or not contract[key].strip()):
+            problems.append(f"{key} must be a non-empty string")
+
     kpi = contract.get("kpi")
-    if kpi is not None and (not isinstance(kpi, list) or not kpi):
-        problems.append("kpi must be a non-empty list")
+    kpi_ids = []
+    if kpi is not None:
+        if not isinstance(kpi, list) or not kpi:
+            problems.append("kpi must be a non-empty list")
+        else:
+            for index, item in enumerate(kpi):
+                if not isinstance(item, dict):
+                    problems.append(f"kpi[{index}] must be an object")
+                    continue
+                if set(item) != MISSION_KPI_REQUIRED:
+                    problems.append(f"kpi[{index}] must contain exactly id and goal")
+                kid = item.get("id")
+                if not isinstance(kid, str) or not SAFE_ID_RE.fullmatch(kid):
+                    problems.append(f"kpi[{index}].id must be a path-safe non-empty string")
+                else:
+                    kpi_ids.append(kid)
+                if not isinstance(item.get("goal"), str) or not item.get("goal", "").strip():
+                    problems.append(f"kpi[{index}].goal must be a non-empty string")
+            if len(kpi_ids) != len(set(kpi_ids)):
+                problems.append("kpi ids must be unique")
+
     budget = contract.get("budget")
-    if budget is not None and not (
-        isinstance(budget, dict) and "total_tokens" in budget
+    if budget is not None:
+        if not isinstance(budget, dict) or set(budget) != MISSION_BUDGET_REQUIRED:
+            problems.append("budget must contain exactly total_tokens and per_run_default")
+        else:
+            for key in MISSION_BUDGET_REQUIRED:
+                value = budget.get(key)
+                if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                    problems.append(f"budget.{key} must be a non-negative integer")
+            if not problems and budget["per_run_default"] > budget["total_tokens"]:
+                problems.append("budget.per_run_default must not exceed total_tokens")
+
+    gates = contract.get("gates")
+    if gates is not None and (
+        not isinstance(gates, list)
+        or any(not isinstance(gate, str) or not gate.strip() for gate in gates)
+        or len(gates) != len(set(gates))
     ):
-        problems.append("budget must include total_tokens")
+        problems.append("gates must be a list of unique non-empty strings")
     if problems:
         fail(6, "invalid_mission", "; ".join(problems), problems=problems)
     ok(
         path=str(path),
-        kpi_ids=[k.get("id") if isinstance(k, dict) else k for k in kpi],
+        kpi_ids=kpi_ids,
         budget=budget,
     )
 
@@ -568,6 +753,74 @@ def _load_run_output(args: argparse.Namespace) -> dict:
     return obj
 
 
+def _validate_delta_log(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return ["delta_log must be a list"]
+    problems = []
+    for index, delta in enumerate(value):
+        if not isinstance(delta, dict):
+            problems.append(f"delta_log[{index}] must be an object")
+            continue
+        unknown = sorted(set(delta) - DELTA_ALLOWED)
+        if unknown:
+            problems.append(f"delta_log[{index}] has unknown keys: {', '.join(unknown)}")
+        round_value = delta.get("round")
+        if isinstance(round_value, bool) or not isinstance(round_value, int) or round_value < 1:
+            problems.append(f"delta_log[{index}].round must be a positive integer")
+        if not isinstance(delta.get("changed_what"), str) or not delta.get("changed_what", "").strip():
+            problems.append(f"delta_log[{index}].changed_what must be a non-empty string")
+        if "dry" in delta and not isinstance(delta["dry"], bool):
+            problems.append(f"delta_log[{index}].dry must be boolean")
+        if not delta.get("dry"):
+            if delta.get("anchor") not in VALID_ANCHORS:
+                problems.append(f"delta_log[{index}].anchor must be a valid anchor")
+            if not isinstance(delta.get("evidence"), str) or not delta.get("evidence", "").strip():
+                problems.append(f"delta_log[{index}].evidence is required for non-dry deltas")
+        for key in ("anchor", "evidence", "rejected_alternative"):
+            if key in delta and delta[key] is not None and not isinstance(delta[key], str):
+                problems.append(f"delta_log[{index}].{key} must be a string when present")
+    return problems
+
+
+def _pairing_readiness_problems(out: dict) -> list[str]:
+    problems = []
+    ready = out.get("readyForIntegration")
+    if not isinstance(ready, bool):
+        return ["pairing readyForIntegration must be boolean"]
+    changed = out.get("changedFiles")
+    verification = out.get("verification")
+    blocked = out.get("blockedChecks")
+    verdict = out.get("verdict")
+    if not isinstance(changed, list) or not changed or any(not isinstance(p, str) or not p.strip() for p in changed):
+        problems.append("pairing changedFiles must contain at least one repo-relative path")
+    if not isinstance(verification, list) or not verification:
+        problems.append("pairing verification must contain at least one executed check")
+    else:
+        malformed = any(
+            not isinstance(item, dict)
+            or not isinstance(item.get("command"), str)
+            or not item.get("command", "").strip()
+            or not isinstance(item.get("result"), str)
+            for item in verification
+        )
+        passed = any(
+            isinstance(item, dict)
+            and re.match(r"^pass(?:\b|:)", item.get("result", ""), re.IGNORECASE)
+            for item in verification
+        )
+        if malformed or not passed:
+            problems.append("pairing verification entries need commands and at least one pass result")
+    if not isinstance(blocked, list):
+        problems.append("pairing blockedChecks must be a list")
+    elif blocked:
+        problems.append("pairing blockedChecks must be empty")
+    if not isinstance(verdict, dict) or verdict.get("alive") is not True:
+        problems.append("pairing verdict.alive must be true")
+    if isinstance(verdict, dict) and int(verdict.get("open_count") or 0) != 0:
+        problems.append("pairing verdict.open_count must be zero")
+    return problems if ready else []
+
+
 def cmd_run_record(args: argparse.Namespace) -> None:
     ws = workspace(args)
     require_workspace(ws)
@@ -576,12 +829,16 @@ def cmd_run_record(args: argparse.Namespace) -> None:
     ritual = out.get("ritual", "unknown")
     # id precedence: explicit output field > --id > clock+random (random suffix
     # guards against two runs in the same second with the same ritual colliding).
-    run_id = (
+    run_id = validate_safe_id((
         out.get("run_id")
         or args.id
         or f"RUN-{now_stamp()}-{slugify(ritual)}-{os.urandom(3).hex()}"
-    )
+    ), "run_id")
+    if not isinstance(ritual, str) or not ritual.strip():
+        fail(6, "invalid_run_output", "ritual must be a non-empty string")
     cost = out.get("cost") or {}
+    if not isinstance(cost, dict):
+        fail(6, "invalid_run_output", "cost must be an object")
     try:
         cost_tokens = int(cost.get("tokens") or 0)
     except (TypeError, ValueError):
@@ -589,7 +846,14 @@ def cmd_run_record(args: argparse.Namespace) -> None:
     if cost_tokens < 0:
         fail(4, "bad_cost", "cost.tokens must be >= 0")
     verdict = out.get("verdict") or {}
-    delta_log = out.get("delta_log") or []
+    if not isinstance(verdict, dict):
+        fail(6, "invalid_run_output", "verdict must be an object")
+    delta_log = out.get("delta_log", [])
+    problems = _validate_delta_log(delta_log)
+    if ritual == "pairing":
+        problems += _pairing_readiness_problems(out)
+    if problems:
+        fail(6, "invalid_run_output", "; ".join(problems), problems=problems)
     aborted = bool(out.get("aborted"))
 
     # count real (non-dry) deltas with a valid anchor — the evidence tally.
@@ -602,13 +866,14 @@ def cmd_run_record(args: argparse.Namespace) -> None:
     ]
 
     # ---- write minutes (synthesis + delta_log only; raw transcript stays in raw/)
+    minutes_dir = (ws / "minutes").resolve()
     minutes_path = ws / "minutes" / f"{run_id}.md"
+    if minutes_path.resolve().parent != minutes_dir:
+        fail(4, "unsafe_id", "run_id escapes the minutes directory")
     body = _render_minutes(run_id, out, valid_deltas, aborted)
-    minutes_path.write_text(body, encoding="utf-8")
 
     # ---- update board ledger (idempotent on run_id: re-recording the same run
     # replaces its entry and its cost, never double-counts the budget)
-    board = load_board(ws)
     entry = {
         "run_id": run_id,
         "ritual": ritual,
@@ -619,19 +884,23 @@ def cmd_run_record(args: argparse.Namespace) -> None:
         "aborted": aborted,
         "minutes": str(minutes_path),
     }
-    bud = board["budget"]
-    spent = int(bud.get("spent_tokens") or 0)
-    prior = next((r for r in board["runs"] if r.get("run_id") == run_id), None)
-    if prior is not None:
-        spent -= int(prior.get("cost_tokens") or 0)   # undo the old cost
-        board["runs"] = [r for r in board["runs"] if r.get("run_id") != run_id]
-    board["runs"].append(entry)
-    bud["spent_tokens"] = spent + cost_tokens
-    total = bud.get("total_tokens")
-    exceeded = total is not None and bud["spent_tokens"] > total
-    if exceeded:
-        board["mission_state"] = "paused"  # budget exhausted → owner gate to resume
-    write_board(ws, board)
+    with board_transaction(ws) as board:
+        bud = board.setdefault("budget", {"spent_tokens": 0, "reservations": {}})
+        runs = board.setdefault("runs", [])
+        if not isinstance(runs, list):
+            fail(4, "bad_board", "board.runs must be a list")
+        spent = int(bud.get("spent_tokens") or 0)
+        prior = next((r for r in runs if r.get("run_id") == run_id), None)
+        if prior is not None:
+            spent -= int(prior.get("cost_tokens") or 0)   # undo the old cost
+            board["runs"] = [r for r in runs if r.get("run_id") != run_id]
+        board["runs"].append(entry)
+        bud["spent_tokens"] = spent + cost_tokens
+        total = bud.get("total_tokens")
+        exceeded = total is not None and bud["spent_tokens"] > total
+        if exceeded:
+            board["mission_state"] = "paused"  # budget exhausted → owner gate to resume
+        atomic_write_text(minutes_path, body)
 
     ok(
         run_id=run_id,
@@ -704,21 +973,17 @@ def cmd_board(args: argparse.Namespace) -> None:
 def cmd_mode(args: argparse.Namespace) -> None:
     ws = workspace(args)
     require_workspace(ws)
-    board = load_board(ws)
-    mode = mode_state(board)
-    if args.mcmd == "start":
-        if not mode.get("active"):
+    if args.mcmd == "status":
+        ok(mode=mode_state(load_board(ws)))
+    with board_transaction(ws) as board:
+        mode = mode_state(board)
+        if args.mcmd == "start" and not mode.get("active"):
             mode["active"] = True
             mode["started_at"] = now_stamp()
             mode["ended_at"] = None
-            write_board(ws, board)
-        ok(mode=mode)
-    if args.mcmd == "end":
-        if mode.get("active"):
+        elif args.mcmd == "end" and mode.get("active"):
             mode["active"] = False
             mode["ended_at"] = now_stamp()
-            write_board(ws, board)
-        ok(mode=mode)
     ok(mode=mode)
 
 
@@ -825,6 +1090,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--set-total", type=int, help="total token cap (enables the exhausted→paused gate)")
     sp.add_argument("--set-per-run", type=int, help="advisory per-run token cap the producer applies at convene")
     sp.set_defaults(func=cmd_budget)
+    blife = sp.add_subparsers(dest="lifecycle")
+    for action in ("reserve", "dispatch", "settle", "release"):
+        bp = blife.add_parser(action, help=f"{action} an idempotent budget reservation")
+        bp.add_argument("reservation_id")
+        bp.add_argument("--lease-id", required=True)
+        if action in ("reserve", "settle"):
+            bp.add_argument("--tokens", type=int, required=True)
+        bp.set_defaults(func=cmd_budget_lifecycle)
 
     sp = sub.add_parser("run", help="run ops")
     rsub = sp.add_subparsers(dest="rcmd", required=True)

@@ -84,11 +84,11 @@ const TURN_SCHEMA = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['changed_what', 'anchor'],
+        required: ['changed_what', 'anchor', 'evidence'],
         properties: {
-          changed_what: { type: 'string' },
+          changed_what: { type: 'string', minLength: 1 },
           anchor: { type: 'string', enum: ANCHORS },
-          evidence: { type: 'string' },
+          evidence: { type: 'string', minLength: 1 },
           rejected_alternative: { type: 'string' },
         },
       },

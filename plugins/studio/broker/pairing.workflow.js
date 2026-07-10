@@ -222,7 +222,16 @@ const verdict = await agent([
 ].join('\n'), { schema: VERDICT_SCHEMA, label: 'critic:verdict', phase: 'Verdict', ...policyFor('critic', 'verdict') })
   || { alive: openFailures.length === 0, reason: 'critic unavailable; fell back to open-failure count', defended_count: defendedAll.length, open_count: openFailures.length }
 
-const readyForIntegration = Boolean(verdict.alive && openFailures.length === 0 && blockedChecks.length === 0)
+const verificationComplete = changedFiles.size > 0
+  && verification.length > 0
+  && verification.some(v => /^pass(?:\b|:)/i.test(String(v.result || '')))
+const readyForIntegration = Boolean(
+  CRITERIA.length > 0
+  && verdict.alive
+  && openFailures.length === 0
+  && blockedChecks.length === 0
+  && verificationComplete
+)
 
 return {
   ritual: 'pairing',
