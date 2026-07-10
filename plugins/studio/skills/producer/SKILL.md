@@ -264,7 +264,9 @@ Studio는 task-github Python/JS callable API를 만들거나 import하지 않는
 
 1. ContextPack digest와 QualityPlan ref를 포함한 WorkPacket을 `workflow validate-packet`으로
    검증한다.
-2. 같은 `lease_id`로 budget을 `reserve`한 뒤 `workflow dispatch`를 호출한다.
+2. 같은 `lease_id`로 budget을 `reserve`한 뒤 canonical QualityPlan을 `--plan`으로 붙여
+   `workflow dispatch`를 호출한다. dispatch가 plan 원문+digest와 ContextPack ref+digest를
+   lease binding에 고정하므로 이후 같은 id의 약화된 plan이나 다른 context로 바꿀 수 없다.
 3. external이 선택되면 반환된 `separate-worker-handoff`를 **별도 worker**에 넘긴다.
    producer가 `task-github:start/run/done`을 대신 수행하거나 external 내부 상태를
    issue/branch/PR 단위로 board에 복제하지 않는다.

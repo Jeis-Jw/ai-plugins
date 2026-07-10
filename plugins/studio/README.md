@@ -93,7 +93,7 @@ python3 plugins/studio/scripts/studio.py quality evaluate --plan @plan.json --ev
 python3 plugins/studio/scripts/studio.py context put item --json @item.json
 python3 plugins/studio/scripts/studio.py budget reserve <reservation> --lease-id <lease> --tokens <n>
 python3 plugins/studio/scripts/studio.py workflow validate-packet --json @packet.json
-python3 plugins/studio/scripts/studio.py workflow dispatch --packet @packet.json --capabilities @snapshot.json --lease-id <lease>
+python3 plugins/studio/scripts/studio.py workflow dispatch --packet @packet.json --plan @plan.json --capabilities @snapshot.json --lease-id <lease>
 python3 plugins/studio/scripts/studio.py workflow result --packet @packet.json --plan @plan.json --json @result.json --lease-id <lease>
 ```
 

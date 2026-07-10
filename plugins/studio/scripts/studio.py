@@ -1348,8 +1348,15 @@ def _claim_lease(board: dict, track_id: str, lease_id: str, executor: str, reser
         if current.get("executor") == executor and current.get("budget_reservation_id") == reservation_id:
             return current, False
         fail(6, "lease_conflict", "lease id already exists with different claim data")
-    if current and current.get("state") in ACTIVE_LEASE_STATES:
-        fail(6, "active_lease_exists", f"track {track_id} already has active lease {current.get('lease_id')}")
+    current_reservation = None
+    if current:
+        current_reservation = _budget_reservations(board["budget"]).get(current.get("budget_reservation_id"))
+    replacement_fenced = current and (
+        current.get("state") in ACTIVE_LEASE_STATES
+        or (current_reservation and current_reservation.get("status") in ("reserved", "dispatched"))
+    )
+    if replacement_fenced:
+        fail(6, "active_lease_exists", f"track {track_id} already has fenced lease {current.get('lease_id')}")
     reservations = _budget_reservations(board["budget"])
     reservation = reservations.get(reservation_id)
     if not reservation or reservation.get("lease_id") != lease_id or reservation.get("status") != "reserved":
@@ -1405,6 +1412,9 @@ def _transition_lease(board: dict, track_id: str, lease_id: str, state: str, ext
         lease["external_ref"] = external_ref
     if state == "cancelled":
         lease["cancel_confirmed"] = True
+        lease["recovery_required"] = False
+    elif state == "failed":
+        lease["recovery_required"] = True
     return lease, True
 
 
@@ -1446,9 +1456,10 @@ def validate_work_packet(packet: Any) -> list[str]:
     for key in ("track_id", "quality_plan_ref", "budget_reservation_id"):
         if not isinstance(packet.get(key), str) or not SAFE_ID_RE.fullmatch(packet.get(key, "")):
             problems.append(f"WorkPacket.{key} must be a path-safe identifier")
-    for key in ("objective", "context_ref"):
-        if not isinstance(packet.get(key), str) or not packet.get(key, "").strip():
-            problems.append(f"WorkPacket.{key} must be a non-empty string")
+    if not isinstance(packet.get("objective"), str) or not packet.get("objective", "").strip():
+        problems.append("WorkPacket.objective must be a non-empty string")
+    if not isinstance(packet.get("context_ref"), str) or not SAFE_ID_RE.fullmatch(packet.get("context_ref", "")):
+        problems.append("WorkPacket.context_ref must be a path-safe identifier")
     if not isinstance(packet.get("digest"), str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", packet.get("digest", "")):
         problems.append("WorkPacket.digest must be a sha256 digest")
     criteria = packet.get("acceptance_criteria")
@@ -1569,10 +1580,39 @@ def cmd_workflow_dispatch(args: argparse.Namespace) -> None:
     ws = workspace(args)
     require_workspace(ws)
     packet = load_json_arg(args.packet, "WorkPacket")
+    plan = load_json_arg(args.plan, "QualityPlan")
     problems = validate_work_packet(packet)
     if problems:
         fail(6, "invalid_work_packet", "; ".join(problems), problems=problems)
+    plan_problems = validate_quality_plan(plan)
+    if plan_problems:
+        fail(6, "invalid_quality_plan", "; ".join(plan_problems), problems=plan_problems)
+    if plan["id"] != packet["quality_plan_ref"]:
+        fail(6, "quality_plan_mismatch", "WorkPacket quality_plan_ref does not match QualityPlan.id")
     lease_id = validate_safe_id(args.lease_id, "lease_id")
+
+    context_path = _context_path(ws, "pack", packet["context_ref"])
+    try:
+        stored_pack = json.loads(context_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError) as exc:
+        fail(6, "context_pack_required", f"cannot load ContextPack {packet['context_ref']}: {exc}")
+    canonical_pack = _prepare_context_object("pack", stored_pack)
+    if canonical_pack["id"] != packet["context_ref"]:
+        fail(6, "context_ref_mismatch", "stored ContextPack id does not match WorkPacket.context_ref")
+    if canonical_pack["digest"] != packet["digest"]:
+        fail(6, "context_digest_mismatch", "WorkPacket.digest does not match the stored canonical ContextPack")
+
+    dispatch_binding = {
+        "quality_plan": {
+            "id": plan["id"],
+            "digest": canonical_digest(plan),
+            "canonical": json.loads(json.dumps(plan, ensure_ascii=False, sort_keys=True)),
+        },
+        "context_pack": {
+            "ref": canonical_pack["id"],
+            "digest": canonical_pack["digest"],
+        },
+    }
 
     snapshot = None
     external_ready = False
@@ -1596,6 +1636,12 @@ def cmd_workflow_dispatch(args: argparse.Namespace) -> None:
         lease, _ = _claim_lease(
             board, packet["track_id"], lease_id, selected, packet["budget_reservation_id"]
         )
+        existing_binding = lease.get("dispatch_binding")
+        if existing_binding is not None and existing_binding != dispatch_binding:
+            fail(6, "dispatch_binding_mismatch", "an existing lease cannot be rebound to another QualityPlan or ContextPack")
+        if lease.get("recovery_required"):
+            fail(6, "recovery_required", "failed dispatch must resume or cancel-release before dispatching again")
+        lease["dispatch_binding"] = dispatch_binding
         lease["capability_snapshot"] = snapshot
         lease["requested_executor"] = packet["executor"]
         lease, _ = _transition_lease(board, packet["track_id"], lease_id, "running")
@@ -1648,6 +1694,7 @@ def cmd_workflow_result(args: argparse.Namespace) -> None:
     if plan.get("id") != packet["quality_plan_ref"]:
         fail(6, "quality_plan_mismatch", "WorkPacket quality_plan_ref does not match QualityPlan.id")
     evaluation = evaluate_quality(plan, envelope["evidence_refs"], envelope["telemetry"])
+    provided_plan_digest = canonical_digest(plan)
     lease_id = validate_safe_id(args.lease_id, "lease_id")
     gates_passed = _result_gates_pass(packet, envelope)
     ready = bool(
@@ -1666,6 +1713,19 @@ def cmd_workflow_result(args: argparse.Namespace) -> None:
             fail(6, "stale_lease", "ResultEnvelope lease_id is stale")
         if lease.get("budget_reservation_id") != packet["budget_reservation_id"]:
             fail(6, "reservation_mismatch", "ResultEnvelope packet uses another reservation")
+        binding = lease.get("dispatch_binding")
+        if not isinstance(binding, dict):
+            fail(6, "dispatch_binding_required", "workflow result requires the canonical dispatch binding")
+        quality_binding = binding.get("quality_plan") or {}
+        if (
+            quality_binding.get("id") != packet["quality_plan_ref"]
+            or quality_binding.get("digest") != provided_plan_digest
+            or quality_binding.get("canonical") != json.loads(json.dumps(plan, ensure_ascii=False, sort_keys=True))
+        ):
+            fail(6, "quality_plan_binding_mismatch", "ResultEnvelope QualityPlan differs from the canonical dispatch binding")
+        context_binding = binding.get("context_pack") or {}
+        if context_binding != {"ref": packet["context_ref"], "digest": packet["digest"]}:
+            fail(6, "context_binding_mismatch", "ResultEnvelope WorkPacket context differs from the dispatch binding")
         if lease.get("executor") == "external" and not envelope.get("external_ref"):
             fail(6, "external_ref_required", "external executor ResultEnvelope requires external_ref")
         if lease.get("executor") == "native" and envelope.get("external_ref") is not None:
@@ -1679,8 +1739,13 @@ def cmd_workflow_result(args: argparse.Namespace) -> None:
         lease["external_ref"] = envelope.get("external_ref")
         lease["coarse_status"] = envelope["status"]
         if envelope["status"] == "failed":
-            # Keep the active lease fenced. Fallback is forbidden until explicit
-            # resume or cancel-confirm+release.
+            if lease.get("state") in ("running", "waiting_gate"):
+                lease, _ = _transition_lease(board, packet["track_id"], lease_id, "failed")
+            elif lease.get("state") != "failed":
+                fail(6, "invalid_lease_transition", "failed result requires a running or waiting lease")
+            # Failed remains replacement-fenced. Fallback is forbidden until
+            # explicit resume or cancel-confirm+release.
+            lease["coarse_status"] = "failed"
             lease["recovery_required"] = True
         elif envelope["status"] == "waiting_gate" or (envelope["status"] == "succeeded" and not ready):
             if lease.get("state") == "running":
@@ -1722,7 +1787,14 @@ def cmd_workflow_recover(args: argparse.Namespace) -> None:
         if not lease.get("recovery_required"):
             fail(6, "recovery_not_required", "lease has no failed result awaiting recovery")
         if args.action == "resume":
-            lease.setdefault("result_history", []).append(lease.pop("result_envelope"))
+            prior_result = lease.pop("result_envelope", None)
+            if prior_result is not None:
+                lease.setdefault("result_history", []).append(prior_result)
+            if lease.get("state") == "failed":
+                reservation = _budget_reservations(board["budget"])[lease["budget_reservation_id"]]
+                if reservation.get("status") != "dispatched":
+                    fail(6, "invalid_budget_transition", "failed lease resume requires dispatched budget")
+                lease["state"] = "running"
             lease["coarse_status"] = "running"
             lease["recovery_required"] = False
             lease["resume_count"] = int(lease.get("resume_count") or 0) + 1
@@ -1730,6 +1802,10 @@ def cmd_workflow_recover(args: argparse.Namespace) -> None:
         else:
             if lease.get("state") in ACTIVE_LEASE_STATES:
                 lease, _ = _transition_lease(board, track_id, lease_id, "cancelled")
+            elif lease.get("state") == "failed":
+                lease["state"] = "cancelled"
+                lease["cancel_confirmed"] = True
+                lease["recovery_required"] = False
             reservation = _budget_reservations(board["budget"])[lease["budget_reservation_id"]]
             if reservation.get("status") in ("reserved", "dispatched"):
                 reservation["status"] = "released"
@@ -1994,6 +2070,7 @@ def build_parser() -> argparse.ArgumentParser:
     wvr.set_defaults(func=cmd_workflow_validate_result)
     wd = wfsub.add_parser("dispatch", help="select native/external before dispatch and claim a lease")
     wd.add_argument("--packet", required=True)
+    wd.add_argument("--plan", required=True, help="canonical QualityPlan bound for this lease")
     wd.add_argument("--capabilities", help="agent-visible task-github capability snapshot")
     wd.add_argument("--lease-id", required=True)
     wd.set_defaults(func=cmd_workflow_dispatch)

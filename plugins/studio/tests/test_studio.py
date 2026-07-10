@@ -357,8 +357,37 @@ def main() -> None:
             "preflight": {"mode": "read-only", "status": "pass"},
         }
         run(["workflow", "validate-packet", "--json", json.dumps(packet)], tmp)
+        unsafe_context = {**packet, "track_id": "track-unsafe-context", "context_ref": "../escape"}
+        r = run(["workflow", "validate-packet", "--json", json.dumps(unsafe_context)], tmp, expect=6)
+        assert any("context_ref" in problem for problem in r["problems"]), r
+        missing_context = {**packet, "track_id": "track-missing-context", "context_ref": "bundle-missing"}
+        r = run(["workflow", "dispatch", "--packet", json.dumps(missing_context),
+                 "--plan", json.dumps(quality_plan), "--capabilities", json.dumps(capabilities),
+                 "--lease-id", "lease-missing-context"], tmp, expect=6)
+        assert r["error_code"] == "context_pack_required", r
+        mismatched_context = {**packet, "track_id": "track-mismatch-context", "digest": "sha256:" + "0" * 64}
+        r = run(["workflow", "dispatch", "--packet", json.dumps(mismatched_context),
+                 "--plan", json.dumps(quality_plan), "--capabilities", json.dumps(capabilities),
+                 "--lease-id", "lease-mismatch-context"], tmp, expect=6)
+        assert r["error_code"] == "context_digest_mismatch", r
+        r = run(["context", "compact", "--bundle-id", "bundle-tampered",
+                 "--item-id", "item-1", "--item-id", "item-2"], tmp)
+        tampered_digest = r["context"]["digest"]
+        tampered_path = ws / "context" / "bundles" / "bundle-tampered.json"
+        tampered_pack = json.loads(tampered_path.read_text(encoding="utf-8"))
+        tampered_pack["item_refs"][0]["digest"] = "sha256:" + "1" * 64
+        tampered_path.write_text(json.dumps(tampered_pack), encoding="utf-8")
+        tampered_packet = {
+            **packet, "track_id": "track-tampered-context",
+            "context_ref": "bundle-tampered", "digest": tampered_digest,
+        }
+        r = run(["workflow", "dispatch", "--packet", json.dumps(tampered_packet),
+                 "--plan", json.dumps(quality_plan), "--capabilities", json.dumps(capabilities),
+                 "--lease-id", "lease-tampered-context"], tmp, expect=6)
+        assert r["error_code"] == "digest_mismatch", r
         run(["budget", "reserve", "res-wf-ext", "--lease-id", "lease-wf-ext", "--tokens", "120"], tmp)
         r = run(["workflow", "dispatch", "--packet", json.dumps(packet),
+                 "--plan", json.dumps(quality_plan),
                  "--capabilities", json.dumps(capabilities), "--lease-id", "lease-wf-ext"], tmp)
         assert r["selected_executor"] == "external" and not r["fallback"], r
         assert r["worker_handoff"]["kind"] == "separate-worker-handoff", r
@@ -370,6 +399,16 @@ def main() -> None:
             "failure_class": None,
         }
         run(["workflow", "validate-result", "--json", json.dumps(success)], tmp)
+        weakened_plan = {
+            **quality_plan,
+            "criteria": [
+                {**quality_plan["criteria"][0], "floor": 0.1},
+                {**quality_plan["criteria"][1], "floor": 0.1},
+            ],
+        }
+        r = run(["workflow", "result", "--packet", json.dumps(packet), "--plan", json.dumps(weakened_plan),
+                 "--json", json.dumps(success), "--lease-id", "lease-wf-ext"], tmp, expect=6)
+        assert r["error_code"] == "quality_plan_binding_mismatch", r
         r = run(["workflow", "result", "--packet", json.dumps(packet), "--plan", json.dumps(quality_plan),
                  "--json", json.dumps(success), "--lease-id", "lease-wf-ext"], tmp)
         assert r["readyForIntegration"] and r["lease"]["state"] == "succeeded", r
@@ -383,6 +422,7 @@ def main() -> None:
         fallback_packet = {**packet, "track_id": "track-fallback", "budget_reservation_id": "res-fallback"}
         run(["budget", "reserve", "res-fallback", "--lease-id", "lease-fallback", "--tokens", "30"], tmp)
         r = run(["workflow", "dispatch", "--packet", json.dumps(fallback_packet),
+                 "--plan", json.dumps(quality_plan),
                  "--lease-id", "lease-fallback"], tmp)
         assert r["selected_executor"] == "native" and r["fallback"] and r["worker_handoff"] is None, r
 
@@ -390,6 +430,7 @@ def main() -> None:
         failed_packet = {**packet, "track_id": "track-failed", "budget_reservation_id": "res-failed"}
         run(["budget", "reserve", "res-failed", "--lease-id", "lease-failed", "--tokens", "40"], tmp)
         run(["workflow", "dispatch", "--packet", json.dumps(failed_packet),
+             "--plan", json.dumps(quality_plan),
              "--capabilities", json.dumps(capabilities), "--lease-id", "lease-failed"], tmp)
         failure = {
             "status": "failed", "external_ref": "issue:failed", "artifact_refs": [],
@@ -401,10 +442,16 @@ def main() -> None:
         r = run(["workflow", "result", "--packet", json.dumps(failed_packet), "--plan", json.dumps(quality_plan),
                  "--json", json.dumps(failure), "--lease-id", "lease-failed"], tmp)
         assert not r["readyForIntegration"] and r["lease"]["recovery_required"], r
+        assert r["lease"]["state"] == "failed", r
+        r = run(["workflow", "dispatch", "--packet", json.dumps(failed_packet),
+                 "--plan", json.dumps(quality_plan), "--capabilities", json.dumps(capabilities),
+                 "--lease-id", "lease-failed"], tmp, expect=6)
+        assert r["error_code"] == "recovery_required", r
         premature = {**failed_packet, "budget_reservation_id": "res-premature", "executor": "native"}
         run(["budget", "reserve", "res-premature", "--lease-id", "lease-premature", "--tokens", "10"], tmp)
-        run(["workflow", "dispatch", "--packet", json.dumps(premature),
-             "--lease-id", "lease-premature"], tmp, expect=6)
+        r = run(["workflow", "dispatch", "--packet", json.dumps(premature),
+                 "--plan", json.dumps(quality_plan), "--lease-id", "lease-premature"], tmp, expect=6)
+        assert r["error_code"] == "active_lease_exists", r
         r = run(["workflow", "recover", "track-failed", "--lease-id", "lease-failed", "--action", "resume"], tmp)
         assert not r["native_fallback_allowed"] and r["lease"]["coarse_status"] == "running", r
         run(["workflow", "result", "--packet", json.dumps(failed_packet), "--plan", json.dumps(quality_plan),
@@ -413,7 +460,8 @@ def main() -> None:
         assert r["native_fallback_allowed"] and r["lease"]["cancel_confirmed"], r
         native_packet = {**failed_packet, "budget_reservation_id": "res-native", "executor": "native"}
         run(["budget", "reserve", "res-native", "--lease-id", "lease-native", "--tokens", "10"], tmp)
-        r = run(["workflow", "dispatch", "--packet", json.dumps(native_packet), "--lease-id", "lease-native"], tmp)
+        r = run(["workflow", "dispatch", "--packet", json.dumps(native_packet),
+                 "--plan", json.dumps(quality_plan), "--lease-id", "lease-native"], tmp)
         assert r["selected_executor"] == "native" and not r["fallback"], r
 
         # wiki provider is optional; absent preserves outbox, available still needs owner gate
