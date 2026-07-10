@@ -18,6 +18,12 @@ export const meta = {
 //     personas: { dev: {body}, qa: {body} },
 //     criticRubric: string,
 //     maxRounds?: number (default 3),
+//     reviewCycle?: {                 // optional continuation; never implies final QA
+//       cycleId: string,
+//       qaMode?: 'development'|'delta',
+//       nextFindingSeq: number,
+//       openFindings: [{id,title,repro,severity?}],
+//     },
 //   }
 // defensive: a stringified args (caller passed JSON text instead of an object)
 // would otherwise silently drop every field — parse it back.
@@ -30,6 +36,26 @@ const DEV = (A.personas && A.personas.dev) || { body: 'You are the developer. Bu
 const QA = (A.personas && A.personas.qa) || { body: 'You are QA. Your job is to break it with a reproducible failure.' }
 const RUBRIC = A.criticRubric || ''
 const MAX_ROUNDS = A.maxRounds || 3
+const REVIEW = A.reviewCycle || null
+const REVIEW_ID = REVIEW && (REVIEW.cycleId || REVIEW.cycle_id)
+const REVIEW_MODE = REVIEW && (REVIEW.qaMode || REVIEW.qa_mode || 'development')
+const REVIEW_NEXT = REVIEW && (REVIEW.nextFindingSeq || REVIEW.next_finding_seq)
+const REVIEW_OPEN = REVIEW && (REVIEW.openFindings || REVIEW.open_findings)
+const REVIEW_OPEN_IDS = Array.isArray(REVIEW_OPEN) ? REVIEW_OPEN.map(f => f && f.id) : []
+
+if (REVIEW && (
+  typeof REVIEW_ID !== 'string'
+  || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(REVIEW_ID)
+  || !Number.isInteger(REVIEW_NEXT)
+  || REVIEW_NEXT < 1
+  || !Array.isArray(REVIEW_OPEN)
+  || REVIEW_OPEN.some(f => !f || !/^F-[0-9]{4,}$/.test(f.id) || typeof f.title !== 'string' || typeof f.repro !== 'string')
+  || new Set(REVIEW_OPEN_IDS).size !== REVIEW_OPEN_IDS.length
+  || REVIEW_OPEN_IDS.some(id => Number(id.slice(2)) >= REVIEW_NEXT)
+  || !['development', 'delta'].includes(REVIEW_MODE)
+)) {
+  return { ritual: 'pairing', error: 'reviewCycle continuation is invalid', participants: ['dev', 'qa'] }
+}
 
 if (!WT) {
   return { ritual: 'pairing', error: 'pairing needs a producer-prepared worktreePath (track isolation)', participants: ['dev', 'qa'] }
@@ -89,13 +115,19 @@ const DEV_SCHEMA = {
       items: {
         type: 'object', additionalProperties: false, required: ['failure_id', 'test_added'],
         properties: {
-          failure_id: { type: 'integer', description: 'the id of the open failure you defended (from the open-failures list)' },
+          failure_id: {
+            oneOf: [{ type: 'integer' }, { type: 'string' }],
+            description: 'the id of the open failure you defended (from the open-failures list)',
+          },
           test_added: { type: 'string' },
           how: { type: 'string' },
         },
       },
     },
-    unresolved: { type: 'array', items: { type: 'integer' }, description: 'ids of failures you could not fix this turn' },
+    unresolved: {
+      type: 'array', items: { oneOf: [{ type: 'integer' }, { type: 'string' }] },
+      description: 'ids of failures you could not fix this turn',
+    },
   },
 }
 
@@ -132,12 +164,16 @@ const QA_SCHEMA = {
 const delta_log = []
 let round = 0
 let roundsRun = 0
-let openFailures = []       // qa failures dev has not yet defended; each has a stable id
+let openFailures = REVIEW ? REVIEW_OPEN.map(f => ({ ...f })) : []
+                               // qa failures dev has not yet defended; each has a stable id
 const defendedAll = []      // titles of defended failures (for the verdict prompt)
+const defendedIdsAll = []   // stable ids handed back to the review-cycle ledger
+const openedAll = []        // new findings created during this physical run
 const changedFiles = new Set()
 const verification = []
 const blockedChecks = []
-let failureSeq = 0          // monotonic id source — join key between qa and dev
+let failureSeq = REVIEW ? REVIEW_NEXT : 0
+                               // monotonic id source — join key between qa and dev
 
 phase('Build')
 for (round = 1; round <= MAX_ROUNDS; round++) {
@@ -172,6 +208,7 @@ for (round = 1; round <= MAX_ROUNDS; round++) {
       const f = openById.get(d.failure_id)
       if (!f) continue   // dev cited an id that isn't open — ignore, don't fabricate a defense
       defendedIds.add(d.failure_id)
+      defendedIdsAll.push(d.failure_id)
       defendedAll.push(f.title)
       delta_log.push({ round, changed_what: `defended: ${f.title}`, anchor: 'repro-test', evidence: d.test_added })
     }
@@ -198,7 +235,10 @@ for (round = 1; round <= MAX_ROUNDS; round++) {
     for (const b of qa.blockedChecks || []) blockedChecks.push(b)
   }
   for (const f of newFailures) {
-    openFailures.push({ id: failureSeq++, ...f })   // broker-assigned id = the join key
+    const id = REVIEW ? `F-${String(failureSeq++).padStart(4, '0')}` : failureSeq++
+    const opened = { id, ...f }
+    openFailures.push(opened)   // broker-assigned id = the join key
+    openedAll.push(opened)
     delta_log.push({ round, changed_what: `reproduced failure: ${f.title}`, anchor: 'risk', evidence: f.repro })
   }
   log(`round ${round}: qa produced ${newFailures.length} new failure(s), ${openFailures.length} open`)
@@ -231,13 +271,16 @@ const verdict = await agent([
 const verificationComplete = changedFiles.size > 0
   && verification.length > 0
   && verification.some(v => /^pass(?:\b|:)/i.test(String(v.result || '')))
-const readyForIntegration = Boolean(
+const developmentReady = Boolean(
   CRITERIA.length > 0
   && verdict.alive
   && openFailures.length === 0
   && blockedChecks.length === 0
   && verificationComplete
 )
+// A continuing review cycle needs ledger-backed final QA/integration gates.
+// Pairing is development/delta feedback only, so it cannot self-promote.
+const readyForIntegration = REVIEW ? false : developmentReady
 
 const finishedMs = Date.now()
 const finishedAt = new Date(finishedMs).toISOString()
@@ -263,6 +306,7 @@ const receipt = {
   },
   quality: {
     alive: Boolean(verdict.alive),
+    development_ready: developmentReady,
     ready_for_integration: readyForIntegration,
     blocked_checks: blockedChecks.length,
   },
@@ -288,6 +332,19 @@ return {
   changedFiles: [...changedFiles],
   verification,
   blockedChecks,
+  developmentReady,
   readyForIntegration,
+  reviewFeedback: REVIEW ? {
+    schema: 'studio-review-feedback/v1',
+    cycle_id: REVIEW_ID,
+    qa_mode: REVIEW_MODE,
+    findings_opened: openedAll,
+    findings_defended: [...new Set(defendedIdsAll)],
+    findings_open: openFailures.map(f => f.id),
+    changed_files: [...changedFiles],
+    verification,
+    blocked_checks: blockedChecks,
+    result: blockedChecks.length ? 'blocked' : (openFailures.length ? 'findings-open' : 'clean'),
+  } : null,
   receipt,
 }

@@ -29,8 +29,8 @@
     {
       "name": "studio",
       "source": { "source": "local", "path": "./plugins/studio" },
-      "version": "0.3.0",
-      "description": "Living agent team with quality hard floors, a local Context Kernel, and fenced optional external workflow handoffs.",
+      "version": "0.4.0",
+      "description": "Living agent team with stable review cycles, evidence reuse, and reason-gated delta/full QA.",
       "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
       "category": "Productivity"
     }

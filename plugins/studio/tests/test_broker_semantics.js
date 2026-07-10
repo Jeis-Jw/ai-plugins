@@ -143,4 +143,38 @@ const falseReady = await execute(
 )
 assert.equal(falseReady.output.readyForIntegration, false)
 
+const cyclePairing = await execute(
+  'pairing.workflow.js',
+  {
+    taskSpec: 'continue one logical review cycle', acceptanceCriteria: ['reject unsafe ids'],
+    worktreePath: '/tmp/track', personas: { dev: {}, qa: {} }, maxRounds: 1,
+    reviewCycle: {
+      cycleId: 'RC-issue-58', qaMode: 'delta', nextFindingSeq: 4,
+      openFindings: [{ id: 'F-0003', title: 'path escape', repro: 'python test.py unsafe', severity: 'high' }],
+    },
+  },
+  label => {
+    if (label === 'dev:r1') return {
+      summary: 'fenced path', defended: [{ failure_id: 'F-0003', test_added: 'test_unsafe_id' }], unresolved: [],
+      changedFiles: ['parser.py'], verification: [{ command: 'python test.py', result: 'pass' }], blockedChecks: [],
+    }
+    if (label === 'qa:r1') return {
+      broke: true,
+      failures: [{ title: 'unicode escape', repro: 'python test.py unicode', severity: 'medium' }],
+      verification: [{ command: 'python test.py unicode', result: 'fail: escaped' }], blockedChecks: [],
+    }
+    if (label === 'critic:verdict') return { alive: false, reason: 'one open', defended_count: 1, open_count: 1 }
+    throw new Error(`unexpected cycle-pairing label: ${label}`)
+  },
+)
+assert.equal(cyclePairing.output.developmentReady, false)
+assert.equal(cyclePairing.output.readyForIntegration, false)
+assert.equal(cyclePairing.output.receipt.quality.ready_for_integration, false)
+assert.equal(cyclePairing.output.reviewFeedback.schema, 'studio-review-feedback/v1')
+assert.equal(cyclePairing.output.reviewFeedback.cycle_id, 'RC-issue-58')
+assert.deepEqual(cyclePairing.output.reviewFeedback.findings_defended, ['F-0003'])
+assert.deepEqual(cyclePairing.output.reviewFeedback.findings_opened.map(f => f.id), ['F-0004'])
+assert.deepEqual(cyclePairing.output.reviewFeedback.findings_open, ['F-0004'])
+assert.equal(cyclePairing.output.reviewFeedback.result, 'findings-open')
+
 console.log('all broker semantic checks passed')

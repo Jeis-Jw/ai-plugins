@@ -28,6 +28,20 @@ def board_state(ws: Path) -> dict:
     return json.loads(JSON_BLOCK.search((ws / "board.md").read_text()).group(1))
 
 
+def sha(char: str) -> str:
+    return "sha256:" + char * 64
+
+
+def review_event(cycle_id: str, event_id: str, event_type: str, **fields) -> dict:
+    return {
+        "schema": "studio-review-event/v1",
+        "cycle_id": cycle_id,
+        "event_id": event_id,
+        "type": event_type,
+        **fields,
+    }
+
+
 def run(args, cwd, expect=0, stdin=None):
     env = {**os.environ, "STUDIO_ROOT": str(PLUGIN), "SOURCE_DATE_EPOCH": "1700000000"}
     p = subprocess.run(
@@ -537,6 +551,152 @@ def main() -> None:
         r = run(["workflow", "promote", "promotion-1", "--provider-status", "available", "--owner-approved"], tmp)
         assert r["provider"] == "wiki-markdown" and r["handoff"]["skill"] == "wiki-markdown:wiki", r
 
+        # 8f) review cycle keeps one logical finding/QA history across physical runs
+        cycle_binding = {
+            "cycle_id": "RC-issue-58", "track_id": "track-parser",
+            "criteria_digest": sha("a"), "base_head": "abc123",
+            "quality_plan_ref": "quality-main",
+            "definition_ref": {"schema": "definition-artifact/v1", "ref": "local:def-parser"},
+            "issue_ref": "issue:58", "requires_final_qa": True,
+            "requires_integration_gate": True,
+        }
+        r = run(["review", "open", "--json", json.dumps(cycle_binding)], tmp)
+        assert r["changed"] and r["cycle"]["state"] == "review-cycle", r
+        r = run(["review", "open", "--json", json.dumps(cycle_binding)], tmp)
+        assert not r["changed"], r
+
+        finding_opened = review_event(
+            "RC-issue-58", "REV-58-find-1", "finding-opened", head="abc123",
+            finding={
+                "title": "path escape", "severity": "high", "repro": "python test.py unsafe",
+                "affected_criteria": ["correctness"], "evidence_refs": [],
+            },
+        )
+        r = run(["review", "event", "RC-issue-58", "--json", json.dumps(finding_opened)], tmp)
+        assert r["changed"] and "F-0001" in r["cycle"]["findings"], r
+        assert r["issue_event"]["marker"] == "studio-review-event:REV-58-find-1", r
+        r = run(["review", "event", "RC-issue-58", "--json", json.dumps(finding_opened)], tmp)
+        assert not r["changed"] and len(r["cycle"]["events"]) == 1, r
+
+        evidence_1 = {
+            "ref": "EV-58-parser", "head": "abc124", "criteria_digest": sha("a"),
+            "covered_paths": ["tests/test_parser.py"], "surface_digest": sha("b"),
+            "tool_version": "pytest-9", "environment_digest": sha("c"),
+            "command_digest": sha("d"),
+        }
+        r = run(["review", "event", "RC-issue-58", "--json", json.dumps(review_event(
+            "RC-issue-58", "REV-58-evidence-1", "evidence-recorded", evidence=evidence_1,
+        ))], tmp)
+        assert r["cycle"]["evidence"]["EV-58-parser"]["status"] == "valid", r
+        change_1 = {
+            "head": "abc124", "criteria_digest": sha("a"), "changed_paths": ["src/parser.py"],
+            "surface_digest": sha("b"), "tool_version": "pytest-9",
+            "environment_digest": sha("c"), "impact_known": True,
+            "shared_contract_changed": False,
+        }
+        r = run(["review", "event", "RC-issue-58", "--json", json.dumps(review_event(
+            "RC-issue-58", "REV-58-fix-1", "fix-submitted",
+            finding_ids=["F-0001"], change=change_1,
+        ))], tmp)
+        assert r["cycle"]["counters"]["evidence_reused"] == 1, r
+        assert r["cycle"]["findings"]["F-0001"]["status"] == "fixed-pending-verification", r
+        delta_qa = review_event(
+            "RC-issue-58", "REV-58-delta-1", "qa-completed", qa_mode="delta", head="abc124",
+            passed=True, checks=["pytest tests/test_parser.py"], blocked_checks=[],
+            evidence_refs=["EV-58-parser"],
+            finding_results=[{"id": "F-0001", "status": "closed", "evidence_refs": ["EV-58-parser"]}],
+        )
+        r = run(["review", "event", "RC-issue-58", "--json", json.dumps(delta_qa)], tmp)
+        assert r["cycle"]["state"] == "stabilized", r
+        for event_id, mode, expected in (
+            ("REV-58-final-1", "final", "final-qa-passed"),
+            ("REV-58-integration-1", "integration", "integration-ready"),
+        ):
+            qa_event = review_event(
+                "RC-issue-58", event_id, "qa-completed", qa_mode=mode, head="abc124",
+                passed=True, checks=["pytest tests/test_parser.py"], blocked_checks=[],
+                evidence_refs=["EV-58-parser"], finding_results=[],
+            )
+            r = run(["review", "event", "RC-issue-58", "--json", json.dumps(qa_event)], tmp)
+            assert r["cycle"]["state"] == expected, r
+        r = run(["review", "summary", "RC-issue-58"], tmp)
+        assert r["summary"]["integration_ready"] and r["summary"]["counters"]["qa_rounds"] == 3, r
+        r = run(["review", "handoff", "RC-issue-58"], tmp)
+        assert r["handoff"]["open_findings"] == [] and len(r["handoff"]["valid_evidence"]) == 1, r
+
+        # evidence reuse is a deterministic pin/surface decision, not reviewer intuition
+        r = run(["review", "evidence-check", "--evidence", json.dumps(evidence_1),
+                 "--change", json.dumps(change_1)], tmp)
+        assert r["decision"]["reusable"], r
+        overlap_change = {**change_1, "changed_paths": ["tests/test_parser.py"]}
+        r = run(["review", "evidence-check", "--evidence", json.dumps(evidence_1),
+                 "--change", json.dumps(overlap_change)], tmp)
+        assert not r["decision"]["reusable"] and "covered-path-overlap" in r["decision"]["reasons"], r
+
+        # 8g) boundary change requires reasoned full QA; transient retry stays in the same cycle
+        risky_binding = {**cycle_binding, "cycle_id": "RC-risk", "track_id": "track-risk", "issue_ref": "issue:59"}
+        run(["review", "open", "--json", json.dumps(risky_binding)], tmp)
+        run(["review", "event", "RC-risk", "--json", json.dumps(review_event(
+            "RC-risk", "REV-risk-find", "finding-opened", head="abc123",
+            finding={
+                "title": "shared surface regression", "severity": "high", "repro": "pytest -k shared",
+                "affected_criteria": ["correctness"], "evidence_refs": [],
+            },
+        ))], tmp)
+        old_risk_evidence = {**evidence_1, "ref": "EV-risk-old", "covered_paths": ["src/shared"]}
+        run(["review", "event", "RC-risk", "--json", json.dumps(review_event(
+            "RC-risk", "REV-risk-evidence-old", "evidence-recorded", evidence=old_risk_evidence,
+        ))], tmp)
+        risky_change = {
+            **change_1, "head": "abc200", "changed_paths": ["src/shared/api.py"],
+            "surface_digest": sha("e"),
+        }
+        r = run(["review", "event", "RC-risk", "--json", json.dumps(review_event(
+            "RC-risk", "REV-risk-fix", "fix-submitted", finding_ids=["F-0001"], change=risky_change,
+        ))], tmp)
+        assert r["cycle"]["required_full_qa_reason"] == "dependency-surface-changed", r
+        assert r["cycle"]["evidence"]["EV-risk-old"]["status"] == "invalidated", r
+        retry = review_event(
+            "RC-risk", "REV-risk-retry", "retry-recorded", classification="environment-transient",
+            failure="runner disconnected", attempt=1,
+        )
+        retry_run = {
+            "run_id": "RUN-review-retry", "ritual": "unknown", "verdict": {}, "delta_log": [],
+            "cost": {"tokens": None, "token_coverage": "unavailable", "elapsed_ms": 1},
+            "review_cycle_delta": {"cycle_id": "RC-risk", "events": [retry]},
+        }
+        r = run(["run", "record", "--json", json.dumps(retry_run)], tmp)
+        assert r["review_cycle_id"] == "RC-risk" and r["issue_events"] == [], r
+        new_risk_evidence = {
+            **old_risk_evidence, "ref": "EV-risk-new", "head": "abc200",
+            "surface_digest": sha("e"), "command_digest": sha("f"),
+        }
+        run(["review", "event", "RC-risk", "--json", json.dumps(review_event(
+            "RC-risk", "REV-risk-evidence-new", "evidence-recorded", evidence=new_risk_evidence,
+        ))], tmp)
+        premature_final = review_event(
+            "RC-risk", "REV-risk-final-premature", "qa-completed", qa_mode="final", head="abc200",
+            passed=True, checks=["pytest"], blocked_checks=[], evidence_refs=["EV-risk-new"],
+            finding_results=[{"id": "F-0001", "status": "closed", "evidence_refs": ["EV-risk-new"]}],
+        )
+        r = run(["review", "event", "RC-risk", "--json", json.dumps(premature_final)], tmp, expect=6)
+        assert r["error_code"] == "full_qa_required", r
+        full_qa = review_event(
+            "RC-risk", "REV-risk-full", "qa-completed", qa_mode="full", head="abc200",
+            passed=True, checks=["pytest"], blocked_checks=[], evidence_refs=["EV-risk-new"],
+            full_qa_reason="dependency-surface-changed",
+            finding_results=[{"id": "F-0001", "status": "closed", "evidence_refs": ["EV-risk-new"]}],
+        )
+        r = run(["review", "event", "RC-risk", "--json", json.dumps(full_qa)], tmp)
+        assert r["cycle"]["state"] == "stabilized" and r["cycle"]["required_full_qa_reason"] is None, r
+        assert r["cycle"]["counters"]["full_qa"] == 1 and r["cycle"]["counters"]["integration_gate"] == 0, r
+        assert r["cycle"]["counters"]["transient_retries"] == 1, r
+        r = run(["review", "summary", "RC-risk"], tmp)
+        assert r["summary"]["cost"] == {
+            "physical_runs": 1, "tokens": None, "token_coverage": "unavailable",
+            "elapsed_ms": 1, "elapsed_coverage": "exact",
+        }, r
+
         # 9) config (.studio.yml) — scaffold, validate, parse, guards
         cfg = tmp / ".studio.yml"
         r = run(["config", "scaffold", "--path", str(cfg)], tmp)
@@ -614,8 +774,18 @@ def main() -> None:
             "`--action cancel-release`",
             "ResultEnvelope 필수 필드",
             "provider가 absent/unknown이면 `context outbox`",
+            "`references/review-cycle.md`",
         ):
             assert phrase in producer, phrase
+        review_reference = plugin_text("skills/producer/references/review-cycle.md")
+        for phrase in (
+            "한 cycle = 한 `DefinitionArtifact + Issue leaf(optional) + track + criteria_digest + QualityPlan`",
+            "무효화된 `ref`를 되살리지 말고",
+            "pending full reason이 있으면 `final`/`integration`은 fail-closed",
+            "transient/tool/config는 같은 cycle self-loop",
+            "token/time을 coverage와 함께 반환",
+        ):
+            assert phrase in review_reference, phrase
 
         # 12) pairing output carries the integration handoff contract
         pairing = plugin_text("broker/pairing.workflow.js")

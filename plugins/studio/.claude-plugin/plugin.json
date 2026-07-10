@@ -1,5 +1,5 @@
 {
   "name": "studio",
-  "version": "0.3.0",
-  "description": "살아있는 에이전트 팀 — QualityPlan hard floor와 Context Kernel을 Studio가 소유하고, native ritual 또는 optional external workflow를 fenced single-executor lease로 실행한다. task-github/wiki-markdown은 agent-visible handoff 기반 optional provider이며 hard dependency가 아니다."
+  "version": "0.4.0",
+  "description": "살아있는 에이전트 팀 — QualityPlan, stable review cycle, evidence reuse와 delta/full QA gate로 품질을 지키면서 반복 handoff·검증 낭비를 줄인다. task-github/wiki-markdown은 agent-visible optional provider다."
 }

@@ -58,9 +58,14 @@ STUDIO="${STUDIO_CLI:-$CLAUDE_PLUGIN_ROOT/scripts/studio.py}"
 ## 상태는 디스크에, 세션은 캐시
 
 studio의 상태는 전부 작업장(`.studio/`)에 있다. 세션이 죽어도 작업장을 읽으면
-이어진다. crew는 상주하지 않는다 — run 때마다 fresh로 소집되고, 자기 페르소나 +
-작업장을 읽어 온보딩한다. 너(producer)도 회의 전문(raw transcript)을 정독하지
-않는다 — 합성본(minutes)과 delta만 소비한다.
+이어진다. crew 프로세스는 상주하지 않아도 **같은 review cycle은 compact handoff로
+이어받는다.** 매 run마다 raw transcript나 전체 작업장을 다시 읽지 않는다. producer도
+회의 전문을 정독하지 않고 합성본(minutes), delta, 활성 finding, 유효 evidence pin만
+소비한다. 독립성 때문에 새 컨텍스트가 필요한 final QA는 별도 게이트다.
+
+tracked implementation/QA에서 review cycle을 열거나 이어갈 때만
+[`references/review-cycle.md`](references/review-cycle.md)를 끝까지 읽고 정확한 JSON 계약을
+사용한다. brainstorm/단발 run에는 이 reference를 로드하지 않는다.
 
 ## studio mode — 출근/퇴근
 
@@ -231,12 +236,16 @@ Workflow 호출 (백그라운드):
     criticRubric: "<rubric.md 내용>",
     agentPolicy: <config get의 config>,
     overrides: {},
-    maxRounds: 3
+    maxRounds: 3,
+    reviewCycle: {...<review handoff 출력>, qaMode: "development|delta"} // continuation일 때만
   }
 ```
 
 acceptance criteria는 소집 **전에** 고정한다. run 도중 바꾸면 증거가 오염되니,
-바꿔야 하면 kill하고 새 criteria로 재소집한다.
+바꿔야 하면 현재 cycle을 중단하고 새 criteria digest로 새 cycle을 연다. 같은 criteria에서
+발견·수정·재검증하는 것은 새 cycle이 아니라 continuation이다. `reviewCycle`을 넘기면
+broker는 기존 `F-xxxx`를 이어받고 `studio-review-feedback/v1`을 반환한다. 이 모드의
+pairing은 development/delta QA일 뿐이므로 스스로 `readyForIntegration:true`가 되지 않는다.
 
 ### Workflow unavailable fallback
 
@@ -273,6 +282,13 @@ Studio는 task-github Python/JS callable API를 만들거나 import하지 않는
 4. Studio에 저장하는 외부 실행 상태는 capability snapshot, `external_ref`, coarse status,
    ResultEnvelope뿐이다. raw transcript와 외부 workflow 내부 상태는 저장하지 않는다.
 
+task-github 기록을 선택했다면 Issue tree의 의미는 그대로 유지한다. root부터 기록하기로
+한 subtree에는 중간 누락을 만들지 않고, 각 leaf Issue는 팀원이 점유할 수 있으며 그 범위가
+완료되어야 닫히는 작업 단위다. leaf Issue/track 하나의 재작업은 같은 review cycle로 묶는다.
+`review event`/`run record`가 반환한 `studio-issue-event/v1`은 external worker가 hidden marker로
+멱등 upsert하는 Issue comment 투영 명령이다. Studio가 GitHub 내부 상태를 복제하지는 않는다.
+GitHub 기록을 선택하지 않았다면 같은 DefinitionArtifact와 cycle을 로컬에서만 소비한다.
+
 dispatch 전 capability가 unavailable/unknown이면 native fallback한다. 일단 external
 dispatch가 시작된 뒤 failure가 오면 즉시 native를 중복 실행하지 않는다.
 `workflow recover --action resume`을 우선하고, 불가능할 때만
@@ -298,6 +314,9 @@ python3 "$STUDIO" run record --json '<브로커가 반환한 JSON>' --track <tra
 - 같은 `run_id`로 다시 record하면 원장이 **덮어쓰기**(중복 계상 없음) — 재시도 안전.
 - 브로커가 전제 실패로 `{error: ...}`를 반환하면 record가 거부한다(exit 4). 그건
   run이 아니므로 theatre 집계에 안 들어간다.
+- 실제 post-run head/evidence pin까지 확인해 `review_cycle_delta`를 붙인 출력은 record와
+  cycle 원장을 한 transaction으로 갱신한다. 반환된 `issue_events`는 team mode의 comment
+  projection에만 사용한다. 같은 event id 재전송은 no-op이다.
 
 - `budget_exceeded: true`면 미션이 `paused`로 전이된다 — owner 예산 게이트 전까지
   새 run을 소집하지 마라.
@@ -307,12 +326,13 @@ python3 "$STUDIO" run record --json '<브로커가 반환한 JSON>' --track <tra
 ## 5) post-QA loop와 integration
 
 QA pass 뒤 producer가 결함을 발견하거나 owner가 결함을 지적하면 직접 고치지 않는다.
-올바른 루프는:
-
-1. 기존 dev worker에 재지시하거나 fix-worker를 새로 소집한다.
-2. 같은 track 워크트리에서 수정하게 한다.
-3. QA worker를 다시 소집해 재검증한다.
-4. `run record`로 새 evidence를 남긴다.
+그러나 같은 finding 때문에 미션·handoff·QA를 처음부터 다시 만들지도 않는다.
+정확한 command/event schema와 전이표는 `references/review-cycle.md`가 정본이다. 핵심은
+같은 Issue/criteria에서는 `F-xxxx`와 유효 evidence를 이어받아 delta QA하고, full QA·fresh
+context는 구조화된 사유가 있을 때만 쓰는 것이다. criteria/Issue scope 변경은 새 cycle,
+환경/tool 변경은 관련 evidence 재실행, transient/tool/config 실패는 같은 cycle의 retry다.
+각 물리 run 비용은 record하되 같은 event 재전송은 no-op이며, summary는 측정된 token/time만
+coverage와 함께 합산한다.
 
 pairing output만으로 통합하지 않는다. 실제 verification, artifact/context criterion evidence,
 quality floor, telemetry, owner gate가 모두 완결되어 `workflow result`가
@@ -360,7 +380,10 @@ owner gate 문구는 다음처럼 쓴다:
   "changedFiles": ["path/to/file"],
   "verification": [{"command": "pytest path", "result": "pass"}],
   "blockedChecks": [],
+  "developmentReady": true,
   "readyForIntegration": true,
+  "reviewFeedback": {"schema": "studio-review-feedback/v1", "cycle_id": "RC-...", "qa_mode": "delta", "findings_opened": [], "findings_defended": ["F-0001"], "findings_open": [], "changed_files": [], "verification": [], "blocked_checks": [], "result": "clean"},
+  "review_cycle_delta": {"cycle_id": "RC-...", "events": [{"schema": "studio-review-event/v1", "event_id": "...", "cycle_id": "RC-...", "type": "..."}]},
   "aborted": false
 }
 ```
@@ -374,6 +397,9 @@ owner gate 문구는 다음처럼 쓴다:
 - optional JSONL sink가 필요할 때만 `run record --receipt-log <path>`를 사용한다.
   append 실패는 core run 기록을 실패시키지 않고 `warnings`에 남는다.
 - pairing에서 `readyForIntegration:false`이면 owner gate 대신 dev/fix → QA loop로 되돌린다.
+- `reviewFeedback`은 broker 관찰이고 원장 확정본이 아니다. producer는 실제 post-run
+  head/evidence를 결합한 뒤 `review event` 또는 `review_cycle_delta`로 기록한다.
+- `review_cycle_delta`는 선택 필드다. cycle 이벤트가 없는 brainstorm/legacy run에는 넣지 않는다.
 
 ## 네이밍 규율 (2층)
 
