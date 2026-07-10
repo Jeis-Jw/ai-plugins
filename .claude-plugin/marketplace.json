@@ -14,20 +14,20 @@
     {
       "name": "task-github",
       "source": "./plugins/task-github",
-      "description": "GitHub 기반 자율 작업 프로토콜 — Issue 추적·Plan Mode·gear-gated PR/FF closeout을 wiki-markdown task 노드로 결정 그래프와 연계. 프로파일·기어·플로우 3축 분류, 14개 스킬, orchestrate 이슈트리 자동수행(브랜치트리 머지업·.task-github.yml config), PR 검증 서브에이전트.",
-      "version": "0.19.0"
+      "description": "DefinitionArtifact 기반 자율 작업 프로토콜 — 선택적 GitHub 전체 기록과 wiki-markdown task 노드 연계",
+      "version": "0.20.0"
     },
     {
       "name": "session-review",
       "source": "./plugins/session-review",
-      "description": "wiki snapshot audit 모드와 fast self-mode로 worker/reviewer 세션 리뷰 루프를 운영. 단일 CLI facade, profile-aware complete gate, 하니스 무관 경로(Claude+Codex).",
-      "version": "0.4.1"
+      "description": "Wiki snapshot + git review-branch protocol for worker/reviewer loops with self-mode fast/audit profiles and turnkey completion.",
+      "version": "0.5.0"
     },
     {
       "name": "studio",
       "source": "./plugins/studio",
-      "description": "살아있는 에이전트 팀 — QualityPlan hard floor, 로컬 Context Kernel, fenced single-executor lease로 native ritual과 optional external workflow를 안전하게 실행한다.",
-      "version": "0.2.0"
+      "description": "살아있는 에이전트 팀 — QualityPlan hard floor와 Context Kernel을 Studio가 소유하고, native ritual 또는 optional external workflow를 fenced single-executor lease로 실행한다. task-github/wiki-markdown은 agent-visible handoff 기반 optional provider이며 hard dependency가 아니다.",
+      "version": "0.3.0"
     }
   ]
 }

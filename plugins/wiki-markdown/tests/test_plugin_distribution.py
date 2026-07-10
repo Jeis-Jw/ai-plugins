@@ -63,7 +63,7 @@ class PluginDistributionTests(unittest.TestCase):
         self.assertTrue((studio / "tests" / "test_broker_semantics.js").exists())
         self.assertTrue((studio / "broker" / "brainstorm.workflow.js").exists())
         self.assertTrue((studio / "broker" / "pairing.workflow.js").exists())
-        self.assertEqual(read_json(studio / ".claude-plugin" / "plugin.json")["version"], "0.2.0")
+        self.assertEqual(read_json(studio / ".claude-plugin" / "plugin.json")["version"], "0.3.0")
 
 
 if __name__ == "__main__":

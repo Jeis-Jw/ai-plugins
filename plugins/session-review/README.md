@@ -22,6 +22,13 @@ place), `validate-status` / `validate-turn` / `validate-complete` (gates),
 `render` (status block). Read/validate/mutate commands take `--slug`; the path
 is resolved internally.
 
+Reviewer episode operations use the same facade:
+
+- `lease-acquire`: returns `fresh|reuse` plus the updated status. `--slug`
+  persists an audit snapshot; `--status-json` is the snapshot-free fast-mode
+  transport.
+- `emit-receipt`: emits `workflow-receipt/v1` from either transport.
+
 ## Snapshot backend (hybrid)
 
 The snapshot handshake uses `wiki-markdown` when available and a built-in writer
@@ -53,14 +60,39 @@ Self review has two independent axes:
 Defaults are conservative: `self` uses `manual + audit`, and `separate` is
 always audit. `auto-rounds` may use audit or fast, but still stops before
 complete for user confirmation. `turnkey` is self-only and forces fast: no
-snapshot, review branch, or round commits. It still requires a fresh reviewer
-subagent; fast removes recording overhead, not reviewer separation. The final
+snapshot, review branch, or round commits. It still requires the separated
+reviewer selected by the lease; fast removes recording overhead, not reviewer separation. The final
 complete commit carries the subagent verdict, resolved findings, and test
 evidence.
 
 Audit mode keeps the snapshot handshake and round commits. Its complete flow
 lands the squash merge and snapshot discard in one `review: complete` commit,
 so the transient snapshot does not survive in main history.
+
+## Reviewer episode lease
+
+Round 1 always acquires a fresh reviewer. Later rounds reuse that reviewer only
+when the scope digest, target/base refs, review strength, and round horizon are
+unchanged and the harness can address `reviewer_ref`. Otherwise the decision is
+fresh with one of `scope_changed|ref_changed|risk_changed|round_expired|harness_unaddressable`.
+The default horizon permits two reuse rounds after acquisition.
+
+The status carries the lease id, optional reviewer ref, last reviewed ref,
+scope/finding digests, started/updated timestamps, expiry round, and cumulative
+`fresh_count`/`reuse_count`. A pre-lease snapshot is lazily migrated to
+`fresh_required: true` with `fresh_fallback_reason: legacy_snapshot`; no
+reviewer identity is invented. Review feedback records `reviewed_ref` and
+`finding_digest` together.
+
+Fast mode passes the returned status JSON directly to the reviewer. This drops
+snapshot ceremony without weakening the same lease decision contract.
+
+## Receipt schema v1
+
+`emit-receipt` outputs the binding fields `schema`, `emitter`, `workflow`,
+`run_id`, timestamps, `elapsed_ms`, `tokens`, `token_coverage`, `counters`, and
+`quality`. Unknown token usage is always `tokens: null` with
+`token_coverage: unavailable`; it is never estimated or replaced with zero.
 
 ## Status block consistency
 

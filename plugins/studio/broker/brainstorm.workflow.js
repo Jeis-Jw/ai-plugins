@@ -31,6 +31,10 @@ if (PERSONAS.length < 2) {
   return { ritual: 'brainstorm', error: 'brainstorm needs >=2 personas with distinct priors', participants: PERSONAS.map(p => p.name) }
 }
 
+const startedMs = Date.now()
+const startedAt = new Date(startedMs).toISOString()
+const runId = A.runId || `RUN-studio-brainstorm-${startedMs}-${Math.random().toString(36).slice(2, 8)}`
+
 // --- agent model/effort policy (from .studio.yml via the producer) ----------
 // precedence: run override > rituals.brainstorm.<step> > roles.<role> > defaults
 // > omit (inherit the session). Blank/null anywhere falls through.
@@ -232,7 +236,32 @@ const verdict = await agent([
 // output delta_log = verified deltas + dry-marked rejects (audit trail for the
 // minutes); studio.py counts only the non-dry, anchored ones as evidence.
 const outDeltas = [...deltaLog, ...dryLog].sort((a, b) => (a.round || 0) - (b.round || 0))
+const finishedMs = Date.now()
+const finishedAt = new Date(finishedMs).toISOString()
+const spentEnd = budget.spent()
+const tokenDelta = Number.isInteger(spentStart) && Number.isInteger(spentEnd) && spentEnd >= spentStart
+  ? spentEnd - spentStart
+  : null
+const receipt = {
+  schema: 'workflow-receipt/v1',
+  emitter: 'studio',
+  workflow: 'studio-brainstorm',
+  run_id: runId,
+  started_at: startedAt,
+  finished_at: finishedAt,
+  elapsed_ms: finishedMs - startedMs,
+  tokens: tokenDelta,
+  token_coverage: tokenDelta === null ? 'unavailable' : 'exact',
+  counters: {
+    rounds: roundsRun,
+    participants: PERSONAS.length,
+    valid_deltas: deltaLog.length,
+    dry_deltas: dryLog.length,
+  },
+  quality: { alive: Boolean(verdict.alive), theatre: deltaLog.length === 0 },
+}
 return {
+  run_id: runId,
   ritual: 'brainstorm',
   participants: PERSONAS.map(p => p.name),
   synthesis: synth.synthesis,
@@ -240,5 +269,11 @@ return {
   delta_log: outDeltas,
   verdict,
   proposals: synth.proposals || [],
-  cost: { tokens: budget.spent() - spentStart, rounds: roundsRun },
+  cost: {
+    tokens: tokenDelta,
+    token_coverage: receipt.token_coverage,
+    elapsed_ms: receipt.elapsed_ms,
+    rounds: roundsRun,
+  },
+  receipt,
 }

@@ -1,15 +1,57 @@
 ---
 name: define
-description: 업무를 GitHub Issue(루트 + 트리)로 등록하고, 위키가 있으면 결정·취지를 잇는 task 노드를 1:1로 만들어 연결한다. 자동 분해 금지 — 기준 없이 분해하지 않는다. "define", "이슈 만들어줘", "서브이슈 만들어줘", "define 10 도메인별로" 등의 요청에 실행하라.
+description: provider-neutral DefinitionArtifact로 업무를 정의하고, 선택 시 전체 트리를 GitHub Issue로 기록한다. 위키가 있으면 결정·취지를 잇는 task 노드를 연결한다. 자동 분해 금지 — 기준 없이 분해하지 않는다. "define", "이슈 만들어줘", "서브이슈 만들어줘", "define 10 도메인별로" 등의 요청에 실행하라.
 ---
 
-# define — 업무 정의 (작업정의 task 노드 → 루트 이슈)
+# define — 업무 정의 (작업정의 task 노드 → DefinitionArtifact → 선택적 기록)
 
-작업을 Issue(단일 또는 트리)로 구조화하고, 필요하면 하위 작업 간 GitHub Issue dependency를 정의한다. **위키가 있으면 업무 단위로 task 노드를 1:1 연결**한다. **등록 전 반드시 사령관 확인.**
+작업을 provider-neutral immutable `DefinitionArtifact` revision으로 구조화한다. 기록을 선택하면 root/descendant/dependency 전체를 GitHub로 투영하고, 기록하지 않으면 같은 revision을 로컬 lifecycle에서 소비한다. **위키가 있으면 업무 단위로 task 노드를 연결**한다. **정의 확정과 원격 기록 전 반드시 사령관 확인.**
 
-> **업무 1개 = 위키 task 노드 1개 + 루트 이슈 1개.** task 노드는 업무(루트) 단위이며 **리프마다 만들지 않는다.** ([wiki-bridge.md](../../rules/wiki-bridge.md) §4)
+## DefinitionArtifact 기록 경계 (우선 적용)
+
+아래 기존 Issue 생성 절차는 **`record:github` 투영 또는 legacy Issue-first 호환 경로에서만** 실행한다. `record:none`에서는 `gh issue create/edit/comment`를 호출하지 않는다. `record`와 delivery는 독립이다:
+
+- `record:none|github` — 실행 이력을 GitHub IssueTree에 기록할지 여부.
+- `delivery:local-ff|pull-request` — 결과물을 부모에 합류시키는 transport. `record:none + pull-request`도 가능하며, 이 PR은 DefinitionArtifact를 Issue로 기록했다는 뜻이 아니다.
+
+정의 spec은 기존 `root`/`children`/`blocked_by` shape를 그대로 쓰고 먼저 immutable revision으로 저장한다:
+
+```bash
+ARTIFACT=$(python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py" create \
+  --spec /tmp/task-github-definition.json \
+  --store .task-github/local/definitions \
+  --record none --delivery local-ff \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["path"])')
+```
+
+기존 정의 변경은 파일 덮어쓰기가 아니라 새 revision이다. `revision`, `digest`, `previous_digest`가 chain을 이루며 stable definition/node id는 유지된다:
+
+```bash
+python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py" revise \
+  --spec /tmp/task-github-definition-v2.json --previous "$ARTIFACT" \
+  --store .task-github/local/definitions
+```
+
+`record:github`은 전체 projection을 checkpoint 파일에 기록한다. 실패 후 같은 명령을 재실행하면 이미 생성된 node/edge는 건너뛴다. **coverage가 complete이기 전에는 local-start/run 금지**다:
+
+```bash
+python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/skills/define/scripts/create_issue_tree.py" \
+  --artifact "$ARTIFACT" --projection-state .task-github/local/projections/{definition-id}.json \
+  --strict-deps --json
+```
+
+`record:none`은 projection 없이 실행한다. run state는 artifact revision/digest에 pin되고 branch/worktree identity는 stable node id에서 결정된다:
+
+```bash
+python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py" local-start \
+  --artifact "$ARTIFACT" --node {node-key} --state-dir .task-github/local/runs
+```
+
+기존 `create_issue_tree.py --spec ...` Issue-first 호출은 호환 경로로 유지한다. 이 경로의 `task/issue-{N}` / `.worktrees/issue-{N}` identity와 기존 start→run→done 흐름은 바뀌지 않는다.
+
+> **업무 1개 = 위키 task 노드 1개 + DefinitionArtifact 1개.** `record:github`이면 여기에 루트 이슈 1개를 전체 projection의 root로 연결한다. task 노드는 업무 단위이며 **리프마다 만들지 않는다.** ([wiki-bridge.md](../../rules/wiki-bridge.md) §4)
 >
-> **순서: 작업정의(위키 task)가 수행(이슈)보다 먼저.** 위키 가용 시 이슈 생성 **전에** 작업정의 task 노드를 확보(있으면 링크, 없으면 capture)하고, 이슈 생성은 사령관 "진행" 확인으로 게이트한다. 위키 미가용이면 세션 컨텍스트로 이슈만 만든다(정상). 조율은 task-github가 한다 — 위키는 task-github를 모른다([wiki-bridge.md](../../rules/wiki-bridge.md) §1).
+> **순서: 작업정의(위키 task) → DefinitionArtifact → 선택적 IssueTree projection.** 위키 가용 시 artifact 확정 전에 task 노드를 확보하고, 원격 기록을 선택한 경우에만 GitHub 생성 게이트를 추가한다. 위키 미가용이면 artifact만으로 정상 동작한다. 조율은 task-github가 한다 — 위키는 task-github를 모른다([wiki-bridge.md](../../rules/wiki-bridge.md) §1).
 >
 > **분해는 payoff가 있을 때만.** 리프로 쪼개는 것은 **절단 payoff > 리프 고정비**(worker spawn + 세리머니, ~20분+)일 때만 한다. payoff가 없으면 **묶는다(기본)**. 크기 자체는 절단 사유가 아니고 하드캡도 없다 — 큰 유닛 하나가 여러 리프보다 나을 수 있다. 절단 사유는 아래 "절단 원리 / 토폴로지 결정 게이트" 4개 중 하나여야 한다.
 
@@ -21,6 +63,7 @@ $ARGUMENTS:
   {N}           # 모드 B: 해당 이슈 open 후 분해 기준 요청
   {N} {기준}    # 모드 C: 기준에 따라 서브이슈로 분해
   --review      # (모드 무관) co-design 확인 후·이슈생성 전 challenge review 게이트를 켠다(기본 off)
+  --record none|github --delivery local-ff|pull-request
 ```
 
 ## 절차
@@ -35,19 +78,19 @@ fi
 ```
 경고는 **차단이 아니다**(최소 적용분). 잔여 레코드가 이번 업무의 근거가 아니라면 먼저 커밋한 뒤 진행한다.
 
-### 모드 A — 대화 맥락 등록 (작업정의 task 노드 → 루트 이슈)
+### 모드 A — 대화 맥락 등록 (작업정의 task 노드 → DefinitionArtifact → 선택적 루트 이슈)
 
 1. 대화 내용 정리 (루트/서브 판단)
 2. **(위키 가용 시) 관련 결정 recall** — 이 업무가 어떤 결정·취지에서 나오는지 파악:
 ```bash
 [ -d "./wiki" ] && wiki recall "{업무 키워드}" --stage 1 --limit 10 --json
 ```
-3. **(위키 가용 시) 작업정의 task 노드 확보 — 이슈보다 먼저.** 위키는 작업정의 문서를 만드는 주체이고, define은 그 문서를 *확보*한 뒤에야 수행 이슈로 넘어간다:
+3. **(위키 가용 시) 작업정의 task 노드 확보 — artifact보다 먼저.** 위키는 작업정의 문서를 만드는 주체이고, define은 그 문서를 *확보*한 뒤에야 immutable revision을 확정한다:
    - **기존 소스 탐색** — 이 업무의 작업정의 노드가 이미 있는지 본다(활성 task 중 이슈 미연결인 것; 같은 세션에서 위키로 막 만들었다면 그게 소스):
    ```bash
    [ -d "./wiki" ] && wiki recall "{업무 키워드}" --type task --stage 1 --json
    ```
-   - **있으면** → 그 노드를 소스로 사용(아래 6에서 이슈 역링크). `TASK={그 basename}`.
+   - **있으면** → 그 노드를 소스로 사용한다. `record:github`이면 아래 6에서 이슈 역링크도 추가한다. `TASK={그 basename}`.
    - **없으면** → 작업정의 노드를 **먼저 생성**(제안 후 확인). 이슈 번호가 아직 없으므로 `--tasks` 없이 캡처하고 6에서 잇는다:
    ```bash
    TASK=$(wiki capture task \
@@ -58,7 +101,7 @@ fi
    ```
    > **대기 vs 트리거**: 단일 에이전트면 위 capture로 즉시 생성한다(트리거). 다른 세션/사람이 위키 작업정의를 만들기로 했다면, 노드가 생길 때까지 **대기**한 뒤 다음으로 간다.
    > 위키 미가용이면 3 전체 스킵 — 이슈만 만들고 task 노드는 두지 않는다(정상).
-4. **진행 확인 (이슈 생성 게이트)** — 생성 구조(루트 이슈 + 연결할 작업정의 task 노드 + 결정/취지)를 사령관에게 보여주고 **"진행?" 확인**.
+4. **진행 확인 (정의 확정 + 선택적 이슈 생성 게이트)** — DefinitionArtifact 구조, `record`/`delivery`, 연결할 작업정의 task 노드와 결정/취지를 사령관에게 보여주고 **"진행?" 확인**. `record:github`이면 만들 루트/전체 트리도 함께 보여준다.
    - 확인안에는 [quality-gates.md](../../rules/quality-gates.md) G3 기준을 포함한다: 근거, 완료 기준, 검증, 영향 경로/파일, 관련 intent/decision.
    - 트리가 2개 이상 리프면 **Topology Decision 섹션도 필수 포함**한다(아래 "트리 깊이 / 토폴로지 결정 게이트" 참조).
    - 기준이 비어 있으면 자동으로 보완하지 말고 `FLAG-to-human`으로 표시한 뒤 확인받는다.
@@ -90,7 +133,7 @@ else:
 PY
 ```
 
-5. 이슈 생성 — 테스트된 배치 헬퍼 사용:
+5. **`record:github`일 때만** 이슈 생성 — 위 DefinitionArtifact projection 경로를 우선 사용한다. legacy Issue-first 입력은 테스트된 배치 헬퍼의 `--spec` 경로로 계속 지원한다:
 ```bash
 python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/skills/define/scripts/create_issue_tree.py" \
   --spec /tmp/task-github-issue-tree.json \
@@ -270,7 +313,7 @@ container는 카테고리가 아니라 **독립 실행 가능한 delivery lane**
 리프 PR base는 각 container branch를 기준으로 한다.
 ```
 
-6. **(위키 가용 시) 이슈 ↔ 작업정의 노드 연결** — task 노드는 3에서 이미 확보됨. 이제 이슈 번호를 task 노드에 **역링크**하고, 루트 이슈 본문에 task 노드를 기록한다. merge/done이 이 본문의 `[[TASK-...]]`를 읽어 완료 전이하므로 실제 ID를 박아야 한다([wiki-bridge.md](../../rules/wiki-bridge.md) §4):
+6. **(`record:github` + 위키 가용 시만) 이슈 ↔ 작업정의 노드 연결** — task 노드는 3에서 이미 확보됨. 이제 이슈 번호를 task 노드에 **역링크**하고, 루트 이슈 본문에 task 노드를 기록한다. merge/done이 이 본문의 `[[TASK-...]]`를 읽어 완료 전이하므로 실제 ID를 박아야 한다([wiki-bridge.md](../../rules/wiki-bridge.md) §4):
 ```bash
 # (a) task 노드에 루트 이슈 역링크 (capture가 --tasks 없이 만들었으므로 여기서 연결)
 wiki relate "$TASK" --add-tasks "$OWNER/$REPO#$ROOT"
@@ -292,12 +335,16 @@ print(b2 if '## Wiki Context' in b else b.rstrip()+'\n\n'+ctx+'\n')
 gh issue edit "$ROOT" --body "$NEW_BODY"
 ```
 > 위키 미가용이면 (a)(b) 전체를 스킵 — 이슈만 만들고 역링크는 두지 않는다(정상). `{관련 DEC}`/`{상위 INT}`는 캡처에 쓴 것과 동일하게 채운다(없으면 보조 줄 생략).
-7. **(위키 가용 시) rationale 원자적 커밋** — 3에서 만든 task 노드 + 이번 업무의 근거 `DEC`/`REJ`/`INT`를 **메인에 바로 커밋**한다. 워크트리 생성(=`start`) 전에 vault를 깨끗이 두어 이후 작업별 커밋을 자명하게 만든다. rationale는 메인에 남고 코드 PR은 `DEC` ID로 참조한다([wiki-bridge.md](../../rules/wiki-bridge.md) §8):
+7. **(위키 가용 시) rationale 원자적 커밋** — 3에서 만든 task 노드 + 이번 업무의 근거 `DEC`/`REJ`/`INT`를 **메인에 바로 커밋**한다. 워크트리 생성 전에 vault를 깨끗이 두어 이후 작업별 커밋을 자명하게 만든다. rationale는 메인에 남고 코드 PR은 `DEC` ID로 참조한다([wiki-bridge.md](../../rules/wiki-bridge.md) §8):
 ```bash
 if [ -d "./wiki" ]; then
   git add wiki/context wiki/task
   if ! git diff --cached --quiet -- wiki/context wiki/task; then
-    git commit -m "docs(wiki): {업무} rationale + task 노드 (#$ROOT)"
+    if [ -n "${ROOT:-}" ]; then
+      git commit -m "docs(wiki): {업무} rationale + task 노드 (#$ROOT)"
+    else
+      git commit -m "docs(wiki): {업무} rationale + task 노드"
+    fi
     echo "rationale 메인 커밋 — 워크트리 생성 전 vault clean"
   fi
 fi
@@ -329,7 +376,7 @@ fi
 
 ## 불변식
 - **자동 분해 금지** — 기준 없이 분해하지 않는다. 기준은 사령관이 준다.
-- **작업정의(위키 task)가 수행(이슈)보다 먼저** — 위키 가용 시 이슈 생성 전에 task 노드를 확보한다(있으면 링크, 없으면 capture; 다른 세션이 만들면 대기). 이슈 생성은 "진행" 확인으로 게이트하고, 연결은 `wiki relate --add-tasks`로 역링크한다.
+- **작업정의(위키 task)가 수행보다 먼저** — 위키 가용 시 DefinitionArtifact 확정 전에 task 노드를 확보한다(있으면 링크, 없으면 capture; 다른 세션이 만들면 대기). `record:github`의 이슈 생성은 별도 "진행" 확인으로 게이트하고 `wiki relate --add-tasks`로 역링크한다.
 - 하위 작업 선후관계는 GitHub Issue dependency가 정본이다. `parallel`/`sequential` 라벨은 만들지 않는다.
 - **절단은 payoff가 있을 때만** — 리프 절단은 절단 payoff > 리프 고정비(worker spawn+세리머니, ~20분+)일 때만. 크기는 절단 사유가 아니고 하드캡도 없다. 사유는 4개뿐: ①병렬 이득(각 normal 이상; micro는 흡수/sweep) ②위험 격리(크기 무관) ③정보 가치 경계("A 검증이 B 계획을 바꾸나?"/"B만 revert가 현실적인가?" yes면 절단) ④병렬 해금(선행 spec 리프, 산출물=바인딩 가능 artifact, 크기 무관). 사유 없으면 묶는다. 검증·문서·runbook은 리프가 아니라 완료조건으로 흡수한다.
 - **container는 카테고리가 아니라 독립 delivery lane, `blocked_by`는 직접 의존·sibling-only** — container는 병렬 lane 격리 또는 직렬 staging/통합검증 지점이라는 수요가 만든다(리프 1개만 남으면 접는다; 깊이 제약 없음—깊이는 결과). `blocked_by`는 직접 선행조건만(transitive·방어적 선언 금지)이고, 다른 parent의 node에 걸리면 `cross_parent_dependency_detected`로 거부한다. 공유 선행조건은 선행 spec 리프를 sibling으로 승격해 해소하고, override가 불가피하면 `cross_parent_dependency_reason`을 명시한다.
@@ -342,6 +389,6 @@ fi
 - orchestrate 대상 tree는 dependency 생성 실패를 fallback comment로 숨기지 않고 `dep_create_failed`로 실패 처리한다.
 - 단위 상세 설계는 서브이슈 본문 또는 해당 단위 실행 중 캡처되는 DEC/OBS에 둔다. 위키 리프 task 노드는 만들지 않는다. 이미 만들었다면 내용을 서브이슈로 이전한 뒤 task 노드를 `retire --type deprecated`한다.
 - **granularity 정지 규칙**: 리프 = **절단 payoff가 고정비를 넘는 최소 단위**(자기 worktree + merge edge를 지불할 값어치). 헤드라인 질문("다른 워커가 독립 점유해 끝낼 수 있는가")에 no면, 그리고 don't-split 프로브(검증 명령 동일/같은 shared component/context 연속) 중 하나라도 걸리면 **가짜 독립**이므로 자르지 말고 **1리프 + phase 체크리스트**로 묶는다(same-theme 겹침은 직렬화보다 재합침 우선). payoff 없는 sub-step은 이슈가 아니라 리프 본문 체크리스트에 둔다. 묶은 큰 리프의 완성도는 phase별 커밋·체크포인트·마지막 full-verify·(필요 시)phase별 세션 재진입으로 잡는다. container 자격 = **delivery lane 수요가 있을 때만**(병렬 lane 격리 또는 직렬 staging/통합검증 지점). 단일 리프뿐인 lane은 container로 감싸지 않는다 — 과분해도 과소분해(lane을 한 리프로 뭉갬)도 피한다.
-- task 노드 캡처는 **제안 후 확인**. 위키 미가용이면 이슈만 만들고 task 노드는 스킵(정상).
+- task 노드 캡처는 **제안 후 확인**. 위키 미가용이면 DefinitionArtifact만 만들고, `record:github`을 선택한 경우에만 이슈를 추가한다(정상).
 - **rationale는 메인 직접 커밋** — task 노드 + 근거 `DEC`/`REJ`/`INT`를 define이 메인에 원자적 커밋하고, 시작 시 dirty-vault를 경고한다(차단 아님). 코드 PR은 `DEC` ID로 참조([wiki-bridge.md](../../rules/wiki-bridge.md) §8).
 - 등록 전 반드시 사령관 확인.

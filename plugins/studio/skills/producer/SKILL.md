@@ -353,6 +353,7 @@ owner gate 문구는 다음처럼 쓴다:
   "verdict": {"alive": true, "reason": "critic 소견"},
   "proposals": ["백로그 제안", "..."],
   "cost": {"tokens": 0, "rounds": 3},
+  "receipt": {"schema": "workflow-receipt/v1", "emitter": "studio", "workflow": "studio-brainstorm", "run_id": "RUN-...", "started_at": "...", "finished_at": "...", "elapsed_ms": 1000, "tokens": 0, "token_coverage": "exact", "counters": {}, "quality": {}},
   "track": "track-slug(선택 — 없으면 --track)",
   "worktreePath": ".worktrees/track-slug",
   "branch": "studio/track-slug",
@@ -367,6 +368,11 @@ owner gate 문구는 다음처럼 쓴다:
 - `delta_log`에는 critic이 검증한 delta + `dry:true`로 표시된 기각 시도가 함께
   담긴다(minutes 감사용). `studio.py`는 non-dry + 유효 anchor만 evidence로 센다.
 - `track`은 선택이다 — 없으면 record의 `--track`이 채운다.
+- broker receipt는 실행 구간의 exact token delta와 elapsed time을 담는다. token 측정이
+  불가능하면 `tokens:null`, `token_coverage:unavailable`이며 budget spent를 0만큼
+  정산한 것으로 가장하지 않고 그대로 미측정 상태로 기록한다.
+- optional JSONL sink가 필요할 때만 `run record --receipt-log <path>`를 사용한다.
+  append 실패는 core run 기록을 실패시키지 않고 `warnings`에 남는다.
 - pairing에서 `readyForIntegration:false`이면 owner gate 대신 dev/fix → QA loop로 되돌린다.
 
 ## 네이밍 규율 (2층)

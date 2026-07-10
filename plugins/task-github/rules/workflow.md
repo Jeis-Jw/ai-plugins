@@ -74,6 +74,36 @@ define(capture) ──► 활성(wiki/task/) ──루트 이슈 close(merge)─
 ```
 - 연동 시 **GitHub 이슈가 상태 정본**, 위키 task는 그 투영. merge가 루트 이슈를 close하면 task를 `complete`로 전이. 상세는 [wiki-bridge.md](wiki-bridge.md).
 
+### DefinitionArtifact local lifecycle
+
+새 define 경로의 정본은 immutable DefinitionArtifact revision이다. local run은 `definition_id + revision + digest`를 pin하며 다음 전이만 허용한다:
+
+```
+started ──run──► running ──verify──► verified ──done──► done ──closeout──► closed
+```
+
+- `recover`는 현재 state와 다음 event를 반환하며 상태를 추정하거나 건너뛰지 않는다.
+- `record:none`은 GitHub Issue write를 금지한다. delivery는 별도 축이므로 `local-ff|pull-request` 중 하나를 독립 선택한다.
+- `record:github`은 root, 모든 descendant, 모든 dependency edge가 projection checkpoint에 materialize된 뒤에만 `local-start`를 허용한다. partial projection은 같은 artifact digest로 resume한다.
+- 신규 local identity는 stable node id에서 파생한 `task/definition-*` / `.worktrees/definition-*`을 사용한다. revision이 바뀌어도 logical node key가 같으면 identity가 유지된다.
+- legacy Issue-first는 기존 `task/issue-{N}` / `.worktrees/issue-{N}`과 Issue 상태 전이를 그대로 유지한다.
+
+helper 호출:
+
+```bash
+python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py" local-event \
+  --artifact "$ARTIFACT" --run-state "$RUN_STATE" --event run
+python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py" recover \
+  --artifact "$ARTIFACT" --run-state "$RUN_STATE"
+```
+
+closeout 후 binding receipt schema v1을 방출한다. token 측정값은 `exact`, 없으면 `tokens:null`, `token_coverage:unavailable`이며 0이나 추정값으로 대체하지 않는다:
+
+```bash
+python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py" receipt \
+  --run-state "$RUN_STATE" --workflow task-github
+```
+
 ### 중복 방지 쿼리 (team 협업)
 ```bash
 is:open is:issue label:in-progress,in-review                  # 점유됨(건드리지 않음)

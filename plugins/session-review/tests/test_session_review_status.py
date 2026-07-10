@@ -251,6 +251,138 @@ review_strength: normal
         session_review.validate_complete(approved, user_confirmed=False)
 
 
+class ReviewerLeaseAndReceiptTests(unittest.TestCase):
+    NOW = "2026-07-10T08:00:00Z"
+
+    def base_status(self):
+        return {
+            "phase": "awaiting-review", "active_actor": "none",
+            "next_actor": "reviewer", "target_mode": "diff",
+            "target_ref": "task/issue-59-review", "base_ref": "abc123",
+            "round": 1, "flow_mode": "self", "review_strength": "hard",
+            "blocking_count": 0,
+        }
+
+    def fresh_lease(self):
+        return session_review.acquire_reviewer_lease(
+            self.base_status(), scope_digest="scope:v1", reviewer_ref="agent:7",
+            now=self.NOW, lease_id="lease-1",
+        )["status"]
+
+    def test_legacy_status_requires_fresh_without_inventing_a_lease(self):
+        status = session_review.normalize_status(self.base_status())
+        self.assertIsNone(status.get("lease_id"))
+        self.assertTrue(status["fresh_required"])
+        self.assertEqual(status["fresh_fallback_reason"], "legacy_snapshot")
+        self.assertIn("fresh_required: true", session_review.render_status(status))
+        acquired = session_review.acquire_reviewer_lease(
+            status, scope_digest="scope:v1", now=self.NOW, lease_id="migrated"
+        )
+        self.assertEqual(acquired["reason"], "legacy_snapshot")
+
+    def test_first_round_is_fresh_then_same_reviewer_is_reused(self):
+        first = session_review.acquire_reviewer_lease(
+            self.base_status(), scope_digest="scope:v1", reviewer_ref="agent:7",
+            now=self.NOW, lease_id="lease-1",
+        )
+        self.assertEqual((first["decision"], first["reason"]),
+                         ("fresh", "episode_start"))
+        self.assertEqual(first["status"]["fresh_count"], 1)
+
+        revised = dict(first["status"], round=2, reviewed_ref="def456",
+                       finding_digest="findings:v1")
+        second = session_review.acquire_reviewer_lease(
+            revised, scope_digest="scope:v1", reviewer_ref="agent:7",
+            now="2026-07-10T08:05:00Z",
+        )
+        self.assertEqual(second["decision"], "reuse")
+        self.assertEqual(second["status"]["lease_id"], "lease-1")
+        self.assertEqual(second["status"]["reuse_count"], 1)
+
+    def test_acquired_lease_cannot_approve_or_complete_without_review_evidence(self):
+        approved = dict(
+            self.fresh_lease(), phase="approved", next_actor="worker",
+            blocking_count=0,
+        )
+        with self.assertRaisesRegex(session_review.StatusError, "reviewed_ref"):
+            session_review.validate_status(approved)
+        with self.assertRaisesRegex(session_review.StatusError, "reviewed_ref"):
+            session_review.validate_complete(approved, user_confirmed=True)
+
+    def test_reuse_clears_prior_review_evidence_before_next_review(self):
+        reviewed = dict(
+            self.fresh_lease(), round=2, reviewed_ref="def456",
+            finding_digest="findings:v1",
+        )
+        result = session_review.acquire_reviewer_lease(
+            reviewed, scope_digest="scope:v1", reviewer_ref="agent:7",
+            now="2026-07-10T08:05:00Z",
+        )
+        self.assertEqual(result["decision"], "reuse")
+        self.assertIsNone(result["status"]["reviewed_ref"])
+        self.assertIsNone(result["status"]["finding_digest"])
+
+    def test_scope_ref_risk_round_and_harness_expiry_force_fresh(self):
+        cases = (
+            ("scope_changed", {"scope_digest": "scope:v2"}, {}),
+            ("ref_changed", {}, {"target_ref": "other-review"}),
+            ("risk_changed", {}, {"review_strength": "normal"}),
+            ("round_expired", {}, {"round": 4}),
+            ("harness_unaddressable", {"reviewer_addressable": False}, {}),
+        )
+        for reason, kwargs, updates in cases:
+            with self.subTest(reason=reason):
+                status = dict(self.fresh_lease(), round=2)
+                status.update(updates)
+                result = session_review.acquire_reviewer_lease(
+                    status, scope_digest=kwargs.pop("scope_digest", "scope:v1"),
+                    now=self.NOW, lease_id=f"new-{reason}", **kwargs,
+                )
+                self.assertEqual((result["decision"], result["reason"]),
+                                 ("fresh", reason))
+                self.assertEqual(result["status"]["fresh_count"], 2)
+
+    def test_receipt_keeps_unknown_tokens_null_and_reports_lease_quality(self):
+        status = dict(self.fresh_lease(), phase="approved", next_actor="worker",
+                      reviewed_ref="def456", finding_digest="findings:v1")
+        receipt = session_review.receipt_from_status(
+            status, run_id="review-59", started_at="2026-07-10T08:00:00Z",
+            finished_at="2026-07-10T08:00:01.250Z",
+        )
+        self.assertEqual(receipt["schema"], "workflow-receipt/v1")
+        self.assertEqual(receipt["elapsed_ms"], 1250)
+        self.assertIsNone(receipt["tokens"])
+        self.assertEqual(receipt["token_coverage"], "unavailable")
+        self.assertEqual(receipt["counters"]["fresh_reviewers"], 1)
+        self.assertEqual(receipt["quality"]["finding_digest"], "findings:v1")
+
+    def test_receipt_rejects_non_null_unknown_token_pair(self):
+        with self.assertRaisesRegex(session_review.StatusError, "tokens"):
+            session_review.receipt_from_status(
+                self.fresh_lease(), run_id="review-59",
+                started_at=self.NOW, finished_at=self.NOW,
+                tokens=0, token_coverage="unavailable",
+            )
+
+    def test_receipt_accepts_only_exact_or_unavailable_coverage(self):
+        common = {
+            "status": self.fresh_lease(), "run_id": "review-59",
+            "started_at": self.NOW, "finished_at": self.NOW,
+        }
+        unknown = session_review.receipt_from_status(**common)
+        exact = session_review.receipt_from_status(
+            **common, tokens=5, token_coverage="exact"
+        )
+        self.assertEqual((unknown["tokens"], unknown["token_coverage"]),
+                         (None, "unavailable"))
+        self.assertEqual((exact["tokens"], exact["token_coverage"]),
+                         (5, "exact"))
+        with self.assertRaisesRegex(session_review.StatusError, "token_coverage"):
+            session_review.receipt_from_status(
+                **common, tokens=5, token_coverage="partial"
+            )
+
+
 class BackendResolverTests(unittest.TestCase):
     def test_env_override_none_forces_builtin(self):
         for val in ("", "none", "off"):
@@ -510,6 +642,44 @@ class FacadeCliTests(unittest.TestCase):
         self.assertTrue(r.stdout.startswith("```yaml\n"), r.stdout)
         self.assertIn("phase: \"approved\"", r.stdout)
         self.assertIn("```", r.stdout.rstrip()[-3:])
+
+    def test_fast_mode_lease_and_receipt_use_context_json_only(self):
+        status = {
+            "phase": "awaiting-review", "next_actor": "reviewer",
+            "target_mode": "diff", "target_ref": "review-branch",
+            "base_ref": "abc", "round": 1, "flow_mode": "self",
+            "recording_mode": "fast", "review_strength": "hard",
+        }
+        lease = run_cli(
+            "lease-acquire", "--status-json", json.dumps(status),
+            "--scope-digest", "scope:v1", "--reviewer-ref", "agent:7",
+            "--lease-id", "lease-1", "--now", "2026-07-10T08:00:00Z",
+        )
+        self.assertEqual(lease.returncode, 0, lease.stderr)
+        payload = json.loads(lease.stdout)
+        self.assertEqual(payload["decision"], "fresh")
+
+        receipt = run_cli(
+            "emit-receipt", "--status-json", json.dumps(payload["status"]),
+            "--run-id", "r1", "--started-at", "2026-07-10T08:00:00Z",
+            "--finished-at", "2026-07-10T08:00:01Z",
+        )
+        self.assertEqual(receipt.returncode, 0, receipt.stderr)
+        self.assertEqual(json.loads(receipt.stdout)["elapsed_ms"], 1000)
+
+    def test_emit_receipt_cli_rejects_partial_and_accepts_exact(self):
+        common = (
+            "emit-receipt", "--status-json", "{}", "--run-id", "r1",
+            "--started-at", "2026-07-10T08:00:00Z",
+            "--finished-at", "2026-07-10T08:00:01Z", "--tokens", "5",
+        )
+        exact = run_cli(*common, "--token-coverage", "exact")
+        self.assertEqual(exact.returncode, 0, exact.stderr)
+        self.assertEqual(json.loads(exact.stdout)["token_coverage"], "exact")
+
+        partial = run_cli(*common, "--token-coverage", "partial")
+        self.assertEqual(partial.returncode, 2)
+        self.assertIn("invalid choice", partial.stderr)
 
     def test_validate_complete_allows_self_turnkey_without_user_confirmed_flag(self):
         with tempfile.TemporaryDirectory() as tmp:

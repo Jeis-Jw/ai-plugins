@@ -1,21 +1,34 @@
 ---
 name: start
-description: 리프 Issue를 점유해 작업을 시작한다. 이슈 번호를 인자로 받으면 해당 이슈를 점유하고, 제목을 받으면 리프 이슈를 생성 후 즉시 점유한다. 기어를 판단해 gear 라벨을 부여하고, 연결된 위키 task 노드의 맥락을 주입한다. "task-github:start", "작업 시작하자", "start 10" 등의 요청에 실행하라.
+description: 리프 Issue를 점유하거나 record:none DefinitionArtifact node의 local run을 시작한다. 이슈 번호/제목은 기존 Issue 모드, --artifact/--node는 GitHub 기록 없는 local mode다. "task-github:start", "작업 시작하자", "start 10" 등의 요청에 실행하라.
 ---
 
 # start — 리프 Issue 점유 + 기어 판단
 
-리프 Issue를 점유하고 작업 세션을 시작한다. **기어를 판단하고 `gear:*` 라벨을 부여**하는 유일한 지점.
+리프 Issue를 점유하거나 record:none local run을 시작한다. **Issue mode에서 기어를 판단하고 `gear:*` 라벨을 부여**하는 유일한 지점이다.
 
-## 입력 (2모드)
+## 입력 (3모드)
 
 ```
 $ARGUMENTS:
   "제목" [설명]   # 모드 A: 리프 이슈 생성 + 즉시 점유
   {N}            # 모드 B: 기존 이슈 점유
+  --artifact {PATH} --node {KEY|NODE_ID} [--run-id {ID}]  # 모드 C: record:none local
 ```
 
 ## 절차
+
+### 모드 C — record:none DefinitionArtifact mode
+
+artifact의 `record`가 `none`인지 확인하고 immutable revision/node를 local run에 pin한다. `record:github`은 이 모드를 쓰지 않고 full projection 뒤 기존 Issue 번호 모드로 진입한다.
+
+```bash
+python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py" local-start \
+  --artifact {PATH} --node {KEY|NODE_ID} --state-dir .task-github/local/runs \
+  ${RUN_ID:+--run-id "$RUN_ID"}
+```
+
+출력의 `path`를 `RUN_STATE`로, stable `identity.branch/worktree`를 다음 `run`에 전달한다. 이 모드에서는 `gh issue create/edit/comment`, assignee, label을 전부 건너뛴다. lifecycle과 dependency 규약은 [workflow.md](../../rules/workflow.md)의 DefinitionArtifact 절을 따른다. 아래 모드 A/B는 변경 없는 legacy Issue 경로다.
 
 ### 시작 전 — dirty wiki vault 점검 (위키 가용 시)
 워크트리 생성 전 메인 vault에 **미커밋 rationale 레코드**가 있으면 경고한다(**차단 아님**). 잔여 레코드가 워크트리 코드 작업과 공유 인덱스에서 엉키는 것을 막는다([wiki-bridge.md](../../rules/wiki-bridge.md) §8):
@@ -89,11 +102,11 @@ python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/context_bundle.py" --i
 `blockers`/`downstream`/`wiki_task`/`worktree_path`는 이후 `plan`/`run`에 넘기는 세션 컨텍스트의 기준 shape다. `integrity.errors`가 있으면 점유 전 보고하고, 링크 복구가 필요하면 별도 reconcile 지시를 받는다.
 
 ## 불변식
-- 기어 판단·라벨 부여의 **단일 책임 지점**. (기존 gear 라벨 있으면 유지, 없으면 부여)
+- Issue mode 기어 판단·라벨 부여의 **단일 책임 지점**. (record:none local mode는 라벨 없음)
 - 컨테이너 이슈는 작업 대상이 아니다(차단).
 - 열린 `blocked_by`가 있는 이슈는 작업 대상이 아니다(차단).
 - 점유 중복 방지 — 타인 점유 Issue는 사령관 확인 없이 시작 금지.
 - start는 위키를 **읽기만**(recall) — task 노드 생성은 define의 책임.
 - 시작 시 **dirty wiki vault를 경고**(차단 아님) — 미커밋 rationale 레코드가 워크트리 작업과 엉키는 것을 예방([wiki-bridge.md](../../rules/wiki-bridge.md) §8).
 - start는 워크트리를 만들지 않는다. 코드 작업 워크트리는 run 책임이다.
-- task-github가 만든 context bundle은 wiki task를 대체하지 않는다. wiki task는 여전히 ROOT 이슈와 1:1로만 연결된다.
+- task-github가 만든 context bundle은 wiki task를 대체하지 않는다. Issue mode wiki task는 ROOT 이슈에, record:none mode는 DefinitionArtifact 업무 정의에 연결된다.
