@@ -47,13 +47,23 @@ def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
 
+        # 0) default workspace errors point to the hidden repo-local directory
+        r = run(["--help"], tmp)
+        assert "workspace dir (default: .studio/)" in r["_raw"], r
+        r = run(["mode", "status"], tmp, expect=3)
+        assert r["error_code"] == "no_workspace" and ".studio/" in r["message"], r
+
         # 1) init scaffolds workspace + copies crew personas
         r = run(["init"], tmp)
         assert r["ok"] and r["created"], r
-        ws = tmp / "studio"
+        ws = tmp / ".studio"
+        assert not (tmp / "studio").exists()
         assert (ws / "board.md").is_file()
         assert (ws / "backlog.md").is_file()
         assert (ws / "missions" / "TEMPLATE.md").is_file()
+        assert board_state(ws)["schema"] == 2
+        for sub in ("items", "bundles", "deltas", "outbox"):
+            assert (ws / "context" / sub).is_dir(), sub
         crew = sorted(p.name for p in (ws / "crew").glob("*.md"))
         assert crew == [
             "architect.md",
@@ -75,14 +85,24 @@ def main() -> None:
         run(["init", "--force"], tmp, expect=0)
 
         # 3) mission validate — the shipped TEMPLATE is a valid contract
-        r = run(["mission", "validate", "studio/missions/TEMPLATE.md"], tmp)
+        r = run(["mission", "validate", ".studio/missions/TEMPLATE.md"], tmp)
         assert r["ok"] and r["kpi_ids"] == ["k1", "k2"], r
 
         # 4) mission validate — missing kpi → gate violation exit 6
         bad = ws / "missions" / "bad.md"
         bad.write_text('```json\n{"mission":"m","done_when":"d","budget":{"total_tokens":1},"gates":[],"autonomy":"a"}\n```\n', encoding="utf-8")
-        r = run(["mission", "validate", "studio/missions/bad.md"], tmp, expect=6)
+        r = run(["mission", "validate", ".studio/missions/bad.md"], tmp, expect=6)
         assert not r["ok"] and any("kpi" in p for p in r["problems"]), r
+        strict_bad = ws / "missions" / "strict-bad.md"
+        strict_bad.write_text(
+            '```json\n{"mission":"m","kpi":[{"id":"k1","goal":""}],'
+            '"done_when":"d","budget":{"total_tokens":1,"per_run_default":1},'
+            '"gates":[],"autonomy":"a","surprise":true}\n```\n',
+            encoding="utf-8",
+        )
+        r = run(["mission", "validate", str(strict_bad)], tmp, expect=6)
+        assert any("unknown key" in p for p in r["problems"]), r
+        assert any("goal" in p for p in r["problems"]), r
 
         # 5) backlog check — default item has (kpi: k1) → ok
         r = run(["backlog", "check"], tmp)
@@ -152,25 +172,304 @@ def main() -> None:
         r = run(["budget", "--set-total", "1000"], tmp)
         assert "mission_state" not in board_state(ws), board_state(ws)
 
-        # 6d) malformed run outputs hit the exit-code contract, not a crash
+        # 6d) budget reserve/dispatch/settle is fenced and idempotent
+        r = run(["budget", "reserve", "res-1", "--lease-id", "lease-1", "--tokens", "40"], tmp)
+        assert r["changed"] and r["reservation"]["status"] == "reserved", r
+        r = run(["budget", "reserve", "res-1", "--lease-id", "lease-1", "--tokens", "40"], tmp)
+        assert not r["changed"], r
+        run(["budget", "dispatch", "res-1", "--lease-id", "stale"], tmp, expect=6)
+        r = run(["budget", "dispatch", "res-1", "--lease-id", "lease-1"], tmp)
+        assert r["reservation"]["status"] == "dispatched", r
+        r = run(["budget", "dispatch", "res-1", "--lease-id", "lease-1"], tmp)
+        assert not r["changed"], r
+        r = run(["budget", "settle", "res-1", "--lease-id", "lease-1", "--tokens", "30"], tmp)
+        assert r["changed"] and r["spent_tokens"] == 180, r
+        r = run(["budget", "settle", "res-1", "--lease-id", "lease-1", "--tokens", "30"], tmp)
+        assert not r["changed"] and r["reservation"]["settled_tokens"] == 30, r
+
+        # 6e) malformed run outputs hit the exit-code contract, not a crash
         run(["run", "record", "--json", "-"], tmp, expect=4,
             stdin=json.dumps({"run_id": "z", "cost": {"tokens": "lots"}}))       # non-numeric cost
         run(["run", "record", "--json", "@/no/such/file.json"], tmp, expect=4)    # missing @file
         run(["run", "record", "--json", "-"], tmp, expect=4,
             stdin=json.dumps({"error": "brainstorm needs >=2 personas"}))         # broker error, not a run
+        r = run(["run", "record", "--json", "-"], tmp, expect=4,
+                stdin=json.dumps({"run_id": "../escape", "ritual": "brainstorm", "delta_log": []}))
+        assert r["error_code"] == "unsafe_id" and not (tmp / "escape.md").exists(), r
+        r = run(["run", "record", "--json", "-"], tmp, expect=6, stdin=json.dumps({
+            "run_id": "strict-delta", "ritual": "brainstorm", "cost": {"tokens": 0},
+            "delta_log": [{"round": 1, "changed_what": "claimed", "anchor": "artifact"}],
+        }))
+        assert r["error_code"] == "invalid_run_output" and any("evidence" in p for p in r["problems"]), r
+        r = run(["run", "record", "--json", "-"], tmp, expect=6, stdin=json.dumps({
+            "run_id": "false-ready", "ritual": "pairing", "cost": {"tokens": 0},
+            "delta_log": [{"round": 1, "changed_what": "implemented", "anchor": "artifact", "evidence": "diff"}],
+            "verdict": {"alive": True, "open_count": 0}, "changedFiles": [],
+            "verification": [], "blockedChecks": [], "readyForIntegration": True,
+        }))
+        assert any("changedFiles" in p for p in r["problems"]), r
 
         # 7) aborted run — deltas quarantined, not counted as evidence
         aborted_out = {"run_id": "RUN-test-brainstorm-2", "ritual": "brainstorm", "aborted": True,
                        "cost": {"tokens": 10},
-                       "delta_log": [{"round": 1, "changed_what": "x", "anchor": "risk"}]}
+                       "delta_log": [{"round": 1, "changed_what": "x", "anchor": "risk", "evidence": "repro"}]}
         r = run(["run", "record", "--json", "-"], tmp, stdin=json.dumps(aborted_out))
         assert r["ok"] and r["aborted"] and r["valid_deltas"] == 1, r
+
+        # 7a) concurrent run records serialize their board read-modify-write
+        concurrent = [
+            {"run_id": "RUN-concurrent-a", "ritual": "brainstorm", "cost": {"tokens": 7}, "delta_log": []},
+            {"run_id": "RUN-concurrent-b", "ritual": "brainstorm", "cost": {"tokens": 11}, "delta_log": []},
+        ]
+        env = {**os.environ, "STUDIO_ROOT": str(PLUGIN), "SOURCE_DATE_EPOCH": "1700000000"}
+        procs = [
+            subprocess.Popen(
+                [sys.executable, str(CLI), "run", "record", "--json", "-"],
+                cwd=tmp, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True,
+            )
+            for _ in concurrent
+        ]
+        results = [proc.communicate(json.dumps(payload)) for proc, payload in zip(procs, concurrent)]
+        assert all(proc.returncode == 0 for proc in procs), results
+        concurrent_ids = {r["run_id"] for r in board_state(ws)["runs"] if r["run_id"].startswith("RUN-concurrent")}
+        assert concurrent_ids == {"RUN-concurrent-a", "RUN-concurrent-b"}, board_state(ws)
 
         # 8) evidence tally — 1 valid delta from the non-aborted run
         r = run(["evidence"], tmp)
         assert r["ok"] and r["total_valid_deltas"] == 1, r
-        assert r["aborted_runs"] == 1 and r["runs"] == 2, r
+        assert r["aborted_runs"] == 1 and r["runs"] == 4, r
         assert r["theatre"] is False, r
+
+        # 8a) schema 1 is projected lazily and persisted on the next mutation
+        legacy = tmp / "legacy"
+        legacy.mkdir()
+        legacy_board = {
+            "schema": 1, "budget": {"total_tokens": 50, "spent_tokens": 0},
+            "tracks": [], "runs": [],
+        }
+        (legacy / "board.md").write_text(
+            "# board\n\n```json\n" + json.dumps(legacy_board) + "\n```\n",
+            encoding="utf-8",
+        )
+        r = run(["--workspace", str(legacy), "board"], tmp)
+        assert r["board"]["schema"] == 2 and r["board"]["tracks"] == {}, r
+        assert board_state(legacy)["schema"] == 1  # read-only projection does not rewrite
+        run(["--workspace", str(legacy), "budget", "--set-total", "60"], tmp)
+        assert board_state(legacy)["schema"] == 2
+
+        # 8b) QualityPlan: evidence/floors gate before utility; unknown telemetry stays incomplete
+        quality_plan = {
+            "schema": 1,
+            "id": "quality-v1",
+            "criteria": [
+                {"id": "artifact-correct", "kind": "artifact", "weight": 0.6, "floor": 0.8, "measure": "tests"},
+                {"id": "context-usable", "kind": "context", "weight": 0.4, "floor": 0.7, "measure": "handoff rubric"},
+            ],
+            "utility_weights": {"quality": 1.0, "tokens": 0.000001, "elapsed": 0.0000001, "avoidable_owner_question": 0.1},
+        }
+        evidence = [
+            {"criterion_id": "artifact-correct", "ref": "test:studio", "score": 0.9},
+            {"criterion_id": "context-usable", "ref": "review:context", "score": 0.8},
+        ]
+        telemetry = {"tokens": 100, "elapsed_ms": 200, "avoidable_owner_questions": 0}
+        r = run(["quality", "evaluate", "--plan", json.dumps(quality_plan),
+                 "--evidence", json.dumps(evidence[:1]), "--telemetry", json.dumps(telemetry)], tmp)
+        assert not r["evaluation"]["floors_passed"] and r["evaluation"]["utility"] is None, r
+        low = [evidence[0], {**evidence[1], "score": 0.5}]
+        r = run(["quality", "evaluate", "--plan", json.dumps(quality_plan),
+                 "--evidence", json.dumps(low), "--telemetry", json.dumps(telemetry)], tmp)
+        assert not r["evaluation"]["complete"] and r["evaluation"]["utility"] is None, r
+        unknown_tokens = {**telemetry, "tokens": None}
+        r = run(["quality", "evaluate", "--plan", json.dumps(quality_plan),
+                 "--evidence", json.dumps(evidence), "--telemetry", json.dumps(unknown_tokens)], tmp)
+        assert r["evaluation"]["floors_passed"] and not r["evaluation"]["telemetry_complete"], r
+        assert r["evaluation"]["utility"] is None, r
+        r = run(["quality", "evaluate", "--plan", json.dumps(quality_plan),
+                 "--evidence", json.dumps(evidence), "--telemetry", json.dumps(telemetry)], tmp)
+        assert r["evaluation"]["complete"] and isinstance(r["evaluation"]["utility"], float), r
+
+        # 8c) Context Kernel projection is immutable/idempotent; compact and prune are local
+        item1 = {"id": "item-1", "kind": "fact", "content": "bounded", "source_ref": "issue:54"}
+        r = run(["context", "put", "item", "--json", json.dumps(item1)], tmp)
+        assert r["changed"] and r["context"]["digest"].startswith("sha256:"), r
+        item1_digest = r["context"]["digest"]
+        r = run(["context", "put", "item", "--json", json.dumps(item1)], tmp)
+        assert not r["changed"], r
+        run(["context", "put", "item", "--json", json.dumps({
+            "id": "item-2", "kind": "decision", "content": {"boundary": "reference-only"}, "source_ref": "dec:executor",
+        })], tmp)
+        r = run(["context", "compact", "--bundle-id", "bundle-1", "--item-id", "item-1", "--item-id", "item-2"], tmp)
+        assert r["context"]["item_refs"][0] == {"id": "item-1", "digest": item1_digest}, r
+        bundle_digest = r["context"]["digest"]
+        for delta_id in ("delta-1", "delta-2"):
+            run(["context", "put", "delta", "--json", json.dumps({
+                "id": delta_id, "base_ref": "bundle-1", "changes": {"add": [delta_id]},
+            })], tmp)
+        r = run(["context", "prune", "--keep-deltas", "1"], tmp)
+        assert len(r["removed"]) == 1 and (ws / "context" / "deltas" / "delta-2.json").is_file(), r
+        bad_digest = {**item1, "id": "item-bad", "digest": "sha256:deadbeef"}
+        run(["context", "put", "item", "--json", json.dumps(bad_digest)], tmp, expect=6)
+        candidate = {
+            "id": "promotion-1", "promotion_type": "decision",
+            "summary": "keep task-github reference-only", "source_refs": ["item-2"],
+            "owner_gate": True,
+        }
+        r = run(["context", "outbox", "--json", json.dumps(candidate)], tmp)
+        assert r["changed"] and r["candidate"]["status"] == "pending", r
+        r = run(["context", "outbox", "--json", json.dumps(candidate)], tmp)
+        assert not r["changed"] and (ws / "context" / "outbox" / "promotion-1.json").is_file(), r
+        run(["context", "outbox", "--json", json.dumps({**candidate, "id": "promotion-no-gate", "owner_gate": False})], tmp, expect=6)
+
+        # 8d) one active executor lease per track, fenced by lease_id and reservation
+        run(["budget", "reserve", "res-lease-1", "--lease-id", "lease-a", "--tokens", "20"], tmp)
+        r = run(["lease", "claim", "track-a", "--lease-id", "lease-a", "--executor", "external",
+                 "--reservation-id", "res-lease-1"], tmp)
+        assert r["lease"]["state"] == "claimed", r
+        r = run(["lease", "claim", "track-a", "--lease-id", "lease-a", "--executor", "external",
+                 "--reservation-id", "res-lease-1"], tmp)
+        assert not r["changed"], r
+        run(["budget", "reserve", "res-lease-2", "--lease-id", "lease-b", "--tokens", "20"], tmp)
+        run(["lease", "claim", "track-a", "--lease-id", "lease-b", "--executor", "native",
+             "--reservation-id", "res-lease-2"], tmp, expect=6)
+        run(["lease", "transition", "track-a", "--lease-id", "stale", "--state", "running"], tmp, expect=6)
+        r = run(["lease", "transition", "track-a", "--lease-id", "lease-a", "--state", "running",
+                 "--external-ref", "issue:54"], tmp)
+        assert r["lease"]["state"] == "running" and r["lease"]["external_ref"] == "issue:54", r
+        r = run(["lease", "transition", "track-a", "--lease-id", "lease-a", "--state", "running"], tmp)
+        assert not r["changed"], r
+        r = run(["lease", "transition", "track-a", "--lease-id", "lease-a", "--state", "succeeded"], tmp)
+        assert r["lease"]["state"] == "succeeded", r
+
+        # 8e) WorkPacket/ResultEnvelope + task-github reference adapter boundary
+        packet = {
+            "schema": 1, "track_id": "track-external", "objective": "ship guarded parser",
+            "acceptance_criteria": ["tests pass", "context handoff is usable"],
+            "context_ref": "bundle-1", "digest": bundle_digest,
+            "quality_plan_ref": "quality-v1", "constraints": {"state_copy": "references-only"},
+            "budget_reservation_id": "res-wf-ext", "gates": ["integration"],
+            "executor": "task-github",
+        }
+        capabilities = {
+            "schema": 1, "source": "agent-visible-skill-catalog",
+            "catalog": ["task-github:start", "task-github:run", "task-github:done", "task-github:doctor"],
+            "doctor": {"mode": "read-only", "status": "pass"},
+            "preflight": {"mode": "read-only", "status": "pass"},
+        }
+        run(["workflow", "validate-packet", "--json", json.dumps(packet)], tmp)
+        unsafe_context = {**packet, "track_id": "track-unsafe-context", "context_ref": "../escape"}
+        r = run(["workflow", "validate-packet", "--json", json.dumps(unsafe_context)], tmp, expect=6)
+        assert any("context_ref" in problem for problem in r["problems"]), r
+        missing_context = {**packet, "track_id": "track-missing-context", "context_ref": "bundle-missing"}
+        r = run(["workflow", "dispatch", "--packet", json.dumps(missing_context),
+                 "--plan", json.dumps(quality_plan), "--capabilities", json.dumps(capabilities),
+                 "--lease-id", "lease-missing-context"], tmp, expect=6)
+        assert r["error_code"] == "context_pack_required", r
+        mismatched_context = {**packet, "track_id": "track-mismatch-context", "digest": "sha256:" + "0" * 64}
+        r = run(["workflow", "dispatch", "--packet", json.dumps(mismatched_context),
+                 "--plan", json.dumps(quality_plan), "--capabilities", json.dumps(capabilities),
+                 "--lease-id", "lease-mismatch-context"], tmp, expect=6)
+        assert r["error_code"] == "context_digest_mismatch", r
+        r = run(["context", "compact", "--bundle-id", "bundle-tampered",
+                 "--item-id", "item-1", "--item-id", "item-2"], tmp)
+        tampered_digest = r["context"]["digest"]
+        tampered_path = ws / "context" / "bundles" / "bundle-tampered.json"
+        tampered_pack = json.loads(tampered_path.read_text(encoding="utf-8"))
+        tampered_pack["item_refs"][0]["digest"] = "sha256:" + "1" * 64
+        tampered_path.write_text(json.dumps(tampered_pack), encoding="utf-8")
+        tampered_packet = {
+            **packet, "track_id": "track-tampered-context",
+            "context_ref": "bundle-tampered", "digest": tampered_digest,
+        }
+        r = run(["workflow", "dispatch", "--packet", json.dumps(tampered_packet),
+                 "--plan", json.dumps(quality_plan), "--capabilities", json.dumps(capabilities),
+                 "--lease-id", "lease-tampered-context"], tmp, expect=6)
+        assert r["error_code"] == "digest_mismatch", r
+        run(["budget", "reserve", "res-wf-ext", "--lease-id", "lease-wf-ext", "--tokens", "120"], tmp)
+        r = run(["workflow", "dispatch", "--packet", json.dumps(packet),
+                 "--plan", json.dumps(quality_plan),
+                 "--capabilities", json.dumps(capabilities), "--lease-id", "lease-wf-ext"], tmp)
+        assert r["selected_executor"] == "external" and not r["fallback"], r
+        assert r["worker_handoff"]["kind"] == "separate-worker-handoff", r
+        assert r["worker_handoff"]["state_contract"].startswith("return external_ref"), r
+        success = {
+            "status": "succeeded", "external_ref": "issue:54", "artifact_refs": ["git:abc123"],
+            "evidence_refs": evidence, "context_delta_refs": ["delta-2"], "telemetry": telemetry,
+            "gates": [{"id": "integration", "status": "passed", "evidence_ref": "test:full"}],
+            "failure_class": None,
+        }
+        run(["workflow", "validate-result", "--json", json.dumps(success)], tmp)
+        weakened_plan = {
+            **quality_plan,
+            "criteria": [
+                {**quality_plan["criteria"][0], "floor": 0.1},
+                {**quality_plan["criteria"][1], "floor": 0.1},
+            ],
+        }
+        r = run(["workflow", "result", "--packet", json.dumps(packet), "--plan", json.dumps(weakened_plan),
+                 "--json", json.dumps(success), "--lease-id", "lease-wf-ext"], tmp, expect=6)
+        assert r["error_code"] == "quality_plan_binding_mismatch", r
+        r = run(["workflow", "result", "--packet", json.dumps(packet), "--plan", json.dumps(quality_plan),
+                 "--json", json.dumps(success), "--lease-id", "lease-wf-ext"], tmp)
+        assert r["readyForIntegration"] and r["lease"]["state"] == "succeeded", r
+        assert r["lease"]["external_ref"] == "issue:54" and r["lease"]["coarse_status"] == "succeeded", r
+        assert not ({"issue", "branch", "pr", "raw_transcript"} & set(r["lease"])), r
+        r = run(["workflow", "result", "--packet", json.dumps(packet), "--plan", json.dumps(quality_plan),
+                 "--json", json.dumps(success), "--lease-id", "lease-wf-ext"], tmp)
+        assert not r["changed"], r
+
+        # pre-dispatch unavailable/unknown falls back to native before any external start
+        fallback_packet = {**packet, "track_id": "track-fallback", "budget_reservation_id": "res-fallback"}
+        run(["budget", "reserve", "res-fallback", "--lease-id", "lease-fallback", "--tokens", "30"], tmp)
+        r = run(["workflow", "dispatch", "--packet", json.dumps(fallback_packet),
+                 "--plan", json.dumps(quality_plan),
+                 "--lease-id", "lease-fallback"], tmp)
+        assert r["selected_executor"] == "native" and r["fallback"] and r["worker_handoff"] is None, r
+
+        # after external dispatch, failure requires resume or cancel-confirm+release before fallback
+        failed_packet = {**packet, "track_id": "track-failed", "budget_reservation_id": "res-failed"}
+        run(["budget", "reserve", "res-failed", "--lease-id", "lease-failed", "--tokens", "40"], tmp)
+        run(["workflow", "dispatch", "--packet", json.dumps(failed_packet),
+             "--plan", json.dumps(quality_plan),
+             "--capabilities", json.dumps(capabilities), "--lease-id", "lease-failed"], tmp)
+        failure = {
+            "status": "failed", "external_ref": "issue:failed", "artifact_refs": [],
+            "evidence_refs": [], "context_delta_refs": [],
+            "telemetry": {"tokens": None, "elapsed_ms": 5, "avoidable_owner_questions": 0},
+            "gates": [{"id": "integration", "status": "failed", "evidence_ref": "log:failure"}],
+            "failure_class": "retriable",
+        }
+        r = run(["workflow", "result", "--packet", json.dumps(failed_packet), "--plan", json.dumps(quality_plan),
+                 "--json", json.dumps(failure), "--lease-id", "lease-failed"], tmp)
+        assert not r["readyForIntegration"] and r["lease"]["recovery_required"], r
+        assert r["lease"]["state"] == "failed", r
+        r = run(["workflow", "dispatch", "--packet", json.dumps(failed_packet),
+                 "--plan", json.dumps(quality_plan), "--capabilities", json.dumps(capabilities),
+                 "--lease-id", "lease-failed"], tmp, expect=6)
+        assert r["error_code"] == "recovery_required", r
+        premature = {**failed_packet, "budget_reservation_id": "res-premature", "executor": "native"}
+        run(["budget", "reserve", "res-premature", "--lease-id", "lease-premature", "--tokens", "10"], tmp)
+        r = run(["workflow", "dispatch", "--packet", json.dumps(premature),
+                 "--plan", json.dumps(quality_plan), "--lease-id", "lease-premature"], tmp, expect=6)
+        assert r["error_code"] == "active_lease_exists", r
+        r = run(["workflow", "recover", "track-failed", "--lease-id", "lease-failed", "--action", "resume"], tmp)
+        assert not r["native_fallback_allowed"] and r["lease"]["coarse_status"] == "running", r
+        run(["workflow", "result", "--packet", json.dumps(failed_packet), "--plan", json.dumps(quality_plan),
+             "--json", json.dumps(failure), "--lease-id", "lease-failed"], tmp)
+        r = run(["workflow", "recover", "track-failed", "--lease-id", "lease-failed", "--action", "cancel-release"], tmp)
+        assert r["native_fallback_allowed"] and r["lease"]["cancel_confirmed"], r
+        native_packet = {**failed_packet, "budget_reservation_id": "res-native", "executor": "native"}
+        run(["budget", "reserve", "res-native", "--lease-id", "lease-native", "--tokens", "10"], tmp)
+        r = run(["workflow", "dispatch", "--packet", json.dumps(native_packet),
+                 "--plan", json.dumps(quality_plan), "--lease-id", "lease-native"], tmp)
+        assert r["selected_executor"] == "native" and not r["fallback"], r
+
+        # wiki provider is optional; absent preserves outbox, available still needs owner gate
+        r = run(["workflow", "promote", "promotion-1", "--provider-status", "unavailable"], tmp)
+        assert r["provider"] == "local-outbox" and r["handoff"] is None, r
+        run(["workflow", "promote", "promotion-1", "--provider-status", "available"], tmp, expect=6)
+        r = run(["workflow", "promote", "promotion-1", "--provider-status", "available", "--owner-approved"], tmp)
+        assert r["provider"] == "wiki-markdown" and r["handoff"]["skill"] == "wiki-markdown:wiki", r
 
         # 9) config (.studio.yml) — scaffold, validate, parse, guards
         cfg = tmp / ".studio.yml"
@@ -223,6 +522,14 @@ def main() -> None:
         r = run(["cast", "suggest", "unknown-kind"], tmp, expect=6)
         assert r["error_code"] == "unknown_cast", r
 
+        # 10a) an explicit workspace remains supported for init and state commands
+        custom_ws = tmp / "custom-studio-workspace"
+        r = run(["--workspace", str(custom_ws), "init"], tmp)
+        assert r["ok"] and Path(r["workspace"]) == custom_ws, r
+        assert (custom_ws / "board.md").is_file()
+        r = run(["--workspace", str(custom_ws), "mode", "status"], tmp)
+        assert r["ok"] and r["mode"]["active"] is False, r
+
         # 11) producer contract — main thread may coordinate, not edit/integrate
         producer = plugin_text("skills/producer/SKILL.md")
         for phrase in (
@@ -234,6 +541,13 @@ def main() -> None:
             "QA pass. track 변경을 main에 반영할까요?",
             "integrator worker",
             "`readyForIntegration:false`이면",
+            "task-github Python/JS callable API를 만들거나 import하지 않는다",
+            "agent-visible `task-github:*` skill catalog",
+            "`separate-worker-handoff`",
+            "`workflow recover --action resume`",
+            "`--action cancel-release`",
+            "ResultEnvelope 필수 필드",
+            "provider가 absent/unknown이면 `context outbox`",
         ):
             assert phrase in producer, phrase
 

@@ -10,7 +10,7 @@ parser, which nested contracts make fragile). Human prose sits outside the fence
 
 Workspace layout (created by `init`):
 
-    <workspace>/                 default: studio/
+    <workspace>/                 default: .studio/
       missions/                  one file per mission contract (+ TEMPLATE.md)
       minutes/                   one file per recorded run (synthesis + delta_log)
       raw/                       raw transcripts (git-ignored, TTL-pruned)
@@ -25,12 +25,16 @@ Every subcommand prints one JSON object and uses these exit codes:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
+import fcntl
+import hashlib
 import json
 import os
 import re
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +46,10 @@ BACKLOG_ITEM_RE = re.compile(r"^\s*[-*]\s+\[[ xX]\]\s+(.*)$")
 KPI_TAG_RE = re.compile(r"\(kpi:\s*([^)\s][^)]*)\)")
 
 MISSION_REQUIRED = ("mission", "kpi", "done_when", "budget", "gates", "autonomy")
+MISSION_ALLOWED = frozenset(MISSION_REQUIRED)
+MISSION_BUDGET_REQUIRED = frozenset(("total_tokens", "per_run_default"))
+MISSION_KPI_REQUIRED = frozenset(("id", "goal"))
+SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 VALID_ANCHORS = (
     "artifact",
     "acceptance-criteria",
@@ -49,9 +57,13 @@ VALID_ANCHORS = (
     "rejected-alternative",
     "repro-test",
 )
+DELTA_ALLOWED = frozenset(
+    ("round", "changed_what", "anchor", "evidence", "rejected_alternative", "dry")
+)
 
 # agent policy config (.studio.yml)
 CONFIG_PATH_DEFAULT = ".studio.yml"
+WORKSPACE_PATH_DEFAULT = ".studio"
 KNOWN_MODELS = ("sonnet", "opus", "haiku", "fable")   # blank/omitted = inherit session
 KNOWN_EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
@@ -144,12 +156,22 @@ def plugin_root() -> Path:
 
 
 def workspace(args: argparse.Namespace) -> Path:
-    return Path(getattr(args, "workspace", None) or "studio")
+    return Path(getattr(args, "workspace", None) or WORKSPACE_PATH_DEFAULT)
+
+
+def validate_safe_id(value: Any, field: str) -> str:
+    if not isinstance(value, str) or not SAFE_ID_RE.fullmatch(value) or value in (".", ".."):
+        fail(4, "unsafe_id", f"{field} must be a path-safe identifier, got {value!r}")
+    return value
 
 
 def require_workspace(ws: Path) -> None:
     if not ws.is_dir() or not (ws / "board.md").is_file():
-        fail(3, "no_workspace", f"no studio workspace at {ws} (run: studio.py init)")
+        fail(
+            3,
+            "no_workspace",
+            f"no studio workspace at {ws}/ (run: studio.py init)",
+        )
 
 
 def extract_json_block(text: str) -> Any:
@@ -165,19 +187,103 @@ def read_json_block(path: Path) -> Any:
     return extract_json_block(path.read_text(encoding="utf-8"))
 
 
-def write_board(ws: Path, board: dict) -> None:
-    body = (
+def load_json_arg(raw_arg: str | None, label: str) -> Any:
+    if raw_arg in (None, "-"):
+        raw = sys.stdin.read()
+    elif raw_arg.startswith("@"):
+        try:
+            raw = Path(raw_arg[1:]).read_text(encoding="utf-8")
+        except (FileNotFoundError, OSError) as exc:
+            fail(4, "not_found", f"{label} file not found: {raw_arg[1:]} ({exc})")
+    else:
+        raw = raw_arg
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        fail(4, "parse", f"{label} is not valid JSON: {exc}")
+
+
+def atomic_write_text(path: Path, body: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as tmp:
+            tmp.write(body)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        os.replace(tmp_name, path)
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp_name)
+
+
+def render_board(board: dict) -> str:
+    return (
         "# board — studio operating board\n\n"
         "> Machine state is the fenced json block below (the producer's source "
         "of truth for budget, tracks, and recorded runs). Edit via `studio.py`, "
         "not by hand.\n\n"
         "```json\n" + json.dumps(board, ensure_ascii=False, indent=2) + "\n```\n"
     )
-    (ws / "board.md").write_text(body, encoding="utf-8")
+
+
+def write_board(ws: Path, board: dict) -> None:
+    atomic_write_text(ws / "board.md", render_board(board))
 
 
 def load_board(ws: Path) -> dict:
-    return read_json_block(ws / "board.md")
+    board = read_json_block(ws / "board.md")
+    if not isinstance(board, dict):
+        fail(4, "bad_board", "board state must be an object")
+    return migrate_board(board)
+
+
+def migrate_board(board: dict) -> dict:
+    """Project schema 1 into schema 2 in memory; mutating commands persist it."""
+    schema = board.get("schema", 1)
+    if schema not in (1, 2):
+        fail(4, "unsupported_schema", f"unsupported board schema: {schema}")
+    if schema == 1:
+        old_tracks = board.get("tracks") or []
+        if isinstance(old_tracks, list):
+            board["tracks"] = {
+                str(track.get("track_id") or track.get("id")): track
+                for track in old_tracks
+                if isinstance(track, dict) and (track.get("track_id") or track.get("id"))
+            }
+        elif not isinstance(old_tracks, dict):
+            board["tracks"] = {}
+        board["schema"] = 2
+    board.setdefault("tracks", {})
+    board.setdefault("runs", [])
+    budget = board.setdefault("budget", {})
+    budget.setdefault("total_tokens", None)
+    budget.setdefault("per_run_default", None)
+    budget.setdefault("spent_tokens", 0)
+    budget.setdefault("reservations", {})
+    return board
+
+
+def canonical_digest(value: Any) -> str:
+    payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+@contextlib.contextmanager
+def board_transaction(ws: Path):
+    """Serialize read-modify-write and replace board.md atomically."""
+    lock_path = ws / ".board.lock"
+    with lock_path.open("a+", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        board = load_board(ws)
+        try:
+            yield board
+        except BaseException:
+            raise
+        else:
+            write_board(ws, board)
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
 def mode_state(board: dict) -> dict:
@@ -401,7 +507,16 @@ def cmd_init(args: argparse.Namespace) -> None:
     if (ws / "board.md").is_file() and not args.force:
         fail(2, "exists", f"workspace already at {ws} (use --force to re-scaffold)")
 
-    for sub in ("missions", "minutes", "raw", "crew"):
+    for sub in (
+        "missions",
+        "minutes",
+        "raw",
+        "crew",
+        "context/items",
+        "context/bundles",
+        "context/deltas",
+        "context/outbox",
+    ):
         (ws / sub).mkdir(parents=True, exist_ok=True)
 
     # copy shipped persona templates into the live crew roster
@@ -435,10 +550,15 @@ def cmd_init(args: argparse.Namespace) -> None:
     write_board(
         ws,
         {
-            "schema": 1,
+            "schema": 2,
             "studio_mode": {"active": False, "started_at": None, "ended_at": None},
-            "budget": {"total_tokens": None, "per_run_default": None, "spent_tokens": 0},
-            "tracks": [],
+            "budget": {
+                "total_tokens": None,
+                "per_run_default": None,
+                "spent_tokens": 0,
+                "reservations": {},
+            },
+            "tracks": {},
             "runs": [],
         },
     )
@@ -453,25 +573,115 @@ def cmd_init(args: argparse.Namespace) -> None:
 def cmd_budget(args: argparse.Namespace) -> None:
     ws = workspace(args)
     require_workspace(ws)
-    board = load_board(ws)
-    bud = board.setdefault("budget", {"spent_tokens": 0})
-    changed = {}
-    if args.set_total is not None:
-        if args.set_total < 0:
-            fail(2, "bad_budget", "total must be >= 0")
-        bud["total_tokens"] = args.set_total
-        changed["total_tokens"] = args.set_total
-    if args.set_per_run is not None:
-        if args.set_per_run < 0:
-            fail(2, "bad_budget", "per_run must be >= 0")
-        bud["per_run_default"] = args.set_per_run
-        changed["per_run_default"] = args.set_per_run
-    # clearing paused if we just raised the cap above spend
-    total = bud.get("total_tokens")
-    if total is not None and int(bud.get("spent_tokens") or 0) <= total:
-        board.pop("mission_state", None)
-    write_board(ws, board)
+    with board_transaction(ws) as board:
+        bud = board.setdefault("budget", {"spent_tokens": 0, "reservations": {}})
+        bud.setdefault("reservations", {})
+        changed = {}
+        if args.set_total is not None:
+            if args.set_total < 0:
+                fail(2, "bad_budget", "total must be >= 0")
+            bud["total_tokens"] = args.set_total
+            changed["total_tokens"] = args.set_total
+        if args.set_per_run is not None:
+            if args.set_per_run < 0:
+                fail(2, "bad_budget", "per_run must be >= 0")
+            bud["per_run_default"] = args.set_per_run
+            changed["per_run_default"] = args.set_per_run
+        # clearing paused if we just raised the cap above spend
+        total = bud.get("total_tokens")
+        if total is not None and int(bud.get("spent_tokens") or 0) <= total:
+            board.pop("mission_state", None)
     ok(budget=bud, changed=changed)
+
+
+def _budget_reservations(budget: dict) -> dict:
+    reservations = budget.setdefault("reservations", {})
+    if not isinstance(reservations, dict):
+        fail(4, "bad_budget", "budget.reservations must be an object")
+    return reservations
+
+
+def _active_reserved_tokens(reservations: dict) -> int:
+    return sum(
+        int(item.get("tokens") or 0)
+        for item in reservations.values()
+        if item.get("status") in ("reserved", "dispatched")
+    )
+
+
+def cmd_budget_lifecycle(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    reservation_id = validate_safe_id(args.reservation_id, "reservation_id")
+    lease_id = validate_safe_id(args.lease_id, "lease_id")
+
+    with board_transaction(ws) as board:
+        budget = board.setdefault("budget", {"spent_tokens": 0, "reservations": {}})
+        reservations = _budget_reservations(budget)
+        current = reservations.get(reservation_id)
+        changed = False
+
+        if args.lifecycle == "reserve":
+            if args.tokens is None or args.tokens < 0:
+                fail(2, "bad_budget", "reserve tokens must be >= 0")
+            desired = {
+                "reservation_id": reservation_id,
+                "lease_id": lease_id,
+                "tokens": args.tokens,
+                "status": "reserved",
+            }
+            if current is not None:
+                if (
+                    current.get("lease_id") == lease_id
+                    and current.get("tokens") == args.tokens
+                ):
+                    ok(reservation=current, changed=False)
+                fail(6, "reservation_conflict", f"reservation {reservation_id} already exists with different data")
+            total = budget.get("total_tokens")
+            committed = int(budget.get("spent_tokens") or 0) + _active_reserved_tokens(reservations)
+            if total is not None and committed + args.tokens > total:
+                fail(6, "budget_exceeded", "reservation would exceed total token budget")
+            reservations[reservation_id] = desired
+            current = desired
+            changed = True
+
+        else:
+            if current is None:
+                fail(4, "reservation_not_found", f"unknown reservation: {reservation_id}")
+            if current.get("lease_id") != lease_id:
+                fail(6, "stale_lease", f"reservation {reservation_id} is fenced by another lease")
+
+            if args.lifecycle == "dispatch":
+                if current.get("status") == "dispatched":
+                    ok(reservation=current, changed=False)
+                if current.get("status") != "reserved":
+                    fail(6, "invalid_budget_transition", f"cannot dispatch from {current.get('status')}")
+                current["status"] = "dispatched"
+                changed = True
+            elif args.lifecycle == "settle":
+                if args.tokens is None or args.tokens < 0:
+                    fail(2, "bad_budget", "settle tokens must be >= 0")
+                if current.get("status") == "settled":
+                    if current.get("settled_tokens") == args.tokens:
+                        ok(reservation=current, changed=False)
+                    fail(6, "reservation_conflict", "settled token count cannot change")
+                if current.get("status") != "dispatched":
+                    fail(6, "invalid_budget_transition", f"cannot settle from {current.get('status')}")
+                current["status"] = "settled"
+                current["settled_tokens"] = args.tokens
+                budget["spent_tokens"] = int(budget.get("spent_tokens") or 0) + args.tokens
+                changed = True
+            elif args.lifecycle == "release":
+                if current.get("status") == "released":
+                    ok(reservation=current, changed=False)
+                if current.get("status") not in ("reserved", "dispatched"):
+                    fail(6, "invalid_budget_transition", f"cannot release from {current.get('status')}")
+                current["status"] = "released"
+                changed = True
+            else:  # argparse guarantees this; keep the state machine explicit.
+                fail(2, "bad_budget_action", f"unknown lifecycle action: {args.lifecycle}")
+
+    ok(reservation=current, changed=changed, spent_tokens=budget.get("spent_tokens", 0))
 
 
 # --------------------------------------------------------------------------- #
@@ -486,21 +696,61 @@ def cmd_mission_validate(args: argparse.Namespace) -> None:
     except ValueError as e:
         fail(4, "parse", f"{path}: {e}")
 
-    missing = [k for k in MISSION_REQUIRED if k not in contract]
-    problems = list(missing and [f"missing key: {k}" for k in missing] or [])
+    if not isinstance(contract, dict):
+        fail(6, "invalid_mission", "mission contract must be an object", problems=["contract must be an object"])
+    problems = [f"missing key: {key}" for key in MISSION_REQUIRED if key not in contract]
+    problems += [f"unknown key: {key}" for key in sorted(set(contract) - MISSION_ALLOWED)]
+
+    for key in ("mission", "done_when", "autonomy"):
+        if key in contract and (not isinstance(contract[key], str) or not contract[key].strip()):
+            problems.append(f"{key} must be a non-empty string")
+
     kpi = contract.get("kpi")
-    if kpi is not None and (not isinstance(kpi, list) or not kpi):
-        problems.append("kpi must be a non-empty list")
+    kpi_ids = []
+    if kpi is not None:
+        if not isinstance(kpi, list) or not kpi:
+            problems.append("kpi must be a non-empty list")
+        else:
+            for index, item in enumerate(kpi):
+                if not isinstance(item, dict):
+                    problems.append(f"kpi[{index}] must be an object")
+                    continue
+                if set(item) != MISSION_KPI_REQUIRED:
+                    problems.append(f"kpi[{index}] must contain exactly id and goal")
+                kid = item.get("id")
+                if not isinstance(kid, str) or not SAFE_ID_RE.fullmatch(kid):
+                    problems.append(f"kpi[{index}].id must be a path-safe non-empty string")
+                else:
+                    kpi_ids.append(kid)
+                if not isinstance(item.get("goal"), str) or not item.get("goal", "").strip():
+                    problems.append(f"kpi[{index}].goal must be a non-empty string")
+            if len(kpi_ids) != len(set(kpi_ids)):
+                problems.append("kpi ids must be unique")
+
     budget = contract.get("budget")
-    if budget is not None and not (
-        isinstance(budget, dict) and "total_tokens" in budget
+    if budget is not None:
+        if not isinstance(budget, dict) or set(budget) != MISSION_BUDGET_REQUIRED:
+            problems.append("budget must contain exactly total_tokens and per_run_default")
+        else:
+            for key in MISSION_BUDGET_REQUIRED:
+                value = budget.get(key)
+                if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                    problems.append(f"budget.{key} must be a non-negative integer")
+            if not problems and budget["per_run_default"] > budget["total_tokens"]:
+                problems.append("budget.per_run_default must not exceed total_tokens")
+
+    gates = contract.get("gates")
+    if gates is not None and (
+        not isinstance(gates, list)
+        or any(not isinstance(gate, str) or not gate.strip() for gate in gates)
+        or len(gates) != len(set(gates))
     ):
-        problems.append("budget must include total_tokens")
+        problems.append("gates must be a list of unique non-empty strings")
     if problems:
         fail(6, "invalid_mission", "; ".join(problems), problems=problems)
     ok(
         path=str(path),
-        kpi_ids=[k.get("id") if isinstance(k, dict) else k for k in kpi],
+        kpi_ids=kpi_ids,
         budget=budget,
     )
 
@@ -563,6 +813,74 @@ def _load_run_output(args: argparse.Namespace) -> dict:
     return obj
 
 
+def _validate_delta_log(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return ["delta_log must be a list"]
+    problems = []
+    for index, delta in enumerate(value):
+        if not isinstance(delta, dict):
+            problems.append(f"delta_log[{index}] must be an object")
+            continue
+        unknown = sorted(set(delta) - DELTA_ALLOWED)
+        if unknown:
+            problems.append(f"delta_log[{index}] has unknown keys: {', '.join(unknown)}")
+        round_value = delta.get("round")
+        if isinstance(round_value, bool) or not isinstance(round_value, int) or round_value < 1:
+            problems.append(f"delta_log[{index}].round must be a positive integer")
+        if not isinstance(delta.get("changed_what"), str) or not delta.get("changed_what", "").strip():
+            problems.append(f"delta_log[{index}].changed_what must be a non-empty string")
+        if "dry" in delta and not isinstance(delta["dry"], bool):
+            problems.append(f"delta_log[{index}].dry must be boolean")
+        if not delta.get("dry"):
+            if delta.get("anchor") not in VALID_ANCHORS:
+                problems.append(f"delta_log[{index}].anchor must be a valid anchor")
+            if not isinstance(delta.get("evidence"), str) or not delta.get("evidence", "").strip():
+                problems.append(f"delta_log[{index}].evidence is required for non-dry deltas")
+        for key in ("anchor", "evidence", "rejected_alternative"):
+            if key in delta and delta[key] is not None and not isinstance(delta[key], str):
+                problems.append(f"delta_log[{index}].{key} must be a string when present")
+    return problems
+
+
+def _pairing_readiness_problems(out: dict) -> list[str]:
+    problems = []
+    ready = out.get("readyForIntegration")
+    if not isinstance(ready, bool):
+        return ["pairing readyForIntegration must be boolean"]
+    changed = out.get("changedFiles")
+    verification = out.get("verification")
+    blocked = out.get("blockedChecks")
+    verdict = out.get("verdict")
+    if not isinstance(changed, list) or not changed or any(not isinstance(p, str) or not p.strip() for p in changed):
+        problems.append("pairing changedFiles must contain at least one repo-relative path")
+    if not isinstance(verification, list) or not verification:
+        problems.append("pairing verification must contain at least one executed check")
+    else:
+        malformed = any(
+            not isinstance(item, dict)
+            or not isinstance(item.get("command"), str)
+            or not item.get("command", "").strip()
+            or not isinstance(item.get("result"), str)
+            for item in verification
+        )
+        passed = any(
+            isinstance(item, dict)
+            and re.match(r"^pass(?:\b|:)", item.get("result", ""), re.IGNORECASE)
+            for item in verification
+        )
+        if malformed or not passed:
+            problems.append("pairing verification entries need commands and at least one pass result")
+    if not isinstance(blocked, list):
+        problems.append("pairing blockedChecks must be a list")
+    elif blocked:
+        problems.append("pairing blockedChecks must be empty")
+    if not isinstance(verdict, dict) or verdict.get("alive") is not True:
+        problems.append("pairing verdict.alive must be true")
+    if isinstance(verdict, dict) and int(verdict.get("open_count") or 0) != 0:
+        problems.append("pairing verdict.open_count must be zero")
+    return problems if ready else []
+
+
 def cmd_run_record(args: argparse.Namespace) -> None:
     ws = workspace(args)
     require_workspace(ws)
@@ -571,12 +889,16 @@ def cmd_run_record(args: argparse.Namespace) -> None:
     ritual = out.get("ritual", "unknown")
     # id precedence: explicit output field > --id > clock+random (random suffix
     # guards against two runs in the same second with the same ritual colliding).
-    run_id = (
+    run_id = validate_safe_id((
         out.get("run_id")
         or args.id
         or f"RUN-{now_stamp()}-{slugify(ritual)}-{os.urandom(3).hex()}"
-    )
+    ), "run_id")
+    if not isinstance(ritual, str) or not ritual.strip():
+        fail(6, "invalid_run_output", "ritual must be a non-empty string")
     cost = out.get("cost") or {}
+    if not isinstance(cost, dict):
+        fail(6, "invalid_run_output", "cost must be an object")
     try:
         cost_tokens = int(cost.get("tokens") or 0)
     except (TypeError, ValueError):
@@ -584,7 +906,14 @@ def cmd_run_record(args: argparse.Namespace) -> None:
     if cost_tokens < 0:
         fail(4, "bad_cost", "cost.tokens must be >= 0")
     verdict = out.get("verdict") or {}
-    delta_log = out.get("delta_log") or []
+    if not isinstance(verdict, dict):
+        fail(6, "invalid_run_output", "verdict must be an object")
+    delta_log = out.get("delta_log", [])
+    problems = _validate_delta_log(delta_log)
+    if ritual == "pairing":
+        problems += _pairing_readiness_problems(out)
+    if problems:
+        fail(6, "invalid_run_output", "; ".join(problems), problems=problems)
     aborted = bool(out.get("aborted"))
 
     # count real (non-dry) deltas with a valid anchor — the evidence tally.
@@ -597,13 +926,14 @@ def cmd_run_record(args: argparse.Namespace) -> None:
     ]
 
     # ---- write minutes (synthesis + delta_log only; raw transcript stays in raw/)
+    minutes_dir = (ws / "minutes").resolve()
     minutes_path = ws / "minutes" / f"{run_id}.md"
+    if minutes_path.resolve().parent != minutes_dir:
+        fail(4, "unsafe_id", "run_id escapes the minutes directory")
     body = _render_minutes(run_id, out, valid_deltas, aborted)
-    minutes_path.write_text(body, encoding="utf-8")
 
     # ---- update board ledger (idempotent on run_id: re-recording the same run
     # replaces its entry and its cost, never double-counts the budget)
-    board = load_board(ws)
     entry = {
         "run_id": run_id,
         "ritual": ritual,
@@ -614,19 +944,23 @@ def cmd_run_record(args: argparse.Namespace) -> None:
         "aborted": aborted,
         "minutes": str(minutes_path),
     }
-    bud = board["budget"]
-    spent = int(bud.get("spent_tokens") or 0)
-    prior = next((r for r in board["runs"] if r.get("run_id") == run_id), None)
-    if prior is not None:
-        spent -= int(prior.get("cost_tokens") or 0)   # undo the old cost
-        board["runs"] = [r for r in board["runs"] if r.get("run_id") != run_id]
-    board["runs"].append(entry)
-    bud["spent_tokens"] = spent + cost_tokens
-    total = bud.get("total_tokens")
-    exceeded = total is not None and bud["spent_tokens"] > total
-    if exceeded:
-        board["mission_state"] = "paused"  # budget exhausted → owner gate to resume
-    write_board(ws, board)
+    with board_transaction(ws) as board:
+        bud = board.setdefault("budget", {"spent_tokens": 0, "reservations": {}})
+        runs = board.setdefault("runs", [])
+        if not isinstance(runs, list):
+            fail(4, "bad_board", "board.runs must be a list")
+        spent = int(bud.get("spent_tokens") or 0)
+        prior = next((r for r in runs if r.get("run_id") == run_id), None)
+        if prior is not None:
+            spent -= int(prior.get("cost_tokens") or 0)   # undo the old cost
+            board["runs"] = [r for r in runs if r.get("run_id") != run_id]
+        board["runs"].append(entry)
+        bud["spent_tokens"] = spent + cost_tokens
+        total = bud.get("total_tokens")
+        exceeded = total is not None and bud["spent_tokens"] > total
+        if exceeded:
+            board["mission_state"] = "paused"  # budget exhausted → owner gate to resume
+        atomic_write_text(minutes_path, body)
 
     ok(
         run_id=run_id,
@@ -685,6 +1019,832 @@ def _render_minutes(run_id: str, out: dict, valid_deltas: list, aborted: bool) -
 
 
 # --------------------------------------------------------------------------- #
+# quality — hard floors first, weighted utility only for complete candidates
+# --------------------------------------------------------------------------- #
+QUALITY_PLAN_REQUIRED = frozenset(("schema", "id", "criteria", "utility_weights"))
+QUALITY_CRITERION_REQUIRED = frozenset(("id", "kind", "weight", "floor", "measure"))
+UTILITY_KEYS = frozenset(("quality", "tokens", "elapsed", "avoidable_owner_question"))
+TELEMETRY_KEYS = frozenset(("tokens", "elapsed_ms", "avoidable_owner_questions"))
+
+
+def _number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def validate_quality_plan(plan: Any) -> list[str]:
+    if not isinstance(plan, dict):
+        return ["QualityPlan must be an object"]
+    problems = []
+    if set(plan) != QUALITY_PLAN_REQUIRED:
+        problems.append("QualityPlan must contain exactly schema, id, criteria, utility_weights")
+    if plan.get("schema") != 1:
+        problems.append("QualityPlan.schema must be 1")
+    if not isinstance(plan.get("id"), str) or not SAFE_ID_RE.fullmatch(plan.get("id", "")):
+        problems.append("QualityPlan.id must be a path-safe identifier")
+    criteria = plan.get("criteria")
+    criterion_ids = []
+    kinds = set()
+    if not isinstance(criteria, list) or not criteria:
+        problems.append("QualityPlan.criteria must be a non-empty list")
+    else:
+        for index, criterion in enumerate(criteria):
+            if not isinstance(criterion, dict) or set(criterion) != QUALITY_CRITERION_REQUIRED:
+                problems.append(f"criteria[{index}] must contain exactly id, kind, weight, floor, measure")
+                continue
+            criterion_id = criterion.get("id")
+            if not isinstance(criterion_id, str) or not SAFE_ID_RE.fullmatch(criterion_id):
+                problems.append(f"criteria[{index}].id must be path-safe")
+            else:
+                criterion_ids.append(criterion_id)
+            if criterion.get("kind") not in ("artifact", "context"):
+                problems.append(f"criteria[{index}].kind must be artifact or context")
+            else:
+                kinds.add(criterion["kind"])
+            for key in ("weight", "floor"):
+                value = criterion.get(key)
+                if not _number(value) or not 0 <= value <= 1:
+                    problems.append(f"criteria[{index}].{key} must be between 0 and 1")
+            if not isinstance(criterion.get("measure"), str) or not criterion.get("measure", "").strip():
+                problems.append(f"criteria[{index}].measure must be a non-empty string")
+        if len(criterion_ids) != len(set(criterion_ids)):
+            problems.append("criterion ids must be unique")
+        if kinds != {"artifact", "context"}:
+            problems.append("QualityPlan requires both artifact and context criteria")
+
+    weights = plan.get("utility_weights")
+    if not isinstance(weights, dict) or set(weights) != UTILITY_KEYS:
+        problems.append("utility_weights must contain quality, tokens, elapsed, avoidable_owner_question")
+    else:
+        if any(not _number(value) or value < 0 for value in weights.values()):
+            problems.append("utility weights must be non-negative numbers")
+        elif not all(weights["quality"] > weights[key] for key in UTILITY_KEYS - {"quality"}):
+            problems.append("quality must have the highest utility weight")
+    return problems
+
+
+def evaluate_quality(plan: dict, evidence_refs: Any, telemetry: Any) -> dict:
+    problems = validate_quality_plan(plan)
+    if problems:
+        fail(6, "invalid_quality_plan", "; ".join(problems), problems=problems)
+    if not isinstance(evidence_refs, list):
+        fail(6, "invalid_evidence", "evidence_refs must be a list")
+    evidence_problems = []
+    evidence_by_criterion: dict[str, list[dict]] = {}
+    for index, evidence in enumerate(evidence_refs):
+        if not isinstance(evidence, dict) or set(evidence) != {"criterion_id", "ref", "score"}:
+            evidence_problems.append(f"evidence_refs[{index}] must contain criterion_id, ref, score")
+            continue
+        if not isinstance(evidence.get("criterion_id"), str):
+            evidence_problems.append(f"evidence_refs[{index}].criterion_id must be a string")
+        if not isinstance(evidence.get("ref"), str) or not evidence.get("ref", "").strip():
+            evidence_problems.append(f"evidence_refs[{index}].ref must be non-empty")
+        if not _number(evidence.get("score")) or not 0 <= evidence.get("score", -1) <= 1:
+            evidence_problems.append(f"evidence_refs[{index}].score must be between 0 and 1")
+        if not evidence_problems or all(not item.startswith(f"evidence_refs[{index}]") for item in evidence_problems):
+            evidence_by_criterion.setdefault(evidence["criterion_id"], []).append(evidence)
+    if evidence_problems:
+        fail(6, "invalid_evidence", "; ".join(evidence_problems), problems=evidence_problems)
+
+    results = []
+    weighted_score = 0.0
+    total_weight = 0.0
+    for criterion in plan["criteria"]:
+        refs = evidence_by_criterion.get(criterion["id"], [])
+        score = max((item["score"] for item in refs), default=None)
+        passed = score is not None and score >= criterion["floor"]
+        results.append({
+            "criterion_id": criterion["id"],
+            "kind": criterion["kind"],
+            "floor": criterion["floor"],
+            "score": score,
+            "evidence_refs": [item["ref"] for item in refs],
+            "passed": passed,
+        })
+        if score is not None:
+            weighted_score += score * criterion["weight"]
+            total_weight += criterion["weight"]
+    floors_passed = all(result["passed"] for result in results)
+    quality_score = weighted_score / total_weight if total_weight else None
+
+    telemetry_complete = (
+        isinstance(telemetry, dict)
+        and set(telemetry) == TELEMETRY_KEYS
+        and _number(telemetry.get("tokens"))
+        and telemetry.get("tokens", -1) >= 0
+        and _number(telemetry.get("elapsed_ms"))
+        and telemetry.get("elapsed_ms", -1) >= 0
+        and isinstance(telemetry.get("avoidable_owner_questions"), int)
+        and not isinstance(telemetry.get("avoidable_owner_questions"), bool)
+        and telemetry.get("avoidable_owner_questions", -1) >= 0
+    )
+    utility = None
+    if floors_passed and telemetry_complete and quality_score is not None:
+        weights = plan["utility_weights"]
+        utility = (
+            quality_score * weights["quality"]
+            - telemetry["tokens"] * weights["tokens"]
+            - telemetry["elapsed_ms"] * weights["elapsed"]
+            - telemetry["avoidable_owner_questions"] * weights["avoidable_owner_question"]
+        )
+    return {
+        "quality_plan_ref": plan["id"],
+        "criteria": results,
+        "floors_passed": floors_passed,
+        "quality_score": quality_score,
+        "telemetry_complete": telemetry_complete,
+        "utility": utility,
+        "complete": floors_passed and telemetry_complete,
+    }
+
+
+def cmd_quality_evaluate(args: argparse.Namespace) -> None:
+    plan = load_json_arg(args.plan, "QualityPlan")
+    evidence = load_json_arg(args.evidence, "evidence_refs")
+    telemetry = load_json_arg(args.telemetry, "telemetry")
+    ok(evaluation=evaluate_quality(plan, evidence, telemetry))
+
+
+# --------------------------------------------------------------------------- #
+# context kernel — local projection only; optional providers consume outbox
+# --------------------------------------------------------------------------- #
+CONTEXT_FIELDS = {
+    "item": frozenset(("schema", "id", "kind", "content", "source_ref", "created_at", "digest")),
+    "pack": frozenset(("schema", "id", "item_refs", "created_at", "digest")),
+    "delta": frozenset(("schema", "id", "base_ref", "changes", "created_at", "digest")),
+}
+CONTEXT_DIRS = {"item": "items", "pack": "bundles", "delta": "deltas"}
+OUTBOX_FIELDS = frozenset(
+    ("schema", "id", "promotion_type", "summary", "source_refs", "owner_gate", "status", "digest")
+)
+
+
+def _prepare_context_object(kind: str, value: Any) -> dict:
+    if not isinstance(value, dict):
+        fail(6, "invalid_context", f"Context{kind.title()} must be an object")
+    obj = dict(value)
+    obj.setdefault("schema", 1)
+    obj.setdefault("created_at", now_stamp())
+    obj.setdefault("digest", "auto")
+    expected_fields = CONTEXT_FIELDS[kind]
+    if set(obj) != expected_fields:
+        fail(6, "invalid_context", f"Context{kind.title()} fields must be exactly {', '.join(sorted(expected_fields))}")
+    obj["id"] = validate_safe_id(obj.get("id"), f"Context{kind.title()}.id")
+    if obj.get("schema") != 1:
+        fail(6, "invalid_context", "context schema must be 1")
+    if not isinstance(obj.get("created_at"), str) or not obj.get("created_at", "").strip():
+        fail(6, "invalid_context", "created_at must be a non-empty string")
+    if kind == "item":
+        if not isinstance(obj.get("kind"), str) or not obj.get("kind", "").strip():
+            fail(6, "invalid_context", "ContextItem.kind must be non-empty")
+        if not isinstance(obj.get("content"), (str, dict, list)):
+            fail(6, "invalid_context", "ContextItem.content must be string, object, or list")
+        if not isinstance(obj.get("source_ref"), str) or not obj.get("source_ref", "").strip():
+            fail(6, "invalid_context", "ContextItem.source_ref must be non-empty")
+    elif kind == "pack":
+        refs = obj.get("item_refs")
+        if not isinstance(refs, list) or not refs or any(
+            not isinstance(ref, dict) or set(ref) != {"id", "digest"}
+            or not isinstance(ref.get("id"), str) or not isinstance(ref.get("digest"), str)
+            for ref in refs
+        ):
+            fail(6, "invalid_context", "ContextPack.item_refs must contain {id,digest} entries")
+    elif kind == "delta":
+        if not isinstance(obj.get("base_ref"), str) or not obj.get("base_ref", "").strip():
+            fail(6, "invalid_context", "ContextDelta.base_ref must be non-empty")
+        if not isinstance(obj.get("changes"), (dict, list)) or not obj.get("changes"):
+            fail(6, "invalid_context", "ContextDelta.changes must be a non-empty object or list")
+    digest_payload = {key: value for key, value in obj.items() if key != "digest"}
+    expected_digest = canonical_digest(digest_payload)
+    if obj["digest"] == "auto":
+        obj["digest"] = expected_digest
+    elif obj["digest"] != expected_digest:
+        fail(6, "digest_mismatch", f"context digest mismatch: expected {expected_digest}")
+    return obj
+
+
+def _context_path(ws: Path, kind: str, object_id: str) -> Path:
+    return ws / "context" / CONTEXT_DIRS[kind] / f"{object_id}.json"
+
+
+def _store_context(ws: Path, kind: str, value: Any) -> tuple[dict, Path, bool]:
+    obj = _prepare_context_object(kind, value)
+    path = _context_path(ws, kind, obj["id"])
+    body = json.dumps(obj, ensure_ascii=False, indent=2) + "\n"
+    if path.is_file():
+        if path.read_text(encoding="utf-8") == body:
+            return obj, path, False
+        fail(6, "context_conflict", f"context object already exists with different content: {obj['id']}")
+    atomic_write_text(path, body)
+    return obj, path, True
+
+
+def cmd_context_put(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    obj, path, changed = _store_context(ws, args.kind, load_json_arg(args.json, f"Context{args.kind.title()}"))
+    ok(context=obj, path=str(path), changed=changed)
+
+
+def cmd_context_compact(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    refs = []
+    for item_id in args.item_id:
+        item_id = validate_safe_id(item_id, "item_id")
+        path = _context_path(ws, "item", item_id)
+        try:
+            item = json.loads(path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError) as exc:
+            fail(4, "context_not_found", f"cannot load ContextItem {item_id}: {exc}")
+        refs.append({"id": item_id, "digest": item.get("digest")})
+    pack, path, changed = _store_context(ws, "pack", {
+        "id": args.bundle_id,
+        "item_refs": refs,
+        "created_at": now_stamp(),
+        "digest": "auto",
+    })
+    ok(context=pack, path=str(path), changed=changed)
+
+
+def cmd_context_prune(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    if args.keep_deltas < 0:
+        fail(2, "bad_prune", "keep-deltas must be >= 0")
+    delta_dir = ws / "context" / "deltas"
+    ranked = []
+    for path in delta_dir.glob("*.json"):
+        try:
+            obj = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            fail(4, "invalid_context", f"cannot parse context delta: {path}")
+        ranked.append((str(obj.get("created_at") or ""), str(obj.get("id") or path.stem), path))
+    ranked.sort(reverse=True)
+    removed = [path for _, _, path in ranked[args.keep_deltas:]]
+    for path in removed:
+        path.unlink()
+    ok(kept=min(args.keep_deltas, len(ranked)), removed=[str(path) for path in removed])
+
+
+def cmd_context_outbox(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    value = load_json_arg(args.json, "promotion candidate")
+    if not isinstance(value, dict):
+        fail(6, "invalid_promotion", "promotion candidate must be an object")
+    candidate = dict(value)
+    candidate.setdefault("schema", 1)
+    candidate.setdefault("status", "pending")
+    candidate.setdefault("digest", "auto")
+    if set(candidate) != OUTBOX_FIELDS:
+        fail(6, "invalid_promotion", f"promotion candidate fields must be exactly {', '.join(sorted(OUTBOX_FIELDS))}")
+    candidate["id"] = validate_safe_id(candidate.get("id"), "promotion candidate id")
+    if candidate.get("schema") != 1 or candidate.get("status") != "pending":
+        fail(6, "invalid_promotion", "new promotion candidates require schema=1 and status=pending")
+    if candidate.get("promotion_type") not in ("decision", "rejected_decision", "trial_error", "ssot"):
+        fail(6, "invalid_promotion", "unsupported promotion_type")
+    if not isinstance(candidate.get("summary"), str) or not candidate.get("summary", "").strip():
+        fail(6, "invalid_promotion", "promotion summary must be non-empty")
+    if not isinstance(candidate.get("source_refs"), list) or not candidate.get("source_refs") or any(
+        not isinstance(ref, str) or not ref.strip() for ref in candidate.get("source_refs", [])
+    ):
+        fail(6, "invalid_promotion", "source_refs must be a non-empty string list")
+    if candidate.get("owner_gate") is not True:
+        fail(6, "owner_gate_required", "promotion requires owner_gate=true")
+    expected = canonical_digest({key: value for key, value in candidate.items() if key != "digest"})
+    if candidate["digest"] == "auto":
+        candidate["digest"] = expected
+    elif candidate["digest"] != expected:
+        fail(6, "digest_mismatch", f"promotion digest mismatch: expected {expected}")
+    path = ws / "context" / "outbox" / f"{candidate['id']}.json"
+    body = json.dumps(candidate, ensure_ascii=False, indent=2) + "\n"
+    if path.is_file():
+        if path.read_text(encoding="utf-8") == body:
+            ok(candidate=candidate, path=str(path), changed=False)
+        fail(6, "promotion_conflict", f"promotion candidate already exists: {candidate['id']}")
+    atomic_write_text(path, body)
+    ok(candidate=candidate, path=str(path), changed=True)
+
+
+# --------------------------------------------------------------------------- #
+# executor lease — one active lease per track with fencing
+# --------------------------------------------------------------------------- #
+ACTIVE_LEASE_STATES = frozenset(("claimed", "running", "waiting_gate"))
+TERMINAL_LEASE_STATES = frozenset(("succeeded", "failed", "cancelled"))
+LEASE_TRANSITIONS = {
+    "claimed": frozenset(("running", "cancelled")),
+    "running": frozenset(("waiting_gate", "succeeded", "failed", "cancelled")),
+    "waiting_gate": frozenset(("running", "succeeded", "failed", "cancelled")),
+}
+
+
+def _claim_lease(board: dict, track_id: str, lease_id: str, executor: str, reservation_id: str) -> tuple[dict, bool]:
+    tracks = board.setdefault("tracks", {})
+    if not isinstance(tracks, dict):
+        fail(4, "bad_board", "board.tracks must be an object in schema 2")
+    track = tracks.setdefault(track_id, {"track_id": track_id, "lease_history": []})
+    current = track.get("executor_lease")
+    if current and current.get("lease_id") == lease_id:
+        if current.get("executor") == executor and current.get("budget_reservation_id") == reservation_id:
+            return current, False
+        fail(6, "lease_conflict", "lease id already exists with different claim data")
+    current_reservation = None
+    if current:
+        current_reservation = _budget_reservations(board["budget"]).get(current.get("budget_reservation_id"))
+    replacement_fenced = current and (
+        current.get("state") in ACTIVE_LEASE_STATES
+        or (current_reservation and current_reservation.get("status") in ("reserved", "dispatched"))
+    )
+    if replacement_fenced:
+        fail(6, "active_lease_exists", f"track {track_id} already has fenced lease {current.get('lease_id')}")
+    reservations = _budget_reservations(board["budget"])
+    reservation = reservations.get(reservation_id)
+    if not reservation or reservation.get("lease_id") != lease_id or reservation.get("status") != "reserved":
+        fail(6, "reservation_required", "claim requires a reserved budget reservation fenced by the same lease")
+    if current:
+        track.setdefault("lease_history", []).append(current)
+    current = {
+        "lease_id": lease_id,
+        "executor": executor,
+        "state": "claimed",
+        "budget_reservation_id": reservation_id,
+        "external_ref": None,
+        "coarse_status": "claimed",
+    }
+    track["executor_lease"] = current
+    return current, True
+
+
+def cmd_lease_claim(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    track_id = validate_safe_id(args.track_id, "track_id")
+    lease_id = validate_safe_id(args.lease_id, "lease_id")
+    reservation_id = validate_safe_id(args.reservation_id, "reservation_id")
+    with board_transaction(ws) as board:
+        current, changed = _claim_lease(board, track_id, lease_id, args.executor, reservation_id)
+    ok(lease=current, changed=changed)
+
+
+def _transition_lease(board: dict, track_id: str, lease_id: str, state: str, external_ref: str | None = None) -> tuple[dict, bool]:
+    track = board.setdefault("tracks", {}).get(track_id)
+    lease = track and track.get("executor_lease")
+    if not lease:
+        fail(4, "lease_not_found", f"no lease for track {track_id}")
+    if lease.get("lease_id") != lease_id:
+        fail(6, "stale_lease", f"track {track_id} is fenced by another lease")
+    old_state = lease.get("state")
+    if old_state == state:
+        return lease, False
+    if state not in LEASE_TRANSITIONS.get(old_state, frozenset()):
+        fail(6, "invalid_lease_transition", f"cannot transition {old_state} to {state}")
+    reservation = _budget_reservations(board["budget"])[lease["budget_reservation_id"]]
+    if state == "running":
+        if reservation.get("lease_id") != lease_id:
+            fail(6, "stale_lease", "budget reservation is fenced by another lease")
+        if reservation.get("status") == "reserved":
+            reservation["status"] = "dispatched"
+        elif reservation.get("status") != "dispatched":
+            fail(6, "invalid_budget_transition", "running requires a reserved or dispatched budget")
+    lease["state"] = state
+    lease["coarse_status"] = state
+    if external_ref is not None:
+        lease["external_ref"] = external_ref
+    if state == "cancelled":
+        lease["cancel_confirmed"] = True
+        lease["recovery_required"] = False
+    elif state == "failed":
+        lease["recovery_required"] = True
+    return lease, True
+
+
+def cmd_lease_transition(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    track_id = validate_safe_id(args.track_id, "track_id")
+    lease_id = validate_safe_id(args.lease_id, "lease_id")
+    with board_transaction(ws) as board:
+        lease, changed = _transition_lease(board, track_id, lease_id, args.state, args.external_ref)
+    ok(lease=lease, changed=changed)
+
+
+# --------------------------------------------------------------------------- #
+# workflow adapter — validate and hand off; never import external workflow APIs
+# --------------------------------------------------------------------------- #
+WORK_PACKET_FIELDS = frozenset((
+    "schema", "track_id", "objective", "acceptance_criteria", "context_ref",
+    "digest", "quality_plan_ref", "constraints", "budget_reservation_id", "gates", "executor",
+))
+RESULT_ENVELOPE_FIELDS = frozenset((
+    "status", "external_ref", "artifact_refs", "evidence_refs", "context_delta_refs",
+    "telemetry", "gates", "failure_class",
+))
+CAPABILITY_FIELDS = frozenset(("schema", "source", "catalog", "doctor", "preflight"))
+TASK_GITHUB_REQUIRED_SKILLS = frozenset((
+    "task-github:start", "task-github:run", "task-github:done", "task-github:doctor",
+))
+
+
+def validate_work_packet(packet: Any) -> list[str]:
+    if not isinstance(packet, dict):
+        return ["WorkPacket must be an object"]
+    problems = []
+    if set(packet) != WORK_PACKET_FIELDS:
+        problems.append("WorkPacket fields do not match the binding contract")
+    if packet.get("schema") != 1:
+        problems.append("WorkPacket.schema must be 1")
+    for key in ("track_id", "quality_plan_ref", "budget_reservation_id"):
+        if not isinstance(packet.get(key), str) or not SAFE_ID_RE.fullmatch(packet.get(key, "")):
+            problems.append(f"WorkPacket.{key} must be a path-safe identifier")
+    if not isinstance(packet.get("objective"), str) or not packet.get("objective", "").strip():
+        problems.append("WorkPacket.objective must be a non-empty string")
+    if not isinstance(packet.get("context_ref"), str) or not SAFE_ID_RE.fullmatch(packet.get("context_ref", "")):
+        problems.append("WorkPacket.context_ref must be a path-safe identifier")
+    if not isinstance(packet.get("digest"), str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", packet.get("digest", "")):
+        problems.append("WorkPacket.digest must be a sha256 digest")
+    criteria = packet.get("acceptance_criteria")
+    if not isinstance(criteria, list) or not criteria or any(not isinstance(item, str) or not item.strip() for item in criteria):
+        problems.append("WorkPacket.acceptance_criteria must be a non-empty string list")
+    if not isinstance(packet.get("constraints"), dict):
+        problems.append("WorkPacket.constraints must be an object")
+    gates = packet.get("gates")
+    if not isinstance(gates, list) or any(not isinstance(gate, str) or not gate.strip() for gate in gates) or len(gates) != len(set(gates or [])):
+        problems.append("WorkPacket.gates must be a unique string list")
+    if packet.get("executor") not in ("native", "task-github"):
+        problems.append("WorkPacket.executor must be native or task-github")
+    return problems
+
+
+def validate_result_envelope(envelope: Any) -> list[str]:
+    if not isinstance(envelope, dict):
+        return ["ResultEnvelope must be an object"]
+    problems = []
+    if set(envelope) != RESULT_ENVELOPE_FIELDS:
+        problems.append("ResultEnvelope fields do not match the binding contract")
+    if envelope.get("status") not in ("succeeded", "failed", "waiting_gate", "cancelled"):
+        problems.append("ResultEnvelope.status is invalid")
+    if envelope.get("external_ref") is not None and (
+        not isinstance(envelope.get("external_ref"), str) or not envelope.get("external_ref", "").strip()
+    ):
+        problems.append("ResultEnvelope.external_ref must be null or non-empty")
+    for key in ("artifact_refs", "context_delta_refs"):
+        value = envelope.get(key)
+        if not isinstance(value, list) or any(not isinstance(ref, str) or not ref.strip() for ref in (value or [])):
+            problems.append(f"ResultEnvelope.{key} must be a string list")
+    if not isinstance(envelope.get("evidence_refs"), list):
+        problems.append("ResultEnvelope.evidence_refs must be a list")
+    telemetry = envelope.get("telemetry")
+    if not isinstance(telemetry, dict) or set(telemetry) != TELEMETRY_KEYS:
+        problems.append("ResultEnvelope.telemetry must contain tokens, elapsed_ms, avoidable_owner_questions")
+    else:
+        tokens = telemetry.get("tokens")
+        if tokens is not None and (not _number(tokens) or tokens < 0):
+            problems.append("telemetry.tokens must be a non-negative number or null")
+        if not _number(telemetry.get("elapsed_ms")) or telemetry.get("elapsed_ms", -1) < 0:
+            problems.append("telemetry.elapsed_ms must be non-negative")
+        questions = telemetry.get("avoidable_owner_questions")
+        if not isinstance(questions, int) or isinstance(questions, bool) or questions < 0:
+            problems.append("telemetry.avoidable_owner_questions must be a non-negative integer")
+    gates = envelope.get("gates")
+    if not isinstance(gates, list):
+        problems.append("ResultEnvelope.gates must be a list")
+    else:
+        ids = []
+        for index, gate in enumerate(gates):
+            if not isinstance(gate, dict) or set(gate) != {"id", "status", "evidence_ref"}:
+                problems.append(f"ResultEnvelope.gates[{index}] must contain id, status, evidence_ref")
+                continue
+            ids.append(gate.get("id"))
+            if not isinstance(gate.get("id"), str) or not gate.get("id", "").strip():
+                problems.append(f"ResultEnvelope.gates[{index}].id must be non-empty")
+            if gate.get("status") not in ("passed", "waiting", "failed"):
+                problems.append(f"ResultEnvelope.gates[{index}].status is invalid")
+            if gate.get("evidence_ref") is not None and not isinstance(gate.get("evidence_ref"), str):
+                problems.append(f"ResultEnvelope.gates[{index}].evidence_ref must be string or null")
+        if len(ids) != len(set(ids)):
+            problems.append("ResultEnvelope gate ids must be unique")
+    failure = envelope.get("failure_class")
+    if failure is not None and (not isinstance(failure, str) or not failure.strip()):
+        problems.append("ResultEnvelope.failure_class must be null or non-empty")
+    if envelope.get("status") == "failed" and failure is None:
+        problems.append("failed ResultEnvelope requires failure_class")
+    if envelope.get("status") == "succeeded" and failure is not None:
+        problems.append("succeeded ResultEnvelope requires failure_class=null")
+    return problems
+
+
+def validate_capability_snapshot(snapshot: Any) -> list[str]:
+    if not isinstance(snapshot, dict):
+        return ["capability snapshot must be an object"]
+    problems = []
+    if set(snapshot) != CAPABILITY_FIELDS:
+        problems.append("capability snapshot fields must be schema, source, catalog, doctor, preflight")
+    if snapshot.get("schema") != 1 or snapshot.get("source") != "agent-visible-skill-catalog":
+        problems.append("capability snapshot requires schema=1 and agent-visible-skill-catalog source")
+    if not isinstance(snapshot.get("catalog"), list) or any(not isinstance(item, str) for item in snapshot.get("catalog", [])):
+        problems.append("capability catalog must be a string list")
+    for key in ("doctor", "preflight"):
+        check = snapshot.get(key)
+        if not isinstance(check, dict) or set(check) != {"mode", "status"}:
+            problems.append(f"{key} must contain mode and status")
+        elif check.get("mode") != "read-only" or check.get("status") not in ("pass", "fail", "unavailable", "unknown"):
+            problems.append(f"{key} requires mode=read-only and a valid status")
+    return problems
+
+
+def task_github_available(snapshot: dict) -> bool:
+    return (
+        TASK_GITHUB_REQUIRED_SKILLS.issubset(set(snapshot.get("catalog") or []))
+        and snapshot.get("doctor", {}).get("status") == "pass"
+        and snapshot.get("preflight", {}).get("status") == "pass"
+    )
+
+
+def cmd_workflow_validate_packet(args: argparse.Namespace) -> None:
+    packet = load_json_arg(args.json, "WorkPacket")
+    problems = validate_work_packet(packet)
+    if problems:
+        fail(6, "invalid_work_packet", "; ".join(problems), problems=problems)
+    ok(work_packet=packet)
+
+
+def cmd_workflow_validate_result(args: argparse.Namespace) -> None:
+    envelope = load_json_arg(args.json, "ResultEnvelope")
+    problems = validate_result_envelope(envelope)
+    if problems:
+        fail(6, "invalid_result_envelope", "; ".join(problems), problems=problems)
+    ok(result_envelope=envelope)
+
+
+def cmd_workflow_dispatch(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    packet = load_json_arg(args.packet, "WorkPacket")
+    plan = load_json_arg(args.plan, "QualityPlan")
+    problems = validate_work_packet(packet)
+    if problems:
+        fail(6, "invalid_work_packet", "; ".join(problems), problems=problems)
+    plan_problems = validate_quality_plan(plan)
+    if plan_problems:
+        fail(6, "invalid_quality_plan", "; ".join(plan_problems), problems=plan_problems)
+    if plan["id"] != packet["quality_plan_ref"]:
+        fail(6, "quality_plan_mismatch", "WorkPacket quality_plan_ref does not match QualityPlan.id")
+    lease_id = validate_safe_id(args.lease_id, "lease_id")
+
+    context_path = _context_path(ws, "pack", packet["context_ref"])
+    try:
+        stored_pack = json.loads(context_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError) as exc:
+        fail(6, "context_pack_required", f"cannot load ContextPack {packet['context_ref']}: {exc}")
+    canonical_pack = _prepare_context_object("pack", stored_pack)
+    if canonical_pack["id"] != packet["context_ref"]:
+        fail(6, "context_ref_mismatch", "stored ContextPack id does not match WorkPacket.context_ref")
+    if canonical_pack["digest"] != packet["digest"]:
+        fail(6, "context_digest_mismatch", "WorkPacket.digest does not match the stored canonical ContextPack")
+
+    dispatch_binding = {
+        "quality_plan": {
+            "id": plan["id"],
+            "digest": canonical_digest(plan),
+            "canonical": json.loads(json.dumps(plan, ensure_ascii=False, sort_keys=True)),
+        },
+        "context_pack": {
+            "ref": canonical_pack["id"],
+            "digest": canonical_pack["digest"],
+        },
+    }
+
+    snapshot = None
+    external_ready = False
+    if packet["executor"] == "task-github":
+        if args.capabilities is None:
+            snapshot = {
+                "schema": 1, "source": "agent-visible-skill-catalog", "catalog": [],
+                "doctor": {"mode": "read-only", "status": "unknown"},
+                "preflight": {"mode": "read-only", "status": "unknown"},
+            }
+        else:
+            snapshot = load_json_arg(args.capabilities, "capability snapshot")
+        capability_problems = validate_capability_snapshot(snapshot)
+        if capability_problems:
+            fail(6, "invalid_capability_snapshot", "; ".join(capability_problems), problems=capability_problems)
+        external_ready = task_github_available(snapshot)
+
+    selected = "external" if packet["executor"] == "task-github" and external_ready else "native"
+    fallback = packet["executor"] == "task-github" and selected == "native"
+    with board_transaction(ws) as board:
+        lease, _ = _claim_lease(
+            board, packet["track_id"], lease_id, selected, packet["budget_reservation_id"]
+        )
+        existing_binding = lease.get("dispatch_binding")
+        if existing_binding is not None and existing_binding != dispatch_binding:
+            fail(6, "dispatch_binding_mismatch", "an existing lease cannot be rebound to another QualityPlan or ContextPack")
+        if lease.get("recovery_required"):
+            fail(6, "recovery_required", "failed dispatch must resume or cancel-release before dispatching again")
+        lease["dispatch_binding"] = dispatch_binding
+        lease["capability_snapshot"] = snapshot
+        lease["requested_executor"] = packet["executor"]
+        lease, _ = _transition_lease(board, packet["track_id"], lease_id, "running")
+
+    handoff = None
+    if selected == "external":
+        handoff = {
+            "kind": "separate-worker-handoff",
+            "executor": "task-github",
+            "work_packet": packet,
+            "skill_catalog": sorted(TASK_GITHUB_REQUIRED_SKILLS),
+            "preflight": "read-only-complete",
+            "state_contract": "return external_ref, coarse status, and ResultEnvelope only",
+        }
+    ok(
+        selected_executor=selected,
+        fallback=fallback,
+        fallback_reason="pre-dispatch capability unavailable or unknown" if fallback else None,
+        lease=lease,
+        worker_handoff=handoff,
+    )
+
+
+def _result_gates_pass(packet: dict, envelope: dict) -> bool:
+    by_id = {gate["id"]: gate for gate in envelope.get("gates", []) if isinstance(gate, dict) and "id" in gate}
+    return all(
+        gate_id in by_id
+        and by_id[gate_id].get("status") == "passed"
+        and isinstance(by_id[gate_id].get("evidence_ref"), str)
+        and bool(by_id[gate_id]["evidence_ref"].strip())
+        for gate_id in packet["gates"]
+    )
+
+
+def cmd_workflow_result(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    packet = load_json_arg(args.packet, "WorkPacket")
+    plan = load_json_arg(args.plan, "QualityPlan")
+    envelope = load_json_arg(args.json, "ResultEnvelope")
+    packet_problems = validate_work_packet(packet)
+    result_problems = validate_result_envelope(envelope)
+    if packet_problems:
+        fail(6, "invalid_work_packet", "; ".join(packet_problems), problems=packet_problems)
+    if result_problems:
+        fail(6, "invalid_result_envelope", "; ".join(result_problems), problems=result_problems)
+    plan_problems = validate_quality_plan(plan)
+    if plan_problems:
+        fail(6, "invalid_quality_plan", "; ".join(plan_problems), problems=plan_problems)
+    if plan.get("id") != packet["quality_plan_ref"]:
+        fail(6, "quality_plan_mismatch", "WorkPacket quality_plan_ref does not match QualityPlan.id")
+    evaluation = evaluate_quality(plan, envelope["evidence_refs"], envelope["telemetry"])
+    provided_plan_digest = canonical_digest(plan)
+    lease_id = validate_safe_id(args.lease_id, "lease_id")
+    gates_passed = _result_gates_pass(packet, envelope)
+    ready = bool(
+        envelope["status"] == "succeeded"
+        and envelope["artifact_refs"]
+        and evaluation["complete"]
+        and gates_passed
+    )
+
+    with board_transaction(ws) as board:
+        track = board.setdefault("tracks", {}).get(packet["track_id"])
+        lease = track and track.get("executor_lease")
+        if not lease:
+            fail(4, "lease_not_found", f"no lease for track {packet['track_id']}")
+        if lease.get("lease_id") != lease_id:
+            fail(6, "stale_lease", "ResultEnvelope lease_id is stale")
+        if lease.get("budget_reservation_id") != packet["budget_reservation_id"]:
+            fail(6, "reservation_mismatch", "ResultEnvelope packet uses another reservation")
+        binding = lease.get("dispatch_binding")
+        if not isinstance(binding, dict):
+            fail(6, "dispatch_binding_required", "workflow result requires the canonical dispatch binding")
+        quality_binding = binding.get("quality_plan") or {}
+        if (
+            quality_binding.get("id") != packet["quality_plan_ref"]
+            or quality_binding.get("digest") != provided_plan_digest
+            or quality_binding.get("canonical") != json.loads(json.dumps(plan, ensure_ascii=False, sort_keys=True))
+        ):
+            fail(6, "quality_plan_binding_mismatch", "ResultEnvelope QualityPlan differs from the canonical dispatch binding")
+        context_binding = binding.get("context_pack") or {}
+        if context_binding != {"ref": packet["context_ref"], "digest": packet["digest"]}:
+            fail(6, "context_binding_mismatch", "ResultEnvelope WorkPacket context differs from the dispatch binding")
+        if lease.get("executor") == "external" and not envelope.get("external_ref"):
+            fail(6, "external_ref_required", "external executor ResultEnvelope requires external_ref")
+        if lease.get("executor") == "native" and envelope.get("external_ref") is not None:
+            fail(6, "external_ref_forbidden", "native executor ResultEnvelope requires external_ref=null")
+        if lease.get("result_envelope") == envelope:
+            ok(readyForIntegration=ready, evaluation=evaluation, gates_passed=gates_passed, lease=lease, changed=False)
+        if lease.get("recovery_required"):
+            fail(6, "recovery_required", "resume or cancel-release the prior failed result before ingesting another")
+
+        lease["result_envelope"] = envelope
+        lease["external_ref"] = envelope.get("external_ref")
+        lease["coarse_status"] = envelope["status"]
+        if envelope["status"] == "failed":
+            if lease.get("state") in ("running", "waiting_gate"):
+                lease, _ = _transition_lease(board, packet["track_id"], lease_id, "failed")
+            elif lease.get("state") != "failed":
+                fail(6, "invalid_lease_transition", "failed result requires a running or waiting lease")
+            # Failed remains replacement-fenced. Fallback is forbidden until
+            # explicit resume or cancel-confirm+release.
+            lease["coarse_status"] = "failed"
+            lease["recovery_required"] = True
+        elif envelope["status"] == "waiting_gate" or (envelope["status"] == "succeeded" and not ready):
+            if lease.get("state") == "running":
+                lease, _ = _transition_lease(board, packet["track_id"], lease_id, "waiting_gate")
+            lease["coarse_status"] = "waiting_gate" if envelope["status"] == "waiting_gate" else "incomplete"
+        elif envelope["status"] == "cancelled":
+            if lease.get("state") in ACTIVE_LEASE_STATES:
+                lease, _ = _transition_lease(board, packet["track_id"], lease_id, "cancelled")
+            reservation = _budget_reservations(board["budget"])[packet["budget_reservation_id"]]
+            if reservation.get("status") in ("reserved", "dispatched"):
+                reservation["status"] = "released"
+            lease["coarse_status"] = "cancelled"
+        elif ready:
+            reservation = _budget_reservations(board["budget"])[packet["budget_reservation_id"]]
+            tokens = envelope["telemetry"]["tokens"]
+            if reservation.get("status") == "dispatched":
+                reservation["status"] = "settled"
+                reservation["settled_tokens"] = tokens
+                board["budget"]["spent_tokens"] = int(board["budget"].get("spent_tokens") or 0) + tokens
+            elif reservation.get("status") != "settled" or reservation.get("settled_tokens") != tokens:
+                fail(6, "invalid_budget_transition", "successful result cannot settle reservation")
+            lease, _ = _transition_lease(board, packet["track_id"], lease_id, "succeeded")
+            lease["coarse_status"] = "succeeded"
+    ok(readyForIntegration=ready, evaluation=evaluation, gates_passed=gates_passed, lease=lease, changed=True)
+
+
+def cmd_workflow_recover(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    track_id = validate_safe_id(args.track_id, "track_id")
+    lease_id = validate_safe_id(args.lease_id, "lease_id")
+    with board_transaction(ws) as board:
+        track = board.setdefault("tracks", {}).get(track_id)
+        lease = track and track.get("executor_lease")
+        if not lease:
+            fail(4, "lease_not_found", f"no lease for track {track_id}")
+        if lease.get("lease_id") != lease_id:
+            fail(6, "stale_lease", "recovery lease_id is stale")
+        if not lease.get("recovery_required"):
+            fail(6, "recovery_not_required", "lease has no failed result awaiting recovery")
+        if args.action == "resume":
+            prior_result = lease.pop("result_envelope", None)
+            if prior_result is not None:
+                lease.setdefault("result_history", []).append(prior_result)
+            if lease.get("state") == "failed":
+                reservation = _budget_reservations(board["budget"])[lease["budget_reservation_id"]]
+                if reservation.get("status") != "dispatched":
+                    fail(6, "invalid_budget_transition", "failed lease resume requires dispatched budget")
+                lease["state"] = "running"
+            lease["coarse_status"] = "running"
+            lease["recovery_required"] = False
+            lease["resume_count"] = int(lease.get("resume_count") or 0) + 1
+            fallback_allowed = False
+        else:
+            if lease.get("state") in ACTIVE_LEASE_STATES:
+                lease, _ = _transition_lease(board, track_id, lease_id, "cancelled")
+            elif lease.get("state") == "failed":
+                lease["state"] = "cancelled"
+                lease["cancel_confirmed"] = True
+                lease["recovery_required"] = False
+            reservation = _budget_reservations(board["budget"])[lease["budget_reservation_id"]]
+            if reservation.get("status") in ("reserved", "dispatched"):
+                reservation["status"] = "released"
+            lease["recovery_required"] = False
+            lease["coarse_status"] = "cancelled"
+            fallback_allowed = True
+    ok(lease=lease, action=args.action, native_fallback_allowed=fallback_allowed)
+
+
+def cmd_workflow_promote(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    candidate_id = validate_safe_id(args.candidate_id, "candidate_id")
+    path = ws / "context" / "outbox" / f"{candidate_id}.json"
+    try:
+        candidate = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError) as exc:
+        fail(4, "promotion_not_found", f"cannot load promotion candidate: {exc}")
+    if args.provider_status in ("unavailable", "unknown"):
+        ok(provider="local-outbox", candidate=candidate, handoff=None, changed=False)
+    if not args.owner_approved:
+        fail(6, "owner_gate_required", "wiki promotion requires explicit owner approval")
+    candidate["status"] = "ready_for_provider"
+    candidate["digest"] = canonical_digest({key: value for key, value in candidate.items() if key != "digest"})
+    atomic_write_text(path, json.dumps(candidate, ensure_ascii=False, indent=2) + "\n")
+    ok(
+        provider="wiki-markdown",
+        candidate=candidate,
+        handoff={
+            "kind": "agent-visible-provider-handoff",
+            "skill": "wiki-markdown:wiki",
+            "action": "capture",
+            "candidate_ref": str(path),
+        },
+        changed=True,
+    )
+
+
+# --------------------------------------------------------------------------- #
 # board / evidence (read-only)
 # --------------------------------------------------------------------------- #
 def cmd_board(args: argparse.Namespace) -> None:
@@ -699,21 +1859,17 @@ def cmd_board(args: argparse.Namespace) -> None:
 def cmd_mode(args: argparse.Namespace) -> None:
     ws = workspace(args)
     require_workspace(ws)
-    board = load_board(ws)
-    mode = mode_state(board)
-    if args.mcmd == "start":
-        if not mode.get("active"):
+    if args.mcmd == "status":
+        ok(mode=mode_state(load_board(ws)))
+    with board_transaction(ws) as board:
+        mode = mode_state(board)
+        if args.mcmd == "start" and not mode.get("active"):
             mode["active"] = True
             mode["started_at"] = now_stamp()
             mode["ended_at"] = None
-            write_board(ws, board)
-        ok(mode=mode)
-    if args.mcmd == "end":
-        if mode.get("active"):
+        elif args.mcmd == "end" and mode.get("active"):
             mode["active"] = False
             mode["ended_at"] = now_stamp()
-            write_board(ws, board)
-        ok(mode=mode)
     ok(mode=mode)
 
 
@@ -798,7 +1954,7 @@ def cmd_cast_suggest(args: argparse.Namespace) -> None:
 # --------------------------------------------------------------------------- #
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="studio")
-    p.add_argument("--workspace", help="workspace dir (default: studio)")
+    p.add_argument("--workspace", help="workspace dir (default: .studio/)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sp = sub.add_parser("init", help="scaffold a studio workspace")
@@ -820,6 +1976,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--set-total", type=int, help="total token cap (enables the exhausted→paused gate)")
     sp.add_argument("--set-per-run", type=int, help="advisory per-run token cap the producer applies at convene")
     sp.set_defaults(func=cmd_budget)
+    blife = sp.add_subparsers(dest="lifecycle")
+    for action in ("reserve", "dispatch", "settle", "release"):
+        bp = blife.add_parser(action, help=f"{action} an idempotent budget reservation")
+        bp.add_argument("reservation_id")
+        bp.add_argument("--lease-id", required=True)
+        if action in ("reserve", "settle"):
+            bp.add_argument("--tokens", type=int, required=True)
+        bp.set_defaults(func=cmd_budget_lifecycle)
 
     sp = sub.add_parser("run", help="run ops")
     rsub = sp.add_subparsers(dest="rcmd", required=True)
@@ -855,6 +2019,77 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("evidence", help="tally delta evidence (baseline/theatre check)")
     sp.set_defaults(func=cmd_evidence)
+
+    sp = sub.add_parser("quality", help="QualityPlan hard-floor evaluation")
+    qsub = sp.add_subparsers(dest="qcmd", required=True)
+    qe = qsub.add_parser("evaluate", help="evaluate criterion evidence and telemetry")
+    qe.add_argument("--plan", required=True, help="QualityPlan JSON (inline or @file)")
+    qe.add_argument("--evidence", required=True, help="criterion-bound evidence_refs JSON")
+    qe.add_argument("--telemetry", required=True, help="telemetry JSON")
+    qe.set_defaults(func=cmd_quality_evaluate)
+
+    sp = sub.add_parser("context", help="Context Kernel local projection")
+    cxsub = sp.add_subparsers(dest="cxcmd", required=True)
+    cp = cxsub.add_parser("put", help="store a ContextItem, ContextPack, or ContextDelta")
+    cp.add_argument("kind", choices=sorted(CONTEXT_FIELDS))
+    cp.add_argument("--json", required=True, help="context JSON (inline, @file, or -)")
+    cp.set_defaults(func=cmd_context_put)
+    cc = cxsub.add_parser("compact", help="compact ContextItems into a ContextPack")
+    cc.add_argument("--bundle-id", required=True)
+    cc.add_argument("--item-id", action="append", required=True)
+    cc.set_defaults(func=cmd_context_compact)
+    cr = cxsub.add_parser("prune", help="prune old local ContextDelta projections")
+    cr.add_argument("--keep-deltas", type=int, required=True)
+    cr.set_defaults(func=cmd_context_prune)
+    co = cxsub.add_parser("outbox", help="preserve an owner-gated promotion candidate locally")
+    co.add_argument("--json", required=True, help="promotion candidate JSON")
+    co.set_defaults(func=cmd_context_outbox)
+
+    sp = sub.add_parser("lease", help="track executor lease with fencing")
+    lsub = sp.add_subparsers(dest="lcmd", required=True)
+    lc = lsub.add_parser("claim", help="claim one executor lease for a track")
+    lc.add_argument("track_id")
+    lc.add_argument("--lease-id", required=True)
+    lc.add_argument("--executor", required=True, choices=("native", "external"))
+    lc.add_argument("--reservation-id", required=True)
+    lc.set_defaults(func=cmd_lease_claim)
+    lt = lsub.add_parser("transition", help="transition a fenced executor lease")
+    lt.add_argument("track_id")
+    lt.add_argument("--lease-id", required=True)
+    lt.add_argument("--state", required=True, choices=sorted(set().union(*LEASE_TRANSITIONS.values())))
+    lt.add_argument("--external-ref")
+    lt.set_defaults(func=cmd_lease_transition)
+
+    sp = sub.add_parser("workflow", help="optional executor contract and handoff")
+    wfsub = sp.add_subparsers(dest="wcmd", required=True)
+    wvp = wfsub.add_parser("validate-packet", help="validate a WorkPacket")
+    wvp.add_argument("--json", required=True)
+    wvp.set_defaults(func=cmd_workflow_validate_packet)
+    wvr = wfsub.add_parser("validate-result", help="validate a ResultEnvelope")
+    wvr.add_argument("--json", required=True)
+    wvr.set_defaults(func=cmd_workflow_validate_result)
+    wd = wfsub.add_parser("dispatch", help="select native/external before dispatch and claim a lease")
+    wd.add_argument("--packet", required=True)
+    wd.add_argument("--plan", required=True, help="canonical QualityPlan bound for this lease")
+    wd.add_argument("--capabilities", help="agent-visible task-github capability snapshot")
+    wd.add_argument("--lease-id", required=True)
+    wd.set_defaults(func=cmd_workflow_dispatch)
+    wr = wfsub.add_parser("result", help="ingest a coarse ResultEnvelope and evaluate integration readiness")
+    wr.add_argument("--packet", required=True)
+    wr.add_argument("--plan", required=True)
+    wr.add_argument("--json", required=True)
+    wr.add_argument("--lease-id", required=True)
+    wr.set_defaults(func=cmd_workflow_result)
+    wrec = wfsub.add_parser("recover", help="resume or cancel-confirm+release a failed external run")
+    wrec.add_argument("track_id")
+    wrec.add_argument("--lease-id", required=True)
+    wrec.add_argument("--action", required=True, choices=("resume", "cancel-release"))
+    wrec.set_defaults(func=cmd_workflow_recover)
+    wp = wfsub.add_parser("promote", help="gate optional wiki provider handoff")
+    wp.add_argument("candidate_id")
+    wp.add_argument("--provider-status", required=True, choices=("available", "unavailable", "unknown"))
+    wp.add_argument("--owner-approved", action="store_true")
+    wp.set_defaults(func=cmd_workflow_promote)
 
     sp = sub.add_parser("cast", help="producer crew casting policy")
     casub = sp.add_subparsers(dest="castcmd", required=True)
