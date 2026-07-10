@@ -47,10 +47,17 @@ def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
 
+        # 0) default workspace errors point to the hidden repo-local directory
+        r = run(["--help"], tmp)
+        assert "workspace dir (default: .studio/)" in r["_raw"], r
+        r = run(["mode", "status"], tmp, expect=3)
+        assert r["error_code"] == "no_workspace" and ".studio/" in r["message"], r
+
         # 1) init scaffolds workspace + copies crew personas
         r = run(["init"], tmp)
         assert r["ok"] and r["created"], r
-        ws = tmp / "studio"
+        ws = tmp / ".studio"
+        assert not (tmp / "studio").exists()
         assert (ws / "board.md").is_file()
         assert (ws / "backlog.md").is_file()
         assert (ws / "missions" / "TEMPLATE.md").is_file()
@@ -75,13 +82,13 @@ def main() -> None:
         run(["init", "--force"], tmp, expect=0)
 
         # 3) mission validate — the shipped TEMPLATE is a valid contract
-        r = run(["mission", "validate", "studio/missions/TEMPLATE.md"], tmp)
+        r = run(["mission", "validate", ".studio/missions/TEMPLATE.md"], tmp)
         assert r["ok"] and r["kpi_ids"] == ["k1", "k2"], r
 
         # 4) mission validate — missing kpi → gate violation exit 6
         bad = ws / "missions" / "bad.md"
         bad.write_text('```json\n{"mission":"m","done_when":"d","budget":{"total_tokens":1},"gates":[],"autonomy":"a"}\n```\n', encoding="utf-8")
-        r = run(["mission", "validate", "studio/missions/bad.md"], tmp, expect=6)
+        r = run(["mission", "validate", ".studio/missions/bad.md"], tmp, expect=6)
         assert not r["ok"] and any("kpi" in p for p in r["problems"]), r
 
         # 5) backlog check — default item has (kpi: k1) → ok
@@ -222,6 +229,14 @@ def main() -> None:
 
         r = run(["cast", "suggest", "unknown-kind"], tmp, expect=6)
         assert r["error_code"] == "unknown_cast", r
+
+        # 10a) an explicit workspace remains supported for init and state commands
+        custom_ws = tmp / "custom-studio-workspace"
+        r = run(["--workspace", str(custom_ws), "init"], tmp)
+        assert r["ok"] and Path(r["workspace"]) == custom_ws, r
+        assert (custom_ws / "board.md").is_file()
+        r = run(["--workspace", str(custom_ws), "mode", "status"], tmp)
+        assert r["ok"] and r["mode"]["active"] is False, r
 
         # 11) producer contract — main thread may coordinate, not edit/integrate
         producer = plugin_text("skills/producer/SKILL.md")

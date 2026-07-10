@@ -10,7 +10,7 @@ parser, which nested contracts make fragile). Human prose sits outside the fence
 
 Workspace layout (created by `init`):
 
-    <workspace>/                 default: studio/
+    <workspace>/                 default: .studio/
       missions/                  one file per mission contract (+ TEMPLATE.md)
       minutes/                   one file per recorded run (synthesis + delta_log)
       raw/                       raw transcripts (git-ignored, TTL-pruned)
@@ -52,6 +52,7 @@ VALID_ANCHORS = (
 
 # agent policy config (.studio.yml)
 CONFIG_PATH_DEFAULT = ".studio.yml"
+WORKSPACE_PATH_DEFAULT = ".studio"
 KNOWN_MODELS = ("sonnet", "opus", "haiku", "fable")   # blank/omitted = inherit session
 KNOWN_EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
@@ -144,12 +145,16 @@ def plugin_root() -> Path:
 
 
 def workspace(args: argparse.Namespace) -> Path:
-    return Path(getattr(args, "workspace", None) or "studio")
+    return Path(getattr(args, "workspace", None) or WORKSPACE_PATH_DEFAULT)
 
 
 def require_workspace(ws: Path) -> None:
     if not ws.is_dir() or not (ws / "board.md").is_file():
-        fail(3, "no_workspace", f"no studio workspace at {ws} (run: studio.py init)")
+        fail(
+            3,
+            "no_workspace",
+            f"no studio workspace at {ws}/ (run: studio.py init)",
+        )
 
 
 def extract_json_block(text: str) -> Any:
@@ -798,7 +803,7 @@ def cmd_cast_suggest(args: argparse.Namespace) -> None:
 # --------------------------------------------------------------------------- #
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="studio")
-    p.add_argument("--workspace", help="workspace dir (default: studio)")
+    p.add_argument("--workspace", help="workspace dir (default: .studio/)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sp = sub.add_parser("init", help="scaffold a studio workspace")

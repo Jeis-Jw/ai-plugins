@@ -22,7 +22,7 @@ dev↔qa 공방)이 **실제 품질을 만드는가**이며, 그 판정을 criti
 | studio CLI | `scripts/studio.py` | 결정적 상태: init·mission validate·backlog KPI 강제·run record(예산 원장)·evidence 집계·config(agent 정책) |
 | agent 정책 | `.studio.yml` (repo 루트, `config scaffold`로 생성) | crew 서브에이전트의 model/effort 층별 설정 |
 | 브로커 | `broker/brainstorm.workflow.js`, `broker/pairing.workflow.js` | ritual 실행체(Workflow) — transcript 릴레이, 순수 오케스트레이션(fs 없음) |
-| crew | `crew/*.md` | 페르소나 데이터(name·role·prior·requested_tools·activation) — init이 `studio/crew/`로 복사 |
+| crew | `crew/*.md` | 페르소나 데이터(name·role·prior·requested_tools·activation) — init이 `.studio/crew/`로 복사 |
 | casting policy | `rules/casting.md` | producer가 mission을 분류해 crew/tool/gate를 고르는 최소 규칙 |
 | critic rubric | `critic/rubric.md` | 검증 전용 계약 + anchor 규칙 |
 | mission 템플릿 | `templates/mission.md` | 미션 계약(KPI·예산·게이트·완료기준) |
@@ -39,8 +39,19 @@ python3 plugins/studio/scripts/studio.py mode status
 python3 plugins/studio/scripts/studio.py mode end
 ```
 
-상태는 `studio/board.md`의 `studio_mode`에 저장된다. 세션이 이어지면 producer는 먼저
+상태는 `.studio/board.md`의 `studio_mode`에 저장된다. 세션이 이어지면 producer는 먼저
 `mode status`를 확인하고 active이면 이전 운영 맥락을 이어간다.
+
+runtime 작업장의 기본 경로는 repo 루트의 `.studio/`이며, 전체 디렉터리가 로컬 상태라
+git에 커밋하지 않는다. 예전 `studio/` 작업장이 있다면 자동 이동이나 삭제 없이 직접
+한 번만 옮긴다:
+
+```bash
+mv studio .studio
+```
+
+다른 경로가 필요하면 모든 상태 명령에 `--workspace <path>`를 명시한다. 플러그인 제품
+코드 경로인 `plugins/studio/`와 track 브랜치 접두사 `studio/track-*`는 이 작업장과 별개다.
 
 ## 개념 (계약 층 — 은유 금지)
 
@@ -86,7 +97,7 @@ python3 plugins/studio/scripts/studio.py cast suggest implementation
 
 ## 흐름
 
-1. owner 미션 → producer가 `studio/missions/<slug>.md` 계약화 → **owner 게이트**.
+1. owner 미션 → producer가 `.studio/missions/<slug>.md` 계약화 → **owner 게이트**.
 2. producer가 `studio.py cast suggest <kind>`와 `rules/casting.md`로 일을 분류하고
    최소 crew/tool/gate를 고른다.
 3. 백로그 분해(KPI 링크 강제, `studio.py backlog check`).

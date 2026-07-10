@@ -57,7 +57,7 @@ STUDIO="${STUDIO_CLI:-$CLAUDE_PLUGIN_ROOT/scripts/studio.py}"
 
 ## 상태는 디스크에, 세션은 캐시
 
-studio의 상태는 전부 작업장(`studio/`)에 있다. 세션이 죽어도 작업장을 읽으면
+studio의 상태는 전부 작업장(`.studio/`)에 있다. 세션이 죽어도 작업장을 읽으면
 이어진다. crew는 상주하지 않는다 — run 때마다 fresh로 소집되고, 자기 페르소나 +
 작업장을 읽어 온보딩한다. 너(producer)도 회의 전문(raw transcript)을 정독하지
 않는다 — 합성본(minutes)과 delta만 소비한다.
@@ -84,7 +84,7 @@ owner가 종료/퇴근/normal mode를 지시할 때만:
 python3 "$STUDIO" mode end
 ```
 
-를 호출한다. mode 상태는 `studio/board.md`에 저장되며, 세션은 그 디스크 상태를 캐시처럼
+를 호출한다. mode 상태는 `.studio/board.md`에 저장되며, 세션은 그 디스크 상태를 캐시처럼
 이어받는다.
 
 ## 디스패치 루프 (이벤트 드리븐)
@@ -106,11 +106,11 @@ python3 "$STUDIO" mode end
 owner의 상위 아이디어를 mission 계약으로 변환한다.
 
 ```bash
-# 작업장이 없으면 스캐폴드 (crew 페르소나가 studio/crew/로 복사된다)
+# 작업장이 없으면 스캐폴드 (crew 페르소나가 .studio/crew/로 복사된다)
 python3 "$STUDIO" init          # 이미 있으면 --force 없이 실패 → 그대로 사용
 
-# 미션 계약 초안: templates/mission.md를 studio/missions/<slug>.md로 복사해 채운다
-python3 "$STUDIO" mission validate studio/missions/<slug>.md
+# 미션 계약 초안: templates/mission.md를 .studio/missions/<slug>.md로 복사해 채운다
+python3 "$STUDIO" mission validate .studio/missions/<slug>.md
 ```
 
 미션 계약(KPI·예산·게이트·완료기준·자율성)은 **owner 게이트**다. validate 통과 +
@@ -184,7 +184,7 @@ python3 "$STUDIO" config get   # JSON 무조건 출력 → {config: {defaults, r
 ### 회의형 (brainstorm) — 사고 작업, 무제한 병렬
 
 ```
-1. 페르소나 로드: studio/crew/planner-a.md, planner-b.md (frontmatter + 본문)
+1. 페르소나 로드: .studio/crew/planner-a.md, planner-b.md (frontmatter + 본문)
 2. rubric 로드: $CLAUDE_PLUGIN_ROOT/critic/rubric.md
 3. Workflow 호출 (백그라운드):
      scriptPath = "$CLAUDE_PLUGIN_ROOT/broker/brainstorm.workflow.js"
@@ -240,7 +240,7 @@ fallback은 studio 규약을 약화하지 않는다.
 
 ```bash
 python3 "$STUDIO" run record --json '<브로커가 반환한 JSON>' --track <track-slug>
-# → studio/minutes/<run-id>.md 작성, board 예산 원장 갱신, valid_deltas 집계 반환
+# → .studio/minutes/<run-id>.md 작성, board 예산 원장 갱신, valid_deltas 집계 반환
 ```
 
 - `--track`은 이 run이 속한 track을 board에 기록한다(track은 producer 소유 상태 —
