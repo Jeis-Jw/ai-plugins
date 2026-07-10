@@ -19,7 +19,7 @@ dev↔qa 공방)이 **실제 품질을 만드는가**이며, 그 판정을 criti
 | 요소 | 위치 | 역할 |
 |---|---|---|
 | producer 스킬 | `skills/producer/` | 메인스레드 규약: 소집·중계·게이트, 직접 제작·판단 대리 금지 |
-| studio CLI | `scripts/studio.py` | 결정적 상태: init·mission validate·backlog KPI 강제·run record(예산 원장)·evidence 집계·config(agent 정책) |
+| studio CLI | `scripts/studio.py` | 결정적 상태: schema 2 board, QualityPlan, Context Kernel, fenced lease·budget, WorkPacket/ResultEnvelope |
 | agent 정책 | `.studio.yml` (repo 루트, `config scaffold`로 생성) | crew 서브에이전트의 model/effort 층별 설정 |
 | 브로커 | `broker/brainstorm.workflow.js`, `broker/pairing.workflow.js` | ritual 실행체(Workflow) — transcript 릴레이, 순수 오케스트레이션(fs 없음) |
 | crew | `crew/*.md` | 페르소나 데이터(name·role·prior·requested_tools·activation) — init이 `.studio/crew/`로 복사 |
@@ -61,6 +61,41 @@ mv studio .studio
 - **dry**: 유효 delta 없는 라운드. dry 2회 = 폐회.
 - **theatre**: 팀 run인데 valid delta 0 → 연극 판정.
 - **integration**: QA pass 뒤 main 반영은 owner gate 후 integrator worker 또는 결정적 CLI가 수행한다. producer는 `git apply`/`apply_patch`로 직접 통합하지 않는다.
+
+## v0.2 품질·컨텍스트·외부 실행 계약
+
+Studio가 mission·QualityPlan·context·owner gate의 정본을 소유한다. 실행은 track마다
+`native` 또는 `task-github` 중 하나만 lease로 점유하며, 외부 workflow의 issue/branch/PR
+상태나 raw transcript를 board에 복제하지 않는다.
+
+- **QualityPlan**: artifact/context criterion은 각각 `{id, kind, weight, floor, measure}`를
+  가진다. criterion-bound evidence가 없거나 `score < floor`이면 비용 점수와 무관하게
+  통합 불가다. floor 통과 후에만 quality 최고 비중의 utility를 계산한다.
+- **telemetry**: `{tokens, elapsed_ms, avoidable_owner_questions}` 중 하나라도 불완전하거나
+  `tokens:null`이면 incomplete다. 알 수 없는 값을 0으로 바꾸지 않는다.
+- **Context Kernel**: `.studio/context/{items,bundles,deltas,outbox}`에 digest가 결합된
+  ContextItem/ContextPack/ContextDelta와 promotion candidate를 보존한다. schema 1 board는
+  읽을 때 schema 2로 lazy projection되고 다음 mutation에서만 저장된다.
+- **lease/budget**: `reserve → dispatch → settle|release`는 reservation/lease 기준으로
+  idempotent하며, track당 active lease는 1개다. 모든 전이는 `lease_id` fencing을 검증한다.
+- **external adapter**: WorkPacket을 별도 worker에 넘기고 ResultEnvelope만 회수한다.
+  task-github callable API를 만들지 않으며 producer가 agent-visible `task-github:*` catalog와
+  read-only doctor/preflight 결과로 capability snapshot을 만든다.
+- **fallback**: dispatch 전 unavailable/unknown이면 native로 전환한다. dispatch 뒤 실패는
+  resume 또는 cancel-confirm+budget release 전에는 다른 executor로 전환하지 않는다.
+- **wiki provider**: wiki-markdown은 optional이다. 없으면 owner-gated promotion candidate가
+  local outbox에 남고, 있어도 owner 승인 뒤 agent-visible provider handoff만 만든다.
+
+핵심 결정적 명령:
+
+```bash
+python3 plugins/studio/scripts/studio.py quality evaluate --plan @plan.json --evidence @evidence.json --telemetry @telemetry.json
+python3 plugins/studio/scripts/studio.py context put item --json @item.json
+python3 plugins/studio/scripts/studio.py budget reserve <reservation> --lease-id <lease> --tokens <n>
+python3 plugins/studio/scripts/studio.py workflow validate-packet --json @packet.json
+python3 plugins/studio/scripts/studio.py workflow dispatch --packet @packet.json --capabilities @snapshot.json --lease-id <lease>
+python3 plugins/studio/scripts/studio.py workflow result --packet @packet.json --plan @plan.json --json @result.json --lease-id <lease>
+```
 
 ## agent model/effort 정책 (`.studio.yml`)
 
@@ -104,9 +139,10 @@ python3 plugins/studio/scripts/studio.py cast suggest implementation
 4. producer가 페르소나·안건·rubric을 `args`로 실어 브로커 Workflow를 **백그라운드**
    소집. 회의형(brainstorm)은 무제한 병렬, 작업형(pairing)은 producer가 준비한
    track 워크트리에서 격리 실행.
-5. 완료 회수 → `studio.py run record`(minutes + 예산 원장) → owner에 합성본+delta 보고.
+5. 완료 회수 → native ritual은 `run record`, external executor는 `workflow result`로 기록.
 6. post-QA 결함은 producer가 직접 고치지 않고 dev/fix worker → QA worker 재검증으로 되돌린다.
-7. `readyForIntegration:true`이면 owner에게 "QA pass. track 변경을 main에 반영할까요?"를 묻고, 승인 후에도 integrator worker/결정적 CLI에 맡긴다.
+7. verification·criterion evidence·quality floor·telemetry·gate가 모두 완결돼
+   `readyForIntegration:true`일 때만 owner에게 반영 게이트를 묻는다.
 8. 검증(baseline): 같은 소형 미션을 솔로 vs 팀으로 돌려 `studio.py evidence`로
    추가 delta를 센다. theatre면 리추얼 재설계.
 
@@ -129,8 +165,10 @@ python3 plugins/studio/scripts/studio.py cast suggest implementation
 
 ## 상태
 
-v0.1.3 — MVP. 설계 정본은 이 repo 위키(INT/DEC studio) + `drafts/agent-team-concept.md`.
-검증 테스트: `python3 plugins/studio/tests/test_studio.py`.
+v0.2.0 — QualityPlan·Context Kernel·optional external executor. 설계 정본은 이 repo
+위키(INT/DEC studio) + `drafts/agent-team-concept.md`.
+검증 테스트: `python3 plugins/studio/tests/test_studio.py`와
+`node --test plugins/studio/tests/test_broker_semantics.js`.
 
 후순위(정의만, MVP 비활성): 마케팅/판매 운영 역할, 동적 채용(casting), standup/retro/demo
-리추얼, task-github/향후 execution workflow 작업형 백엔드 위임.
+리추얼과 추가 external workflow adapter.

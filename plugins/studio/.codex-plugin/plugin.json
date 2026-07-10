@@ -1,7 +1,7 @@
 {
   "name": "studio",
-  "version": "0.1.3",
-  "description": "Living agent team — a producer main thread convenes crew personas into background ritual runs; an independent critic filters theatre by delta evidence.",
+  "version": "0.2.0",
+  "description": "Living agent team with quality hard floors, a local Context Kernel, and fenced optional external workflow handoffs.",
   "author": {
     "name": "Jinwuk-Lee",
     "url": "https://github.com/Jeis-Jw"
@@ -9,14 +9,15 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Studio",
-    "shortDescription": "Run a living agent team: producer convenes crew into ritual runs, critic filters theatre.",
-    "longDescription": "The owner gives a mission; the producer (main thread) decomposes it against KPIs, convenes crew personas into background ritual runs (brainstorm, pairing), and an independent critic verifies each run's deltas by an anchor rule so agreement-theatre is filtered out. State lives on disk (mission contract, board budget ledger, minutes); crew are convened fresh per turn with transcript relay. Owner gates cover mission changes, new epics, irreversible actions, and external publishing.",
+    "shortDescription": "Run a quality-gated living agent team with local context and optional external executors.",
+    "longDescription": "The owner gives a mission; Studio owns the mission, QualityPlan, Context Kernel, evidence-based completion, and owner gates. The producer convenes native ritual runs or hands a WorkPacket to one fenced optional external executor. ResultEnvelope evidence must satisfy artifact and context quality floors before utility or integration; task-github and wiki-markdown remain optional agent-visible providers rather than hard dependencies.",
     "developerName": "Jinwuk-Lee",
     "category": "Productivity",
     "capabilities": ["Read", "Write", "Workflow", "Validation"],
     "defaultPrompt": [
       "Use $producer to run a mission through the living agent team.",
       "The producer convenes crew into background runs; it never makes artifacts itself.",
+      "Require artifact and context evidence to pass QualityPlan floors before integration.",
       "Owner gates: mission contract, new epic, irreversible, external-publish, budget-raise."
     ]
   }

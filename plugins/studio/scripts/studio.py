@@ -1338,6 +1338,36 @@ LEASE_TRANSITIONS = {
 }
 
 
+def _claim_lease(board: dict, track_id: str, lease_id: str, executor: str, reservation_id: str) -> tuple[dict, bool]:
+    tracks = board.setdefault("tracks", {})
+    if not isinstance(tracks, dict):
+        fail(4, "bad_board", "board.tracks must be an object in schema 2")
+    track = tracks.setdefault(track_id, {"track_id": track_id, "lease_history": []})
+    current = track.get("executor_lease")
+    if current and current.get("lease_id") == lease_id:
+        if current.get("executor") == executor and current.get("budget_reservation_id") == reservation_id:
+            return current, False
+        fail(6, "lease_conflict", "lease id already exists with different claim data")
+    if current and current.get("state") in ACTIVE_LEASE_STATES:
+        fail(6, "active_lease_exists", f"track {track_id} already has active lease {current.get('lease_id')}")
+    reservations = _budget_reservations(board["budget"])
+    reservation = reservations.get(reservation_id)
+    if not reservation or reservation.get("lease_id") != lease_id or reservation.get("status") != "reserved":
+        fail(6, "reservation_required", "claim requires a reserved budget reservation fenced by the same lease")
+    if current:
+        track.setdefault("lease_history", []).append(current)
+    current = {
+        "lease_id": lease_id,
+        "executor": executor,
+        "state": "claimed",
+        "budget_reservation_id": reservation_id,
+        "external_ref": None,
+        "coarse_status": "claimed",
+    }
+    track["executor_lease"] = current
+    return current, True
+
+
 def cmd_lease_claim(args: argparse.Namespace) -> None:
     ws = workspace(args)
     require_workspace(ws)
@@ -1345,35 +1375,339 @@ def cmd_lease_claim(args: argparse.Namespace) -> None:
     lease_id = validate_safe_id(args.lease_id, "lease_id")
     reservation_id = validate_safe_id(args.reservation_id, "reservation_id")
     with board_transaction(ws) as board:
-        tracks = board.setdefault("tracks", {})
-        if not isinstance(tracks, dict):
-            fail(4, "bad_board", "board.tracks must be an object in schema 2")
-        track = tracks.setdefault(track_id, {"track_id": track_id, "lease_history": []})
-        current = track.get("executor_lease")
-        if current and current.get("lease_id") == lease_id:
-            if current.get("executor") == args.executor and current.get("budget_reservation_id") == reservation_id:
-                ok(lease=current, changed=False)
-            fail(6, "lease_conflict", "lease id already exists with different claim data")
-        if current and current.get("state") in ACTIVE_LEASE_STATES:
-            fail(6, "active_lease_exists", f"track {track_id} already has active lease {current.get('lease_id')}")
-        reservations = _budget_reservations(board["budget"])
-        reservation = reservations.get(reservation_id)
-        if not reservation or reservation.get("lease_id") != lease_id or reservation.get("status") != "reserved":
-            fail(6, "reservation_required", "claim requires a reserved budget reservation fenced by the same lease")
-        if current:
-            track.setdefault("lease_history", []).append(current)
-        current = {
-            "lease_id": lease_id,
-            "executor": args.executor,
-            "state": "claimed",
-            "budget_reservation_id": reservation_id,
-            "external_ref": None,
-        }
-        track["executor_lease"] = current
-    ok(lease=current, changed=True)
+        current, changed = _claim_lease(board, track_id, lease_id, args.executor, reservation_id)
+    ok(lease=current, changed=changed)
+
+
+def _transition_lease(board: dict, track_id: str, lease_id: str, state: str, external_ref: str | None = None) -> tuple[dict, bool]:
+    track = board.setdefault("tracks", {}).get(track_id)
+    lease = track and track.get("executor_lease")
+    if not lease:
+        fail(4, "lease_not_found", f"no lease for track {track_id}")
+    if lease.get("lease_id") != lease_id:
+        fail(6, "stale_lease", f"track {track_id} is fenced by another lease")
+    old_state = lease.get("state")
+    if old_state == state:
+        return lease, False
+    if state not in LEASE_TRANSITIONS.get(old_state, frozenset()):
+        fail(6, "invalid_lease_transition", f"cannot transition {old_state} to {state}")
+    reservation = _budget_reservations(board["budget"])[lease["budget_reservation_id"]]
+    if state == "running":
+        if reservation.get("lease_id") != lease_id:
+            fail(6, "stale_lease", "budget reservation is fenced by another lease")
+        if reservation.get("status") == "reserved":
+            reservation["status"] = "dispatched"
+        elif reservation.get("status") != "dispatched":
+            fail(6, "invalid_budget_transition", "running requires a reserved or dispatched budget")
+    lease["state"] = state
+    lease["coarse_status"] = state
+    if external_ref is not None:
+        lease["external_ref"] = external_ref
+    if state == "cancelled":
+        lease["cancel_confirmed"] = True
+    return lease, True
 
 
 def cmd_lease_transition(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    track_id = validate_safe_id(args.track_id, "track_id")
+    lease_id = validate_safe_id(args.lease_id, "lease_id")
+    with board_transaction(ws) as board:
+        lease, changed = _transition_lease(board, track_id, lease_id, args.state, args.external_ref)
+    ok(lease=lease, changed=changed)
+
+
+# --------------------------------------------------------------------------- #
+# workflow adapter — validate and hand off; never import external workflow APIs
+# --------------------------------------------------------------------------- #
+WORK_PACKET_FIELDS = frozenset((
+    "schema", "track_id", "objective", "acceptance_criteria", "context_ref",
+    "digest", "quality_plan_ref", "constraints", "budget_reservation_id", "gates", "executor",
+))
+RESULT_ENVELOPE_FIELDS = frozenset((
+    "status", "external_ref", "artifact_refs", "evidence_refs", "context_delta_refs",
+    "telemetry", "gates", "failure_class",
+))
+CAPABILITY_FIELDS = frozenset(("schema", "source", "catalog", "doctor", "preflight"))
+TASK_GITHUB_REQUIRED_SKILLS = frozenset((
+    "task-github:start", "task-github:run", "task-github:done", "task-github:doctor",
+))
+
+
+def validate_work_packet(packet: Any) -> list[str]:
+    if not isinstance(packet, dict):
+        return ["WorkPacket must be an object"]
+    problems = []
+    if set(packet) != WORK_PACKET_FIELDS:
+        problems.append("WorkPacket fields do not match the binding contract")
+    if packet.get("schema") != 1:
+        problems.append("WorkPacket.schema must be 1")
+    for key in ("track_id", "quality_plan_ref", "budget_reservation_id"):
+        if not isinstance(packet.get(key), str) or not SAFE_ID_RE.fullmatch(packet.get(key, "")):
+            problems.append(f"WorkPacket.{key} must be a path-safe identifier")
+    for key in ("objective", "context_ref"):
+        if not isinstance(packet.get(key), str) or not packet.get(key, "").strip():
+            problems.append(f"WorkPacket.{key} must be a non-empty string")
+    if not isinstance(packet.get("digest"), str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", packet.get("digest", "")):
+        problems.append("WorkPacket.digest must be a sha256 digest")
+    criteria = packet.get("acceptance_criteria")
+    if not isinstance(criteria, list) or not criteria or any(not isinstance(item, str) or not item.strip() for item in criteria):
+        problems.append("WorkPacket.acceptance_criteria must be a non-empty string list")
+    if not isinstance(packet.get("constraints"), dict):
+        problems.append("WorkPacket.constraints must be an object")
+    gates = packet.get("gates")
+    if not isinstance(gates, list) or any(not isinstance(gate, str) or not gate.strip() for gate in gates) or len(gates) != len(set(gates or [])):
+        problems.append("WorkPacket.gates must be a unique string list")
+    if packet.get("executor") not in ("native", "task-github"):
+        problems.append("WorkPacket.executor must be native or task-github")
+    return problems
+
+
+def validate_result_envelope(envelope: Any) -> list[str]:
+    if not isinstance(envelope, dict):
+        return ["ResultEnvelope must be an object"]
+    problems = []
+    if set(envelope) != RESULT_ENVELOPE_FIELDS:
+        problems.append("ResultEnvelope fields do not match the binding contract")
+    if envelope.get("status") not in ("succeeded", "failed", "waiting_gate", "cancelled"):
+        problems.append("ResultEnvelope.status is invalid")
+    if envelope.get("external_ref") is not None and (
+        not isinstance(envelope.get("external_ref"), str) or not envelope.get("external_ref", "").strip()
+    ):
+        problems.append("ResultEnvelope.external_ref must be null or non-empty")
+    for key in ("artifact_refs", "context_delta_refs"):
+        value = envelope.get(key)
+        if not isinstance(value, list) or any(not isinstance(ref, str) or not ref.strip() for ref in (value or [])):
+            problems.append(f"ResultEnvelope.{key} must be a string list")
+    if not isinstance(envelope.get("evidence_refs"), list):
+        problems.append("ResultEnvelope.evidence_refs must be a list")
+    telemetry = envelope.get("telemetry")
+    if not isinstance(telemetry, dict) or set(telemetry) != TELEMETRY_KEYS:
+        problems.append("ResultEnvelope.telemetry must contain tokens, elapsed_ms, avoidable_owner_questions")
+    else:
+        tokens = telemetry.get("tokens")
+        if tokens is not None and (not _number(tokens) or tokens < 0):
+            problems.append("telemetry.tokens must be a non-negative number or null")
+        if not _number(telemetry.get("elapsed_ms")) or telemetry.get("elapsed_ms", -1) < 0:
+            problems.append("telemetry.elapsed_ms must be non-negative")
+        questions = telemetry.get("avoidable_owner_questions")
+        if not isinstance(questions, int) or isinstance(questions, bool) or questions < 0:
+            problems.append("telemetry.avoidable_owner_questions must be a non-negative integer")
+    gates = envelope.get("gates")
+    if not isinstance(gates, list):
+        problems.append("ResultEnvelope.gates must be a list")
+    else:
+        ids = []
+        for index, gate in enumerate(gates):
+            if not isinstance(gate, dict) or set(gate) != {"id", "status", "evidence_ref"}:
+                problems.append(f"ResultEnvelope.gates[{index}] must contain id, status, evidence_ref")
+                continue
+            ids.append(gate.get("id"))
+            if not isinstance(gate.get("id"), str) or not gate.get("id", "").strip():
+                problems.append(f"ResultEnvelope.gates[{index}].id must be non-empty")
+            if gate.get("status") not in ("passed", "waiting", "failed"):
+                problems.append(f"ResultEnvelope.gates[{index}].status is invalid")
+            if gate.get("evidence_ref") is not None and not isinstance(gate.get("evidence_ref"), str):
+                problems.append(f"ResultEnvelope.gates[{index}].evidence_ref must be string or null")
+        if len(ids) != len(set(ids)):
+            problems.append("ResultEnvelope gate ids must be unique")
+    failure = envelope.get("failure_class")
+    if failure is not None and (not isinstance(failure, str) or not failure.strip()):
+        problems.append("ResultEnvelope.failure_class must be null or non-empty")
+    if envelope.get("status") == "failed" and failure is None:
+        problems.append("failed ResultEnvelope requires failure_class")
+    if envelope.get("status") == "succeeded" and failure is not None:
+        problems.append("succeeded ResultEnvelope requires failure_class=null")
+    return problems
+
+
+def validate_capability_snapshot(snapshot: Any) -> list[str]:
+    if not isinstance(snapshot, dict):
+        return ["capability snapshot must be an object"]
+    problems = []
+    if set(snapshot) != CAPABILITY_FIELDS:
+        problems.append("capability snapshot fields must be schema, source, catalog, doctor, preflight")
+    if snapshot.get("schema") != 1 or snapshot.get("source") != "agent-visible-skill-catalog":
+        problems.append("capability snapshot requires schema=1 and agent-visible-skill-catalog source")
+    if not isinstance(snapshot.get("catalog"), list) or any(not isinstance(item, str) for item in snapshot.get("catalog", [])):
+        problems.append("capability catalog must be a string list")
+    for key in ("doctor", "preflight"):
+        check = snapshot.get(key)
+        if not isinstance(check, dict) or set(check) != {"mode", "status"}:
+            problems.append(f"{key} must contain mode and status")
+        elif check.get("mode") != "read-only" or check.get("status") not in ("pass", "fail", "unavailable", "unknown"):
+            problems.append(f"{key} requires mode=read-only and a valid status")
+    return problems
+
+
+def task_github_available(snapshot: dict) -> bool:
+    return (
+        TASK_GITHUB_REQUIRED_SKILLS.issubset(set(snapshot.get("catalog") or []))
+        and snapshot.get("doctor", {}).get("status") == "pass"
+        and snapshot.get("preflight", {}).get("status") == "pass"
+    )
+
+
+def cmd_workflow_validate_packet(args: argparse.Namespace) -> None:
+    packet = load_json_arg(args.json, "WorkPacket")
+    problems = validate_work_packet(packet)
+    if problems:
+        fail(6, "invalid_work_packet", "; ".join(problems), problems=problems)
+    ok(work_packet=packet)
+
+
+def cmd_workflow_validate_result(args: argparse.Namespace) -> None:
+    envelope = load_json_arg(args.json, "ResultEnvelope")
+    problems = validate_result_envelope(envelope)
+    if problems:
+        fail(6, "invalid_result_envelope", "; ".join(problems), problems=problems)
+    ok(result_envelope=envelope)
+
+
+def cmd_workflow_dispatch(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    packet = load_json_arg(args.packet, "WorkPacket")
+    problems = validate_work_packet(packet)
+    if problems:
+        fail(6, "invalid_work_packet", "; ".join(problems), problems=problems)
+    lease_id = validate_safe_id(args.lease_id, "lease_id")
+
+    snapshot = None
+    external_ready = False
+    if packet["executor"] == "task-github":
+        if args.capabilities is None:
+            snapshot = {
+                "schema": 1, "source": "agent-visible-skill-catalog", "catalog": [],
+                "doctor": {"mode": "read-only", "status": "unknown"},
+                "preflight": {"mode": "read-only", "status": "unknown"},
+            }
+        else:
+            snapshot = load_json_arg(args.capabilities, "capability snapshot")
+        capability_problems = validate_capability_snapshot(snapshot)
+        if capability_problems:
+            fail(6, "invalid_capability_snapshot", "; ".join(capability_problems), problems=capability_problems)
+        external_ready = task_github_available(snapshot)
+
+    selected = "external" if packet["executor"] == "task-github" and external_ready else "native"
+    fallback = packet["executor"] == "task-github" and selected == "native"
+    with board_transaction(ws) as board:
+        lease, _ = _claim_lease(
+            board, packet["track_id"], lease_id, selected, packet["budget_reservation_id"]
+        )
+        lease["capability_snapshot"] = snapshot
+        lease["requested_executor"] = packet["executor"]
+        lease, _ = _transition_lease(board, packet["track_id"], lease_id, "running")
+
+    handoff = None
+    if selected == "external":
+        handoff = {
+            "kind": "separate-worker-handoff",
+            "executor": "task-github",
+            "work_packet": packet,
+            "skill_catalog": sorted(TASK_GITHUB_REQUIRED_SKILLS),
+            "preflight": "read-only-complete",
+            "state_contract": "return external_ref, coarse status, and ResultEnvelope only",
+        }
+    ok(
+        selected_executor=selected,
+        fallback=fallback,
+        fallback_reason="pre-dispatch capability unavailable or unknown" if fallback else None,
+        lease=lease,
+        worker_handoff=handoff,
+    )
+
+
+def _result_gates_pass(packet: dict, envelope: dict) -> bool:
+    by_id = {gate["id"]: gate for gate in envelope.get("gates", []) if isinstance(gate, dict) and "id" in gate}
+    return all(
+        gate_id in by_id
+        and by_id[gate_id].get("status") == "passed"
+        and isinstance(by_id[gate_id].get("evidence_ref"), str)
+        and bool(by_id[gate_id]["evidence_ref"].strip())
+        for gate_id in packet["gates"]
+    )
+
+
+def cmd_workflow_result(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    packet = load_json_arg(args.packet, "WorkPacket")
+    plan = load_json_arg(args.plan, "QualityPlan")
+    envelope = load_json_arg(args.json, "ResultEnvelope")
+    packet_problems = validate_work_packet(packet)
+    result_problems = validate_result_envelope(envelope)
+    if packet_problems:
+        fail(6, "invalid_work_packet", "; ".join(packet_problems), problems=packet_problems)
+    if result_problems:
+        fail(6, "invalid_result_envelope", "; ".join(result_problems), problems=result_problems)
+    plan_problems = validate_quality_plan(plan)
+    if plan_problems:
+        fail(6, "invalid_quality_plan", "; ".join(plan_problems), problems=plan_problems)
+    if plan.get("id") != packet["quality_plan_ref"]:
+        fail(6, "quality_plan_mismatch", "WorkPacket quality_plan_ref does not match QualityPlan.id")
+    evaluation = evaluate_quality(plan, envelope["evidence_refs"], envelope["telemetry"])
+    lease_id = validate_safe_id(args.lease_id, "lease_id")
+    gates_passed = _result_gates_pass(packet, envelope)
+    ready = bool(
+        envelope["status"] == "succeeded"
+        and envelope["artifact_refs"]
+        and evaluation["complete"]
+        and gates_passed
+    )
+
+    with board_transaction(ws) as board:
+        track = board.setdefault("tracks", {}).get(packet["track_id"])
+        lease = track and track.get("executor_lease")
+        if not lease:
+            fail(4, "lease_not_found", f"no lease for track {packet['track_id']}")
+        if lease.get("lease_id") != lease_id:
+            fail(6, "stale_lease", "ResultEnvelope lease_id is stale")
+        if lease.get("budget_reservation_id") != packet["budget_reservation_id"]:
+            fail(6, "reservation_mismatch", "ResultEnvelope packet uses another reservation")
+        if lease.get("executor") == "external" and not envelope.get("external_ref"):
+            fail(6, "external_ref_required", "external executor ResultEnvelope requires external_ref")
+        if lease.get("executor") == "native" and envelope.get("external_ref") is not None:
+            fail(6, "external_ref_forbidden", "native executor ResultEnvelope requires external_ref=null")
+        if lease.get("result_envelope") == envelope:
+            ok(readyForIntegration=ready, evaluation=evaluation, gates_passed=gates_passed, lease=lease, changed=False)
+        if lease.get("recovery_required"):
+            fail(6, "recovery_required", "resume or cancel-release the prior failed result before ingesting another")
+
+        lease["result_envelope"] = envelope
+        lease["external_ref"] = envelope.get("external_ref")
+        lease["coarse_status"] = envelope["status"]
+        if envelope["status"] == "failed":
+            # Keep the active lease fenced. Fallback is forbidden until explicit
+            # resume or cancel-confirm+release.
+            lease["recovery_required"] = True
+        elif envelope["status"] == "waiting_gate" or (envelope["status"] == "succeeded" and not ready):
+            if lease.get("state") == "running":
+                lease, _ = _transition_lease(board, packet["track_id"], lease_id, "waiting_gate")
+            lease["coarse_status"] = "waiting_gate" if envelope["status"] == "waiting_gate" else "incomplete"
+        elif envelope["status"] == "cancelled":
+            if lease.get("state") in ACTIVE_LEASE_STATES:
+                lease, _ = _transition_lease(board, packet["track_id"], lease_id, "cancelled")
+            reservation = _budget_reservations(board["budget"])[packet["budget_reservation_id"]]
+            if reservation.get("status") in ("reserved", "dispatched"):
+                reservation["status"] = "released"
+            lease["coarse_status"] = "cancelled"
+        elif ready:
+            reservation = _budget_reservations(board["budget"])[packet["budget_reservation_id"]]
+            tokens = envelope["telemetry"]["tokens"]
+            if reservation.get("status") == "dispatched":
+                reservation["status"] = "settled"
+                reservation["settled_tokens"] = tokens
+                board["budget"]["spent_tokens"] = int(board["budget"].get("spent_tokens") or 0) + tokens
+            elif reservation.get("status") != "settled" or reservation.get("settled_tokens") != tokens:
+                fail(6, "invalid_budget_transition", "successful result cannot settle reservation")
+            lease, _ = _transition_lease(board, packet["track_id"], lease_id, "succeeded")
+            lease["coarse_status"] = "succeeded"
+    ok(readyForIntegration=ready, evaluation=evaluation, gates_passed=gates_passed, lease=lease, changed=True)
+
+
+def cmd_workflow_recover(args: argparse.Namespace) -> None:
     ws = workspace(args)
     require_workspace(ws)
     track_id = validate_safe_id(args.track_id, "track_id")
@@ -1384,26 +1718,54 @@ def cmd_lease_transition(args: argparse.Namespace) -> None:
         if not lease:
             fail(4, "lease_not_found", f"no lease for track {track_id}")
         if lease.get("lease_id") != lease_id:
-            fail(6, "stale_lease", f"track {track_id} is fenced by another lease")
-        old_state = lease.get("state")
-        if old_state == args.state:
-            ok(lease=lease, changed=False)
-        if args.state not in LEASE_TRANSITIONS.get(old_state, frozenset()):
-            fail(6, "invalid_lease_transition", f"cannot transition {old_state} to {args.state}")
-        reservation = _budget_reservations(board["budget"])[lease["budget_reservation_id"]]
-        if args.state == "running":
-            if reservation.get("lease_id") != lease_id:
-                fail(6, "stale_lease", "budget reservation is fenced by another lease")
-            if reservation.get("status") == "reserved":
-                reservation["status"] = "dispatched"
-            elif reservation.get("status") != "dispatched":
-                fail(6, "invalid_budget_transition", "running requires a reserved or dispatched budget")
-        lease["state"] = args.state
-        if args.external_ref is not None:
-            lease["external_ref"] = args.external_ref
-        if args.state == "cancelled":
-            lease["cancel_confirmed"] = True
-    ok(lease=lease, changed=True)
+            fail(6, "stale_lease", "recovery lease_id is stale")
+        if not lease.get("recovery_required"):
+            fail(6, "recovery_not_required", "lease has no failed result awaiting recovery")
+        if args.action == "resume":
+            lease.setdefault("result_history", []).append(lease.pop("result_envelope"))
+            lease["coarse_status"] = "running"
+            lease["recovery_required"] = False
+            lease["resume_count"] = int(lease.get("resume_count") or 0) + 1
+            fallback_allowed = False
+        else:
+            if lease.get("state") in ACTIVE_LEASE_STATES:
+                lease, _ = _transition_lease(board, track_id, lease_id, "cancelled")
+            reservation = _budget_reservations(board["budget"])[lease["budget_reservation_id"]]
+            if reservation.get("status") in ("reserved", "dispatched"):
+                reservation["status"] = "released"
+            lease["recovery_required"] = False
+            lease["coarse_status"] = "cancelled"
+            fallback_allowed = True
+    ok(lease=lease, action=args.action, native_fallback_allowed=fallback_allowed)
+
+
+def cmd_workflow_promote(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    candidate_id = validate_safe_id(args.candidate_id, "candidate_id")
+    path = ws / "context" / "outbox" / f"{candidate_id}.json"
+    try:
+        candidate = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError) as exc:
+        fail(4, "promotion_not_found", f"cannot load promotion candidate: {exc}")
+    if args.provider_status in ("unavailable", "unknown"):
+        ok(provider="local-outbox", candidate=candidate, handoff=None, changed=False)
+    if not args.owner_approved:
+        fail(6, "owner_gate_required", "wiki promotion requires explicit owner approval")
+    candidate["status"] = "ready_for_provider"
+    candidate["digest"] = canonical_digest({key: value for key, value in candidate.items() if key != "digest"})
+    atomic_write_text(path, json.dumps(candidate, ensure_ascii=False, indent=2) + "\n")
+    ok(
+        provider="wiki-markdown",
+        candidate=candidate,
+        handoff={
+            "kind": "agent-visible-provider-handoff",
+            "skill": "wiki-markdown:wiki",
+            "action": "capture",
+            "candidate_ref": str(path),
+        },
+        changed=True,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -1621,6 +1983,36 @@ def build_parser() -> argparse.ArgumentParser:
     lt.add_argument("--state", required=True, choices=sorted(set().union(*LEASE_TRANSITIONS.values())))
     lt.add_argument("--external-ref")
     lt.set_defaults(func=cmd_lease_transition)
+
+    sp = sub.add_parser("workflow", help="optional executor contract and handoff")
+    wfsub = sp.add_subparsers(dest="wcmd", required=True)
+    wvp = wfsub.add_parser("validate-packet", help="validate a WorkPacket")
+    wvp.add_argument("--json", required=True)
+    wvp.set_defaults(func=cmd_workflow_validate_packet)
+    wvr = wfsub.add_parser("validate-result", help="validate a ResultEnvelope")
+    wvr.add_argument("--json", required=True)
+    wvr.set_defaults(func=cmd_workflow_validate_result)
+    wd = wfsub.add_parser("dispatch", help="select native/external before dispatch and claim a lease")
+    wd.add_argument("--packet", required=True)
+    wd.add_argument("--capabilities", help="agent-visible task-github capability snapshot")
+    wd.add_argument("--lease-id", required=True)
+    wd.set_defaults(func=cmd_workflow_dispatch)
+    wr = wfsub.add_parser("result", help="ingest a coarse ResultEnvelope and evaluate integration readiness")
+    wr.add_argument("--packet", required=True)
+    wr.add_argument("--plan", required=True)
+    wr.add_argument("--json", required=True)
+    wr.add_argument("--lease-id", required=True)
+    wr.set_defaults(func=cmd_workflow_result)
+    wrec = wfsub.add_parser("recover", help="resume or cancel-confirm+release a failed external run")
+    wrec.add_argument("track_id")
+    wrec.add_argument("--lease-id", required=True)
+    wrec.add_argument("--action", required=True, choices=("resume", "cancel-release"))
+    wrec.set_defaults(func=cmd_workflow_recover)
+    wp = wfsub.add_parser("promote", help="gate optional wiki provider handoff")
+    wp.add_argument("candidate_id")
+    wp.add_argument("--provider-status", required=True, choices=("available", "unavailable", "unknown"))
+    wp.add_argument("--owner-approved", action="store_true")
+    wp.set_defaults(func=cmd_workflow_promote)
 
     sp = sub.add_parser("cast", help="producer crew casting policy")
     casub = sp.add_subparsers(dest="castcmd", required=True)

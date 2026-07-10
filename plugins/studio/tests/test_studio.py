@@ -301,6 +301,7 @@ def main() -> None:
         })], tmp)
         r = run(["context", "compact", "--bundle-id", "bundle-1", "--item-id", "item-1", "--item-id", "item-2"], tmp)
         assert r["context"]["item_refs"][0] == {"id": "item-1", "digest": item1_digest}, r
+        bundle_digest = r["context"]["digest"]
         for delta_id in ("delta-1", "delta-2"):
             run(["context", "put", "delta", "--json", json.dumps({
                 "id": delta_id, "base_ref": "bundle-1", "changes": {"add": [delta_id]},
@@ -339,6 +340,88 @@ def main() -> None:
         assert not r["changed"], r
         r = run(["lease", "transition", "track-a", "--lease-id", "lease-a", "--state", "succeeded"], tmp)
         assert r["lease"]["state"] == "succeeded", r
+
+        # 8e) WorkPacket/ResultEnvelope + task-github reference adapter boundary
+        packet = {
+            "schema": 1, "track_id": "track-external", "objective": "ship guarded parser",
+            "acceptance_criteria": ["tests pass", "context handoff is usable"],
+            "context_ref": "bundle-1", "digest": bundle_digest,
+            "quality_plan_ref": "quality-v1", "constraints": {"state_copy": "references-only"},
+            "budget_reservation_id": "res-wf-ext", "gates": ["integration"],
+            "executor": "task-github",
+        }
+        capabilities = {
+            "schema": 1, "source": "agent-visible-skill-catalog",
+            "catalog": ["task-github:start", "task-github:run", "task-github:done", "task-github:doctor"],
+            "doctor": {"mode": "read-only", "status": "pass"},
+            "preflight": {"mode": "read-only", "status": "pass"},
+        }
+        run(["workflow", "validate-packet", "--json", json.dumps(packet)], tmp)
+        run(["budget", "reserve", "res-wf-ext", "--lease-id", "lease-wf-ext", "--tokens", "120"], tmp)
+        r = run(["workflow", "dispatch", "--packet", json.dumps(packet),
+                 "--capabilities", json.dumps(capabilities), "--lease-id", "lease-wf-ext"], tmp)
+        assert r["selected_executor"] == "external" and not r["fallback"], r
+        assert r["worker_handoff"]["kind"] == "separate-worker-handoff", r
+        assert r["worker_handoff"]["state_contract"].startswith("return external_ref"), r
+        success = {
+            "status": "succeeded", "external_ref": "issue:54", "artifact_refs": ["git:abc123"],
+            "evidence_refs": evidence, "context_delta_refs": ["delta-2"], "telemetry": telemetry,
+            "gates": [{"id": "integration", "status": "passed", "evidence_ref": "test:full"}],
+            "failure_class": None,
+        }
+        run(["workflow", "validate-result", "--json", json.dumps(success)], tmp)
+        r = run(["workflow", "result", "--packet", json.dumps(packet), "--plan", json.dumps(quality_plan),
+                 "--json", json.dumps(success), "--lease-id", "lease-wf-ext"], tmp)
+        assert r["readyForIntegration"] and r["lease"]["state"] == "succeeded", r
+        assert r["lease"]["external_ref"] == "issue:54" and r["lease"]["coarse_status"] == "succeeded", r
+        assert not ({"issue", "branch", "pr", "raw_transcript"} & set(r["lease"])), r
+        r = run(["workflow", "result", "--packet", json.dumps(packet), "--plan", json.dumps(quality_plan),
+                 "--json", json.dumps(success), "--lease-id", "lease-wf-ext"], tmp)
+        assert not r["changed"], r
+
+        # pre-dispatch unavailable/unknown falls back to native before any external start
+        fallback_packet = {**packet, "track_id": "track-fallback", "budget_reservation_id": "res-fallback"}
+        run(["budget", "reserve", "res-fallback", "--lease-id", "lease-fallback", "--tokens", "30"], tmp)
+        r = run(["workflow", "dispatch", "--packet", json.dumps(fallback_packet),
+                 "--lease-id", "lease-fallback"], tmp)
+        assert r["selected_executor"] == "native" and r["fallback"] and r["worker_handoff"] is None, r
+
+        # after external dispatch, failure requires resume or cancel-confirm+release before fallback
+        failed_packet = {**packet, "track_id": "track-failed", "budget_reservation_id": "res-failed"}
+        run(["budget", "reserve", "res-failed", "--lease-id", "lease-failed", "--tokens", "40"], tmp)
+        run(["workflow", "dispatch", "--packet", json.dumps(failed_packet),
+             "--capabilities", json.dumps(capabilities), "--lease-id", "lease-failed"], tmp)
+        failure = {
+            "status": "failed", "external_ref": "issue:failed", "artifact_refs": [],
+            "evidence_refs": [], "context_delta_refs": [],
+            "telemetry": {"tokens": None, "elapsed_ms": 5, "avoidable_owner_questions": 0},
+            "gates": [{"id": "integration", "status": "failed", "evidence_ref": "log:failure"}],
+            "failure_class": "retriable",
+        }
+        r = run(["workflow", "result", "--packet", json.dumps(failed_packet), "--plan", json.dumps(quality_plan),
+                 "--json", json.dumps(failure), "--lease-id", "lease-failed"], tmp)
+        assert not r["readyForIntegration"] and r["lease"]["recovery_required"], r
+        premature = {**failed_packet, "budget_reservation_id": "res-premature", "executor": "native"}
+        run(["budget", "reserve", "res-premature", "--lease-id", "lease-premature", "--tokens", "10"], tmp)
+        run(["workflow", "dispatch", "--packet", json.dumps(premature),
+             "--lease-id", "lease-premature"], tmp, expect=6)
+        r = run(["workflow", "recover", "track-failed", "--lease-id", "lease-failed", "--action", "resume"], tmp)
+        assert not r["native_fallback_allowed"] and r["lease"]["coarse_status"] == "running", r
+        run(["workflow", "result", "--packet", json.dumps(failed_packet), "--plan", json.dumps(quality_plan),
+             "--json", json.dumps(failure), "--lease-id", "lease-failed"], tmp)
+        r = run(["workflow", "recover", "track-failed", "--lease-id", "lease-failed", "--action", "cancel-release"], tmp)
+        assert r["native_fallback_allowed"] and r["lease"]["cancel_confirmed"], r
+        native_packet = {**failed_packet, "budget_reservation_id": "res-native", "executor": "native"}
+        run(["budget", "reserve", "res-native", "--lease-id", "lease-native", "--tokens", "10"], tmp)
+        r = run(["workflow", "dispatch", "--packet", json.dumps(native_packet), "--lease-id", "lease-native"], tmp)
+        assert r["selected_executor"] == "native" and not r["fallback"], r
+
+        # wiki provider is optional; absent preserves outbox, available still needs owner gate
+        r = run(["workflow", "promote", "promotion-1", "--provider-status", "unavailable"], tmp)
+        assert r["provider"] == "local-outbox" and r["handoff"] is None, r
+        run(["workflow", "promote", "promotion-1", "--provider-status", "available"], tmp, expect=6)
+        r = run(["workflow", "promote", "promotion-1", "--provider-status", "available", "--owner-approved"], tmp)
+        assert r["provider"] == "wiki-markdown" and r["handoff"]["skill"] == "wiki-markdown:wiki", r
 
         # 9) config (.studio.yml) — scaffold, validate, parse, guards
         cfg = tmp / ".studio.yml"
@@ -410,6 +493,13 @@ def main() -> None:
             "QA pass. track 변경을 main에 반영할까요?",
             "integrator worker",
             "`readyForIntegration:false`이면",
+            "task-github Python/JS callable API를 만들거나 import하지 않는다",
+            "agent-visible `task-github:*` skill catalog",
+            "`separate-worker-handoff`",
+            "`workflow recover --action resume`",
+            "`--action cancel-release`",
+            "ResultEnvelope 필수 필드",
+            "provider가 absent/unknown이면 `context outbox`",
         ):
             assert phrase in producer, phrase
 
