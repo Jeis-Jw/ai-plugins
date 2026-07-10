@@ -51,3 +51,4 @@ audience: [human, agent]
 - [[DEC-2026-07-08-164805-studio-코어-설계-채택-원시개념-run-실행-모델-소집형]] — 원시개념 5+producer, 실행 단위 run(일감×ritual×crew), 소집형 fresh-per-turn + transcript-first 캐시 배치, 리추얼별 브로커 + 공통 I/O 계약, track 동시 운영을 studio 코어 구조로 채택.
 - [[DEC-2026-07-10-133541-studio-최적화-우선순위-artifact-context-품질-hard-floor와-가중-효용]] — 결과물과 컨텍스트 품질을 각각 hard floor로 보장하고, 통과한 후보만 품질에 최고 비중을 둔 token·elapsed·avoidable owner intervention 가중 효용으로 비교한다.
 - [[DEC-2026-07-10-133629-studio-실행-경계-mission-quality-context-gate-소유와-선택적-single-executor]] — Studio가 mission·quality·context·owner gate를 소유하고 track별 외부 workflow는 단일 선택 executor로 위임한다. task-github와 wiki-markdown은 각각 reference adapter와 optional promotion provider이며 hard dependency가 아니다.
+- [[DEC-2026-07-10-161845-작업-정의와-github-기록을-분리하고-전체-트리만-투영]] — define은 provider-neutral DefinitionArtifact를 만들고 GitHub 기록을 선택하면 root 전체 tree를 누락 없이 materialize한다.
