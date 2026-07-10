@@ -21,7 +21,7 @@
       "name": "session-review",
       "source": "./plugins/session-review",
       "description": "Wiki snapshot + git review-branch protocol for worker/reviewer loops with self-mode fast/audit profiles and turnkey completion.",
-      "version": "0.4.1"
+      "version": "0.5.0"
     },
     {
       "name": "studio",
