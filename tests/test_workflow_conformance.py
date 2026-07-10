@@ -50,21 +50,31 @@ class WorkflowReceiptConformanceTests(unittest.TestCase):
         else:
             self.assertIsInstance(receipt["tokens"], int)
             self.assertGreaterEqual(receipt["tokens"], 0)
-            self.assertNotEqual(receipt["token_coverage"], "unavailable")
+            self.assertEqual(receipt["token_coverage"], "exact")
         self.assertIsInstance(receipt["counters"], dict)
         self.assertIsInstance(receipt["quality"], dict)
 
     def test_three_emitters_share_schema_v1_and_null_token_semantics(self):
-        task_receipt = self.task_github.build_receipt({
+        task_state = {
             "schema": self.task_github.RUN_SCHEMA,
             "status": "closed",
             "run_id": "task-60",
             "started_at": "2026-07-10T00:00:00Z",
             "finished_at": "2026-07-10T00:00:01Z",
-        })
-        review_receipt = self.session_review.receipt_from_status(
-            {}, run_id="review-60", started_at="2026-07-10T00:00:00Z",
-            finished_at="2026-07-10T00:00:01Z",
+        }
+        task_receipts = (
+            self.task_github.build_receipt(task_state),
+            self.task_github.build_receipt(task_state, tokens=7),
+        )
+        review_receipts = (
+            self.session_review.receipt_from_status(
+                {}, run_id="review-60", started_at="2026-07-10T00:00:00Z",
+                finished_at="2026-07-10T00:00:01Z",
+            ),
+            self.session_review.receipt_from_status(
+                {}, run_id="review-60", started_at="2026-07-10T00:00:00Z",
+                finished_at="2026-07-10T00:00:01Z", tokens=8,
+            ),
         )
         studio_receipt = {
             "schema": "workflow-receipt/v1",
@@ -79,10 +89,15 @@ class WorkflowReceiptConformanceTests(unittest.TestCase):
             "counters": {"rounds": 1},
             "quality": {"alive": True},
         }
-        self.assertEqual(self.studio.workflow_receipt_problems(studio_receipt), [])
+        studio_receipts = (
+            studio_receipt,
+            {**studio_receipt, "tokens": None, "token_coverage": "unavailable"},
+        )
+        for receipt in studio_receipts:
+            self.assertEqual(self.studio.workflow_receipt_problems(receipt), [])
 
-        for receipt in (task_receipt, review_receipt, studio_receipt):
-            with self.subTest(emitter=receipt["emitter"]):
+        for receipt in (*task_receipts, *review_receipts, *studio_receipts):
+            with self.subTest(emitter=receipt["emitter"], tokens=receipt["tokens"]):
                 self.assert_receipt(receipt)
 
     def test_central_marketplaces_match_the_three_plugin_manifests(self):

@@ -456,6 +456,34 @@ def main() -> None:
                  "--json", json.dumps(success), "--lease-id", "lease-wf-ext"], tmp)
         assert not r["changed"], r
 
+        # succeeded artifacts/evidence/gates still wait when token telemetry is unknown
+        unknown_packet = {
+            **packet,
+            "track_id": "track-unknown-tokens",
+            "budget_reservation_id": "res-unknown-tokens",
+        }
+        run(["budget", "reserve", "res-unknown-tokens", "--lease-id", "lease-unknown-tokens",
+             "--tokens", "80"], tmp)
+        run(["workflow", "dispatch", "--packet", json.dumps(unknown_packet),
+             "--plan", json.dumps(quality_plan), "--capabilities", json.dumps(capabilities),
+             "--lease-id", "lease-unknown-tokens"], tmp)
+        unknown_success = {
+            **success,
+            "external_ref": "issue:unknown-tokens",
+            "telemetry": {**telemetry, "tokens": None},
+        }
+        spent_before_unknown = board_state(ws)["budget"]["spent_tokens"]
+        r = run(["workflow", "result", "--packet", json.dumps(unknown_packet),
+                 "--plan", json.dumps(quality_plan), "--json", json.dumps(unknown_success),
+                 "--lease-id", "lease-unknown-tokens"], tmp)
+        assert not r["readyForIntegration"] and not r["evaluation"]["telemetry_complete"], r
+        assert r["lease"]["state"] == "waiting_gate" and r["lease"]["coarse_status"] == "incomplete", r
+        board_after_unknown = board_state(ws)
+        assert board_after_unknown["budget"]["spent_tokens"] == spent_before_unknown, board_after_unknown
+        unknown_reservation = board_after_unknown["budget"]["reservations"]["res-unknown-tokens"]
+        assert unknown_reservation["status"] == "dispatched", unknown_reservation
+        assert "settled_tokens" not in unknown_reservation, unknown_reservation
+
         # pre-dispatch unavailable/unknown falls back to native before any external start
         fallback_packet = {**packet, "track_id": "track-fallback", "budget_reservation_id": "res-fallback"}
         run(["budget", "reserve", "res-fallback", "--lease-id", "lease-fallback", "--tokens", "30"], tmp)
