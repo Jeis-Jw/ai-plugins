@@ -57,6 +57,8 @@ mv studio .studio
 
 - **run I/O 계약**: `{run_id, ritual, participants, synthesis, minority, delta_log[{round, changed_what, anchor, evidence, rejected_alternative}], verdict{alive,reason}, proposals, cost, receipt, aborted}`. receipt는 `workflow-receipt/v1`의 정확한 11필드이며 broker 실행 전후 token delta와 elapsed time을 담는다.
 - **pairing integration 계약**: `{worktreePath, branch, changedFiles, verification, blockedChecks, readyForIntegration}`. `readyForIntegration:false`이면 producer는 직접 수정하지 않고 dev/fix → QA loop로 되돌린다.
+- **review cycle**: 한 DefinitionArtifact/Issue leaf/track/criteria digest에 결합된 논리적
+  검증 단위. 여러 물리 run·fix·retry가 생겨도 finding ID와 evidence pin을 유지한다.
 - **anchor**: delta가 실제로 닿는 대상 — `artifact | acceptance-criteria | risk | rejected-alternative | repro-test`. anchor 없는 delta는 delta가 아니다.
 - **dry**: 유효 delta 없는 라운드. dry 2회 = 폐회.
 - **theatre**: 팀 run인데 valid delta 0 → 연극 판정.
@@ -101,6 +103,41 @@ python3 plugins/studio/scripts/studio.py workflow dispatch --packet @packet.json
 python3 plugins/studio/scripts/studio.py workflow result --packet @packet.json --plan @plan.json --json @result.json --lease-id <lease>
 ```
 
+## v0.4 반복 QA·handoff 비용 제어
+
+작업 분해와 독립 검증은 유지하되, 그 주변의 반복 비용을 logical review cycle로 줄인다.
+Issue tree를 사용하는 경우 Issue는 여전히 팀원이 점유하고 완료할 수 있는 업무 단위이며,
+cycle은 그 Issue 안의 finding/수정/QA 이력이다. GitHub 기록을 선택하지 않으면 같은
+DefinitionArtifact와 cycle을 `.studio/`에서만 소비한다.
+
+- finding은 `F-xxxx`로 고정되어 새 run/agent에서도 이어진다.
+- handoff에는 활성 finding과 유효 evidence pin만 들어가며 transcript는 들어가지 않는다.
+- evidence는 criteria/head/path/dependency surface/tool/environment/command pin이 같고 수정
+  영향과 겹치지 않을 때만 재사용한다.
+- 기본 재검증은 delta QA다. full QA는 shared contract·dependency surface 변화, 영향 범위
+  불명, 독립성 요구처럼 구조화된 사유가 있어야 한다. criteria/scope 변경은 새 cycle이며,
+  환경/tool 변경은 관련 evidence만 다시 실행한다.
+- transient/tool/config failure는 같은 cycle의 retry이며 새 finding이나 QA round가 아니다.
+- summary는 cycle에 연결된 physical run의 measured token/time만 coverage와 함께 합산한다.
+  미측정 값은 0으로 추정하지 않는다.
+- final QA와 integration gate는 fail-closed이고, pending full-QA 사유를 우회할 수 없다.
+- team mode에서는 중요한 cycle 이벤트를 `studio-issue-event/v1`로 반환한다. external
+  worker가 event marker를 기준으로 Issue comment를 멱등 투영하며 Studio가 GitHub 상태를
+  중복 보관하지 않는다.
+
+```bash
+python3 plugins/studio/scripts/studio.py review open --json @cycle.json
+python3 plugins/studio/scripts/studio.py review handoff RC-issue-58
+python3 plugins/studio/scripts/studio.py review event RC-issue-58 --json @event.json
+python3 plugins/studio/scripts/studio.py review evidence-check --evidence @pin.json --change @change.json
+python3 plugins/studio/scripts/studio.py review summary RC-issue-58
+```
+
+`pairing.workflow.js`에 `reviewCycle` handoff를 넘기면 기존 finding ID를 이어받은
+`studio-review-feedback/v1`을 반환한다. 이는 development/delta 관찰값이라 실제 post-run
+head/evidence와 결합해 `review event` 또는 `run record`의 `review_cycle_delta`로 확정해야
+한다. cycle mode pairing만으로는 integration-ready가 되지 않는다.
+
 ## agent model/effort 정책 (`.studio.yml`)
 
 crew 서브에이전트가 어떤 모델·에포트로 돌지는 `.task-github.yml`과 같은 결의 repo
@@ -144,7 +181,8 @@ python3 plugins/studio/scripts/studio.py cast suggest implementation
    소집. 회의형(brainstorm)은 무제한 병렬, 작업형(pairing)은 producer가 준비한
    track 워크트리에서 격리 실행.
 5. 완료 회수 → native ritual은 `run record`, external executor는 `workflow result`로 기록.
-6. post-QA 결함은 producer가 직접 고치지 않고 dev/fix worker → QA worker 재검증으로 되돌린다.
+6. post-QA 결함은 같은 review cycle/finding ID로 dev/fix → 영향 범위 delta QA를 이어간다.
+   전체 handoff/full QA는 구조화된 사유가 있을 때만 사용한다.
 7. verification·criterion evidence·quality floor·telemetry·gate가 모두 완결돼
    `readyForIntegration:true`일 때만 owner에게 반영 게이트를 묻는다.
 8. 검증(baseline): 같은 소형 미션을 솔로 vs 팀으로 돌려 `studio.py evidence`로
@@ -169,7 +207,8 @@ python3 plugins/studio/scripts/studio.py cast suggest implementation
 
 ## 상태
 
-v0.3.0 — schema-v1 workflow receipt·QualityPlan·Context Kernel·optional external executor. 설계 정본은 이 repo
+v0.4.0 — stable review cycle·delta/full QA gate·evidence reuse·compact handoff·Issue event projection.
+기존 schema-v1 workflow receipt·QualityPlan·Context Kernel·optional external executor도 유지한다. 설계 정본은 이 repo
 위키(INT/DEC studio) + `drafts/agent-team-concept.md`.
 검증 테스트: `python3 plugins/studio/tests/test_studio.py`와
 `node --test plugins/studio/tests/test_broker_semantics.js`.

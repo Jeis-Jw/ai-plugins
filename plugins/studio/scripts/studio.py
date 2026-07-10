@@ -65,6 +65,37 @@ WORKFLOW_RECEIPT_FIELDS = frozenset((
     "schema", "emitter", "workflow", "run_id", "started_at", "finished_at",
     "elapsed_ms", "tokens", "token_coverage", "counters", "quality",
 ))
+REVIEW_CYCLE_SCHEMA = "studio-review-cycle/v1"
+REVIEW_EVENT_SCHEMA = "studio-review-event/v1"
+ISSUE_EVENT_SCHEMA = "studio-issue-event/v1"
+QA_MODES = frozenset(("development", "delta", "full", "final", "integration"))
+FULL_QA_REASONS = frozenset((
+    "impact-unknown", "shared-contract-changed", "cross-track-change",
+    "dependency-surface-changed", "independence-required",
+))
+RETRY_CLASSIFICATIONS = frozenset((
+    "product-defect", "environment-transient", "tool-unavailable",
+    "configuration-error", "criteria-gap",
+))
+FRESH_CONTEXT_REASONS = frozenset((
+    "context-unavailable", "domain-shift", "complexity-boundary",
+    "independence-required", "cycle-ledger-invalid",
+))
+REVIEW_EVENT_TYPES = frozenset((
+    "finding-opened", "fix-submitted", "qa-completed", "retry-recorded",
+    "handoff-recorded", "evidence-recorded",
+))
+REVIEW_EVENT_FIELDS = {
+    "finding-opened": {"head", "finding"},
+    "fix-submitted": {"finding_ids", "change"},
+    "qa-completed": {
+        "qa_mode", "head", "passed", "checks", "blocked_checks", "evidence_refs",
+        "finding_results", "full_qa_reason",
+    },
+    "retry-recorded": {"classification", "failure", "attempt", "finding_ids"},
+    "handoff-recorded": {"fresh_context", "continuation_ref", "reason"},
+    "evidence-recorded": {"evidence"},
+}
 
 # agent policy config (.studio.yml)
 CONFIG_PATH_DEFAULT = ".studio.yml"
@@ -261,6 +292,7 @@ def migrate_board(board: dict) -> dict:
         board["schema"] = 2
     board.setdefault("tracks", {})
     board.setdefault("runs", [])
+    board.setdefault("review_cycles", {})
     budget = board.setdefault("budget", {})
     budget.setdefault("total_tokens", None)
     budget.setdefault("per_run_default", None)
@@ -1002,6 +1034,9 @@ def cmd_run_record(args: argparse.Namespace) -> None:
     if problems:
         fail(6, "invalid_run_output", "; ".join(problems), problems=problems)
     aborted = bool(out.get("aborted"))
+    review_cycle_delta = out.get("review_cycle_delta")
+    if review_cycle_delta is not None:
+        review_cycle_delta = _review_cycle_delta(review_cycle_delta)
 
     # count real (non-dry) deltas with a valid anchor — the evidence tally.
     valid_deltas = [
@@ -1027,13 +1062,25 @@ def cmd_run_record(args: argparse.Namespace) -> None:
         "track": out.get("track") or getattr(args, "track", None),
         "verdict": verdict,
         "cost_tokens": cost_tokens,
+        "cost_elapsed_ms": cost_elapsed if cost_elapsed is not None else (
+            receipt.get("elapsed_ms") if receipt is not None else None
+        ),
         "valid_deltas": len(valid_deltas),
         "aborted": aborted,
         "minutes": str(minutes_path),
     }
+    if review_cycle_delta is not None:
+        entry["review_cycle_id"] = review_cycle_delta["cycle_id"]
     if receipt is not None:
         entry["receipt"] = receipt
+    issue_events = []
     with board_transaction(ws) as board:
+        if review_cycle_delta is not None:
+            cycle = _review_cycle_from_board(board, review_cycle_delta["cycle_id"])
+            for review_event in review_cycle_delta["events"]:
+                cycle, _, issue_event = _apply_review_event(cycle, review_event)
+                if issue_event is not None:
+                    issue_events.append(issue_event)
         bud = board.setdefault("budget", {"spent_tokens": 0, "reservations": {}})
         runs = board.setdefault("runs", [])
         if not isinstance(runs, list):
@@ -1070,6 +1117,8 @@ def cmd_run_record(args: argparse.Namespace) -> None:
         budget_total=total,
         budget_exceeded=exceeded,
         receipt=receipt,
+        review_cycle_id=review_cycle_delta["cycle_id"] if review_cycle_delta else None,
+        issue_events=issue_events,
         warnings=warnings,
     )
 
@@ -1527,6 +1576,654 @@ def cmd_lease_transition(args: argparse.Namespace) -> None:
     with board_transaction(ws) as board:
         lease, changed = _transition_lease(board, track_id, lease_id, args.state, args.external_ref)
     ok(lease=lease, changed=changed)
+
+
+# --------------------------------------------------------------------------- #
+# review cycle — stable findings, delta QA, evidence reuse, compact handoff
+# --------------------------------------------------------------------------- #
+def _review_cycles(board: dict) -> dict:
+    cycles = board.setdefault("review_cycles", {})
+    if not isinstance(cycles, dict):
+        fail(4, "bad_board", "board.review_cycles must be an object")
+    return cycles
+
+
+def _review_text(value: Any, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        fail(6, "invalid_review_contract", f"{field} must be a non-empty string")
+    return value.strip()
+
+
+def _review_string_list(value: Any, field: str, *, non_empty: bool = False) -> list[str]:
+    if not isinstance(value, list) or any(not isinstance(item, str) or not item.strip() for item in value):
+        fail(6, "invalid_review_contract", f"{field} must be a string list")
+    result = [item.strip() for item in value]
+    if non_empty and not result:
+        fail(6, "invalid_review_contract", f"{field} must not be empty")
+    if len(result) != len(set(result)):
+        fail(6, "invalid_review_contract", f"{field} must not contain duplicates")
+    return result
+
+
+def _review_digest(value: Any, field: str) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", value):
+        fail(6, "invalid_review_contract", f"{field} must be a sha256 digest")
+    return value
+
+
+def _review_cycle_digest(cycle: dict) -> str:
+    return canonical_digest({key: value for key, value in cycle.items() if key != "digest"})
+
+
+def _seal_review_cycle(cycle: dict) -> dict:
+    cycle["digest"] = _review_cycle_digest(cycle)
+    return cycle
+
+
+def _review_binding(payload: dict) -> dict:
+    required = {
+        "cycle_id", "track_id", "criteria_digest", "base_head", "quality_plan_ref",
+    }
+    allowed = required | {
+        "definition_ref", "issue_ref", "requires_final_qa", "requires_integration_gate",
+    }
+    unknown = sorted(set(payload) - allowed)
+    missing = sorted(required - set(payload))
+    if unknown or missing:
+        fail(
+            6, "invalid_review_contract", "review cycle binding fields are invalid",
+            unknown=unknown, missing=missing,
+        )
+    cycle_id = validate_safe_id(payload["cycle_id"], "cycle_id")
+    track_id = validate_safe_id(payload["track_id"], "track_id")
+    quality_plan_ref = validate_safe_id(payload["quality_plan_ref"], "quality_plan_ref")
+    criteria_digest = _review_digest(payload["criteria_digest"], "criteria_digest")
+    base_head = _review_text(payload["base_head"], "base_head")
+    definition_ref = payload.get("definition_ref")
+    if definition_ref is not None and not isinstance(definition_ref, dict):
+        fail(6, "invalid_review_contract", "definition_ref must be an object or null")
+    issue_ref = payload.get("issue_ref")
+    if issue_ref is not None and (not isinstance(issue_ref, str) or not issue_ref.strip()):
+        fail(6, "invalid_review_contract", "issue_ref must be null or a non-empty string")
+    for key in ("requires_final_qa", "requires_integration_gate"):
+        if key in payload and not isinstance(payload[key], bool):
+            fail(6, "invalid_review_contract", f"{key} must be boolean")
+    return {
+        "cycle_id": cycle_id,
+        "track_id": track_id,
+        "criteria_digest": criteria_digest,
+        "base_head": base_head,
+        "quality_plan_ref": quality_plan_ref,
+        "definition_ref": definition_ref,
+        "issue_ref": issue_ref.strip() if isinstance(issue_ref, str) else None,
+        "requires_final_qa": payload.get("requires_final_qa", True),
+        "requires_integration_gate": payload.get("requires_integration_gate", True),
+    }
+
+
+def _new_review_cycle(binding: dict) -> dict:
+    timestamp = now_stamp()
+    cycle = {
+        "schema": REVIEW_CYCLE_SCHEMA,
+        **binding,
+        "state": "review-cycle",
+        "findings": {},
+        "evidence": {},
+        "events": [],
+        "next_finding_seq": 1,
+        "required_full_qa_reason": None,
+        "created_at": timestamp,
+        "updated_at": timestamp,
+        "counters": {
+            "qa_rounds": 0,
+            "development_qa": 0,
+            "delta_qa": 0,
+            "full_qa": 0,
+            "final_qa": 0,
+            "integration_gate": 0,
+            "transient_retries": 0,
+            "tool_unavailable_retries": 0,
+            "configuration_retries": 0,
+            "handoffs": 0,
+            "fresh_contexts": 0,
+            "evidence_reused": 0,
+            "evidence_invalidated": 0,
+        },
+        "full_qa_reason_counts": {},
+    }
+    return _seal_review_cycle(cycle)
+
+
+def cmd_review_open(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    payload = load_json_arg(args.json, "review cycle binding")
+    if not isinstance(payload, dict):
+        fail(6, "invalid_review_contract", "review cycle binding must be an object")
+    binding = _review_binding(payload)
+    with board_transaction(ws) as board:
+        cycles = _review_cycles(board)
+        existing = cycles.get(binding["cycle_id"])
+        if existing is not None:
+            existing = _review_cycle_from_board(board, binding["cycle_id"])
+            expected = {key: existing.get(key) for key in binding}
+            if expected != binding:
+                fail(6, "review_cycle_binding_mismatch", "cycle id is already bound to another contract")
+            cycle = existing
+            changed = False
+        else:
+            cycle = _new_review_cycle(binding)
+            cycles[binding["cycle_id"]] = cycle
+            changed = True
+    ok(cycle=cycle, changed=changed)
+
+
+def _review_evidence(value: Any) -> dict:
+    required = {
+        "ref", "head", "criteria_digest", "covered_paths", "surface_digest",
+        "tool_version", "environment_digest", "command_digest",
+    }
+    if not isinstance(value, dict) or set(value) != required:
+        fail(6, "invalid_review_contract", "evidence pin fields do not match the contract")
+    return {
+        "ref": _review_text(value["ref"], "evidence.ref"),
+        "head": _review_text(value["head"], "evidence.head"),
+        "criteria_digest": _review_digest(value["criteria_digest"], "evidence.criteria_digest"),
+        "covered_paths": _review_string_list(value["covered_paths"], "evidence.covered_paths", non_empty=True),
+        "surface_digest": _review_digest(value["surface_digest"], "evidence.surface_digest"),
+        "tool_version": _review_text(value["tool_version"], "evidence.tool_version"),
+        "environment_digest": _review_digest(value["environment_digest"], "evidence.environment_digest"),
+        "command_digest": _review_digest(value["command_digest"], "evidence.command_digest"),
+    }
+
+
+def _review_change(value: Any) -> dict:
+    required = {
+        "head", "criteria_digest", "changed_paths", "surface_digest", "tool_version",
+        "environment_digest", "impact_known", "shared_contract_changed",
+    }
+    if not isinstance(value, dict) or set(value) != required:
+        fail(6, "invalid_review_contract", "change impact fields do not match the contract")
+    if not isinstance(value["impact_known"], bool) or not isinstance(value["shared_contract_changed"], bool):
+        fail(6, "invalid_review_contract", "impact_known and shared_contract_changed must be boolean")
+    return {
+        "head": _review_text(value["head"], "change.head"),
+        "criteria_digest": _review_digest(value["criteria_digest"], "change.criteria_digest"),
+        "changed_paths": _review_string_list(value["changed_paths"], "change.changed_paths", non_empty=True),
+        "surface_digest": _review_digest(value["surface_digest"], "change.surface_digest"),
+        "tool_version": _review_text(value["tool_version"], "change.tool_version"),
+        "environment_digest": _review_digest(value["environment_digest"], "change.environment_digest"),
+        "impact_known": value["impact_known"],
+        "shared_contract_changed": value["shared_contract_changed"],
+    }
+
+
+def _paths_overlap(left: list[str], right: list[str]) -> bool:
+    def overlaps(a: str, b: str) -> bool:
+        a = a.rstrip("/")
+        b = b.rstrip("/")
+        return a == b or a.startswith(b + "/") or b.startswith(a + "/")
+    return any(overlaps(a, b) for a in left for b in right)
+
+
+def review_evidence_decision(evidence: dict, change: dict) -> dict:
+    reasons = []
+    if not change["impact_known"]:
+        reasons.append("impact-unknown")
+    if evidence["criteria_digest"] != change["criteria_digest"]:
+        reasons.append("criteria-changed")
+    if evidence["tool_version"] != change["tool_version"]:
+        reasons.append("tool-version-changed")
+    if evidence["environment_digest"] != change["environment_digest"]:
+        reasons.append("environment-changed")
+    if evidence["surface_digest"] != change["surface_digest"]:
+        reasons.append("dependency-surface-changed")
+    if change["shared_contract_changed"]:
+        reasons.append("shared-contract-changed")
+    if _paths_overlap(evidence["covered_paths"], change["changed_paths"]):
+        reasons.append("covered-path-overlap")
+    return {"ref": evidence["ref"], "reusable": not reasons, "reasons": reasons}
+
+
+def cmd_review_evidence_check(args: argparse.Namespace) -> None:
+    evidence = _review_evidence(load_json_arg(args.evidence, "evidence pin"))
+    change = _review_change(load_json_arg(args.change, "change impact"))
+    ok(decision=review_evidence_decision(evidence, change))
+
+
+def _review_finding_ids(event: dict) -> list[str]:
+    if event.get("type") == "finding-opened":
+        return [event["finding"]["id"]]
+    if event.get("type") == "qa-completed":
+        return [item["id"] for item in event.get("finding_results", [])]
+    return list(event.get("finding_ids") or [])
+
+
+def _review_evidence_refs(event: dict) -> list[str]:
+    refs = list(event.get("evidence_refs") or [])
+    for item in event.get("finding_results", []):
+        refs.extend(item.get("evidence_refs") or [])
+    if event.get("type") == "evidence-recorded":
+        refs.append(event["evidence"]["ref"])
+    return sorted(set(refs))
+
+
+def _review_cycle_delta(value: Any) -> dict:
+    if not isinstance(value, dict) or set(value) != {"cycle_id", "events"}:
+        fail(6, "invalid_review_contract", "review_cycle_delta must contain cycle_id and events")
+    cycle_id = validate_safe_id(value["cycle_id"], "cycle_id")
+    events = value["events"]
+    if not isinstance(events, list) or not events:
+        fail(6, "invalid_review_contract", "review_cycle_delta.events must be a non-empty list")
+    if any(not isinstance(event, dict) for event in events):
+        fail(6, "invalid_review_contract", "review_cycle_delta.events must contain objects")
+    event_ids = [event.get("event_id") for event in events]
+    if any(not isinstance(event_id, str) or not SAFE_ID_RE.fullmatch(event_id) for event_id in event_ids):
+        fail(6, "invalid_review_contract", "review_cycle_delta event ids must be path-safe strings")
+    if len(event_ids) != len(set(event_ids)):
+        fail(6, "invalid_review_contract", "review_cycle_delta event ids must be unique")
+    return {"cycle_id": cycle_id, "events": events}
+
+
+def _review_issue_event(cycle: dict, event: dict) -> dict | None:
+    issue_ref = cycle.get("issue_ref")
+    if not issue_ref or event["type"] in {"handoff-recorded", "evidence-recorded"}:
+        return None
+    if event["type"] == "retry-recorded" and event.get("classification") in {
+        "environment-transient", "tool-unavailable", "configuration-error",
+    }:
+        return None
+    finding_ids = _review_finding_ids(event)
+    evidence_refs = _review_evidence_refs(event)
+    marker = f"studio-review-event:{event['event_id']}"
+    title = event["type"].replace("-", " ")
+    details = [
+        f"- Cycle: `{cycle['cycle_id']}`",
+        f"- State: `{cycle['state']}`",
+        f"- Head: `{event.get('head') or cycle.get('base_head')}`",
+    ]
+    if finding_ids:
+        details.append(f"- Findings: `{', '.join(finding_ids)}`")
+    if event.get("qa_mode"):
+        details.append(f"- QA mode: `{event['qa_mode']}`")
+    if evidence_refs:
+        details.append(f"- Evidence: `{', '.join(evidence_refs)}`")
+    if event.get("full_qa_reason"):
+        details.append(f"- Full QA reason: `{event['full_qa_reason']}`")
+    return {
+        "schema": ISSUE_EVENT_SCHEMA,
+        "event_id": event["event_id"],
+        "issue_ref": issue_ref,
+        "cycle_id": cycle["cycle_id"],
+        "track_id": cycle["track_id"],
+        "type": event["type"],
+        "state": cycle["state"],
+        "finding_ids": finding_ids,
+        "evidence_refs": evidence_refs,
+        "marker": marker,
+        "comment_markdown": f"<!-- {marker} -->\n## Studio {title}\n\n" + "\n".join(details),
+    }
+
+
+def _normalise_review_event(cycle: dict, raw: Any) -> dict:
+    if not isinstance(raw, dict):
+        fail(6, "invalid_review_event", "review event must be an object")
+    event = json.loads(json.dumps(raw))
+    if event.get("schema") != REVIEW_EVENT_SCHEMA:
+        fail(6, "invalid_review_event", f"review event schema must be {REVIEW_EVENT_SCHEMA}")
+    event["event_id"] = validate_safe_id(event.get("event_id"), "event_id")
+    if event.get("type") not in REVIEW_EVENT_TYPES:
+        fail(6, "invalid_review_event", f"event type must be one of {sorted(REVIEW_EVENT_TYPES)}")
+    common = {"schema", "cycle_id", "event_id", "type", "at"}
+    unknown = sorted(set(event) - common - REVIEW_EVENT_FIELDS[event["type"]])
+    if unknown:
+        fail(6, "invalid_review_event", "review event contains unknown fields", unknown=unknown)
+    if event.get("cycle_id") != cycle["cycle_id"]:
+        fail(6, "review_cycle_binding_mismatch", "event cycle_id does not match the target cycle")
+    if "at" in event:
+        _review_text(event["at"], "event.at")
+    return event
+
+
+def _apply_review_event(cycle: dict, raw: Any) -> tuple[dict, bool, dict | None]:
+    event = _normalise_review_event(cycle, raw)
+    request_digest = canonical_digest({key: value for key, value in event.items() if key != "at"})
+    prior = next((item for item in cycle["events"] if item.get("event_id") == event["event_id"]), None)
+    if prior is not None:
+        if prior.get("request_digest") != request_digest:
+            fail(6, "review_event_conflict", "event_id is already bound to different content")
+        return cycle, False, _review_issue_event(cycle, prior)
+
+    event.setdefault("at", now_stamp())
+    event["request_digest"] = request_digest
+
+    findings = cycle["findings"]
+    counters = cycle["counters"]
+    event_type = event["type"]
+    if event_type == "finding-opened":
+        finding = event.get("finding")
+        if not isinstance(finding, dict):
+            fail(6, "invalid_review_event", "finding-opened requires finding")
+        allowed = {"id", "title", "severity", "repro", "affected_criteria", "evidence_refs"}
+        if set(finding) - allowed:
+            fail(6, "invalid_review_event", "finding contains unknown fields")
+        finding_id = finding.get("id")
+        if finding_id is None:
+            finding_id = f"F-{cycle['next_finding_seq']:04d}"
+        if not isinstance(finding_id, str) or not re.fullmatch(r"F-[0-9]{4,}", finding_id):
+            fail(6, "invalid_review_event", "finding.id must look like F-0001")
+        if finding_id in findings:
+            fail(6, "finding_conflict", f"finding already exists: {finding_id}")
+        numeric = int(finding_id.split("-", 1)[1])
+        cycle["next_finding_seq"] = max(cycle["next_finding_seq"], numeric + 1)
+        normalised_finding = {
+            "id": finding_id,
+            "status": "open",
+            "title": _review_text(finding.get("title"), "finding.title"),
+            "severity": _review_text(finding.get("severity"), "finding.severity"),
+            "repro": _review_text(finding.get("repro"), "finding.repro"),
+            "affected_criteria": _review_string_list(
+                finding.get("affected_criteria", []), "finding.affected_criteria", non_empty=True,
+            ),
+            "evidence_refs": _review_string_list(finding.get("evidence_refs", []), "finding.evidence_refs"),
+            "opened_at_head": _review_text(event.get("head"), "event.head"),
+            "closed_by_evidence": [],
+        }
+        findings[finding_id] = normalised_finding
+        event["finding"] = normalised_finding
+        cycle["state"] = "review-cycle"
+    elif event_type == "evidence-recorded":
+        evidence = _review_evidence(event.get("evidence"))
+        if evidence["criteria_digest"] != cycle["criteria_digest"]:
+            fail(6, "new_cycle_required", "evidence criteria differ from the cycle binding")
+        existing = cycle["evidence"].get(evidence["ref"])
+        if existing and {k: v for k, v in existing.items() if k not in {"status", "invalidated_by"}} != evidence:
+            fail(6, "evidence_conflict", "evidence ref is already bound to another pin")
+        if existing and existing.get("status") != "valid":
+            fail(6, "evidence_invalidated", "invalidated evidence ref cannot be resurrected; record a new pin")
+        cycle["evidence"][evidence["ref"]] = {**evidence, "status": "valid", "invalidated_by": None}
+        event["evidence"] = evidence
+    elif event_type == "fix-submitted":
+        finding_ids = _review_string_list(event.get("finding_ids"), "finding_ids", non_empty=True)
+        for finding_id in finding_ids:
+            finding = findings.get(finding_id)
+            if not finding or finding["status"] not in {"open", "blocked"}:
+                fail(6, "invalid_finding_transition", f"cannot submit fix for {finding_id}")
+            finding["status"] = "fixed-pending-verification"
+        change = _review_change(event.get("change"))
+        if change["criteria_digest"] != cycle["criteria_digest"]:
+            fail(6, "new_cycle_required", "criteria changed; start a new review cycle")
+        decisions = []
+        for evidence in cycle["evidence"].values():
+            if evidence.get("status") != "valid":
+                continue
+            decision = review_evidence_decision(evidence, change)
+            decisions.append(decision)
+            if decision["reusable"]:
+                evidence["status"] = "valid"
+                evidence["invalidated_by"] = None
+                counters["evidence_reused"] += 1
+            else:
+                evidence["status"] = "invalidated"
+                evidence["invalidated_by"] = event["event_id"]
+                counters["evidence_invalidated"] += 1
+        event["finding_ids"] = finding_ids
+        event["change"] = change
+        event["evidence_decisions"] = decisions
+        cycle["base_head"] = change["head"]
+        if not change["impact_known"]:
+            cycle["required_full_qa_reason"] = "impact-unknown"
+        elif change["shared_contract_changed"]:
+            cycle["required_full_qa_reason"] = "shared-contract-changed"
+        elif any("dependency-surface-changed" in item["reasons"] for item in decisions):
+            cycle["required_full_qa_reason"] = "dependency-surface-changed"
+        cycle["state"] = "review-cycle"
+    elif event_type == "qa-completed":
+        qa_mode = event.get("qa_mode")
+        if qa_mode not in QA_MODES:
+            fail(6, "invalid_review_event", f"qa_mode must be one of {sorted(QA_MODES)}")
+        if not isinstance(event.get("passed"), bool):
+            fail(6, "invalid_review_event", "qa-completed requires boolean passed")
+        event["checks"] = _review_string_list(event.get("checks", []), "checks")
+        event["blocked_checks"] = _review_string_list(event.get("blocked_checks", []), "blocked_checks")
+        event["evidence_refs"] = _review_string_list(event.get("evidence_refs", []), "evidence_refs")
+        invalid_qa_refs = [
+            ref for ref in event["evidence_refs"]
+            if cycle["evidence"].get(ref, {}).get("status") != "valid"
+        ]
+        if invalid_qa_refs:
+            fail(
+                6, "invalid_review_event", "QA may reference only valid cycle evidence",
+                invalid_evidence_refs=invalid_qa_refs,
+            )
+        if event["passed"] and not event["evidence_refs"]:
+            fail(6, "invalid_review_event", "passed QA requires pinned evidence")
+        results = event.get("finding_results", [])
+        if not isinstance(results, list):
+            fail(6, "invalid_review_event", "finding_results must be a list")
+        normalised_results = []
+        for result in results:
+            if not isinstance(result, dict) or set(result) != {"id", "status", "evidence_refs"}:
+                fail(6, "invalid_review_event", "finding result fields are invalid")
+            finding = findings.get(result["id"])
+            if not finding:
+                fail(6, "finding_not_found", f"unknown finding: {result['id']}")
+            if result["status"] not in {"open", "closed", "blocked"}:
+                fail(6, "invalid_review_event", "finding result status must be open, closed, or blocked")
+            evidence_refs = _review_string_list(result["evidence_refs"], "finding_result.evidence_refs")
+            if result["status"] == "closed" and not evidence_refs:
+                fail(6, "invalid_finding_transition", "closed finding requires defense evidence")
+            if result["status"] == "closed" and event["passed"] is not True:
+                fail(6, "invalid_finding_transition", "failed QA cannot close a finding")
+            invalid_refs = [
+                ref for ref in evidence_refs
+                if cycle["evidence"].get(ref, {}).get("status") != "valid"
+            ]
+            if invalid_refs:
+                fail(
+                    6, "invalid_finding_transition",
+                    "finding results may reference only valid cycle evidence",
+                    invalid_evidence_refs=invalid_refs,
+                )
+            finding["status"] = result["status"]
+            if result["status"] == "closed":
+                finding["closed_by_evidence"] = evidence_refs
+                finding["closed_at_head"] = _review_text(event.get("head"), "event.head")
+            normalised_results.append({**result, "evidence_refs": evidence_refs})
+        event["finding_results"] = normalised_results
+        if qa_mode == "full":
+            reason = event.get("full_qa_reason")
+            if reason not in FULL_QA_REASONS:
+                fail(6, "full_qa_reason_required", "full QA requires a machine-readable reason")
+            required_reason = cycle.get("required_full_qa_reason")
+            if required_reason and reason != required_reason:
+                fail(6, "full_qa_reason_mismatch", "full QA reason must match the pending boundary change")
+            reasons = cycle["full_qa_reason_counts"]
+            reasons[reason] = int(reasons.get(reason) or 0) + 1
+        elif event.get("full_qa_reason") is not None:
+            fail(6, "invalid_review_event", "full_qa_reason is only valid for full QA")
+        counters["qa_rounds"] += 1
+        counter_key = {
+            "development": "development_qa",
+            "delta": "delta_qa",
+            "full": "full_qa",
+            "final": "final_qa",
+            "integration": "integration_gate",
+        }[qa_mode]
+        counters[counter_key] += 1
+        unresolved = [item for item in findings.values() if item["status"] != "closed"]
+        clean = event["passed"] and not event["blocked_checks"] and not unresolved and bool(event["checks"])
+        if qa_mode == "full" and clean:
+            cycle["required_full_qa_reason"] = None
+        if qa_mode == "final":
+            if cycle.get("required_full_qa_reason"):
+                fail(6, "full_qa_required", "final QA cannot bypass a required full QA")
+            if not clean:
+                fail(6, "final_qa_incomplete", "final QA requires passed checks and zero open findings")
+            cycle["state"] = (
+                "final-qa-passed" if cycle["requires_integration_gate"] else "integration-ready"
+            )
+        elif qa_mode == "integration":
+            if cycle.get("required_full_qa_reason"):
+                fail(6, "full_qa_required", "integration cannot bypass a required full QA")
+            if cycle["requires_final_qa"] and cycle["state"] != "final-qa-passed":
+                fail(6, "final_qa_required", "integration requires final QA first")
+            if not clean:
+                fail(6, "integration_gate_incomplete", "integration gate requires passed checks and zero open findings")
+            cycle["state"] = "integration-ready"
+        elif clean:
+            cycle["state"] = (
+                "integration-ready"
+                if not cycle["requires_final_qa"] and not cycle["requires_integration_gate"]
+                else "stabilized"
+            )
+        else:
+            cycle["state"] = "review-cycle"
+        cycle["base_head"] = _review_text(event.get("head"), "event.head")
+    elif event_type == "retry-recorded":
+        classification = event.get("classification")
+        if classification not in RETRY_CLASSIFICATIONS:
+            fail(6, "invalid_review_event", f"classification must be one of {sorted(RETRY_CLASSIFICATIONS)}")
+        event["failure"] = _review_text(event.get("failure"), "failure")
+        if not isinstance(event.get("attempt"), int) or isinstance(event.get("attempt"), bool) or event["attempt"] < 1:
+            fail(6, "invalid_review_event", "retry attempt must be a positive integer")
+        if classification == "environment-transient":
+            counters["transient_retries"] += 1
+        elif classification == "tool-unavailable":
+            counters["tool_unavailable_retries"] += 1
+        elif classification == "configuration-error":
+            counters["configuration_retries"] += 1
+        elif classification == "criteria-gap":
+            cycle["state"] = "blocked"
+            event["new_cycle_required"] = True
+        elif classification == "product-defect":
+            finding_ids = _review_string_list(event.get("finding_ids", []), "finding_ids", non_empty=True)
+            if any(finding_id not in findings for finding_id in finding_ids):
+                fail(6, "finding_not_found", "product-defect retry must reference an existing finding")
+            event["finding_ids"] = finding_ids
+    elif event_type == "handoff-recorded":
+        if not isinstance(event.get("fresh_context"), bool):
+            fail(6, "invalid_review_event", "handoff fresh_context must be boolean")
+        continuation = event.get("continuation_ref")
+        if continuation is not None and (not isinstance(continuation, str) or not continuation.strip()):
+            fail(6, "invalid_review_event", "continuation_ref must be null or non-empty")
+        reason = event.get("reason")
+        if event["fresh_context"] and reason not in FRESH_CONTEXT_REASONS:
+            fail(6, "fresh_context_reason_required", "fresh context requires a machine-readable reason")
+        if not event["fresh_context"] and reason is not None:
+            fail(6, "invalid_review_event", "continuation handoff does not take a fresh-context reason")
+        counters["handoffs"] += 1
+        counters["fresh_contexts"] += int(event["fresh_context"])
+
+    event["digest"] = canonical_digest(event)
+    cycle["events"].append(event)
+    cycle["updated_at"] = now_stamp()
+    _seal_review_cycle(cycle)
+    return cycle, True, _review_issue_event(cycle, event)
+
+
+def _review_cycle_from_board(board: dict, cycle_id: str) -> dict:
+    cycle = _review_cycles(board).get(cycle_id)
+    if not isinstance(cycle, dict):
+        fail(4, "review_cycle_not_found", f"review cycle not found: {cycle_id}")
+    if cycle.get("schema") != REVIEW_CYCLE_SCHEMA or cycle.get("digest") != _review_cycle_digest(cycle):
+        fail(6, "review_cycle_invalid", "review cycle schema or digest is invalid")
+    return cycle
+
+
+def cmd_review_event(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    cycle_id = validate_safe_id(args.cycle_id, "cycle_id")
+    raw = load_json_arg(args.json, "review event")
+    with board_transaction(ws) as board:
+        cycle = _review_cycle_from_board(board, cycle_id)
+        cycle, changed, issue_event = _apply_review_event(cycle, raw)
+    ok(cycle=cycle, changed=changed, issue_event=issue_event)
+
+
+def _review_handoff(cycle: dict) -> dict:
+    findings = [
+        {
+            "id": item["id"], "status": item["status"], "severity": item["severity"],
+            "title": item["title"], "repro": item["repro"],
+            "affected_criteria": item["affected_criteria"],
+        }
+        for item in cycle["findings"].values()
+        if item["status"] != "closed"
+    ]
+    evidence = [
+        {key: item[key] for key in ("ref", "head", "criteria_digest", "surface_digest", "tool_version", "environment_digest")}
+        for item in cycle["evidence"].values() if item.get("status") == "valid"
+    ]
+    pack = {
+        "schema": "studio-review-handoff/v1",
+        "cycle_id": cycle["cycle_id"],
+        "track_id": cycle["track_id"],
+        "state": cycle["state"],
+        "definition_ref": cycle.get("definition_ref"),
+        "issue_ref": cycle.get("issue_ref"),
+        "quality_plan_ref": cycle["quality_plan_ref"],
+        "criteria_digest": cycle["criteria_digest"],
+        "base_head": cycle["base_head"],
+        "next_finding_seq": cycle["next_finding_seq"],
+        "open_findings": findings,
+        "valid_evidence": evidence,
+        "required_full_qa_reason": cycle.get("required_full_qa_reason"),
+        "last_event_id": cycle["events"][-1]["event_id"] if cycle["events"] else None,
+    }
+    pack["digest"] = canonical_digest(pack)
+    return pack
+
+
+def _review_summary(cycle: dict, board: dict) -> dict:
+    total_decisions = cycle["counters"]["evidence_reused"] + cycle["counters"]["evidence_invalidated"]
+    runs = [run for run in board.get("runs", []) if run.get("review_cycle_id") == cycle["cycle_id"]]
+    token_values = [run.get("cost_tokens") for run in runs]
+    elapsed_values = [run.get("cost_elapsed_ms") for run in runs]
+    known_tokens = [value for value in token_values if isinstance(value, int) and not isinstance(value, bool)]
+    known_elapsed = [value for value in elapsed_values if isinstance(value, int) and not isinstance(value, bool)]
+
+    def coverage(known: list[int], total: int) -> str:
+        if not total or not known:
+            return "unavailable"
+        return "exact" if len(known) == total else "partial"
+
+    return {
+        "cycle_id": cycle["cycle_id"],
+        "track_id": cycle["track_id"],
+        "state": cycle["state"],
+        "open_findings": sum(
+            item["status"] != "closed"
+            for item in cycle["findings"].values()
+        ),
+        "counters": cycle["counters"],
+        "full_qa_reason_counts": cycle["full_qa_reason_counts"],
+        "cost": {
+            "physical_runs": len(runs),
+            "tokens": sum(known_tokens) if known_tokens else None,
+            "token_coverage": coverage(known_tokens, len(runs)),
+            "elapsed_ms": sum(known_elapsed) if known_elapsed else None,
+            "elapsed_coverage": coverage(known_elapsed, len(runs)),
+        },
+        "evidence_reuse_ratio": (
+            cycle["counters"]["evidence_reused"] / total_decisions if total_decisions else None
+        ),
+        "integration_ready": cycle["state"] == "integration-ready",
+    }
+
+
+def cmd_review_read(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    cycle_id = validate_safe_id(args.cycle_id, "cycle_id")
+    board = load_board(ws)
+    cycle = _review_cycle_from_board(board, cycle_id)
+    if args.review_command == "status":
+        ok(cycle=cycle)
+    if args.review_command == "handoff":
+        ok(handoff=_review_handoff(cycle))
+    ok(summary=_review_summary(cycle, board))
 
 
 # --------------------------------------------------------------------------- #
@@ -2094,6 +2791,28 @@ def build_parser() -> argparse.ArgumentParser:
     rr.add_argument("--track", help="track slug this run belongs to (producer-owned)")
     rr.add_argument("--receipt-log", help="optional JSONL receipt sink; append failure is warning-only")
     rr.set_defaults(func=cmd_run_record)
+
+    sp = sub.add_parser("review", help="stable review-cycle state and evidence reuse")
+    rvsub = sp.add_subparsers(dest="review_command", required=True)
+    ro = rvsub.add_parser("open", help="open an idempotent review cycle bound to one track")
+    ro.add_argument("--json", required=True, help="review-cycle binding JSON")
+    ro.set_defaults(func=cmd_review_open)
+    revent = rvsub.add_parser("event", help="apply one idempotent review-cycle event")
+    revent.add_argument("cycle_id")
+    revent.add_argument("--json", required=True, help="review event JSON")
+    revent.set_defaults(func=cmd_review_event)
+    for action, helptext in (
+        ("status", "read the full cycle ledger"),
+        ("handoff", "emit only active findings and valid evidence pins"),
+        ("summary", "emit cycle cost and QA counters"),
+    ):
+        rp = rvsub.add_parser(action, help=helptext)
+        rp.add_argument("cycle_id")
+        rp.set_defaults(func=cmd_review_read)
+    rec = rvsub.add_parser("evidence-check", help="decide whether pinned evidence survives a change")
+    rec.add_argument("--evidence", required=True, help="evidence pin JSON")
+    rec.add_argument("--change", required=True, help="change impact JSON")
+    rec.set_defaults(func=cmd_review_evidence_check)
 
     sp = sub.add_parser("config", help="agent model/effort policy (.studio.yml)")
     csub = sp.add_subparsers(dest="ccmd", required=True)
