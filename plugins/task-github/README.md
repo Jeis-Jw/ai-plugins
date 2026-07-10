@@ -54,6 +54,7 @@ python3 plugins/task-github/skills/define/scripts/create_issue_tree.py \
 - `record:none|github`과 `delivery:local-ff|pull-request`는 독립 축이다.
 - `record:none`은 Issue write를 하지 않는다. policy상 PR이 필요한 경우 `record:none + delivery:pull-request`는 허용한다.
 - `record:github`은 full coverage 전 실행을 차단한다. node marker와 node/edge intent checkpoint로 remote write 뒤 local 실패도 동일 Issue/dependency를 재사용한다. 전체 pagination scan은 incomplete node resume에서만 수행한다.
+- exactly-once projection resume은 projection-state 경로당 **단일 process의 순차 실행만** 지원한다. 같은 경로의 concurrent projector는 실행하지 않는다. concurrent writer와 marker의 eventual visibility는 보장하지 않으며 별도 lock도 제공하지 않는다.
 - public `start → run → verify → done`은 `--artifact/--node|--run-state` record:none mode를 제공하고 `recover`로 재진입한다. branch/worktree는 stable node id 기반이라 revision 간 identity가 유지된다.
 - closeout receipt는 binding schema v1 필드(`schema`, `emitter`, `workflow`, `run_id`, 시간/비용/품질)를 방출한다. token 측정값은 `exact`, 없으면 `tokens:null`, `token_coverage:unavailable`이다.
 - 기존 `create_issue_tree.py --spec`와 `task/issue-{N}` 기반 Issue-first 흐름은 그대로 지원한다.
@@ -67,7 +68,7 @@ python3 plugins/task-github/skills/define/scripts/create_issue_tree.py \
 ## 위키 연계
 
 `./wiki/` vault가 있으면 자동 연동(없으면 그레이스풀 스킵):
-- **업무 1개 = 루트 이슈 1개 + 위키 `task` 노드 1개** (1:1 다리)
+- **업무 정의의 정본 = DefinitionArtifact 1개**다. 위키가 가용하면 `task` 노드 1개를 1:1 context bridge로 연결한다. `record:github`/legacy mode만 루트 이슈 1개를 추가하고, `record:none`은 local artifact/run state만 사용한다.
 - 작업 중 `[결정]/[시행착오]/[관찰]`을 위키 결정 그래프로 승격
 - `recall --backlinks-of {DEC}`로 "이 결정이 낳은 작업" 추적
 - `refresh --level integrity --strict`와 PR diff `changed-path-stale`를 완료/머지 hard gate로 적용(hygiene 등급은 경고)

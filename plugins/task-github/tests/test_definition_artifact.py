@@ -194,16 +194,18 @@ class DefinitionArtifactTests(unittest.TestCase):
 class FakeProjectionProvider:
     def __init__(
         self, *, fail_child=None, fail_node_id_for=None, start=100,
-        remote=None, remote_dependencies=None,
+        lose_create_response_for=None, remote=None, remote_dependencies=None,
     ):
         self.fail_child = fail_child
         self.fail_node_id_for = fail_node_id_for
+        self.lose_create_response_for = lose_create_response_for
         self.next_number = start
         self.calls = []
         self.remote = remote if remote is not None else {}
         self.remote_dependencies = remote_dependencies if remote_dependencies is not None else set()
         self.number_keys = {}
         self.failed_node_ids = set()
+        self.lost_create_responses = set()
 
     def context(self):
         self.calls.append(("context",))
@@ -245,6 +247,16 @@ class FakeProjectionProvider:
         self.number_keys[number] = key
         return number
 
+    def _create_remote(self, key, issue):
+        number = self._record_remote(key, issue)
+        if (
+            key == self.lose_create_response_for
+            and key not in self.lost_create_responses
+        ):
+            self.lost_create_responses.add(key)
+            raise tree.IssueTreeError("gh_failed", f"injected lost create response for {key}")
+        return number
+
     @staticmethod
     def assert_projection_marker(marker):
         if not marker.startswith("task-github-definition-node:v1:"):
@@ -252,13 +264,13 @@ class FakeProjectionProvider:
 
     def create_root(self, root):
         self.calls.append(("root",))
-        return self._record_remote("root", root)
+        return self._create_remote("root", root)
 
     def create_child(self, repo_id, parent_id, child):
         self.calls.append(("child", child["key"]))
         if child["key"] == self.fail_child:
             raise tree.IssueTreeError("gh_failed", "injected child failure")
-        return self._record_remote(child["key"], child)
+        return self._create_remote(child["key"], child)
 
     def add_dependency(self, owner, repo, child_number, blocker_number):
         self.calls.append(("dependency", child_number, blocker_number))
@@ -286,6 +298,9 @@ class ProjectionResumeTests(unittest.TestCase):
             result = tree.execute_projection(spec, artifact, state_path, provider=resumed)
             self.assertTrue(result["projection_complete"])
             self.assertTrue(result["resumed"])
+            final = da.read_json(state_path)
+            self.assertTrue(all("status" not in node for node in final["nodes"].values()))
+            self.assertTrue(all("status" not in edge for edge in final["dependencies"].values()))
             self.assertNotIn(("root",), resumed.calls)
             self.assertEqual([call for call in resumed.calls if call[0] == "child"], [("child", "U2")])
             self.assertEqual(len([call for call in resumed.calls if call[0] == "dependency"]), 1)
@@ -311,7 +326,7 @@ class ProjectionResumeTests(unittest.TestCase):
             root_id = artifact["root"]["node_id"]
             partial = da.read_json(state_path)["nodes"][root_id]
             original_number = partial["number"]
-            self.assertEqual(partial["status"], "issue_created")
+            self.assertNotIn("status", partial)
             self.assertIn("marker", partial)
 
             resumed = FakeProjectionProvider(remote=first.remote, start=500)
@@ -356,6 +371,79 @@ class ProjectionResumeTests(unittest.TestCase):
             self.assertEqual(result["root_number"], original_number)
             self.assertNotIn(("root",), resumed.calls)
             self.assertEqual([call[0] for call in resumed.calls].count("find"), 1)
+
+    def test_lost_create_response_retry_finds_marker_and_reuses_root_issue(self):
+        artifact = da.create_artifact({
+            "definition_id": "lost-response-reconcile",
+            "record": "github",
+            "root": {"title": "root", "body": "root"},
+        })
+        spec = tree.validate_spec(da.artifact_to_issue_spec(artifact))
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "projection.json"
+            first = FakeProjectionProvider(lose_create_response_for="root")
+            with self.assertRaisesRegex(tree.IssueTreeError, "lost create response"):
+                tree.execute_projection(spec, artifact, state_path, provider=first)
+
+            root_id = artifact["root"]["node_id"]
+            partial = da.read_json(state_path)["nodes"][root_id]
+            self.assertNotIn("number", partial)
+            self.assertNotIn("status", partial)
+            original_number = next(iter(first.remote.values()))
+
+            resumed = FakeProjectionProvider(remote=first.remote, start=900)
+            result = tree.execute_projection(spec, artifact, state_path, provider=resumed)
+            self.assertTrue(result["projection_complete"])
+            self.assertEqual(result["root_number"], original_number)
+            self.assertNotIn(("root",), resumed.calls)
+            self.assertEqual([call[0] for call in resumed.calls].count("find"), 1)
+
+    def test_incomplete_legacy_checkpoint_without_marker_fails_closed(self):
+        artifact = da.create_artifact({
+            "definition_id": "legacy-markerless",
+            "record": "github",
+            "root": {"title": "root", "body": "root"},
+        })
+        spec = tree.validate_spec(da.artifact_to_issue_spec(artifact))
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "projection.json"
+            state = tree._new_projection_state(artifact)
+            state["owner"] = "owner"
+            state["repo"] = "repo"
+            state["nodes"][artifact["root"]["node_id"]] = {
+                "key": "root",
+                "number": 123,
+                "status": "issue_created",
+            }
+            da.write_json_atomic(state_path, state)
+
+            provider = FakeProjectionProvider()
+            with self.assertRaisesRegex(tree.IssueTreeError, "no reconciliation marker"):
+                tree.execute_projection(spec, artifact, state_path, provider=provider)
+            self.assertEqual(
+                [call for call in provider.calls if call[0] in {"root", "child"}],
+                [],
+            )
+            self.assertEqual(provider.remote, {})
+
+    def test_legacy_status_fields_are_ignored(self):
+        artifact = da.create_artifact(definition_spec(record="github"))
+        spec = tree.validate_spec(da.artifact_to_issue_spec(artifact))
+        state = complete_projection(artifact)
+        for node in state["nodes"].values():
+            node["status"] = "materialized"
+        for edge in state["dependencies"].values():
+            edge["status"] = "materialized"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "projection.json"
+            da.write_json_atomic(state_path, state)
+            provider = FakeProjectionProvider()
+            result = tree.execute_projection(spec, artifact, state_path, provider=provider)
+
+        self.assertTrue(result["projection_complete"])
+        self.assertTrue(result["resumed"])
+        self.assertEqual(provider.calls, [])
 
     def test_post_create_child_node_id_failure_reuses_marker_issue_on_retry(self):
         artifact = da.create_artifact(definition_spec(record="github"))

@@ -821,7 +821,6 @@ def _materialize_projection_node(
             "key": artifact_node["key"],
             "parent_node_id": parent_node_id,
             "marker": marker,
-            "status": "create_intent",
         }
         nodes[stable_id] = entry
         definition_artifact.write_json_atomic(state_path, state)
@@ -858,10 +857,8 @@ def _materialize_projection_node(
     # Persist the remote number before resolving GraphQL node id. If node_id or
     # this checkpoint fails, the next run reconciles the marker and reuses it.
     entry["number"] = remote_number
-    entry["status"] = "issue_created"
     definition_artifact.write_json_atomic(state_path, state)
     entry["github_node_id"] = provider.node_id(owner, repo, remote_number)
-    entry["status"] = "materialized"
     definition_artifact.write_json_atomic(state_path, state)
 
 
@@ -893,7 +890,6 @@ def _materialize_projection_dependency(
             "child_number": child_number,
             "blocked_by_number": blocker_number,
             "materialized": False,
-            "status": "add_intent",
         }
         dependencies[edge_id] = entry
         definition_artifact.write_json_atomic(state_path, state)
@@ -912,7 +908,6 @@ def _materialize_projection_dependency(
                 f"GitHub dependency was not materialized: {edge_id}",
             )
     entry["materialized"] = True
-    entry["status"] = "materialized"
     definition_artifact.write_json_atomic(state_path, state)
 
 
