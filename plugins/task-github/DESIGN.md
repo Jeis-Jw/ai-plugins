@@ -21,10 +21,20 @@
 
 - **무엇으로**: GitHub Issue(작업 단위·트리) + Label(상태·성격) + Assignee(점유) + PR(코드 변경) + Issue 코멘트(실행 기록)
 - **어떻게 분류하나**: 작업을 **3개 축**으로 분류 — 프로파일(환경) · 기어(파급력) · 플로우(승인 관문)
-- **위키와 어떻게 엮나**: **업무 하나 = 위키 `task` 노드 1개 + GitHub 루트 이슈 1개**(1:1 다리). task 노드는 "어떤 결정·취지로 이 업무가 생겼나"를 요약하고 루트 이슈를 가리킨다. 루트 이슈는 그 task 노드를 메인 컨텍스트로 참조하며 상세를 담는다. 작업 중 나온 결정·시행착오·관찰은 위키 record로 승격한다.
+- **위키와 어떻게 엮나**: **업무 하나 = 위키 `task` 노드 1개 + DefinitionArtifact 1개**가 기본이다. `record:github`일 때만 GitHub 루트 이슈를 전체 projection의 root로 추가 연결한다. 작업 중 나온 결정·시행착오·관찰은 위키 record로 승격한다.
 - **계층 위치**: 이 플러그인은 **agent-neutral 메커니즘**이다. "언제·누가·무엇을 캡처/연결하는가"의 운영 규약은 자동로드 **agent-entry policy 표면**(`CLAUDE.md` / `AGENTS.md`)에 둔다.
 
-핵심 한 문장: **"휘발되는 작업 히스토리·결정 맥락을 GitHub 기본 도구 위 얇은 프로토콜로 고정하고, 위키 `task` 노드를 다리 삼아 '결정 → 업무 → 실행'을 하나의 그래프로 잇는다."**
+핵심 한 문장: **"작업 정의를 provider-neutral immutable artifact로 고정하고, 필요한 경우에만 전체 트리를 GitHub에 기록하며, 위키 `task` 노드를 다리 삼아 '결정 → 업무 → 실행'을 하나의 그래프로 잇는다."**
+
+### 1.2 DefinitionArtifact와 projection 경계
+
+`define`의 정본은 `DefinitionArtifact`다. stable definition/node id, `revision`, canonical `digest`, `previous_digest`를 가지며 실행 run은 이 세 revision binding을 pin한다. revision 파일은 append-only이고 기존 revision을 덮어쓰지 않는다.
+
+- `record:none`: GitHub Issue write 없음. `.task-github/local/`의 artifact/run state로 `start → run → verify → done → closeout`과 recovery를 수행한다.
+- `record:github`: root, 모든 descendant, 모든 dependency edge를 projection checkpoint에 materialize한다. 중간 실패 시 성공한 node/edge를 재사용해 resume하며 full coverage 전 실행을 차단한다.
+- `delivery:local-ff|pull-request`: record와 독립이다. 원격 작업 기록 없이도 policy상 필요한 PR delivery를 선택할 수 있다.
+- stable local identity: logical node id에서 `task/definition-*` / `.worktrees/definition-*`을 도출한다. legacy Issue-first는 `task/issue-{N}` identity와 `create_issue_tree.py --spec` 계약을 유지한다.
+- receipt: closeout 뒤 binding schema v1(`schema`, `emitter`, `workflow`, `run_id`, `started_at`, `finished_at`, `elapsed_ms`, `tokens`, `token_coverage`, `counters`, `quality`)을 방출한다. 미측정 token은 반드시 `null/unavailable`이다.
 
 ---
 
@@ -95,6 +105,7 @@ plugins/task-github/
 │   └── quality-gates.md     #   위키 무결성 hard gate + decision/task 품질 FLAG-to-human 규약
 ├── scripts/
 │   ├── context_bundle.py     #   open/start/done/merge/status가 공유하는 issue/root/wiki TASK read-model + 링크 정합 검사
+│   ├── definition_artifact.py #   immutable revision/local lifecycle/full-projection gate/receipt
 │   ├── status_next.py        #   status next_action read-model
 │   ├── doctor.py             #   diagnose-only checks
 │   └── reconcile.py          #   explicit bridge repair actions

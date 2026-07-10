@@ -1,7 +1,7 @@
 {
   "name": "task-github",
-  "version": "0.19.0",
-  "description": "GitHub-based autonomous task protocol with wiki-markdown task-node integration.",
+  "version": "0.20.0",
+  "description": "DefinitionArtifact-based task protocol with optional full GitHub recording and wiki integration.",
   "author": {
     "name": "Jinwuk-Lee",
     "url": "https://github.com/Jeis-Jw"
@@ -9,8 +9,8 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Task GitHub",
-    "shortDescription": "Run GitHub Issue/PR task workflows with wiki context.",
-    "longDescription": "Defines, opens, starts, plans, runs, verifies, completes, reviews, and merges GitHub-tracked work. Integrates with wiki-markdown task bridge nodes when a local wiki vault exists and follows auto-loaded agent operating policy from CLAUDE.md or AGENTS.md.",
+    "shortDescription": "Define and run tasks locally or as full GitHub trees.",
+    "longDescription": "Defines immutable provider-neutral task revisions, runs them locally or projects their full tree to GitHub, and preserves legacy Issue-first workflows. Integrates with wiki-markdown task bridge nodes when a local wiki vault exists and follows auto-loaded agent operating policy from CLAUDE.md or AGENTS.md.",
     "developerName": "Jinwuk-Lee",
     "category": "Productivity",
     "capabilities": [
@@ -20,7 +20,8 @@
       "Workflow"
     ],
     "defaultPrompt": [
-      "Use $start to claim and load an issue.",
+      "Use $define to create an immutable task definition and choose local or GitHub recording.",
+      "Use $start to claim and load a legacy or projected issue.",
       "Use $status to inspect current task state.",
       "Use $orchestrate to run a GitHub issue tree in solo mode.",
       "Use $done or $merge to close out work through gear-gated PR or FF merge paths."

@@ -21,6 +21,7 @@ TASK_GITHUB_DIR = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(TASK_GITHUB_DIR / "scripts"))
 
 import context_bundle  # noqa: E402
+import definition_artifact  # noqa: E402
 import task_config  # noqa: E402
 
 
@@ -659,9 +660,187 @@ def execute(spec: dict) -> dict:
     }
 
 
+class GitHubProjectionProvider:
+    """Small adapter kept injectable for deterministic failure/resume tests."""
+
+    def context(self) -> tuple[str, str, str]:
+        return repo_context()
+
+    def node_id(self, owner: str, repo: str, number: int) -> str:
+        return issue_node_id(owner, repo, number)
+
+    def create_root(self, root: dict) -> int:
+        return create_root_issue(root)
+
+    def create_child(self, repo_id: str, parent_id: str, child: dict) -> int:
+        return create_child_issue(repo_id, parent_id, child)
+
+    def add_dependency(
+        self, owner: str, repo: str, child_number: int, blocker_number: int
+    ) -> bool:
+        # DefinitionArtifact GitHub recording is all-or-none. Unlike the legacy
+        # Issue-first path it never falls back to a comment for a missing edge.
+        return add_dependency(
+            owner, repo, child_number, blocker_number, strict=True
+        )
+
+
+def _new_projection_state(artifact: dict) -> dict:
+    return {
+        "schema": definition_artifact.PROJECTION_SCHEMA,
+        "definition_id": artifact["definition_id"],
+        "revision": artifact["revision"],
+        "definition_digest": artifact["digest"],
+        "owner": None,
+        "repo": None,
+        "nodes": {},
+        "dependencies": {},
+        "complete": False,
+    }
+
+
+def _projection_result(state: dict, artifact: dict, *, resumed: bool) -> dict:
+    coverage = definition_artifact.projection_coverage(artifact, state)
+    root_number = state["nodes"].get(artifact["root"]["node_id"], {}).get("number")
+    return {
+        "ok": True,
+        "owner": state.get("owner"),
+        "repo": state.get("repo"),
+        "root_number": root_number,
+        "definition_id": artifact["definition_id"],
+        "revision": artifact["revision"],
+        "definition_digest": artifact["digest"],
+        "projection_complete": coverage["complete"],
+        "coverage": coverage,
+        "resumed": resumed,
+        "parent_method": PARENT_METHOD,
+        "dependency_api_version": API_VERSION,
+    }
+
+
+def execute_projection(
+    spec: dict,
+    artifact: dict,
+    state_path: Path,
+    *,
+    provider: GitHubProjectionProvider | None = None,
+) -> dict:
+    """Materialize every node/edge, checkpointing after each successful write."""
+    definition_artifact.validate_artifact(artifact)
+    if artifact["record"] != "github":
+        raise IssueTreeError(
+            "record_none_forbids_github",
+            "record:none forbids GitHub issue writes; choose record:github in a new revision",
+        )
+    resumed = state_path.exists()
+    if resumed:
+        try:
+            state = definition_artifact.read_json(state_path)
+        except definition_artifact.DefinitionError as exc:
+            raise IssueTreeError(exc.code, exc.message) from exc
+        coverage = definition_artifact.projection_coverage(artifact, state)
+        if not coverage["binding_valid"]:
+            raise IssueTreeError(
+                "projection_binding_mismatch",
+                "projection state is pinned to another definition revision/digest",
+            )
+        if coverage["complete"]:
+            return _projection_result(state, artifact, resumed=True)
+    else:
+        state = _new_projection_state(artifact)
+
+    provider = provider or GitHubProjectionProvider()
+    owner, repo, repo_id = provider.context()
+    if state.get("owner") not in {None, owner} or state.get("repo") not in {None, repo}:
+        raise IssueTreeError("projection_repo_mismatch", "projection state belongs to another repository")
+    state["owner"] = owner
+    state["repo"] = repo
+    definition_artifact.write_json_atomic(state_path, state)
+
+    by_key = {child["key"]: child for child in artifact["children"]}
+    root_id = artifact["root"]["node_id"]
+    nodes = state["nodes"]
+    if root_id in nodes and not (
+        isinstance(nodes[root_id], dict)
+        and nodes[root_id].get("number")
+        and nodes[root_id].get("github_node_id")
+    ):
+        raise IssueTreeError("projection_state_invalid", "root projection checkpoint is incomplete")
+    if root_id not in nodes:
+        number = provider.create_root(spec["root"])
+        nodes[root_id] = {
+            "key": "root",
+            "number": number,
+            "github_node_id": provider.node_id(owner, repo, number),
+            "parent_node_id": None,
+        }
+        definition_artifact.write_json_atomic(state_path, state)
+
+    for child_spec in _topo_order(spec["children"]):
+        artifact_child = by_key[child_spec["key"]]
+        stable_id = artifact_child["node_id"]
+        if stable_id in nodes:
+            if not (
+                isinstance(nodes[stable_id], dict)
+                and nodes[stable_id].get("number")
+                and nodes[stable_id].get("github_node_id")
+            ):
+                raise IssueTreeError(
+                    "projection_state_invalid",
+                    f"node projection checkpoint is incomplete: {stable_id}",
+                )
+            continue
+        parent_id = artifact_child["parent_node_id"]
+        parent_github_id = nodes[parent_id]["github_node_id"]
+        number = provider.create_child(repo_id, parent_github_id, child_spec)
+        nodes[stable_id] = {
+            "key": artifact_child["key"],
+            "number": number,
+            "github_node_id": provider.node_id(owner, repo, number),
+            "parent_node_id": parent_id,
+        }
+        definition_artifact.write_json_atomic(state_path, state)
+
+    dependencies = state["dependencies"]
+    for child in artifact["children"]:
+        for blocker_key, blocker_id in zip(child["blocked_by"], child["blocked_by_node_ids"]):
+            edge_id = f"{child['node_id']}>{blocker_id}"
+            if dependencies.get(edge_id, {}).get("materialized") is True:
+                continue
+            child_number = nodes[child["node_id"]]["number"]
+            blocker_number = nodes[blocker_id]["number"]
+            if not provider.add_dependency(owner, repo, child_number, blocker_number):
+                raise IssueTreeError(
+                    "dep_create_failed",
+                    f"GitHub dependency was not materialized: {child['key']} blocked_by {blocker_key}",
+                )
+            dependencies[edge_id] = {
+                "child": child["node_id"],
+                "blocked_by": blocker_id,
+                "child_number": child_number,
+                "blocked_by_number": blocker_number,
+                "materialized": True,
+            }
+            definition_artifact.write_json_atomic(state_path, state)
+
+    coverage = definition_artifact.projection_coverage(artifact, state)
+    state["complete"] = coverage["complete"]
+    state["coverage"] = coverage
+    definition_artifact.write_json_atomic(state_path, state)
+    if not coverage["complete"]:
+        raise IssueTreeError("projection_incomplete", f"projection coverage is incomplete: {coverage}")
+    return _projection_result(state, artifact, resumed=resumed)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--spec", required=True, help="JSON spec path")
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--spec", help="legacy Issue-first JSON spec path")
+    source.add_argument("--artifact", help="DefinitionArtifact revision path")
+    parser.add_argument(
+        "--projection-state",
+        help="checkpoint path for resumable DefinitionArtifact GitHub projection",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--strict-deps", action="store_true")
     parser.add_argument("--json", action="store_true", dest="as_json")
@@ -682,9 +861,37 @@ def main(argv: Iterable[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         review_required = review_required_from_config(Path(args.task_config))
-        spec = validate_spec(read_spec(Path(args.spec)), review_required=review_required)
+        artifact = None
+        if args.artifact:
+            try:
+                artifact = definition_artifact.read_json(args.artifact)
+                definition_artifact.validate_artifact(artifact)
+                raw_spec = definition_artifact.artifact_to_issue_spec(artifact)
+            except definition_artifact.DefinitionError as exc:
+                raise IssueTreeError(exc.code, exc.message) from exc
+        else:
+            raw_spec = read_spec(Path(args.spec))
+        spec = validate_spec(raw_spec, review_required=review_required)
         spec["strict_deps"] = bool(spec.get("strict_deps") or args.strict_deps)
-        payload = build_plan(spec) if args.dry_run else execute(spec)
+        if args.dry_run:
+            payload = build_plan(spec)
+            if artifact is not None:
+                payload.update({
+                    "definition_id": artifact["definition_id"],
+                    "revision": artifact["revision"],
+                    "definition_digest": artifact["digest"],
+                    "projection_requirements": definition_artifact.projection_requirements(artifact),
+                })
+        elif artifact is not None:
+            if not args.projection_state:
+                raise IssueTreeError(
+                    "projection_state_required",
+                    "--projection-state is required for resumable artifact recording",
+                )
+            payload = execute_projection(spec, artifact, Path(args.projection_state))
+        else:
+            # Compatibility: the historical Issue-first --spec path is unchanged.
+            payload = execute(spec)
     except IssueTreeError as exc:
         emit({"ok": False, "error_code": exc.error_code, "message": exc.message},
              as_json=args.as_json)
