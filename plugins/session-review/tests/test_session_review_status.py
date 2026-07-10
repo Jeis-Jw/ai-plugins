@@ -299,6 +299,29 @@ class ReviewerLeaseAndReceiptTests(unittest.TestCase):
         self.assertEqual(second["status"]["lease_id"], "lease-1")
         self.assertEqual(second["status"]["reuse_count"], 1)
 
+    def test_acquired_lease_cannot_approve_or_complete_without_review_evidence(self):
+        approved = dict(
+            self.fresh_lease(), phase="approved", next_actor="worker",
+            blocking_count=0,
+        )
+        with self.assertRaisesRegex(session_review.StatusError, "reviewed_ref"):
+            session_review.validate_status(approved)
+        with self.assertRaisesRegex(session_review.StatusError, "reviewed_ref"):
+            session_review.validate_complete(approved, user_confirmed=True)
+
+    def test_reuse_clears_prior_review_evidence_before_next_review(self):
+        reviewed = dict(
+            self.fresh_lease(), round=2, reviewed_ref="def456",
+            finding_digest="findings:v1",
+        )
+        result = session_review.acquire_reviewer_lease(
+            reviewed, scope_digest="scope:v1", reviewer_ref="agent:7",
+            now="2026-07-10T08:05:00Z",
+        )
+        self.assertEqual(result["decision"], "reuse")
+        self.assertIsNone(result["status"]["reviewed_ref"])
+        self.assertIsNone(result["status"]["finding_digest"])
+
     def test_scope_ref_risk_round_and_harness_expiry_force_fresh(self):
         cases = (
             ("scope_changed", {"scope_digest": "scope:v2"}, {}),

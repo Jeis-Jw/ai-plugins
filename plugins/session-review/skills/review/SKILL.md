@@ -68,6 +68,7 @@ wiki_cli를 직접 호출하지 않는다.
    - **`[blocking]` 개수만 센다.** canonical feedback text의 digest와 실제 검토한
      commit/document ref를 각각 `finding_digest`, `reviewed_ref`에 함께 기록하고
      `lease_updated_at`을 갱신한다. 둘 중 하나만 기록하면 helper validation이 거부한다.
+     reuse handoff도 이전 round evidence가 비워진 상태이므로 새 검토 결과를 반드시 기록한다.
    - 새 STATUS를 렌더한다: blocking 0이면
      `phase:"approved"`+`blocking_count:0`, 있으면 `phase:"changes-requested"`+
      `blocking_count:<n>`. 공통으로 `next_actor:"worker"`, `active_actor:"none"`,

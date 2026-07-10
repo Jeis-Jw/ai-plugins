@@ -496,6 +496,8 @@ def acquire_reviewer_lease(
     else:
         updated.update(
             {
+                "reviewed_ref": None,
+                "finding_digest": None,
                 "lease_updated_at": timestamp,
                 "fresh_required": False,
                 "fresh_fallback_reason": None,
@@ -657,6 +659,12 @@ def validate_status(status: dict[str, Any]) -> None:
         raise StatusError(
             f"phase '{phase}' requires next_actor '{expected}', got '{next_actor}'")
     blocking = normalized.get("blocking_count")
+    if normalized.get("lease_id") and phase in {
+        "approved", "awaiting-user-confirmation", "completed"
+    } and not normalized.get("reviewed_ref"):
+        raise StatusError(
+            f"phase '{phase}' requires reviewed_ref and finding_digest"
+        )
     if phase == "approved":
         if blocking is None:
             raise StatusError("phase 'approved' requires blocking_count == 0")
