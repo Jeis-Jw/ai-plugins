@@ -61,6 +61,9 @@ def main() -> None:
         assert (ws / "board.md").is_file()
         assert (ws / "backlog.md").is_file()
         assert (ws / "missions" / "TEMPLATE.md").is_file()
+        assert board_state(ws)["schema"] == 2
+        for sub in ("items", "bundles", "deltas", "outbox"):
+            assert (ws / "context" / sub).is_dir(), sub
         crew = sorted(p.name for p in (ws / "crew").glob("*.md"))
         assert crew == [
             "architect.md",
@@ -237,6 +240,105 @@ def main() -> None:
         assert r["ok"] and r["total_valid_deltas"] == 1, r
         assert r["aborted_runs"] == 1 and r["runs"] == 4, r
         assert r["theatre"] is False, r
+
+        # 8a) schema 1 is projected lazily and persisted on the next mutation
+        legacy = tmp / "legacy"
+        legacy.mkdir()
+        legacy_board = {
+            "schema": 1, "budget": {"total_tokens": 50, "spent_tokens": 0},
+            "tracks": [], "runs": [],
+        }
+        (legacy / "board.md").write_text(
+            "# board\n\n```json\n" + json.dumps(legacy_board) + "\n```\n",
+            encoding="utf-8",
+        )
+        r = run(["--workspace", str(legacy), "board"], tmp)
+        assert r["board"]["schema"] == 2 and r["board"]["tracks"] == {}, r
+        assert board_state(legacy)["schema"] == 1  # read-only projection does not rewrite
+        run(["--workspace", str(legacy), "budget", "--set-total", "60"], tmp)
+        assert board_state(legacy)["schema"] == 2
+
+        # 8b) QualityPlan: evidence/floors gate before utility; unknown telemetry stays incomplete
+        quality_plan = {
+            "schema": 1,
+            "id": "quality-v1",
+            "criteria": [
+                {"id": "artifact-correct", "kind": "artifact", "weight": 0.6, "floor": 0.8, "measure": "tests"},
+                {"id": "context-usable", "kind": "context", "weight": 0.4, "floor": 0.7, "measure": "handoff rubric"},
+            ],
+            "utility_weights": {"quality": 1.0, "tokens": 0.000001, "elapsed": 0.0000001, "avoidable_owner_question": 0.1},
+        }
+        evidence = [
+            {"criterion_id": "artifact-correct", "ref": "test:studio", "score": 0.9},
+            {"criterion_id": "context-usable", "ref": "review:context", "score": 0.8},
+        ]
+        telemetry = {"tokens": 100, "elapsed_ms": 200, "avoidable_owner_questions": 0}
+        r = run(["quality", "evaluate", "--plan", json.dumps(quality_plan),
+                 "--evidence", json.dumps(evidence[:1]), "--telemetry", json.dumps(telemetry)], tmp)
+        assert not r["evaluation"]["floors_passed"] and r["evaluation"]["utility"] is None, r
+        low = [evidence[0], {**evidence[1], "score": 0.5}]
+        r = run(["quality", "evaluate", "--plan", json.dumps(quality_plan),
+                 "--evidence", json.dumps(low), "--telemetry", json.dumps(telemetry)], tmp)
+        assert not r["evaluation"]["complete"] and r["evaluation"]["utility"] is None, r
+        unknown_tokens = {**telemetry, "tokens": None}
+        r = run(["quality", "evaluate", "--plan", json.dumps(quality_plan),
+                 "--evidence", json.dumps(evidence), "--telemetry", json.dumps(unknown_tokens)], tmp)
+        assert r["evaluation"]["floors_passed"] and not r["evaluation"]["telemetry_complete"], r
+        assert r["evaluation"]["utility"] is None, r
+        r = run(["quality", "evaluate", "--plan", json.dumps(quality_plan),
+                 "--evidence", json.dumps(evidence), "--telemetry", json.dumps(telemetry)], tmp)
+        assert r["evaluation"]["complete"] and isinstance(r["evaluation"]["utility"], float), r
+
+        # 8c) Context Kernel projection is immutable/idempotent; compact and prune are local
+        item1 = {"id": "item-1", "kind": "fact", "content": "bounded", "source_ref": "issue:54"}
+        r = run(["context", "put", "item", "--json", json.dumps(item1)], tmp)
+        assert r["changed"] and r["context"]["digest"].startswith("sha256:"), r
+        item1_digest = r["context"]["digest"]
+        r = run(["context", "put", "item", "--json", json.dumps(item1)], tmp)
+        assert not r["changed"], r
+        run(["context", "put", "item", "--json", json.dumps({
+            "id": "item-2", "kind": "decision", "content": {"boundary": "reference-only"}, "source_ref": "dec:executor",
+        })], tmp)
+        r = run(["context", "compact", "--bundle-id", "bundle-1", "--item-id", "item-1", "--item-id", "item-2"], tmp)
+        assert r["context"]["item_refs"][0] == {"id": "item-1", "digest": item1_digest}, r
+        for delta_id in ("delta-1", "delta-2"):
+            run(["context", "put", "delta", "--json", json.dumps({
+                "id": delta_id, "base_ref": "bundle-1", "changes": {"add": [delta_id]},
+            })], tmp)
+        r = run(["context", "prune", "--keep-deltas", "1"], tmp)
+        assert len(r["removed"]) == 1 and (ws / "context" / "deltas" / "delta-2.json").is_file(), r
+        bad_digest = {**item1, "id": "item-bad", "digest": "sha256:deadbeef"}
+        run(["context", "put", "item", "--json", json.dumps(bad_digest)], tmp, expect=6)
+        candidate = {
+            "id": "promotion-1", "promotion_type": "decision",
+            "summary": "keep task-github reference-only", "source_refs": ["item-2"],
+            "owner_gate": True,
+        }
+        r = run(["context", "outbox", "--json", json.dumps(candidate)], tmp)
+        assert r["changed"] and r["candidate"]["status"] == "pending", r
+        r = run(["context", "outbox", "--json", json.dumps(candidate)], tmp)
+        assert not r["changed"] and (ws / "context" / "outbox" / "promotion-1.json").is_file(), r
+        run(["context", "outbox", "--json", json.dumps({**candidate, "id": "promotion-no-gate", "owner_gate": False})], tmp, expect=6)
+
+        # 8d) one active executor lease per track, fenced by lease_id and reservation
+        run(["budget", "reserve", "res-lease-1", "--lease-id", "lease-a", "--tokens", "20"], tmp)
+        r = run(["lease", "claim", "track-a", "--lease-id", "lease-a", "--executor", "external",
+                 "--reservation-id", "res-lease-1"], tmp)
+        assert r["lease"]["state"] == "claimed", r
+        r = run(["lease", "claim", "track-a", "--lease-id", "lease-a", "--executor", "external",
+                 "--reservation-id", "res-lease-1"], tmp)
+        assert not r["changed"], r
+        run(["budget", "reserve", "res-lease-2", "--lease-id", "lease-b", "--tokens", "20"], tmp)
+        run(["lease", "claim", "track-a", "--lease-id", "lease-b", "--executor", "native",
+             "--reservation-id", "res-lease-2"], tmp, expect=6)
+        run(["lease", "transition", "track-a", "--lease-id", "stale", "--state", "running"], tmp, expect=6)
+        r = run(["lease", "transition", "track-a", "--lease-id", "lease-a", "--state", "running",
+                 "--external-ref", "issue:54"], tmp)
+        assert r["lease"]["state"] == "running" and r["lease"]["external_ref"] == "issue:54", r
+        r = run(["lease", "transition", "track-a", "--lease-id", "lease-a", "--state", "running"], tmp)
+        assert not r["changed"], r
+        r = run(["lease", "transition", "track-a", "--lease-id", "lease-a", "--state", "succeeded"], tmp)
+        assert r["lease"]["state"] == "succeeded", r
 
         # 9) config (.studio.yml) — scaffold, validate, parse, guards
         cfg = tmp / ".studio.yml"

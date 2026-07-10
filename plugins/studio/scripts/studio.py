@@ -28,6 +28,7 @@ import argparse
 import contextlib
 import datetime
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -186,6 +187,22 @@ def read_json_block(path: Path) -> Any:
     return extract_json_block(path.read_text(encoding="utf-8"))
 
 
+def load_json_arg(raw_arg: str | None, label: str) -> Any:
+    if raw_arg in (None, "-"):
+        raw = sys.stdin.read()
+    elif raw_arg.startswith("@"):
+        try:
+            raw = Path(raw_arg[1:]).read_text(encoding="utf-8")
+        except (FileNotFoundError, OSError) as exc:
+            fail(4, "not_found", f"{label} file not found: {raw_arg[1:]} ({exc})")
+    else:
+        raw = raw_arg
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        fail(4, "parse", f"{label} is not valid JSON: {exc}")
+
+
 def atomic_write_text(path: Path, body: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
@@ -215,7 +232,41 @@ def write_board(ws: Path, board: dict) -> None:
 
 
 def load_board(ws: Path) -> dict:
-    return read_json_block(ws / "board.md")
+    board = read_json_block(ws / "board.md")
+    if not isinstance(board, dict):
+        fail(4, "bad_board", "board state must be an object")
+    return migrate_board(board)
+
+
+def migrate_board(board: dict) -> dict:
+    """Project schema 1 into schema 2 in memory; mutating commands persist it."""
+    schema = board.get("schema", 1)
+    if schema not in (1, 2):
+        fail(4, "unsupported_schema", f"unsupported board schema: {schema}")
+    if schema == 1:
+        old_tracks = board.get("tracks") or []
+        if isinstance(old_tracks, list):
+            board["tracks"] = {
+                str(track.get("track_id") or track.get("id")): track
+                for track in old_tracks
+                if isinstance(track, dict) and (track.get("track_id") or track.get("id"))
+            }
+        elif not isinstance(old_tracks, dict):
+            board["tracks"] = {}
+        board["schema"] = 2
+    board.setdefault("tracks", {})
+    board.setdefault("runs", [])
+    budget = board.setdefault("budget", {})
+    budget.setdefault("total_tokens", None)
+    budget.setdefault("per_run_default", None)
+    budget.setdefault("spent_tokens", 0)
+    budget.setdefault("reservations", {})
+    return board
+
+
+def canonical_digest(value: Any) -> str:
+    payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 @contextlib.contextmanager
@@ -456,7 +507,16 @@ def cmd_init(args: argparse.Namespace) -> None:
     if (ws / "board.md").is_file() and not args.force:
         fail(2, "exists", f"workspace already at {ws} (use --force to re-scaffold)")
 
-    for sub in ("missions", "minutes", "raw", "crew"):
+    for sub in (
+        "missions",
+        "minutes",
+        "raw",
+        "crew",
+        "context/items",
+        "context/bundles",
+        "context/deltas",
+        "context/outbox",
+    ):
         (ws / sub).mkdir(parents=True, exist_ok=True)
 
     # copy shipped persona templates into the live crew roster
@@ -490,7 +550,7 @@ def cmd_init(args: argparse.Namespace) -> None:
     write_board(
         ws,
         {
-            "schema": 1,
+            "schema": 2,
             "studio_mode": {"active": False, "started_at": None, "ended_at": None},
             "budget": {
                 "total_tokens": None,
@@ -498,7 +558,7 @@ def cmd_init(args: argparse.Namespace) -> None:
                 "spent_tokens": 0,
                 "reservations": {},
             },
-            "tracks": [],
+            "tracks": {},
             "runs": [],
         },
     )
@@ -959,6 +1019,394 @@ def _render_minutes(run_id: str, out: dict, valid_deltas: list, aborted: bool) -
 
 
 # --------------------------------------------------------------------------- #
+# quality — hard floors first, weighted utility only for complete candidates
+# --------------------------------------------------------------------------- #
+QUALITY_PLAN_REQUIRED = frozenset(("schema", "id", "criteria", "utility_weights"))
+QUALITY_CRITERION_REQUIRED = frozenset(("id", "kind", "weight", "floor", "measure"))
+UTILITY_KEYS = frozenset(("quality", "tokens", "elapsed", "avoidable_owner_question"))
+TELEMETRY_KEYS = frozenset(("tokens", "elapsed_ms", "avoidable_owner_questions"))
+
+
+def _number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def validate_quality_plan(plan: Any) -> list[str]:
+    if not isinstance(plan, dict):
+        return ["QualityPlan must be an object"]
+    problems = []
+    if set(plan) != QUALITY_PLAN_REQUIRED:
+        problems.append("QualityPlan must contain exactly schema, id, criteria, utility_weights")
+    if plan.get("schema") != 1:
+        problems.append("QualityPlan.schema must be 1")
+    if not isinstance(plan.get("id"), str) or not SAFE_ID_RE.fullmatch(plan.get("id", "")):
+        problems.append("QualityPlan.id must be a path-safe identifier")
+    criteria = plan.get("criteria")
+    criterion_ids = []
+    kinds = set()
+    if not isinstance(criteria, list) or not criteria:
+        problems.append("QualityPlan.criteria must be a non-empty list")
+    else:
+        for index, criterion in enumerate(criteria):
+            if not isinstance(criterion, dict) or set(criterion) != QUALITY_CRITERION_REQUIRED:
+                problems.append(f"criteria[{index}] must contain exactly id, kind, weight, floor, measure")
+                continue
+            criterion_id = criterion.get("id")
+            if not isinstance(criterion_id, str) or not SAFE_ID_RE.fullmatch(criterion_id):
+                problems.append(f"criteria[{index}].id must be path-safe")
+            else:
+                criterion_ids.append(criterion_id)
+            if criterion.get("kind") not in ("artifact", "context"):
+                problems.append(f"criteria[{index}].kind must be artifact or context")
+            else:
+                kinds.add(criterion["kind"])
+            for key in ("weight", "floor"):
+                value = criterion.get(key)
+                if not _number(value) or not 0 <= value <= 1:
+                    problems.append(f"criteria[{index}].{key} must be between 0 and 1")
+            if not isinstance(criterion.get("measure"), str) or not criterion.get("measure", "").strip():
+                problems.append(f"criteria[{index}].measure must be a non-empty string")
+        if len(criterion_ids) != len(set(criterion_ids)):
+            problems.append("criterion ids must be unique")
+        if kinds != {"artifact", "context"}:
+            problems.append("QualityPlan requires both artifact and context criteria")
+
+    weights = plan.get("utility_weights")
+    if not isinstance(weights, dict) or set(weights) != UTILITY_KEYS:
+        problems.append("utility_weights must contain quality, tokens, elapsed, avoidable_owner_question")
+    else:
+        if any(not _number(value) or value < 0 for value in weights.values()):
+            problems.append("utility weights must be non-negative numbers")
+        elif not all(weights["quality"] > weights[key] for key in UTILITY_KEYS - {"quality"}):
+            problems.append("quality must have the highest utility weight")
+    return problems
+
+
+def evaluate_quality(plan: dict, evidence_refs: Any, telemetry: Any) -> dict:
+    problems = validate_quality_plan(plan)
+    if problems:
+        fail(6, "invalid_quality_plan", "; ".join(problems), problems=problems)
+    if not isinstance(evidence_refs, list):
+        fail(6, "invalid_evidence", "evidence_refs must be a list")
+    evidence_problems = []
+    evidence_by_criterion: dict[str, list[dict]] = {}
+    for index, evidence in enumerate(evidence_refs):
+        if not isinstance(evidence, dict) or set(evidence) != {"criterion_id", "ref", "score"}:
+            evidence_problems.append(f"evidence_refs[{index}] must contain criterion_id, ref, score")
+            continue
+        if not isinstance(evidence.get("criterion_id"), str):
+            evidence_problems.append(f"evidence_refs[{index}].criterion_id must be a string")
+        if not isinstance(evidence.get("ref"), str) or not evidence.get("ref", "").strip():
+            evidence_problems.append(f"evidence_refs[{index}].ref must be non-empty")
+        if not _number(evidence.get("score")) or not 0 <= evidence.get("score", -1) <= 1:
+            evidence_problems.append(f"evidence_refs[{index}].score must be between 0 and 1")
+        if not evidence_problems or all(not item.startswith(f"evidence_refs[{index}]") for item in evidence_problems):
+            evidence_by_criterion.setdefault(evidence["criterion_id"], []).append(evidence)
+    if evidence_problems:
+        fail(6, "invalid_evidence", "; ".join(evidence_problems), problems=evidence_problems)
+
+    results = []
+    weighted_score = 0.0
+    total_weight = 0.0
+    for criterion in plan["criteria"]:
+        refs = evidence_by_criterion.get(criterion["id"], [])
+        score = max((item["score"] for item in refs), default=None)
+        passed = score is not None and score >= criterion["floor"]
+        results.append({
+            "criterion_id": criterion["id"],
+            "kind": criterion["kind"],
+            "floor": criterion["floor"],
+            "score": score,
+            "evidence_refs": [item["ref"] for item in refs],
+            "passed": passed,
+        })
+        if score is not None:
+            weighted_score += score * criterion["weight"]
+            total_weight += criterion["weight"]
+    floors_passed = all(result["passed"] for result in results)
+    quality_score = weighted_score / total_weight if total_weight else None
+
+    telemetry_complete = (
+        isinstance(telemetry, dict)
+        and set(telemetry) == TELEMETRY_KEYS
+        and _number(telemetry.get("tokens"))
+        and telemetry.get("tokens", -1) >= 0
+        and _number(telemetry.get("elapsed_ms"))
+        and telemetry.get("elapsed_ms", -1) >= 0
+        and isinstance(telemetry.get("avoidable_owner_questions"), int)
+        and not isinstance(telemetry.get("avoidable_owner_questions"), bool)
+        and telemetry.get("avoidable_owner_questions", -1) >= 0
+    )
+    utility = None
+    if floors_passed and telemetry_complete and quality_score is not None:
+        weights = plan["utility_weights"]
+        utility = (
+            quality_score * weights["quality"]
+            - telemetry["tokens"] * weights["tokens"]
+            - telemetry["elapsed_ms"] * weights["elapsed"]
+            - telemetry["avoidable_owner_questions"] * weights["avoidable_owner_question"]
+        )
+    return {
+        "quality_plan_ref": plan["id"],
+        "criteria": results,
+        "floors_passed": floors_passed,
+        "quality_score": quality_score,
+        "telemetry_complete": telemetry_complete,
+        "utility": utility,
+        "complete": floors_passed and telemetry_complete,
+    }
+
+
+def cmd_quality_evaluate(args: argparse.Namespace) -> None:
+    plan = load_json_arg(args.plan, "QualityPlan")
+    evidence = load_json_arg(args.evidence, "evidence_refs")
+    telemetry = load_json_arg(args.telemetry, "telemetry")
+    ok(evaluation=evaluate_quality(plan, evidence, telemetry))
+
+
+# --------------------------------------------------------------------------- #
+# context kernel — local projection only; optional providers consume outbox
+# --------------------------------------------------------------------------- #
+CONTEXT_FIELDS = {
+    "item": frozenset(("schema", "id", "kind", "content", "source_ref", "created_at", "digest")),
+    "pack": frozenset(("schema", "id", "item_refs", "created_at", "digest")),
+    "delta": frozenset(("schema", "id", "base_ref", "changes", "created_at", "digest")),
+}
+CONTEXT_DIRS = {"item": "items", "pack": "bundles", "delta": "deltas"}
+OUTBOX_FIELDS = frozenset(
+    ("schema", "id", "promotion_type", "summary", "source_refs", "owner_gate", "status", "digest")
+)
+
+
+def _prepare_context_object(kind: str, value: Any) -> dict:
+    if not isinstance(value, dict):
+        fail(6, "invalid_context", f"Context{kind.title()} must be an object")
+    obj = dict(value)
+    obj.setdefault("schema", 1)
+    obj.setdefault("created_at", now_stamp())
+    obj.setdefault("digest", "auto")
+    expected_fields = CONTEXT_FIELDS[kind]
+    if set(obj) != expected_fields:
+        fail(6, "invalid_context", f"Context{kind.title()} fields must be exactly {', '.join(sorted(expected_fields))}")
+    obj["id"] = validate_safe_id(obj.get("id"), f"Context{kind.title()}.id")
+    if obj.get("schema") != 1:
+        fail(6, "invalid_context", "context schema must be 1")
+    if not isinstance(obj.get("created_at"), str) or not obj.get("created_at", "").strip():
+        fail(6, "invalid_context", "created_at must be a non-empty string")
+    if kind == "item":
+        if not isinstance(obj.get("kind"), str) or not obj.get("kind", "").strip():
+            fail(6, "invalid_context", "ContextItem.kind must be non-empty")
+        if not isinstance(obj.get("content"), (str, dict, list)):
+            fail(6, "invalid_context", "ContextItem.content must be string, object, or list")
+        if not isinstance(obj.get("source_ref"), str) or not obj.get("source_ref", "").strip():
+            fail(6, "invalid_context", "ContextItem.source_ref must be non-empty")
+    elif kind == "pack":
+        refs = obj.get("item_refs")
+        if not isinstance(refs, list) or not refs or any(
+            not isinstance(ref, dict) or set(ref) != {"id", "digest"}
+            or not isinstance(ref.get("id"), str) or not isinstance(ref.get("digest"), str)
+            for ref in refs
+        ):
+            fail(6, "invalid_context", "ContextPack.item_refs must contain {id,digest} entries")
+    elif kind == "delta":
+        if not isinstance(obj.get("base_ref"), str) or not obj.get("base_ref", "").strip():
+            fail(6, "invalid_context", "ContextDelta.base_ref must be non-empty")
+        if not isinstance(obj.get("changes"), (dict, list)) or not obj.get("changes"):
+            fail(6, "invalid_context", "ContextDelta.changes must be a non-empty object or list")
+    digest_payload = {key: value for key, value in obj.items() if key != "digest"}
+    expected_digest = canonical_digest(digest_payload)
+    if obj["digest"] == "auto":
+        obj["digest"] = expected_digest
+    elif obj["digest"] != expected_digest:
+        fail(6, "digest_mismatch", f"context digest mismatch: expected {expected_digest}")
+    return obj
+
+
+def _context_path(ws: Path, kind: str, object_id: str) -> Path:
+    return ws / "context" / CONTEXT_DIRS[kind] / f"{object_id}.json"
+
+
+def _store_context(ws: Path, kind: str, value: Any) -> tuple[dict, Path, bool]:
+    obj = _prepare_context_object(kind, value)
+    path = _context_path(ws, kind, obj["id"])
+    body = json.dumps(obj, ensure_ascii=False, indent=2) + "\n"
+    if path.is_file():
+        if path.read_text(encoding="utf-8") == body:
+            return obj, path, False
+        fail(6, "context_conflict", f"context object already exists with different content: {obj['id']}")
+    atomic_write_text(path, body)
+    return obj, path, True
+
+
+def cmd_context_put(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    obj, path, changed = _store_context(ws, args.kind, load_json_arg(args.json, f"Context{args.kind.title()}"))
+    ok(context=obj, path=str(path), changed=changed)
+
+
+def cmd_context_compact(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    refs = []
+    for item_id in args.item_id:
+        item_id = validate_safe_id(item_id, "item_id")
+        path = _context_path(ws, "item", item_id)
+        try:
+            item = json.loads(path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError) as exc:
+            fail(4, "context_not_found", f"cannot load ContextItem {item_id}: {exc}")
+        refs.append({"id": item_id, "digest": item.get("digest")})
+    pack, path, changed = _store_context(ws, "pack", {
+        "id": args.bundle_id,
+        "item_refs": refs,
+        "created_at": now_stamp(),
+        "digest": "auto",
+    })
+    ok(context=pack, path=str(path), changed=changed)
+
+
+def cmd_context_prune(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    if args.keep_deltas < 0:
+        fail(2, "bad_prune", "keep-deltas must be >= 0")
+    delta_dir = ws / "context" / "deltas"
+    ranked = []
+    for path in delta_dir.glob("*.json"):
+        try:
+            obj = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            fail(4, "invalid_context", f"cannot parse context delta: {path}")
+        ranked.append((str(obj.get("created_at") or ""), str(obj.get("id") or path.stem), path))
+    ranked.sort(reverse=True)
+    removed = [path for _, _, path in ranked[args.keep_deltas:]]
+    for path in removed:
+        path.unlink()
+    ok(kept=min(args.keep_deltas, len(ranked)), removed=[str(path) for path in removed])
+
+
+def cmd_context_outbox(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    value = load_json_arg(args.json, "promotion candidate")
+    if not isinstance(value, dict):
+        fail(6, "invalid_promotion", "promotion candidate must be an object")
+    candidate = dict(value)
+    candidate.setdefault("schema", 1)
+    candidate.setdefault("status", "pending")
+    candidate.setdefault("digest", "auto")
+    if set(candidate) != OUTBOX_FIELDS:
+        fail(6, "invalid_promotion", f"promotion candidate fields must be exactly {', '.join(sorted(OUTBOX_FIELDS))}")
+    candidate["id"] = validate_safe_id(candidate.get("id"), "promotion candidate id")
+    if candidate.get("schema") != 1 or candidate.get("status") != "pending":
+        fail(6, "invalid_promotion", "new promotion candidates require schema=1 and status=pending")
+    if candidate.get("promotion_type") not in ("decision", "rejected_decision", "trial_error", "ssot"):
+        fail(6, "invalid_promotion", "unsupported promotion_type")
+    if not isinstance(candidate.get("summary"), str) or not candidate.get("summary", "").strip():
+        fail(6, "invalid_promotion", "promotion summary must be non-empty")
+    if not isinstance(candidate.get("source_refs"), list) or not candidate.get("source_refs") or any(
+        not isinstance(ref, str) or not ref.strip() for ref in candidate.get("source_refs", [])
+    ):
+        fail(6, "invalid_promotion", "source_refs must be a non-empty string list")
+    if candidate.get("owner_gate") is not True:
+        fail(6, "owner_gate_required", "promotion requires owner_gate=true")
+    expected = canonical_digest({key: value for key, value in candidate.items() if key != "digest"})
+    if candidate["digest"] == "auto":
+        candidate["digest"] = expected
+    elif candidate["digest"] != expected:
+        fail(6, "digest_mismatch", f"promotion digest mismatch: expected {expected}")
+    path = ws / "context" / "outbox" / f"{candidate['id']}.json"
+    body = json.dumps(candidate, ensure_ascii=False, indent=2) + "\n"
+    if path.is_file():
+        if path.read_text(encoding="utf-8") == body:
+            ok(candidate=candidate, path=str(path), changed=False)
+        fail(6, "promotion_conflict", f"promotion candidate already exists: {candidate['id']}")
+    atomic_write_text(path, body)
+    ok(candidate=candidate, path=str(path), changed=True)
+
+
+# --------------------------------------------------------------------------- #
+# executor lease — one active lease per track with fencing
+# --------------------------------------------------------------------------- #
+ACTIVE_LEASE_STATES = frozenset(("claimed", "running", "waiting_gate"))
+TERMINAL_LEASE_STATES = frozenset(("succeeded", "failed", "cancelled"))
+LEASE_TRANSITIONS = {
+    "claimed": frozenset(("running", "cancelled")),
+    "running": frozenset(("waiting_gate", "succeeded", "failed", "cancelled")),
+    "waiting_gate": frozenset(("running", "succeeded", "failed", "cancelled")),
+}
+
+
+def cmd_lease_claim(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    track_id = validate_safe_id(args.track_id, "track_id")
+    lease_id = validate_safe_id(args.lease_id, "lease_id")
+    reservation_id = validate_safe_id(args.reservation_id, "reservation_id")
+    with board_transaction(ws) as board:
+        tracks = board.setdefault("tracks", {})
+        if not isinstance(tracks, dict):
+            fail(4, "bad_board", "board.tracks must be an object in schema 2")
+        track = tracks.setdefault(track_id, {"track_id": track_id, "lease_history": []})
+        current = track.get("executor_lease")
+        if current and current.get("lease_id") == lease_id:
+            if current.get("executor") == args.executor and current.get("budget_reservation_id") == reservation_id:
+                ok(lease=current, changed=False)
+            fail(6, "lease_conflict", "lease id already exists with different claim data")
+        if current and current.get("state") in ACTIVE_LEASE_STATES:
+            fail(6, "active_lease_exists", f"track {track_id} already has active lease {current.get('lease_id')}")
+        reservations = _budget_reservations(board["budget"])
+        reservation = reservations.get(reservation_id)
+        if not reservation or reservation.get("lease_id") != lease_id or reservation.get("status") != "reserved":
+            fail(6, "reservation_required", "claim requires a reserved budget reservation fenced by the same lease")
+        if current:
+            track.setdefault("lease_history", []).append(current)
+        current = {
+            "lease_id": lease_id,
+            "executor": args.executor,
+            "state": "claimed",
+            "budget_reservation_id": reservation_id,
+            "external_ref": None,
+        }
+        track["executor_lease"] = current
+    ok(lease=current, changed=True)
+
+
+def cmd_lease_transition(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    track_id = validate_safe_id(args.track_id, "track_id")
+    lease_id = validate_safe_id(args.lease_id, "lease_id")
+    with board_transaction(ws) as board:
+        track = board.setdefault("tracks", {}).get(track_id)
+        lease = track and track.get("executor_lease")
+        if not lease:
+            fail(4, "lease_not_found", f"no lease for track {track_id}")
+        if lease.get("lease_id") != lease_id:
+            fail(6, "stale_lease", f"track {track_id} is fenced by another lease")
+        old_state = lease.get("state")
+        if old_state == args.state:
+            ok(lease=lease, changed=False)
+        if args.state not in LEASE_TRANSITIONS.get(old_state, frozenset()):
+            fail(6, "invalid_lease_transition", f"cannot transition {old_state} to {args.state}")
+        reservation = _budget_reservations(board["budget"])[lease["budget_reservation_id"]]
+        if args.state == "running":
+            if reservation.get("lease_id") != lease_id:
+                fail(6, "stale_lease", "budget reservation is fenced by another lease")
+            if reservation.get("status") == "reserved":
+                reservation["status"] = "dispatched"
+            elif reservation.get("status") != "dispatched":
+                fail(6, "invalid_budget_transition", "running requires a reserved or dispatched budget")
+        lease["state"] = args.state
+        if args.external_ref is not None:
+            lease["external_ref"] = args.external_ref
+        if args.state == "cancelled":
+            lease["cancel_confirmed"] = True
+    ok(lease=lease, changed=True)
+
+
+# --------------------------------------------------------------------------- #
 # board / evidence (read-only)
 # --------------------------------------------------------------------------- #
 def cmd_board(args: argparse.Namespace) -> None:
@@ -1133,6 +1581,46 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("evidence", help="tally delta evidence (baseline/theatre check)")
     sp.set_defaults(func=cmd_evidence)
+
+    sp = sub.add_parser("quality", help="QualityPlan hard-floor evaluation")
+    qsub = sp.add_subparsers(dest="qcmd", required=True)
+    qe = qsub.add_parser("evaluate", help="evaluate criterion evidence and telemetry")
+    qe.add_argument("--plan", required=True, help="QualityPlan JSON (inline or @file)")
+    qe.add_argument("--evidence", required=True, help="criterion-bound evidence_refs JSON")
+    qe.add_argument("--telemetry", required=True, help="telemetry JSON")
+    qe.set_defaults(func=cmd_quality_evaluate)
+
+    sp = sub.add_parser("context", help="Context Kernel local projection")
+    cxsub = sp.add_subparsers(dest="cxcmd", required=True)
+    cp = cxsub.add_parser("put", help="store a ContextItem, ContextPack, or ContextDelta")
+    cp.add_argument("kind", choices=sorted(CONTEXT_FIELDS))
+    cp.add_argument("--json", required=True, help="context JSON (inline, @file, or -)")
+    cp.set_defaults(func=cmd_context_put)
+    cc = cxsub.add_parser("compact", help="compact ContextItems into a ContextPack")
+    cc.add_argument("--bundle-id", required=True)
+    cc.add_argument("--item-id", action="append", required=True)
+    cc.set_defaults(func=cmd_context_compact)
+    cr = cxsub.add_parser("prune", help="prune old local ContextDelta projections")
+    cr.add_argument("--keep-deltas", type=int, required=True)
+    cr.set_defaults(func=cmd_context_prune)
+    co = cxsub.add_parser("outbox", help="preserve an owner-gated promotion candidate locally")
+    co.add_argument("--json", required=True, help="promotion candidate JSON")
+    co.set_defaults(func=cmd_context_outbox)
+
+    sp = sub.add_parser("lease", help="track executor lease with fencing")
+    lsub = sp.add_subparsers(dest="lcmd", required=True)
+    lc = lsub.add_parser("claim", help="claim one executor lease for a track")
+    lc.add_argument("track_id")
+    lc.add_argument("--lease-id", required=True)
+    lc.add_argument("--executor", required=True, choices=("native", "external"))
+    lc.add_argument("--reservation-id", required=True)
+    lc.set_defaults(func=cmd_lease_claim)
+    lt = lsub.add_parser("transition", help="transition a fenced executor lease")
+    lt.add_argument("track_id")
+    lt.add_argument("--lease-id", required=True)
+    lt.add_argument("--state", required=True, choices=sorted(set().union(*LEASE_TRANSITIONS.values())))
+    lt.add_argument("--external-ref")
+    lt.set_defaults(func=cmd_lease_transition)
 
     sp = sub.add_parser("cast", help="producer crew casting policy")
     casub = sp.add_subparsers(dest="castcmd", required=True)
