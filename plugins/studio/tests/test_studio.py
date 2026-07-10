@@ -168,11 +168,49 @@ def main() -> None:
         assert r["spent_tokens"] == 150, r                     # not 300
         assert len(board_state(ws)["runs"]) == 1, board_state(ws)
 
-        # 6c) raising the budget above spend clears the paused state
+        # 6c) schema-v1 receipt is compact-appended; unknown tokens never alter spend
+        receipt_out = {
+            "run_id": "RUN-receipt",
+            "ritual": "brainstorm",
+            "delta_log": [],
+            "verdict": {"alive": False, "reason": "dry"},
+            "cost": {"tokens": 5, "token_coverage": "exact", "elapsed_ms": 1000, "rounds": 1},
+            "receipt": {
+                "schema": "workflow-receipt/v1", "emitter": "studio", "workflow": "studio-brainstorm",
+                "run_id": "RUN-receipt", "started_at": "2026-07-10T00:00:00.000Z",
+                "finished_at": "2026-07-10T00:00:01.000Z", "elapsed_ms": 1000,
+                "tokens": 5, "token_coverage": "exact", "counters": {"rounds": 1},
+                "quality": {"alive": False},
+            },
+        }
+        receipt_log = tmp / "receipts.jsonl"
+        r = run(["run", "record", "--json", "-", "--receipt-log", str(receipt_log)], tmp,
+                stdin=json.dumps(receipt_out))
+        assert r["spent_tokens"] == 155 and not r["warnings"], r
+        receipt_line = receipt_log.read_text(encoding="utf-8").strip()
+        assert receipt_line == json.dumps(receipt_out["receipt"], ensure_ascii=False,
+                                          separators=(",", ":")), receipt_line
+
+        null_receipt_out = {**receipt_out, "run_id": "RUN-null-receipt"}
+        null_receipt_out["cost"] = {
+            "tokens": None, "token_coverage": "unavailable", "elapsed_ms": 1000, "rounds": 1,
+        }
+        null_receipt_out["receipt"] = {
+            **receipt_out["receipt"], "run_id": "RUN-null-receipt",
+            "tokens": None, "token_coverage": "unavailable",
+        }
+        r = run(["run", "record", "--json", "-", "--receipt-log", str(tmp)], tmp,
+                stdin=json.dumps(null_receipt_out))
+        assert r["spent_tokens"] == 155, r
+        assert len(r["warnings"]) == 1 and "append failed" in r["warnings"][0], r
+        stored = next(item for item in board_state(ws)["runs"] if item["run_id"] == "RUN-null-receipt")
+        assert stored["cost_tokens"] is None, stored
+
+        # 6d) raising the budget above spend clears the paused state
         r = run(["budget", "--set-total", "1000"], tmp)
         assert "mission_state" not in board_state(ws), board_state(ws)
 
-        # 6d) budget reserve/dispatch/settle is fenced and idempotent
+        # 6e) budget reserve/dispatch/settle is fenced and idempotent
         r = run(["budget", "reserve", "res-1", "--lease-id", "lease-1", "--tokens", "40"], tmp)
         assert r["changed"] and r["reservation"]["status"] == "reserved", r
         r = run(["budget", "reserve", "res-1", "--lease-id", "lease-1", "--tokens", "40"], tmp)
@@ -183,11 +221,11 @@ def main() -> None:
         r = run(["budget", "dispatch", "res-1", "--lease-id", "lease-1"], tmp)
         assert not r["changed"], r
         r = run(["budget", "settle", "res-1", "--lease-id", "lease-1", "--tokens", "30"], tmp)
-        assert r["changed"] and r["spent_tokens"] == 180, r
+        assert r["changed"] and r["spent_tokens"] == 185, r
         r = run(["budget", "settle", "res-1", "--lease-id", "lease-1", "--tokens", "30"], tmp)
         assert not r["changed"] and r["reservation"]["settled_tokens"] == 30, r
 
-        # 6e) malformed run outputs hit the exit-code contract, not a crash
+        # 6f) malformed run outputs hit the exit-code contract, not a crash
         run(["run", "record", "--json", "-"], tmp, expect=4,
             stdin=json.dumps({"run_id": "z", "cost": {"tokens": "lots"}}))       # non-numeric cost
         run(["run", "record", "--json", "@/no/such/file.json"], tmp, expect=4)    # missing @file
@@ -238,7 +276,7 @@ def main() -> None:
         # 8) evidence tally — 1 valid delta from the non-aborted run
         r = run(["evidence"], tmp)
         assert r["ok"] and r["total_valid_deltas"] == 1, r
-        assert r["aborted_runs"] == 1 and r["runs"] == 4, r
+        assert r["aborted_runs"] == 1 and r["runs"] == 6, r
         assert r["theatre"] is False, r
 
         # 8a) schema 1 is projected lazily and persisted on the next mutation

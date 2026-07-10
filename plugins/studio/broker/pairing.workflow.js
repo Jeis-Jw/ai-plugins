@@ -35,6 +35,10 @@ if (!WT) {
   return { ritual: 'pairing', error: 'pairing needs a producer-prepared worktreePath (track isolation)', participants: ['dev', 'qa'] }
 }
 
+const startedMs = Date.now()
+const startedAt = new Date(startedMs).toISOString()
+const runId = A.runId || `RUN-studio-pairing-${startedMs}-${Math.random().toString(36).slice(2, 8)}`
+
 // --- agent model/effort policy (from .studio.yml via the producer) ----------
 // precedence: run override > rituals.pairing.<step> > roles.<role> > defaults
 // > omit (inherit the session). agentType stays 'general-purpose' regardless.
@@ -127,6 +131,7 @@ const QA_SCHEMA = {
 
 const delta_log = []
 let round = 0
+let roundsRun = 0
 let openFailures = []       // qa failures dev has not yet defended; each has a stable id
 const defendedAll = []      // titles of defended failures (for the verdict prompt)
 const changedFiles = new Set()
@@ -136,6 +141,7 @@ let failureSeq = 0          // monotonic id source — join key between qa and d
 
 phase('Build')
 for (round = 1; round <= MAX_ROUNDS; round++) {
+  roundsRun = round
   // ---- dev turn: implement, and defend any open failures with tests --------
   const devPrompt = [
     CONTEXT,
@@ -233,7 +239,37 @@ const readyForIntegration = Boolean(
   && verificationComplete
 )
 
+const finishedMs = Date.now()
+const finishedAt = new Date(finishedMs).toISOString()
+const spentEnd = budget.spent()
+const tokenDelta = Number.isInteger(spentStart) && Number.isInteger(spentEnd) && spentEnd >= spentStart
+  ? spentEnd - spentStart
+  : null
+const receipt = {
+  schema: 'workflow-receipt/v1',
+  emitter: 'studio',
+  workflow: 'studio-pairing',
+  run_id: runId,
+  started_at: startedAt,
+  finished_at: finishedAt,
+  elapsed_ms: finishedMs - startedMs,
+  tokens: tokenDelta,
+  token_coverage: tokenDelta === null ? 'unavailable' : 'exact',
+  counters: {
+    rounds: roundsRun,
+    participants: 2,
+    defended_failures: defendedAll.length,
+    open_failures: openFailures.length,
+  },
+  quality: {
+    alive: Boolean(verdict.alive),
+    ready_for_integration: readyForIntegration,
+    blocked_checks: blockedChecks.length,
+  },
+}
+
 return {
+  run_id: runId,
   ritual: 'pairing',
   participants: ['dev', 'qa'],
   synthesis: `Implemented against ${CRITERIA.length} criteria in ${WT}. Defended ${defendedAll.length} failure(s); ${openFailures.length} open.`,
@@ -241,11 +277,17 @@ return {
   delta_log,
   verdict,
   proposals: openFailures.map(f => `follow-up: resolve open failure "${f.title}"`),
-  cost: { tokens: budget.spent() - spentStart, rounds: round },
+  cost: {
+    tokens: tokenDelta,
+    token_coverage: receipt.token_coverage,
+    elapsed_ms: receipt.elapsed_ms,
+    rounds: roundsRun,
+  },
   worktreePath: WT,
   branch: BRANCH,
   changedFiles: [...changedFiles],
   verification,
   blockedChecks,
   readyForIntegration,
+  receipt,
 }

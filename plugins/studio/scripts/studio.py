@@ -60,6 +60,11 @@ VALID_ANCHORS = (
 DELTA_ALLOWED = frozenset(
     ("round", "changed_what", "anchor", "evidence", "rejected_alternative", "dry")
 )
+WORKFLOW_RECEIPT_SCHEMA = "workflow-receipt/v1"
+WORKFLOW_RECEIPT_FIELDS = frozenset((
+    "schema", "emitter", "workflow", "run_id", "started_at", "finished_at",
+    "elapsed_ms", "tokens", "token_coverage", "counters", "quality",
+))
 
 # agent policy config (.studio.yml)
 CONFIG_PATH_DEFAULT = ".studio.yml"
@@ -881,6 +886,70 @@ def _pairing_readiness_problems(out: dict) -> list[str]:
     return problems if ready else []
 
 
+def _receipt_time(value: Any, field: str) -> datetime.datetime:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field} must be an RFC3339 timestamp")
+    try:
+        parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"{field} must be an RFC3339 timestamp") from exc
+    if parsed.tzinfo is None:
+        raise ValueError(f"{field} must include a timezone")
+    return parsed.astimezone(datetime.timezone.utc)
+
+
+def workflow_receipt_problems(receipt: Any) -> list[str]:
+    if not isinstance(receipt, dict):
+        return ["receipt must be an object"]
+    problems = []
+    if set(receipt) != WORKFLOW_RECEIPT_FIELDS:
+        problems.append("receipt fields do not match workflow-receipt/v1")
+    if receipt.get("schema") != WORKFLOW_RECEIPT_SCHEMA:
+        problems.append("receipt.schema must be workflow-receipt/v1")
+    if receipt.get("emitter") != "studio":
+        problems.append("receipt.emitter must be studio")
+    if not isinstance(receipt.get("workflow"), str) or not receipt.get("workflow", "").strip():
+        problems.append("receipt.workflow must be a non-empty string")
+    receipt_run_id = receipt.get("run_id")
+    if not isinstance(receipt_run_id, str) or not SAFE_ID_RE.fullmatch(receipt_run_id):
+        problems.append("receipt.run_id must be path-safe")
+    try:
+        started = _receipt_time(receipt.get("started_at"), "receipt.started_at")
+        finished = _receipt_time(receipt.get("finished_at"), "receipt.finished_at")
+        expected_elapsed = int((finished - started).total_seconds() * 1000)
+        if expected_elapsed < 0 or receipt.get("elapsed_ms") != expected_elapsed:
+            problems.append("receipt.elapsed_ms must match its timestamps")
+    except ValueError as exc:
+        problems.append(str(exc))
+    tokens = receipt.get("tokens")
+    coverage = receipt.get("token_coverage")
+    if tokens is None:
+        if coverage != "unavailable":
+            problems.append("receipt tokens:null requires token_coverage unavailable")
+    elif isinstance(tokens, bool) or not isinstance(tokens, int) or tokens < 0:
+        problems.append("receipt.tokens must be a non-negative integer or null")
+    elif coverage != "exact":
+        problems.append("Studio measured tokens require token_coverage exact")
+    counters = receipt.get("counters")
+    if not isinstance(counters, dict) or any(
+        isinstance(value, bool) or not isinstance(value, int) or value < 0
+        for value in counters.values()
+    ):
+        problems.append("receipt.counters must contain non-negative integers")
+    if not isinstance(receipt.get("quality"), dict):
+        problems.append("receipt.quality must be an object")
+    return problems
+
+
+def _append_receipt(path: str, receipt: dict) -> str | None:
+    try:
+        with Path(path).open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(receipt, ensure_ascii=False, separators=(",", ":")) + "\n")
+    except OSError as exc:
+        return f"receipt append failed: {exc}"
+    return None
+
+
 def cmd_run_record(args: argparse.Namespace) -> None:
     ws = workspace(args)
     require_workspace(ws)
@@ -899,12 +968,30 @@ def cmd_run_record(args: argparse.Namespace) -> None:
     cost = out.get("cost") or {}
     if not isinstance(cost, dict):
         fail(6, "invalid_run_output", "cost must be an object")
-    try:
-        cost_tokens = int(cost.get("tokens") or 0)
-    except (TypeError, ValueError):
-        fail(4, "bad_cost", f"cost.tokens must be a number, got {cost.get('tokens')!r}")
-    if cost_tokens < 0:
-        fail(4, "bad_cost", "cost.tokens must be >= 0")
+    cost_tokens = cost.get("tokens")
+    if cost_tokens is not None and (
+        isinstance(cost_tokens, bool) or not isinstance(cost_tokens, int) or cost_tokens < 0
+    ):
+        fail(4, "bad_cost", f"cost.tokens must be a non-negative integer or null, got {cost_tokens!r}")
+    expected_coverage = "unavailable" if cost_tokens is None else "exact"
+    if cost.get("token_coverage") not in (None, expected_coverage):
+        fail(4, "bad_cost", f"cost.token_coverage must be {expected_coverage}")
+    cost_elapsed = cost.get("elapsed_ms")
+    if cost_elapsed is not None and (
+        isinstance(cost_elapsed, bool) or not isinstance(cost_elapsed, int) or cost_elapsed < 0
+    ):
+        fail(4, "bad_cost", "cost.elapsed_ms must be a non-negative integer")
+    receipt = out.get("receipt")
+    if receipt is not None:
+        receipt_problems = workflow_receipt_problems(receipt)
+        if receipt.get("run_id") != run_id:
+            receipt_problems.append("receipt.run_id must match the recorded run_id")
+        if receipt.get("tokens") != cost_tokens:
+            receipt_problems.append("receipt.tokens must match cost.tokens")
+        if cost_elapsed is not None and receipt.get("elapsed_ms") != cost_elapsed:
+            receipt_problems.append("receipt.elapsed_ms must match cost.elapsed_ms")
+        if receipt_problems:
+            fail(6, "invalid_run_output", "; ".join(receipt_problems), problems=receipt_problems)
     verdict = out.get("verdict") or {}
     if not isinstance(verdict, dict):
         fail(6, "invalid_run_output", "verdict must be an object")
@@ -944,6 +1031,8 @@ def cmd_run_record(args: argparse.Namespace) -> None:
         "aborted": aborted,
         "minutes": str(minutes_path),
     }
+    if receipt is not None:
+        entry["receipt"] = receipt
     with board_transaction(ws) as board:
         bud = board.setdefault("budget", {"spent_tokens": 0, "reservations": {}})
         runs = board.setdefault("runs", [])
@@ -952,16 +1041,26 @@ def cmd_run_record(args: argparse.Namespace) -> None:
         spent = int(bud.get("spent_tokens") or 0)
         prior = next((r for r in runs if r.get("run_id") == run_id), None)
         if prior is not None:
-            spent -= int(prior.get("cost_tokens") or 0)   # undo the old cost
+            prior_tokens = prior.get("cost_tokens")
+            if cost_tokens is not None and prior_tokens is not None:
+                spent -= int(prior_tokens)   # undo the old known cost
             board["runs"] = [r for r in runs if r.get("run_id") != run_id]
         board["runs"].append(entry)
-        bud["spent_tokens"] = spent + cost_tokens
+        bud["spent_tokens"] = spent + (cost_tokens if cost_tokens is not None else 0)
         total = bud.get("total_tokens")
         exceeded = total is not None and bud["spent_tokens"] > total
         if exceeded:
             board["mission_state"] = "paused"  # budget exhausted → owner gate to resume
         atomic_write_text(minutes_path, body)
 
+    warnings = []
+    if getattr(args, "receipt_log", None):
+        if receipt is None:
+            warnings.append("receipt append skipped: run output has no receipt")
+        else:
+            append_warning = _append_receipt(args.receipt_log, receipt)
+            if append_warning:
+                warnings.append(append_warning)
     ok(
         run_id=run_id,
         minutes=str(minutes_path),
@@ -970,6 +1069,8 @@ def cmd_run_record(args: argparse.Namespace) -> None:
         spent_tokens=bud["spent_tokens"],
         budget_total=total,
         budget_exceeded=exceeded,
+        receipt=receipt,
+        warnings=warnings,
     )
 
 
@@ -1991,6 +2092,7 @@ def build_parser() -> argparse.ArgumentParser:
     rr.add_argument("--json", help="run output JSON (inline, @file, or - for stdin)")
     rr.add_argument("--id", help="override run id (else derived from output/clock)")
     rr.add_argument("--track", help="track slug this run belongs to (producer-owned)")
+    rr.add_argument("--receipt-log", help="optional JSONL receipt sink; append failure is warning-only")
     rr.set_defaults(func=cmd_run_record)
 
     sp = sub.add_parser("config", help="agent model/effort policy (.studio.yml)")

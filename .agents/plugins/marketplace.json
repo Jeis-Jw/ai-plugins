@@ -13,19 +13,24 @@
     {
       "name": "task-github",
       "source": { "source": "local", "path": "./plugins/task-github" },
+      "version": "0.20.0",
+      "description": "DefinitionArtifact-based task protocol with optional full GitHub recording and wiki integration.",
       "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
       "category": "Productivity"
     },
     {
       "name": "session-review",
       "source": { "source": "local", "path": "./plugins/session-review" },
+      "version": "0.4.1",
+      "description": "Wiki snapshot and git review-branch protocol for worker/reviewer loops with self-mode fast/audit profiles.",
       "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
       "category": "Productivity"
     },
     {
       "name": "studio",
       "source": { "source": "local", "path": "./plugins/studio" },
-      "version": "0.2.0",
+      "version": "0.3.0",
+      "description": "Living agent team with quality hard floors, a local Context Kernel, and fenced optional external workflow handoffs.",
       "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
       "category": "Productivity"
     }

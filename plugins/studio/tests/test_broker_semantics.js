@@ -12,14 +12,15 @@ async function loadBroker(name) {
   return new AsyncFunction('args', 'budget', 'phase', 'parallel', 'agent', 'log', source)
 }
 
-async function execute(name, args, responder) {
+async function execute(name, args, responder, spentValues = [0, 0]) {
   const broker = await loadBroker(name)
   const phases = []
   const logs = []
+  let spentIndex = 0
   return {
     output: await broker(
       args,
-      { spent: () => 0 },
+      { spent: () => spentValues[Math.min(spentIndex++, spentValues.length - 1)] },
       value => phases.push(value),
       jobs => Promise.all(jobs.map(job => job())),
       (_prompt, options) => Promise.resolve(responder(options.label)),
@@ -61,11 +62,22 @@ const brainstorm = await execute(
     if (label === 'critic:final') return { alive: true, reason: 'one verified delta' }
     throw new Error(`unexpected brainstorm label: ${label}`)
   },
+  [100, 137],
 )
 assert.equal(brainstorm.output.delta_log.filter(delta => !delta.dry).length, 1)
 assert.equal(brainstorm.output.delta_log.find(delta => !delta.dry).changed_what, 'config removed from v1')
 assert.equal(brainstorm.output.delta_log.filter(delta => delta.dry).length, 1)
 assert.ok(brainstorm.logs.some(line => /DRY/.test(line)), brainstorm.logs)
+assert.deepEqual(Object.keys(brainstorm.output.receipt).sort(), [
+  'counters', 'elapsed_ms', 'emitter', 'finished_at', 'quality', 'run_id',
+  'schema', 'started_at', 'token_coverage', 'tokens', 'workflow',
+].sort())
+assert.equal(brainstorm.output.receipt.schema, 'workflow-receipt/v1')
+assert.equal(brainstorm.output.receipt.emitter, 'studio')
+assert.equal(brainstorm.output.receipt.tokens, 37)
+assert.equal(brainstorm.output.receipt.token_coverage, 'exact')
+assert.equal(brainstorm.output.cost.tokens, 37)
+assert.equal(brainstorm.output.cost.elapsed_ms, brainstorm.output.receipt.elapsed_ms)
 
 let qaRound = 0
 const pairing = await execute(
@@ -102,11 +114,16 @@ const pairing = await execute(
     if (label === 'critic:verdict') return { alive: true, reason: 'defended', defended_count: 1, open_count: 0 }
     throw new Error(`unexpected pairing label: ${label}`)
   },
+  [250, 315],
 )
 assert.equal(qaRound, 2)
 assert.equal(pairing.output.readyForIntegration, true)
 assert.equal(pairing.output.delta_log.filter(delta => delta.anchor === 'repro-test').length, 1)
 assert.deepEqual(pairing.output.changedFiles.sort(), ['parser.py', 'test_parser.py'])
+assert.equal(pairing.output.receipt.tokens, 65)
+assert.equal(pairing.output.receipt.token_coverage, 'exact')
+assert.equal(pairing.output.receipt.quality.ready_for_integration, true)
+assert.equal(pairing.output.cost.elapsed_ms, pairing.output.receipt.elapsed_ms)
 
 const falseReady = await execute(
   'pairing.workflow.js',
