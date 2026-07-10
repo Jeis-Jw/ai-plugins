@@ -1,9 +1,9 @@
 ---
 title: session-review 플러그인
 created_at: 2026-06-18
-summary: 독립 두 세션(작업자·리뷰어)이 wiki snapshot 소통채널과 git 리뷰브랜치로 산출물을 리뷰 루프로 수렴시키는 플러그인 설계 정본
+summary: worker/reviewer가 audit snapshot 또는 fast context와 reviewer lease로 리뷰를 수렴시키는 플러그인 설계 정본
 tags: [session-review, review, design]
-verified_at: 2026-06-19
+verified_at: 2026-07-10
 affects_paths: [plugins/session-review/**]
 ---
 
@@ -25,13 +25,23 @@ affects_paths: [plugins/session-review/**]
 
 | 모드 | reviewer 주체 | 진행 방식 | 용도 |
 |------|--------------|-----------|------|
-| `self` | 작업자가 띄운 **서브에이전트**(fresh 컨텍스트) | 한 세션 안에서 작업자가 양쪽 턴을 오케스트레이션, 사용자 릴레이 없이 자율 수렴 | 빠른 자율 수렴 |
+| `self` | 작업자가 띄운 분리 reviewer(초회 fresh, 수정 라운드는 유효 lease reuse) | 한 세션 안에서 작업자가 양쪽 턴을 오케스트레이션, 사용자 릴레이 없이 자율 수렴 | 빠른 자율 수렴 |
 | `separate` | **독립 세션**의 다른 에이전트 | 두 세션이 git+snapshot으로 비동기, 사용자가 릴레이 | 완전 독립·사용자 개입 |
 
 - 서브에이전트 미지원 환경이면 `separate`가 기본이자 유일.
-- **두 모드는 동일 메커니즘**(핸드셰이크 snapshot·ssot target·git 브랜치/커밋·상태머신·status block)을 공유한다. 다른 것은 reviewer의 정체성과 릴레이 방식뿐 — `self`의 서브에이전트도 fresh 컨텍스트라 독립성이 있고, 같은 핸드셰이크에 `review: feedback`를 커밋한다.
-- **완료 게이트는 두 모드 공통으로 사용자 확인 필수.** `self`도 리뷰 라운드는 자율로 돌리되 완료(squash merge/discard)는 자동화하지 않고 반드시 사용자에게 올린다.
+- 두 모드는 동일한 상태·lease·판정 계약을 공유한다. audit는 snapshot/review branch/round commit을 유지하고, fast는 context JSON으로 같은 상태를 전달한다.
+- 완료는 기본적으로 사용자 확인이 필요하다. 단 `self_automation=turnkey`는 최초 요청이 complete 승인까지 포함하므로 추가 확인 없이 완료할 수 있다.
 - 모드는 status block `flow_mode`에 기록해 콜드 핸드오프가 어느 모드인지 알 수 있게 한다.
+
+### Reviewer episode lease
+- round 1은 항상 fresh reviewer다. 수정 라운드는 scope digest, target/base ref, review strength, round horizon이 유지되고 harness가 `reviewer_ref`를 다시 address할 수 있을 때만 reuse한다.
+- lease 만료는 `scope_changed`, `ref_changed`, `risk_changed`, `round_expired`, `harness_unaddressable` fresh fallback reason으로 기계 판정한다. 기본 horizon은 최초 획득 뒤 수정 라운드 2회다.
+- status에는 `lease_id`, optional `reviewer_ref`, `reviewed_ref`, `scope_digest`, `finding_digest`, started/updated timestamp, expiry round, `fresh_count`/`reuse_count`, `fresh_required`를 저장한다. `reviewed_ref`와 `finding_digest`는 함께 기록한다.
+- lease가 없는 legacy snapshot은 reviewer identity를 추정하지 않고 `fresh_required: true`, `fresh_fallback_reason: legacy_snapshot`으로 lazy migration한다.
+- fast mode는 snapshot 대신 동일한 전체 status JSON을 reviewer context로 전달한다. recording overhead만 제거하며 worker/reviewer 분리는 유지한다.
+
+### Workflow receipt v1
+`emit-receipt`는 `schema`, `emitter`, `workflow`, `run_id`, started/finished timestamp, `elapsed_ms`, `tokens`, `token_coverage`, `counters`, `quality`를 출력한다. 토큰을 정확히 알 수 없으면 `tokens:null`, `token_coverage:unavailable`이며 0이나 추정값으로 치환하지 않는다.
 
 ### 리뷰 강도 (review strength) — 시작 시 선택
 리뷰 깊이와 수렴 바를 시작 시 정한다. status block `review_strength`에 기록하고 reviewer가 이에 맞춰 검토한다. 기본값 `normal`.
@@ -46,13 +56,13 @@ affects_paths: [plugins/session-review/**]
 - `hard`라도 blocking은 일관성·정확성·엣지 리스크 중심이다 — 순수 스타일 nit은 사용자가 명시하지 않는 한 nit로 둔다(thrash 방지).
 - `self` 모드 + `hard`면 작업자가 다중 서브에이전트 reviewer나 적대적 검증 패스를 띄울 수 있다.
 
-### 브랜치 라이프사이클
+### 브랜치 라이프사이클 (audit)
 작업브랜치 → 리뷰브랜치 분기(base commit 기록) → 리뷰브랜치에 턴제 커밋 누적 → 수렴 + 유저확인 → `base..HEAD`를 squash merge로 작업브랜치 반영 → 리뷰브랜치 삭제 + 핸드셰이크 discard. 작업브랜치 worktree 여부 무관. diff 범위 = `base..리뷰브랜치 HEAD`.
 
 ### 상태 머신
 - **phase** (수렴 상태, owner=다음 행위자): `awaiting-review`(→reviewer) / `changes-requested`(→worker) / `approved`(→worker, 유저확인 진행) / `awaiting-user-confirmation`(→user) / `completed`(terminal) / `blocked`(→user).
 - **lock** (동시성): `active_actor` = none|worker|reviewer. 턴 시작 시 획득, 핸드오프 커밋 시 해제. 타인이 active면 행위 금지.
-- **턴/상태 정본 = 스냅샷 body의 parseable status block.** wiki snapshot은 frontmatter를 기능이 고정 관리하므로 커스텀하지 않는다. 대신 스냅샷 `## 현재 논의` 섹션의 **첫 fenced ```yaml``` 블록**을 두어 기계가 읽는다(파서는 문서 전체가 아니라 이 섹션의 첫 블록만 신뢰): `phase`, `active_actor`, `lock_since`, `next_actor`, `target_mode`, `target_nature`, `target_ref`, `base_ref`, `responding_to`, `round`, `round_type`, `flow_mode`, `review_strength`, optional `review_posture`, `blocking_count`. **타입 규약: 식별자/ref/enum 필드(`phase`·`active_actor`·`next_actor`·`target_mode`·`target_nature`·`target_ref`·`base_ref`·`responding_to`·`round_type`·`flow_mode`·`review_strength`·`review_posture`)는 모두 quoted string으로 저장**한다(YAML 스칼라 타입 안정성). 특히 전부-숫자 커밋 SHA가 Integer로 파싱되는 걸 막도록 `base_ref`/`responding_to`는 반드시 따옴표. `round`와 `blocking_count`만 정수, `lock_since`는 ISO8601 string 또는 `null`. parser는 식별자 필드를 string으로 normalize한다. 플러그인은 이 블록으로 phase/lock을 강제한다(owner 아닌 행위자·중복 active 차단).
+- **턴/상태 정본 = parseable status object.** audit는 snapshot `## 현재 논의`의 첫 fenced `yaml` block, fast는 context JSON을 쓴다. 공통 필드는 phase/actor/target/round/profile/verdict와 reviewer lease 필드다. 식별자/ref/enum/digest/timestamp는 string, `round`·`blocking_count`·expiry/fresh/reuse counter는 integer, `fresh_required`는 boolean, `lock_since`는 ISO8601 string 또는 `null`이다. 전부-숫자 commit SHA도 string으로 normalize하며, helper가 phase/lock/verdict/lease 일관성을 강제한다.
 - **리뷰 대상 성격/라운드 목적.** `target_nature`는 `code|spec|direction|process|general`, `round_type`은 `explore|converge|confirm|review`, `review_posture` override는 `verify|challenge|co-design`만 허용한다. `review_posture=confirm`은 금지다. `confirm`은 posture가 아니라 `round_type`이며 별도 lock-check behavior를 갖는다. 기본값은 보수적이다: `target_mode=diff`면 `target_nature=code`, document/unknown은 `general` fallback, `round_type` 누락은 `review`. helper는 `target_nature + round_type`에서 `effective_review_posture`를 계산한다.
 
 파생 기본값:
@@ -90,13 +100,13 @@ affects_paths: [plugins/session-review/**]
 - phase ∈ {`approved`, `awaiting-user-confirmation`}
 - `blocking_count == 0`이며 누락되지 않음
 - **worker가 리뷰 내용(쟁점·해결·결론)을 사용자에게 요약 브리핑**
-- 현재 세션에 **유저 명시 확인** 존재
+- 현재 세션에 **유저 명시 확인** 존재(단 self turnkey는 최초 profile 동의로 대체)
 - 리뷰브랜치가 작업브랜치 파생 + base 추적 가능
 - working tree clean
 - 핸드셰이크 최종 summary 존재 + 필요한 결정/관찰이 wiki로 승격(또는 "없음" 명시)
 - 최신 approved feedback과 worker synthesis에서 미해결 `[should-reflect-before-implementation]`을 final briefing과 다음 구현 단위로 이월. 이어지는 구현이 없으면 "implementation carryover 없음"을 명시.
 
-통과 시 `base..HEAD`를 squash merge → 작업브랜치, 리뷰브랜치 삭제, 핸드셰이크 snapshot **discard**. → `completed`는 장기 저장 상태가 아니라 squash 커밋·(승격된) wiki record·git history에 남는 **결과 상태**다(스냅샷 자체는 사라진다). 이 게이트는 `self`/`separate` 두 모드 공통 — self 모드도 완료는 자동화하지 않고 사용자 확인을 받는다.
+audit 통과 시 `base..HEAD`를 squash merge → 작업브랜치, 리뷰브랜치 삭제, 핸드셰이크 snapshot **discard**. `completed`는 장기 저장 상태가 아니라 squash 커밋·(승격된) wiki record·git history에 남는 결과 상태다. self turnkey만 최초 profile 동의로 추가 사용자 확인을 대체한다.
 
 ### 사용자 소통 — 판단성은 worker 전담, 운영 릴레이는 허용
 - **판단·결정성 소통은 worker 전담.** 사용자에 대한 판단/결정 요청, 완료 브리핑·확인, 정책 판단은 worker만 한다. reviewer는 사용자에게 판단 질문이나 완료 확인을 요청하지 않는다.
