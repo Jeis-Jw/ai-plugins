@@ -23,7 +23,7 @@ wiki_cli를 직접 호출하지 않는다.
 
 1. snapshot 로드
    `recording_mode=fast` self-review면 snapshot이 없으므로 1~2단계를 생략하고 현재
-   worker context의 target을 fresh reviewer subagent가 바로 검토한다. 같은 agent가
+   worker context의 target을 lease가 선택한 분리 reviewer가 바로 검토한다. 같은 agent가
    스스로 재검토하는 것은 session-review가 아니다.
    ```bash
    python3 "$SR" snapshot-load --slug <snapshot> --json
@@ -36,6 +36,9 @@ wiki_cli를 직접 호출하지 않는다.
    `phase`는 `awaiting-review`여야 한다. target이 없거나 모드가 불명확하면
    `blocked`로 넘기고 worker가 사용자에게 묻게 한다. `status` 출력의
    `effective_review_posture`와 `confirm_lock_check`를 기준으로 리뷰 렌즈를 고른다.
+   전달된 lease decision이 `fresh`면 새 reviewer 세션이어야 하고, `reuse`면
+   `reviewer_ref`와 현재 reviewer가 같아야 한다. 불일치하거나 reviewer를 다시 address할
+   수 없으면 worker에게 `harness_unaddressable` fresh fallback을 요청한다.
 3. 대상 검토
    - `target_mode=diff`: `git diff <base_ref>..HEAD`와 관련 테스트/문서를 본다.
    - `target_mode=document`: `target_ref` 문서를 정본으로 읽고 관계 문서를 필요한 만큼 확인한다.
@@ -62,13 +65,17 @@ wiki_cli를 직접 호출하지 않는다.
      approval과 양립 가능하다. `approved`는 `blocking_count=0`이지 "의견 없음"이
      아니다.
    - `hard`여도 순수 스타일 문제는 `[nit]`로 둔다.
-   - **`[blocking]` 개수만 센다.** 새 STATUS를 렌더한다: blocking 0이면
+   - **`[blocking]` 개수만 센다.** canonical feedback text의 digest와 실제 검토한
+     commit/document ref를 각각 `finding_digest`, `reviewed_ref`에 함께 기록하고
+     `lease_updated_at`을 갱신한다. 둘 중 하나만 기록하면 helper validation이 거부한다.
+   - 새 STATUS를 렌더한다: blocking 0이면
      `phase:"approved"`+`blocking_count:0`, 있으면 `phase:"changes-requested"`+
      `blocking_count:<n>`. 공통으로 `next_actor:"worker"`, `active_actor:"none"`,
      `lock_since:null`.
    ```bash
    STATUS=$(python3 "$SR" render --fenced --status-json '{...,"phase":"approved","next_actor":"worker","active_actor":"none","lock_since":null,"blocking_count":0}')
    ```
+   `{...}`는 현재 status의 lease 필드 전체를 보존한다는 뜻이며 실제 JSON 문법이 아니다.
    - `--fenced`는 status를 ```yaml 펜스째 출력하므로 그대로 discussion에 넣는다.
    - 피드백은 `### 리뷰 피드백 (round N)` **하위 헤딩**으로 둬서 `## 현재 논의` 안에
      머물게 한다(sibling `## ...` 금지 — `--merge`가 discussion을 매 라운드 통째
@@ -79,7 +86,7 @@ wiki_cli를 직접 호출하지 않는다.
    ```
 5. 일관성 검증 후 commit
    `recording_mode=fast` self-review면 snapshot 저장과 commit을 생략한다. 판정,
-   blocking_count, 주요 finding은 fresh reviewer subagent의 응답으로 worker에게
+   blocking_count, 주요 finding, 갱신된 lease status JSON을 reviewer 응답으로 worker에게
    전달하고 worker가 바로 반영한다.
    ```bash
    python3 "$SR" validate-status --slug <snapshot>   # approved ⇒ blocking_count==0 강제
@@ -90,7 +97,8 @@ wiki_cli를 직접 호출하지 않는다.
 ## 불변식
 
 - 사용자에게 판단 질문이나 완료 확인을 직접 요청하지 않는다.
-- fast self-review에서도 reviewer는 fresh subagent다. same-agent self-check는 금지다.
+- fast self-review에서도 reviewer 분리는 유지한다. lease가 fresh면 새 reviewer,
+  reuse면 addressable한 동일 reviewer를 쓴다. same-agent self-check는 금지다.
 - 커밋 메시지 bare `review: feedback`는 금지다. 판정과 요지를 붙인다.
 - status 정본은 snapshot status block이다. 커밋 마커는 handoff discovery용이다.
 - `phase:"approved"`는 `blocking_count:0`과만 양립한다(`validate-status`가 강제).
