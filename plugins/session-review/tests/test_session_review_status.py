@@ -364,6 +364,24 @@ class ReviewerLeaseAndReceiptTests(unittest.TestCase):
                 tokens=0, token_coverage="unavailable",
             )
 
+    def test_receipt_accepts_only_exact_or_unavailable_coverage(self):
+        common = {
+            "status": self.fresh_lease(), "run_id": "review-59",
+            "started_at": self.NOW, "finished_at": self.NOW,
+        }
+        unknown = session_review.receipt_from_status(**common)
+        exact = session_review.receipt_from_status(
+            **common, tokens=5, token_coverage="exact"
+        )
+        self.assertEqual((unknown["tokens"], unknown["token_coverage"]),
+                         (None, "unavailable"))
+        self.assertEqual((exact["tokens"], exact["token_coverage"]),
+                         (5, "exact"))
+        with self.assertRaisesRegex(session_review.StatusError, "token_coverage"):
+            session_review.receipt_from_status(
+                **common, tokens=5, token_coverage="partial"
+            )
+
 
 class BackendResolverTests(unittest.TestCase):
     def test_env_override_none_forces_builtin(self):
@@ -648,6 +666,20 @@ class FacadeCliTests(unittest.TestCase):
         )
         self.assertEqual(receipt.returncode, 0, receipt.stderr)
         self.assertEqual(json.loads(receipt.stdout)["elapsed_ms"], 1000)
+
+    def test_emit_receipt_cli_rejects_partial_and_accepts_exact(self):
+        common = (
+            "emit-receipt", "--status-json", "{}", "--run-id", "r1",
+            "--started-at", "2026-07-10T08:00:00Z",
+            "--finished-at", "2026-07-10T08:00:01Z", "--tokens", "5",
+        )
+        exact = run_cli(*common, "--token-coverage", "exact")
+        self.assertEqual(exact.returncode, 0, exact.stderr)
+        self.assertEqual(json.loads(exact.stdout)["token_coverage"], "exact")
+
+        partial = run_cli(*common, "--token-coverage", "partial")
+        self.assertEqual(partial.returncode, 2)
+        self.assertIn("invalid choice", partial.stderr)
 
     def test_validate_complete_allows_self_turnkey_without_user_confirmed_flag(self):
         with tempfile.TemporaryDirectory() as tmp:

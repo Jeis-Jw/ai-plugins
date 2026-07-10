@@ -111,7 +111,7 @@ FRESH_FALLBACK_REASONS = {
     "harness_unaddressable",
 }
 RECEIPT_SCHEMA = "workflow-receipt/v1"
-TOKEN_COVERAGE_VALUES = {"exact", "partial", "unavailable"}
+TOKEN_COVERAGE_VALUES = {"exact", "unavailable"}
 DEFAULT_POSTURE_BY_TARGET_AND_ROUND = {
     "code": {
         "explore": "verify",
