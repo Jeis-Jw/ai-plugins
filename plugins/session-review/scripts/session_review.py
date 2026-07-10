@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 from typing import Any, Optional
 
@@ -38,6 +39,17 @@ STRING_FIELDS = (
     "review_strength",
     "round_type",
     "review_posture",
+    "lease_id",
+    "reviewer_ref",
+    "reviewed_ref",
+    "scope_digest",
+    "finding_digest",
+    "lease_started_at",
+    "lease_updated_at",
+    "lease_target_ref",
+    "lease_base_ref",
+    "lease_risk",
+    "fresh_fallback_reason",
 )
 STATUS_ORDER = (
     "phase",
@@ -57,6 +69,21 @@ STATUS_ORDER = (
     "review_strength",
     "review_posture",
     "blocking_count",
+    "lease_id",
+    "reviewer_ref",
+    "reviewed_ref",
+    "scope_digest",
+    "finding_digest",
+    "lease_started_at",
+    "lease_updated_at",
+    "lease_target_ref",
+    "lease_base_ref",
+    "lease_risk",
+    "lease_expires_round",
+    "fresh_required",
+    "fresh_fallback_reason",
+    "fresh_count",
+    "reuse_count",
 )
 PHASE_OWNER = {
     "awaiting-review": "reviewer",
@@ -67,12 +94,24 @@ PHASE_OWNER = {
     "blocked": "user",
 }
 COMPLETE_ALLOWED_PHASES = {"approved", "awaiting-user-confirmation"}
-INT_FIELDS = ("round", "blocking_count")
+INT_FIELDS = ("round", "blocking_count", "lease_expires_round", "fresh_count", "reuse_count")
+BOOL_FIELDS = ("fresh_required",)
 TARGET_NATURE_VALUES = {"code", "spec", "direction", "process", "general"}
 ROUND_TYPE_VALUES = {"explore", "converge", "confirm", "review"}
 REVIEW_POSTURE_VALUES = {"verify", "challenge", "co-design"}
 SELF_AUTOMATION_VALUES = {"manual", "auto-rounds", "turnkey"}
 RECORDING_MODE_VALUES = {"audit", "fast"}
+FRESH_FALLBACK_REASONS = {
+    "episode_start",
+    "legacy_snapshot",
+    "scope_changed",
+    "ref_changed",
+    "risk_changed",
+    "round_expired",
+    "harness_unaddressable",
+}
+RECEIPT_SCHEMA = "workflow-receipt/v1"
+TOKEN_COVERAGE_VALUES = {"exact", "partial", "unavailable"}
 DEFAULT_POSTURE_BY_TARGET_AND_ROUND = {
     "code": {
         "explore": "verify",
@@ -166,6 +205,12 @@ def _parse_scalar(key: str, raw: str) -> Any:
             return int(value)
         except ValueError as exc:
             raise StatusError(f"{key} must be an integer") from exc
+    if key in BOOL_FIELDS:
+        if value == "true":
+            return True
+        if value == "false":
+            return False
+        raise StatusError(f"{key} must be true or false")
     if key in STRING_FIELDS:
         return str(value)
     return value
@@ -195,6 +240,14 @@ def normalize_status(status: dict[str, Any]) -> dict[str, Any]:
         if field in normalized and normalized[field] is not None \
                 and not isinstance(normalized[field], int):
             normalized[field] = int(normalized[field])
+    for field in BOOL_FIELDS:
+        if field in normalized and normalized[field] is not None \
+                and not isinstance(normalized[field], bool):
+            value = normalized[field]
+            if isinstance(value, str) and value.lower() in {"true", "false"}:
+                normalized[field] = value.lower() == "true"
+            else:
+                raise StatusError(f"{field} must be a boolean")
     if normalized.get("target_nature") is None:
         if normalized.get("target_mode") == "diff":
             normalized["target_nature"] = "code"
@@ -209,7 +262,25 @@ def normalize_status(status: dict[str, Any]) -> dict[str, Any]:
             normalized["recording_mode"] = (
                 "fast" if normalized.get("self_automation") == "turnkey" else "audit"
             )
+    normalized = migrate_legacy_reviewer_lease(normalized)
     return normalized
+
+
+def migrate_legacy_reviewer_lease(status: dict[str, Any]) -> dict[str, Any]:
+    """Make a pre-lease status safe without pretending it has a reusable reviewer.
+
+    Legacy snapshots did not identify a reviewer episode. They therefore migrate
+    to an explicit fresh requirement; the next lease acquisition replaces this
+    marker with a complete lease. The function is idempotent and also supports
+    fast mode, where the same object is passed only in agent context.
+    """
+    migrated = dict(status)
+    migrated.setdefault("fresh_count", 0)
+    migrated.setdefault("reuse_count", 0)
+    if not migrated.get("lease_id"):
+        migrated.setdefault("fresh_required", True)
+        migrated.setdefault("fresh_fallback_reason", "legacy_snapshot")
+    return migrated
 
 
 def _validate_enum(status: dict[str, Any], field: str, allowed: set[str]) -> None:
@@ -263,11 +334,225 @@ def requires_confirm_lock_check(status: dict[str, Any]) -> bool:
 def status_metadata(status: dict[str, Any]) -> dict[str, Any]:
     normalized = normalize_status(status)
     validate_self_profile_fields(normalized)
+    validate_reviewer_lease_fields(normalized)
     return {
         "effective_review_posture": effective_review_posture(status),
         "confirm_lock_check": requires_confirm_lock_check(status),
         "self_automation": normalized.get("self_automation"),
         "recording_mode": normalized.get("recording_mode"),
+        "lease_id": normalized.get("lease_id"),
+        "fresh_required": normalized["fresh_required"],
+        "fresh_fallback_reason": normalized.get("fresh_fallback_reason"),
+    }
+
+
+def _parse_timestamp(value: str, *, field: str) -> datetime.datetime:
+    raw = str(value).strip()
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        parsed = datetime.datetime.fromisoformat(raw)
+    except ValueError as exc:
+        raise StatusError(f"{field} must be an RFC3339 timestamp") from exc
+    if parsed.tzinfo is None:
+        raise StatusError(f"{field} must include a timezone")
+    return parsed.astimezone(datetime.timezone.utc)
+
+
+def _now_timestamp(now: str | None = None) -> str:
+    if now is None:
+        instant = datetime.datetime.now(datetime.timezone.utc)
+    else:
+        instant = _parse_timestamp(now, field="now")
+    return instant.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def validate_reviewer_lease_fields(status: dict[str, Any]) -> None:
+    normalized = normalize_status(status)
+    fresh_count = normalized.get("fresh_count")
+    reuse_count = normalized.get("reuse_count")
+    if fresh_count is None or int(fresh_count) < 0:
+        raise StatusError("fresh_count must be a non-negative integer")
+    if reuse_count is None or int(reuse_count) < 0:
+        raise StatusError("reuse_count must be a non-negative integer")
+
+    reason = normalized.get("fresh_fallback_reason")
+    if reason is not None and reason not in FRESH_FALLBACK_REASONS:
+        choices = ", ".join(sorted(FRESH_FALLBACK_REASONS))
+        raise StatusError(
+            f"fresh_fallback_reason must be one of {{{choices}}}; got {reason}"
+        )
+
+    lease_id = normalized.get("lease_id")
+    if not lease_id:
+        if normalized.get("fresh_required") is not True:
+            raise StatusError("status without lease_id requires fresh_required true")
+        if reason != "legacy_snapshot":
+            raise StatusError(
+                "status without lease_id requires fresh_fallback_reason legacy_snapshot"
+            )
+        return
+
+    if not isinstance(normalized.get("fresh_required"), bool):
+        raise StatusError("an acquired lease requires fresh_required boolean")
+
+    required = (
+        "scope_digest",
+        "lease_started_at",
+        "lease_updated_at",
+        "lease_target_ref",
+        "lease_base_ref",
+        "lease_risk",
+        "lease_expires_round",
+    )
+    missing = [field for field in required if normalized.get(field) in {None, ""}]
+    if missing:
+        raise StatusError(f"lease_id requires fields: {', '.join(missing)}")
+    started = _parse_timestamp(str(normalized["lease_started_at"]), field="lease_started_at")
+    updated = _parse_timestamp(str(normalized["lease_updated_at"]), field="lease_updated_at")
+    if updated < started:
+        raise StatusError("lease_updated_at must not precede lease_started_at")
+    if int(normalized["lease_expires_round"]) < 1:
+        raise StatusError("lease_expires_round must be >= 1")
+    if int(fresh_count) < 1:
+        raise StatusError("an acquired lease requires fresh_count >= 1")
+    if int(reuse_count) > 0 and not normalized.get("reviewer_ref"):
+        raise StatusError("reuse_count > 0 requires reviewer_ref")
+    if normalized.get("fresh_required") is True and reason is None:
+        raise StatusError("fresh_required true requires fresh_fallback_reason")
+    if bool(normalized.get("reviewed_ref")) != bool(normalized.get("finding_digest")):
+        raise StatusError("reviewed_ref and finding_digest must be recorded together")
+
+
+def acquire_reviewer_lease(
+    status: dict[str, Any],
+    *,
+    scope_digest: str | None = None,
+    reviewer_ref: str | None = None,
+    reviewer_addressable: bool = True,
+    max_reuse_rounds: int = 2,
+    now: str | None = None,
+    lease_id: str | None = None,
+) -> dict[str, Any]:
+    """Return the one machine-valid fresh/reuse decision for this round."""
+    if max_reuse_rounds < 0:
+        raise StatusError("max_reuse_rounds must be >= 0")
+    raw_had_lease = bool(status.get("lease_id"))
+    normalized = normalize_status(status)
+    round_number = int(normalized.get("round") or 0)
+    target_ref = normalized.get("target_ref")
+    base_ref = normalized.get("base_ref")
+    risk = normalized.get("review_strength") or "normal"
+    scope_digest = scope_digest or normalized.get("scope_digest")
+    if round_number < 1 or not all((target_ref, base_ref, scope_digest)):
+        raise StatusError("lease requires round, target_ref, base_ref and scope_digest")
+
+    reason: str | None = None
+    if not raw_had_lease:
+        reason = status.get("fresh_fallback_reason") or (
+            "episode_start" if round_number == 1 else "legacy_snapshot"
+        )
+    elif normalized.get("fresh_required"):
+        reason = str(normalized.get("fresh_fallback_reason") or "legacy_snapshot")
+    elif normalized.get("scope_digest") != scope_digest:
+        reason = "scope_changed"
+    elif (
+        normalized.get("lease_target_ref") != target_ref
+        or normalized.get("lease_base_ref") != base_ref
+        or (reviewer_ref is not None and reviewer_ref != normalized.get("reviewer_ref"))
+    ):
+        reason = "ref_changed"
+    elif normalized.get("lease_risk") != risk:
+        reason = "risk_changed"
+    elif round_number > int(normalized.get("lease_expires_round") or 0):
+        reason = "round_expired"
+    elif not reviewer_addressable or not normalized.get("reviewer_ref"):
+        reason = "harness_unaddressable"
+
+    timestamp = _now_timestamp(now)
+    updated = dict(normalized)
+    updated["round"] = round_number
+    if reason is not None:
+        updated.update(
+            {
+                "lease_id": lease_id or str(uuid.uuid4()),
+                "reviewer_ref": reviewer_ref if reviewer_addressable else None,
+                "reviewed_ref": None,
+                "scope_digest": scope_digest,
+                "finding_digest": None,
+                "lease_started_at": timestamp,
+                "lease_updated_at": timestamp,
+                "lease_target_ref": str(target_ref),
+                "lease_base_ref": str(base_ref),
+                "lease_risk": str(risk),
+                "lease_expires_round": round_number + max_reuse_rounds,
+                "fresh_required": False,
+                "fresh_fallback_reason": reason,
+                "fresh_count": int(normalized.get("fresh_count") or 0) + 1,
+                "reuse_count": int(normalized.get("reuse_count") or 0),
+            }
+        )
+        decision = "fresh"
+    else:
+        updated.update(
+            {
+                "lease_updated_at": timestamp,
+                "fresh_required": False,
+                "fresh_fallback_reason": None,
+                "reuse_count": int(normalized.get("reuse_count") or 0) + 1,
+            }
+        )
+        decision = "reuse"
+    validate_reviewer_lease_fields(updated)
+    return {"decision": decision, "reason": reason, "status": updated}
+
+
+def receipt_from_status(
+    status: dict[str, Any],
+    *,
+    run_id: str,
+    started_at: str,
+    finished_at: str,
+    tokens: int | None = None,
+    token_coverage: str | None = None,
+) -> dict[str, Any]:
+    normalized = normalize_status(status)
+    validate_reviewer_lease_fields(normalized)
+    started = _parse_timestamp(started_at, field="started_at")
+    finished = _parse_timestamp(finished_at, field="finished_at")
+    if not run_id.strip() or finished < started:
+        raise StatusError("run_id must be set and finished_at must not precede started_at")
+    coverage = token_coverage or ("unavailable" if tokens is None else "exact")
+    if coverage not in TOKEN_COVERAGE_VALUES:
+        raise StatusError("invalid token_coverage")
+    if (tokens is None) != (coverage == "unavailable"):
+        raise StatusError("unknown tokens must be null with token_coverage unavailable")
+    if tokens is not None and tokens < 0:
+        raise StatusError("tokens must be >= 0")
+    elapsed = finished - started
+    return {
+        "schema": RECEIPT_SCHEMA,
+        "emitter": "session-review",
+        "workflow": "session-review",
+        "run_id": run_id,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "elapsed_ms": elapsed.days * 86_400_000 + elapsed.seconds * 1_000
+        + elapsed.microseconds // 1_000,
+        "tokens": tokens,
+        "token_coverage": coverage,
+        "counters": {
+            "review_rounds": int(normalized.get("round") or 0),
+            "fresh_reviewers": int(normalized.get("fresh_count") or 0),
+            "reviewer_reuses": int(normalized.get("reuse_count") or 0),
+        },
+        "quality": {
+            "phase": normalized.get("phase"),
+            "blocking_count": normalized.get("blocking_count"),
+            "reviewed_ref": normalized.get("reviewed_ref"),
+            "finding_digest": normalized.get("finding_digest"),
+            "fresh_fallback_reason": normalized.get("fresh_fallback_reason"),
+        },
     }
 
 
@@ -282,6 +567,8 @@ def extract_status(snapshot_text: str) -> dict[str, Any]:
 def _render_scalar(key: str, value: Any) -> str:
     if value is None:
         return "null"
+    if key in BOOL_FIELDS:
+        return "true" if bool(value) else "false"
     if key in INT_FIELDS:
         return str(int(value))
     if key in STRING_FIELDS:
@@ -293,6 +580,7 @@ def render_status(status: dict[str, Any]) -> str:
     normalized = normalize_status(status)
     validate_review_posture_fields(normalized)
     validate_self_profile_fields(normalized)
+    validate_reviewer_lease_fields(normalized)
     keys = [key for key in STATUS_ORDER if key in normalized]
     keys.extend(key for key in normalized if key not in STATUS_ORDER)
     return "\n".join(f"{key}: {_render_scalar(key, normalized[key])}" for key in keys) + "\n"
@@ -361,6 +649,7 @@ def validate_status(status: dict[str, Any]) -> None:
     normalized = normalize_status(status)
     validate_review_posture_fields(normalized)
     validate_self_profile_fields(normalized)
+    validate_reviewer_lease_fields(normalized)
     phase = str(normalized.get("phase"))
     expected = PHASE_OWNER.get(phase)
     next_actor = normalized.get("next_actor") or expected
@@ -719,6 +1008,56 @@ def cmd_validate_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _lease_input_status(args: argparse.Namespace) -> dict[str, Any]:
+    if getattr(args, "status_json", None):
+        value = json.loads(args.status_json)
+        if not isinstance(value, dict):
+            raise StatusError("--status-json must be a JSON object")
+        return value
+    if getattr(args, "slug", None):
+        return extract_status(snapshot_load(_vault_arg(args), args.slug)["text"])
+    raise StatusError("provide --slug or --status-json")
+
+
+def _lease_output(args: argparse.Namespace, status: dict[str, Any], **extra: Any) -> int:
+    payload: dict[str, Any] = {"ok": True, **extra, "status": status}
+    if getattr(args, "slug", None):
+        path = set_status(_vault_arg(args), args.slug, status)
+        payload["path"] = str(path)
+    print(json.dumps(payload, ensure_ascii=False))
+    return 0
+
+
+def cmd_lease_acquire(args: argparse.Namespace) -> int:
+    status = _lease_input_status(args)
+    result = acquire_reviewer_lease(
+        status,
+        scope_digest=args.scope_digest,
+        reviewer_ref=args.reviewer_ref,
+        reviewer_addressable=not args.reviewer_unaddressable,
+        max_reuse_rounds=args.max_reuse_rounds,
+        now=args.now,
+        lease_id=args.lease_id,
+    )
+    return _lease_output(
+        args,
+        result["status"],
+        decision=result["decision"],
+        reason=result["reason"],
+    )
+def cmd_emit_receipt(args: argparse.Namespace) -> int:
+    receipt = receipt_from_status(
+        _lease_input_status(args),
+        run_id=args.run_id,
+        started_at=args.started_at,
+        finished_at=args.finished_at,
+        tokens=args.tokens,
+        token_coverage=args.token_coverage,
+    )
+    print(json.dumps(receipt, ensure_ascii=False))
+    return 0
+
+
 def parse_phase_args(values: list[str] | None) -> set[str] | None:
     if not values:
         return None
@@ -795,6 +1134,41 @@ def build_parser() -> argparse.ArgumentParser:
     p_vstatus.add_argument("--vault")
     p_vstatus.add_argument("--slug", required=True)
     p_vstatus.set_defaults(func=cmd_validate_status)
+
+    def add_lease_source(command: argparse.ArgumentParser) -> None:
+        source = command.add_mutually_exclusive_group(required=True)
+        source.add_argument("--slug", help="audit snapshot slug; updates persist in place")
+        source.add_argument(
+            "--status-json",
+            help="context-only status JSON for fast mode; no snapshot is read or written",
+        )
+        command.add_argument("--vault")
+
+    p_acquire = sub.add_parser(
+        "lease-acquire",
+        help="acquire a fresh reviewer or reuse a valid reviewer episode lease",
+    )
+    add_lease_source(p_acquire)
+    p_acquire.add_argument("--scope-digest")
+    p_acquire.add_argument("--reviewer-ref")
+    p_acquire.add_argument("--reviewer-unaddressable", action="store_true")
+    p_acquire.add_argument("--max-reuse-rounds", type=int, default=2)
+    p_acquire.add_argument("--now")
+    p_acquire.add_argument("--lease-id", help="test/harness supplied id; UUID by default")
+    p_acquire.set_defaults(func=cmd_lease_acquire)
+
+    p_receipt = sub.add_parser(
+        "emit-receipt", help="emit a binding workflow receipt schema v1 object"
+    )
+    add_lease_source(p_receipt)
+    p_receipt.add_argument("--run-id", required=True)
+    p_receipt.add_argument("--started-at", required=True)
+    p_receipt.add_argument("--finished-at", required=True)
+    p_receipt.add_argument("--tokens", type=int)
+    p_receipt.add_argument(
+        "--token-coverage", choices=tuple(sorted(TOKEN_COVERAGE_VALUES))
+    )
+    p_receipt.set_defaults(func=cmd_emit_receipt)
     return parser
 
 

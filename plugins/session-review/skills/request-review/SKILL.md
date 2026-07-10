@@ -34,6 +34,8 @@ $ARGUMENTS:
   --self-automation manual|auto-rounds|turnkey # self 전용; 기본 manual
   --recording-mode audit|fast      # 기본 audit; self+turnkey는 fast 강제
   --review-strength fast|normal|hard # 기본: normal
+  --reviewer-ref <addressable-agent-ref> # optional; 수정 라운드 reuse용
+  --max-reuse-rounds <N>            # 기본: 2
   --snapshot <slug>                # 기본: session-review-<target slug>
 ```
 
@@ -71,7 +73,7 @@ $ARGUMENTS:
    ```
    이미 리뷰브랜치가 있으면 `python3 "$SR" snapshot-load --slug <snapshot>` 후
    status block을 읽어 `base_ref`와 `target_ref`가 같은지 확인한다.
-3. status block 생성
+3. status block + reviewer lease 생성
    - `phase: "awaiting-review"`
    - `active_actor: "none"`
    - `lock_since: null`
@@ -80,11 +82,18 @@ $ARGUMENTS:
      `review_strength`, `target_nature`, `round_type`, optional `review_posture`,
      self일 때 `self_automation`, `recording_mode`는 모두 quoted string으로 저장한다.
    - `round`만 integer다.
-   `blocking_count: 0`을 포함한다(초기엔 0). `--fenced`로 ```yaml 펜스째 렌더한다:
+   `blocking_count: 0`을 포함한다(초기엔 0). 먼저 review 대상 path/section의 canonical
+   목록으로 `scope_digest`를 만든 뒤 `lease-acquire`를 호출한다. 최초 round 결과는 항상
+   `decision:fresh`, `reason:episode_start`다. fast mode도 snapshot 대신 같은 JSON을 쓴다.
    ```bash
-   STATUS=$(python3 "$SR" render --fenced \
-     --status-json '{"phase":"awaiting-review","active_actor":"none","lock_since":null,"next_actor":"reviewer","target_mode":"diff","target_nature":"code","target_ref":"task/issue-10-review","base_ref":"<BASE>","responding_to":"<BASE>","round":1,"round_type":"review","flow_mode":"self","self_automation":"auto-rounds","recording_mode":"audit","review_strength":"normal","blocking_count":0}')
+   STATUS_JSON='{"phase":"awaiting-review","active_actor":"none","lock_since":null,"next_actor":"reviewer","target_mode":"diff","target_nature":"code","target_ref":"task/issue-10-review","base_ref":"<BASE>","responding_to":"<BASE>","round":1,"round_type":"review","flow_mode":"self","self_automation":"auto-rounds","recording_mode":"audit","review_strength":"normal","blocking_count":0}'
+   LEASE=$(python3 "$SR" lease-acquire --status-json "$STATUS_JSON" \
+     --scope-digest "<SCOPE_DIGEST>" --reviewer-ref "<addressable reviewer ref>")
+   STATUS_JSON=$(printf '%s' "$LEASE" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["status"]))')
+   STATUS=$(python3 "$SR" render --fenced --status-json "$STATUS_JSON")
    ```
+   reviewer를 다시 address할 수 없는 harness는 `--reviewer-ref`를 생략한다. 이 경우
+   다음 수정 라운드는 `harness_unaddressable` fresh fallback을 강제한다.
    상태를 확인하면 helper가 파생값을 함께 보여준다.
    ```bash
    python3 "$SR" status --slug "$SNAPSHOT"
@@ -114,11 +123,11 @@ $ARGUMENTS:
 ## self / separate
 
 - `separate`: 사용자 운영 릴레이를 전제로 독립 reviewer 세션이 `review`를 실행한다.
-- `self`: 작업자가 핸드셰이크 저장 직후 **fresh 서브에이전트 reviewer**를 띄워
-  `review` 스킬을 실행시킨다(독립 세션 릴레이 대신).
+- `self`: 최초 라운드는 fresh reviewer를 띄운다. 수정 라운드는 lease가 `reuse`면
+  `reviewer_ref`의 기존 reviewer를 다시 호출하고, `fresh`면 새 reviewer를 띄운다.
 - `self + audit`: snapshot, review branch, status block, round commit을 유지한다.
-- `self + fast`: snapshot, review branch, round commit을 생략하지만 **fresh reviewer
-  subagent는 필수**다. same-agent self-check는 session-review가 아니다. 최종 commit
+- `self + fast`: snapshot, review branch, round commit을 생략하지만 reviewer lease와
+  worker/reviewer 분리는 필수다. same-agent self-check는 session-review가 아니다. 최종 commit
   message에 subagent verdict, resolved findings, test 요약을 남긴다.
 
 ## 불변식
