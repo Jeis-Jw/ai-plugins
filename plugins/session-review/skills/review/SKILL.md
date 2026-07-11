@@ -88,7 +88,9 @@ wiki_cli를 직접 호출하지 않는다.
 5. 일관성 검증 후 commit
    `recording_mode=fast` self-review면 snapshot 저장과 commit을 생략한다. 판정,
    blocking_count, 주요 finding, 갱신된 lease status JSON을 reviewer 응답으로 worker에게
-   전달하고 worker가 바로 반영한다.
+   전달하고 worker가 바로 반영한다. 전달 전
+   `python3 "$SR" validate-status --status-json '<status JSON>'`으로 판정 일관성을
+   검증한다.
    ```bash
    python3 "$SR" validate-status --slug <snapshot>   # approved ⇒ blocking_count==0 강제
    git add wiki/snapshot

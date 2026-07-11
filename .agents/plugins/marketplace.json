@@ -7,6 +7,8 @@
     {
       "name": "wiki-markdown",
       "source": { "source": "local", "path": "./plugins/wiki-markdown" },
+      "version": "0.19.2",
+      "description": "Markdown-backed AI-native filesystem wiki management and agent policy scaffolding for AI agents.",
       "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
       "category": "Productivity"
     },
@@ -21,7 +23,7 @@
     {
       "name": "session-review",
       "source": { "source": "local", "path": "./plugins/session-review" },
-      "version": "0.5.0",
+      "version": "0.5.1",
       "description": "Wiki snapshot and git review-branch protocol for worker/reviewer loops with self-mode fast/audit profiles.",
       "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
       "category": "Productivity"

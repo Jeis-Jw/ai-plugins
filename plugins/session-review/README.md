@@ -19,8 +19,10 @@ All skill operations go through `scripts/session_review.py` only — skills neve
 call `wiki_cli` directly. Subcommands: `snapshot-save` / `snapshot-load` /
 `snapshot-discard` (handshake I/O), `set-status` (rewrite the status block in
 place), `validate-status` / `validate-turn` / `validate-complete` (gates),
-`render` (status block). Read/validate/mutate commands take `--slug`; the path
-is resolved internally.
+`render` (status block). Mutate commands take `--slug` (path resolved
+internally); read/validate commands (`status` / `validate-turn` /
+`validate-status` / `validate-complete`) also accept `--file` or
+`--status-json`, so fast mode runs the same machine gates without a snapshot.
 
 Reviewer episode operations use the same facade:
 

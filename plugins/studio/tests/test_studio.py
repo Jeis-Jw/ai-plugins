@@ -802,5 +802,10 @@ def main() -> None:
     print("all studio.py checks passed")
 
 
+def test_studio_cli_end_to_end():
+    """pytest entrypoint; `python3 tests/test_studio.py` stays the script path."""
+    main()
+
+
 if __name__ == "__main__":
     main()

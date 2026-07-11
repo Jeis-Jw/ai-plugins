@@ -55,6 +55,7 @@ class TaskGithubDefineHelperTests(unittest.TestCase):
 
             result = subprocess.run(
                 [sys.executable, str(SCRIPT), "--spec", str(spec), "--dry-run", "--json"],
+                cwd=tmp,  # hermetic: never inhale the developer's repo-local .task-github.yml
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -93,6 +94,7 @@ class TaskGithubDefineHelperTests(unittest.TestCase):
 
             result = subprocess.run(
                 [sys.executable, str(SCRIPT), "--spec", str(spec), "--dry-run", "--json"],
+                cwd=tmp,  # hermetic: never inhale the developer's repo-local .task-github.yml
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -126,6 +128,7 @@ class TaskGithubDefineHelperTests(unittest.TestCase):
 
             result = subprocess.run(
                 [sys.executable, str(SCRIPT), "--spec", str(spec), "--dry-run", "--json"],
+                cwd=tmp,  # hermetic: never inhale the developer's repo-local .task-github.yml
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -167,6 +170,7 @@ class TaskGithubDefineHelperTests(unittest.TestCase):
 
             result = subprocess.run(
                 [sys.executable, str(SCRIPT), "--spec", str(spec), "--dry-run", "--json"],
+                cwd=tmp,  # hermetic: never inhale the developer's repo-local .task-github.yml
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

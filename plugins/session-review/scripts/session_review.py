@@ -924,25 +924,36 @@ def _status_text(args: argparse.Namespace) -> str:
         return snapshot_load(_vault_arg(args), args.slug)["text"]
     if getattr(args, "file", None):
         return Path(args.file).read_text(encoding="utf-8")
-    raise StatusError("provide --slug or --file")
+    raise StatusError("provide --slug, --file or --status-json")
+
+
+def _status_input(args: argparse.Namespace) -> dict[str, Any]:
+    """Resolve a status object from --status-json (fast mode), --slug or --file."""
+    raw = getattr(args, "status_json", None)
+    if raw:
+        value = json.loads(raw)
+        if not isinstance(value, dict):
+            raise StatusError("--status-json must be a JSON object")
+        return value
+    return extract_status(_status_text(args))
 
 
 def cmd_status(args: argparse.Namespace) -> int:
-    status = extract_status(_status_text(args))
+    status = _status_input(args)
     payload = {"ok": True, "status": status, **status_metadata(status)}
     print(json.dumps(payload, ensure_ascii=False))
     return 0
 
 
 def cmd_validate_turn(args: argparse.Namespace) -> int:
-    validate_turn(extract_status(_status_text(args)), actor=args.actor,
+    validate_turn(_status_input(args), actor=args.actor,
                   allowed_phases=parse_phase_args(args.phase))
     print(json.dumps({"ok": True}, ensure_ascii=False))
     return 0
 
 
 def cmd_validate_complete(args: argparse.Namespace) -> int:
-    validate_complete(extract_status(_status_text(args)), user_confirmed=args.user_confirmed)
+    validate_complete(_status_input(args), user_confirmed=args.user_confirmed)
     print(json.dumps({"ok": True}, ensure_ascii=False))
     return 0
 
@@ -1010,21 +1021,9 @@ def cmd_set_status(args: argparse.Namespace) -> int:
 
 
 def cmd_validate_status(args: argparse.Namespace) -> int:
-    loaded = snapshot_load(_vault_arg(args), args.slug)
-    validate_status(extract_status(loaded["text"]))
+    validate_status(_status_input(args))
     print(json.dumps({"ok": True}, ensure_ascii=False))
     return 0
-
-
-def _lease_input_status(args: argparse.Namespace) -> dict[str, Any]:
-    if getattr(args, "status_json", None):
-        value = json.loads(args.status_json)
-        if not isinstance(value, dict):
-            raise StatusError("--status-json must be a JSON object")
-        return value
-    if getattr(args, "slug", None):
-        return extract_status(snapshot_load(_vault_arg(args), args.slug)["text"])
-    raise StatusError("provide --slug or --status-json")
 
 
 def _lease_output(args: argparse.Namespace, status: dict[str, Any], **extra: Any) -> int:
@@ -1037,7 +1036,7 @@ def _lease_output(args: argparse.Namespace, status: dict[str, Any], **extra: Any
 
 
 def cmd_lease_acquire(args: argparse.Namespace) -> int:
-    status = _lease_input_status(args)
+    status = _status_input(args)
     result = acquire_reviewer_lease(
         status,
         scope_digest=args.scope_digest,
@@ -1053,9 +1052,11 @@ def cmd_lease_acquire(args: argparse.Namespace) -> int:
         decision=result["decision"],
         reason=result["reason"],
     )
+
+
 def cmd_emit_receipt(args: argparse.Namespace) -> int:
     receipt = receipt_from_status(
-        _lease_input_status(args),
+        _status_input(args),
         run_id=args.run_id,
         started_at=args.started_at,
         finished_at=args.finished_at,
@@ -1086,12 +1087,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_status.add_argument("--file")
     p_status.add_argument("--slug")
     p_status.add_argument("--vault")
+    p_status.add_argument("--status-json", help="context-only status JSON for fast mode")
     p_status.set_defaults(func=cmd_status)
 
     p_turn = sub.add_parser("validate-turn", help="validate actor ownership and lock")
     p_turn.add_argument("--file")
     p_turn.add_argument("--slug")
     p_turn.add_argument("--vault")
+    p_turn.add_argument("--status-json", help="context-only status JSON for fast mode")
     p_turn.add_argument("--actor", required=True, choices=("worker", "reviewer"))
     p_turn.add_argument("--phase", action="append", help="allowed phase; repeat or comma-separate")
     p_turn.set_defaults(func=cmd_validate_turn)
@@ -1100,6 +1103,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_complete.add_argument("--file")
     p_complete.add_argument("--slug")
     p_complete.add_argument("--vault")
+    p_complete.add_argument("--status-json", help="context-only status JSON for fast mode")
     p_complete.add_argument("--user-confirmed", action="store_true")
     p_complete.set_defaults(func=cmd_validate_complete)
 
@@ -1140,7 +1144,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_vstatus = sub.add_parser("validate-status", help="check status block self-consistency")
     p_vstatus.add_argument("--vault")
-    p_vstatus.add_argument("--slug", required=True)
+    p_vstatus.add_argument("--slug")
+    p_vstatus.add_argument("--file")
+    p_vstatus.add_argument("--status-json", help="context-only status JSON for fast mode")
     p_vstatus.set_defaults(func=cmd_validate_status)
 
     def add_lease_source(command: argparse.ArgumentParser) -> None:

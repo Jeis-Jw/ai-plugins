@@ -38,7 +38,7 @@ affects_paths: [plugins/session-review/**]
 - lease 만료는 `scope_changed`, `ref_changed`, `risk_changed`, `round_expired`, `harness_unaddressable` fresh fallback reason으로 기계 판정한다. 기본 horizon은 최초 획득 뒤 수정 라운드 2회다.
 - status에는 `lease_id`, optional `reviewer_ref`, `reviewed_ref`, `scope_digest`, `finding_digest`, started/updated timestamp, expiry round, `fresh_count`/`reuse_count`, `fresh_required`를 저장한다. `reviewed_ref`와 `finding_digest`는 함께 기록한다.
 - lease가 없는 legacy snapshot은 reviewer identity를 추정하지 않고 `fresh_required: true`, `fresh_fallback_reason: legacy_snapshot`으로 lazy migration한다.
-- fast mode는 snapshot 대신 동일한 전체 status JSON을 reviewer context로 전달한다. recording overhead만 제거하며 worker/reviewer 분리는 유지한다.
+- fast mode는 snapshot 대신 동일한 전체 status JSON을 reviewer context로 전달한다. recording overhead만 제거하며 worker/reviewer 분리는 유지한다. validate 계열 CLI(`status`/`validate-turn`/`validate-status`/`validate-complete`)도 `--status-json`을 받아 fast에서 같은 phase/lease 게이트를 기계로 강제한다.
 
 ### Workflow receipt v1
 `emit-receipt`는 `schema`, `emitter`, `workflow`, `run_id`, started/finished timestamp, `elapsed_ms`, `tokens`, `token_coverage`, `counters`, `quality`를 출력한다. 토큰을 정확히 알 수 없으면 `tokens:null`, `token_coverage:unavailable`이며 0이나 추정값으로 치환하지 않는다.

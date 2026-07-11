@@ -725,5 +725,49 @@ class FacadeCliTests(unittest.TestCase):
             self.assertIn("PARITY CHECK", json.loads(r.stdout)["text"])
 
 
+class FastModeStatusJsonCliTests(unittest.TestCase):
+    """Fast mode has no snapshot; the validate verbs must gate --status-json too."""
+
+    @staticmethod
+    def _lease_status(**overrides):
+        status = {
+            "phase": "approved", "active_actor": "none", "lock_since": None,
+            "next_actor": "worker", "target_mode": "diff",
+            "target_nature": "direction", "target_ref": "main", "base_ref": "a",
+            "responding_to": "a", "round": 2, "round_type": "review",
+            "flow_mode": "self", "self_automation": "turnkey",
+            "recording_mode": "fast", "review_strength": "normal",
+            "blocking_count": 0, "lease_id": "L1", "reviewer_ref": "agent-1",
+            "reviewed_ref": "deadbeef", "scope_digest": "d1",
+            "finding_digest": "f1", "lease_started_at": "2026-07-11T00:00:00Z",
+            "lease_updated_at": "2026-07-11T00:00:00Z", "lease_target_ref": "main",
+            "lease_base_ref": "a", "lease_risk": "normal",
+            "lease_expires_round": 3, "fresh_required": False,
+            "fresh_count": 1, "reuse_count": 0,
+        }
+        status.update(overrides)
+        return status
+
+    def test_validate_status_gates_review_evidence_without_snapshot(self):
+        ok = run_cli("validate-status", "--status-json",
+                     json.dumps(self._lease_status()))
+        self.assertEqual(ok.returncode, 0, ok.stderr)
+
+        stale = self._lease_status(reviewed_ref=None, finding_digest=None)
+        r = run_cli("validate-status", "--status-json", json.dumps(stale))
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn("reviewed_ref", r.stderr)
+
+    def test_validate_complete_honors_turnkey_confirmation_exception(self):
+        turnkey = run_cli("validate-complete", "--status-json",
+                          json.dumps(self._lease_status()))
+        self.assertEqual(turnkey.returncode, 0, turnkey.stderr)
+
+        manual = self._lease_status(self_automation="auto-rounds")
+        r = run_cli("validate-complete", "--status-json", json.dumps(manual))
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn("confirmation", r.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
