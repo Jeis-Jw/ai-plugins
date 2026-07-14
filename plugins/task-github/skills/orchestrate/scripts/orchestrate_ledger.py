@@ -50,6 +50,7 @@ def _default() -> dict[str, Any]:
         "merge_evidence": {},
         "gate_evidence": {},
         "preflight_evidence": {},
+        "execution_evidence": {},
     }
 
 
@@ -86,6 +87,7 @@ def _ensure_v3(payload: dict[str, Any]) -> dict[str, Any]:
     payload.setdefault("merge_evidence", {})
     payload.setdefault("gate_evidence", {})
     payload.setdefault("preflight_evidence", {})
+    payload.setdefault("execution_evidence", {})
     return payload
 
 
@@ -236,6 +238,36 @@ def record_gate_evidence(path: str | Path, issue: int, evidence: dict[str, Any])
 def record_preflight_evidence(path: str | Path, pr: int, evidence: dict[str, Any]) -> dict[str, Any]:
     payload = load_ledger(path)
     payload["preflight_evidence"][str(int(pr))] = {"at": _now(), **dict(evidence)}
+    return write_ledger(path, payload)
+
+
+def record_execution_evidence(
+    path: str | Path, issue: int, projection: dict[str, Any]
+) -> dict[str, Any]:
+    required = {"schema", "receipt_ref", "evidence_ref", "head", "result"}
+    if not isinstance(projection, dict) or set(projection) != required:
+        raise ValueError("execution evidence projection has invalid fields")
+    if projection.get("schema") != "task-github.execution-evidence-ref/v1":
+        raise ValueError("execution evidence projection has invalid schema")
+    for name in ("receipt_ref", "evidence_ref"):
+        ref = projection.get(name)
+        if ref is None and name == "evidence_ref":
+            continue
+        id_key = "receipt_id" if name == "receipt_ref" else "evidence_id"
+        if (
+            not isinstance(ref, dict) or set(ref) != {id_key, "digest"}
+            or not isinstance(ref.get(id_key), str) or not ref[id_key]
+            or not isinstance(ref.get("digest"), str) or not ref["digest"].startswith("sha256:")
+        ):
+            raise ValueError(f"execution evidence {name} is invalid")
+    payload = load_ledger(path)
+    key = str(int(issue))
+    receipt_id = projection["receipt_ref"]["receipt_id"]
+    issue_evidence = payload["execution_evidence"].setdefault(key, {})
+    current = issue_evidence.get(receipt_id)
+    if current is not None and current != projection:
+        raise ValueError("immutable execution evidence projection conflicts with ledger")
+    issue_evidence[receipt_id] = dict(projection)
     return write_ledger(path, payload)
 
 
@@ -849,6 +881,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--merge-evidence-json")
     parser.add_argument("--gate-evidence-json")
     parser.add_argument("--preflight-evidence-json")
+    parser.add_argument("--execution-evidence-json")
     parser.add_argument("--summary", action="store_true")
     parser.add_argument("--events-tail", type=int, default=5)
     parser.add_argument("--json", action="store_true", dest="as_json")
@@ -857,6 +890,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.summary:
             payload = load_ledger(args.path)
+        elif args.execution_evidence_json:
+            if args.issue is None:
+                raise ValueError("--issue is required with execution evidence JSON")
+            payload = record_execution_evidence(
+                args.path, args.issue, json.loads(args.execution_evidence_json)
+            )
         elif args.preflight_evidence_json:
             if args.pr is None:
                 raise ValueError("--pr is required with preflight evidence JSON")
