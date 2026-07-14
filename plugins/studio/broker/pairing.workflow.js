@@ -19,6 +19,7 @@ export const meta = {
 //     criticRubric: string,
 //     maxRounds?: number (default 3),
 //     agentRuntime?: 'claude'|'codex',
+//     runtimeCapability?: { runtime, verified, dispatch_allowed },
 //     agentPolicy?: { defaults, roles, agents, rituals, providers },
 //     reviewCycle?: {                 // optional continuation; never implies final QA
 //       cycleId: string,
@@ -38,7 +39,14 @@ const DEV = (A.personas && A.personas.dev) || { body: 'You are the developer. Bu
 const QA = (A.personas && A.personas.qa) || { body: 'You are QA. Your job is to break it with a reproducible failure.' }
 const RUBRIC = A.criticRubric || ''
 const MAX_ROUNDS = A.maxRounds || 3
-const AGENT_RUNTIME = A.agentRuntime || null
+const REQUESTED_RUNTIME = A.agentRuntime || null
+const RUNTIME_CAPABILITY = A.runtimeCapability || null
+const AGENT_RUNTIME = REQUESTED_RUNTIME && RUNTIME_CAPABILITY
+  && RUNTIME_CAPABILITY.runtime === REQUESTED_RUNTIME
+  && RUNTIME_CAPABILITY.verified === true
+  && RUNTIME_CAPABILITY.dispatch_allowed === true
+  ? REQUESTED_RUNTIME
+  : null
 const REVIEW = A.reviewCycle || null
 const REVIEW_ID = REVIEW && (REVIEW.cycleId || REVIEW.cycle_id)
 const REVIEW_MODE = REVIEW && (REVIEW.qaMode || REVIEW.qa_mode || 'development')
@@ -59,8 +67,11 @@ if (REVIEW && (
 )) {
   return { ritual: 'pairing', error: 'reviewCycle continuation is invalid', participants: ['dev', 'qa'] }
 }
-if (AGENT_RUNTIME && !['claude', 'codex'].includes(AGENT_RUNTIME)) {
+if (REQUESTED_RUNTIME && !['claude', 'codex'].includes(REQUESTED_RUNTIME)) {
   return { ritual: 'pairing', error: 'agentRuntime must be claude or codex', participants: ['dev', 'qa'] }
+}
+if (REQUESTED_RUNTIME && !AGENT_RUNTIME) {
+  return { ritual: 'pairing', error: 'agentRuntime requires a matching verified runtimeCapability', participants: ['dev', 'qa'] }
 }
 
 if (!WT) {

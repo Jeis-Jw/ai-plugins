@@ -17,6 +17,7 @@ export const meta = {
 //     maxRounds?: number (default 4),
 //     dryStop?: number  (default 2),
 //     agentRuntime?: 'claude'|'codex',
+//     runtimeCapability?: { runtime, verified, dispatch_allowed },
 //     agentPolicy?: { defaults, roles, agents, rituals, providers },
 //   }
 // defensive: a stringified args (caller passed JSON text instead of an object)
@@ -27,14 +28,24 @@ const PERSONAS = (A.personas || []).filter(Boolean)
 const RUBRIC = A.criticRubric || 'Reject any delta whose changed_what has no concrete anchor.'
 const MAX_ROUNDS = A.maxRounds || 4
 const DRY_STOP = A.dryStop || 2
-const AGENT_RUNTIME = A.agentRuntime || null
+const REQUESTED_RUNTIME = A.agentRuntime || null
+const RUNTIME_CAPABILITY = A.runtimeCapability || null
+const AGENT_RUNTIME = REQUESTED_RUNTIME && RUNTIME_CAPABILITY
+  && RUNTIME_CAPABILITY.runtime === REQUESTED_RUNTIME
+  && RUNTIME_CAPABILITY.verified === true
+  && RUNTIME_CAPABILITY.dispatch_allowed === true
+  ? REQUESTED_RUNTIME
+  : null
 const ANCHORS = ['artifact', 'acceptance-criteria', 'risk', 'rejected-alternative', 'repro-test']
 
 if (PERSONAS.length < 2) {
   return { ritual: 'brainstorm', error: 'brainstorm needs >=2 personas with distinct priors', participants: PERSONAS.map(p => p.name) }
 }
-if (AGENT_RUNTIME && !['claude', 'codex'].includes(AGENT_RUNTIME)) {
+if (REQUESTED_RUNTIME && !['claude', 'codex'].includes(REQUESTED_RUNTIME)) {
   return { ritual: 'brainstorm', error: 'agentRuntime must be claude or codex', participants: PERSONAS.map(p => p.name) }
+}
+if (REQUESTED_RUNTIME && !AGENT_RUNTIME) {
+  return { ritual: 'brainstorm', error: 'agentRuntime requires a matching verified runtimeCapability', participants: PERSONAS.map(p => p.name) }
 }
 
 const startedMs = Date.now()
@@ -163,7 +174,7 @@ phase('Diverge')
 const seeds = await parallel(
   PERSONAS.map((p, i) => () =>
     agent(personaTurnPrompt('', p, 'Open the room: give your independent take on the agenda. You cannot see the others yet.'),
-      { schema: TURN_SCHEMA, label: `diverge:${p.name}`, phase: 'Diverge', ...policyFor(p.role, 'diverge', p.agentId || p.name) })
+      { schema: TURN_SCHEMA, label: `diverge:${p.name}`, phase: 'Diverge', ...policyFor(p.roleId || p.name, 'diverge', p.agentId || p.name) })
       .then(r => ({ name: p.name, ...r }))
   )
 )
@@ -186,7 +197,7 @@ for (let round = 1; round <= MAX_ROUNDS; round++) {
     const turn = await agent(
       personaTurnPrompt(transcript, p,
         `Round ${round}. React to the transcript: rebut, refine, or propose something new — no agreement-summaries. Log any real delta with its anchor.`),
-      { schema: TURN_SCHEMA, label: `debate:r${round}:${p.name}`, phase: 'Debate', ...policyFor(p.role, 'debate', p.agentId || p.name) })
+      { schema: TURN_SCHEMA, label: `debate:r${round}:${p.name}`, phase: 'Debate', ...policyFor(p.roleId || p.name, 'debate', p.agentId || p.name) })
     if (!turn) continue
     transcript += `\n\n[r${round}] ${p.name}: ${turn.utterance}`
     // stable id = position in roundSubmitted; the critic echoes it back so

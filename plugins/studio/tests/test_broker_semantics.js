@@ -182,10 +182,12 @@ async function resolvedBrainstormOption(agentPolicy, overrides = {}) {
   await execute(
     'brainstorm.workflow.js',
     {
-      agenda: 'policy precedence', agentRuntime: 'codex', agentPolicy, overrides,
+      agenda: 'policy precedence', agentRuntime: 'codex',
+      runtimeCapability: { runtime: 'codex', verified: true, dispatch_allowed: true },
+      agentPolicy, overrides,
       personas: [
-        { name: 'a', agentId: 'planner-a', role: 'planner', prior: 'one', body: 'one' },
-        { name: 'b', agentId: 'planner-b', role: 'reviewer', prior: 'two', body: 'two' },
+        { name: 'a', agentId: 'planner-a', roleId: 'planner', role: 'planner', prior: 'one', body: 'one' },
+        { name: 'b', agentId: 'planner-b', roleId: 'reviewer', role: 'reviewer', prior: 'two', body: 'two' },
       ],
       maxRounds: 1, dryStop: 1,
     },
@@ -200,6 +202,34 @@ async function resolvedBrainstormOption(agentPolicy, overrides = {}) {
   )
   return captured
 }
+
+let castRoleOptions = null
+await execute(
+  'brainstorm.workflow.js',
+  {
+    agenda: 'canonical cast role', agentRuntime: 'codex',
+    runtimeCapability: { runtime: 'codex', verified: true, dispatch_allowed: true },
+    personas: [
+      { name: 'architect', role: '설계', prior: 'system boundary', body: 'shape the system' },
+      { name: 'researcher', role: '자료수집', prior: 'evidence', body: 'check evidence' },
+    ],
+    agentPolicy: {
+      roles: { architect: { model: 'common-architect' } },
+      providers: { codex: { roles: { architect: { model: 'provider-architect' } } } },
+    },
+    maxRounds: 1, dryStop: 1,
+  },
+  (label, options) => {
+    if (label === 'diverge:architect') castRoleOptions = options
+    if (label.startsWith('diverge:') || label.startsWith('debate:')) return { utterance: 'dry', deltas: [] }
+    if (label === 'critic:r1') return { verified: [] }
+    if (label === 'summarizer') return { synthesis: 'done', minority: 'none', proposals: [] }
+    if (label === 'critic:final') return { alive: false, reason: 'dry' }
+    throw new Error(`unexpected cast role label: ${label}`)
+  },
+)
+assert.equal(castRoleOptions.model, 'provider-architect')
+assert.equal(castRoleOptions.agentId, 'architect')
 
 const commonDefault = { defaults: { model: 'common-default' } }
 const providerDefault = { defaults: { model: 'common-default' }, providers: { codex: { defaults: { model: 'provider-default' } } } }
@@ -235,6 +265,7 @@ await execute(
   {
     taskSpec: 'runtime policy', acceptanceCriteria: ['verified'], worktreePath: '/tmp/track',
     agentRuntime: 'claude',
+    runtimeCapability: { runtime: 'claude', verified: true, dispatch_allowed: true },
     personas: { dev: { agentId: 'builder-7' }, qa: { agentId: 'qa-7' } },
     agentPolicy: {
       agents: { 'builder-7': { model: 'common-agent' } },
@@ -269,5 +300,16 @@ const badRuntime = await execute(
   () => { throw new Error('invalid runtime must not dispatch agents') },
 )
 assert.match(badRuntime.output.error, /agentRuntime/)
+
+const unverifiedRuntime = await execute(
+  'brainstorm.workflow.js',
+  {
+    agenda: 'unverified runtime', agentRuntime: 'codex',
+    runtimeCapability: { runtime: 'claude', verified: true, dispatch_allowed: true },
+    personas: [{ name: 'a', role: 'planner' }, { name: 'b', role: 'reviewer' }],
+  },
+  () => { throw new Error('unverified runtime must not dispatch agents') },
+)
+assert.match(unverifiedRuntime.output.error, /verified runtimeCapability/)
 
 console.log('all broker semantic checks passed')

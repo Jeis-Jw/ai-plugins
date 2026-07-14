@@ -100,8 +100,9 @@ REVIEW_EVENT_FIELDS = {
 # agent policy config (.studio.yml)
 CONFIG_PATH_DEFAULT = ".studio.yml"
 WORKSPACE_PATH_DEFAULT = ".studio"
-KNOWN_EFFORTS = ("low", "medium", "high", "xhigh", "max")
-LEGACY_MODEL_ALIASES = ("sonnet", "opus", "haiku", "fable")
+# These are Studio's portable scaffold suggestions, not a claim that every
+# runtime supports them. A verified runtime advertisement is authoritative.
+ABSTRACT_EFFORTS = ("low", "medium", "high", "xhigh", "max")
 AGENT_RUNTIMES = ("claude", "codex")
 TOOL_ACTIVATIONS = ("auto", "always", "never")
 TOOL_FALLBACKS = ("native", "stop")
@@ -109,6 +110,7 @@ WORKER_PROVIDERS = ("native", "task-worker", "task-github")
 REVIEWER_PROVIDERS = ("native", "session-review")
 ROUTING_PLAN_SCHEMA = "studio-routing-plan/v1"
 CAPABILITY_SNAPSHOT_SCHEMA = "studio-capability-snapshot/v1"
+RUNTIME_CAPABILITY_SCHEMA = "studio-runtime-capability/v1"
 REVIEW_LEASE_SCHEMA = "workflow-review-lease/v1"
 
 CASTS = {
@@ -451,7 +453,9 @@ def render_default_config() -> str:
         "# Agent resolution (most→least specific): run override > provider ritual\n"
         "#   > common ritual > provider agent > common agent > provider role\n"
         "#   > common role > provider defaults > common defaults > session inherit.\n"
-        "# model: provider model id (blank = inherit); effort: low|medium|high|xhigh|max\n"
+        "# model/effort: runtime-owned ids (blank = inherit). Scaffold effort names\n"
+        "# are portable policy hints only; a verified runtime advertisement wins.\n"
+        f"# portable effort examples: {','.join(ABSTRACT_EFFORTS)}\n"
         "\n"
         "defaults:\n"
         "  model:            # blank = inherit the session model (recommended default)\n"
@@ -552,11 +556,26 @@ def cmd_config(args: argparse.Namespace) -> None:
     if args.ccmd == "validate":
         ok(path=str(path), problems=problems)
     if args.ccmd == "resolve":
+        raw_runtime_capability = (
+            load_json_arg(args.runtime_capability, "runtime capability")
+            if args.runtime_capability else None
+        )
+        runtime = args.agent_runtime or (
+            raw_runtime_capability.get("runtime")
+            if isinstance(raw_runtime_capability, dict) else None
+        )
+        runtime_capability = _canonical_runtime_capability(
+            raw_runtime_capability, runtime, raw_runtime_capability.get("runtime")
+            if isinstance(raw_runtime_capability, dict) else None,
+        )
         run_override = {"model": args.model, "effort": args.effort}
         profile = resolve_agent_profile(
-            cfg, args.agent_runtime, args.role, args.agent, args.ritual, args.step,
-            run_override,
+            cfg, runtime, args.role, args.agent, args.ritual, args.step,
+            run_override, runtime_capability,
         )
+        unsupported = _unsupported_profile_fields(profile)
+        if unsupported:
+            fail(6, "unsupported_runtime_profile", "resolved agent profile is not advertised by the verified runtime", problems=unsupported)
         ok(path=str(path), present=path.is_file(), profile=profile, problems=problems)
     ok(path=str(path), present=True, config=cfg, problems=problems)
 
@@ -580,17 +599,9 @@ def _validate_config(cfg: dict) -> list[dict]:
         m = block.get("model")
         if m not in (None, "") and (not isinstance(m, str) or not m.strip()):
             problems.append({"severity": "error", "where": where, "msg": "model must be a provider model id string or null"})
-        elif (
-            isinstance(m, str) and m.strip() and not where.startswith("providers.")
-            and m not in LEGACY_MODEL_ALIASES
-        ):
-            problems.append({
-                "severity": "warning", "where": where,
-                "msg": f"model {m!r} is accepted but should normally live under providers.claude or providers.codex",
-            })
         e = block.get("effort")
-        if e not in (None, "") and e not in KNOWN_EFFORTS:
-            problems.append({"severity": "error", "where": where, "msg": f"bad effort {e!r} (must be {', '.join(KNOWN_EFFORTS)})"})
+        if e not in (None, "") and (not isinstance(e, str) or not e.strip()):
+            problems.append({"severity": "error", "where": where, "msg": "effort must be a runtime effort id string or null"})
 
     def check_policy(policy: Any, where: str) -> None:
         if not isinstance(policy, dict):
@@ -665,6 +676,7 @@ def _policy_value(block: Any, field: str) -> Any:
 def resolve_agent_profile(
     cfg: dict, runtime: str | None, role: str | None, agent: str | None,
     ritual: str | None, step: str | None, run_override: dict | None = None,
+    runtime_capability: dict | None = None,
 ) -> dict:
     """Resolve model/effort independently using the documented ten layers."""
     provider = (cfg.get("providers") or {}).get(runtime, {}) if runtime else {}
@@ -692,7 +704,7 @@ def resolve_agent_profile(
         else:
             resolved[field] = None
             sources[field] = "session-inherit"
-    return {
+    profile = {
         "runtime": runtime,
         "role": role,
         "agent": agent,
@@ -701,6 +713,8 @@ def resolve_agent_profile(
         **resolved,
         "sources": sources,
     }
+    profile["validation"] = _profile_validation(profile, runtime_capability)
+    return profile
 
 
 # --------------------------------------------------------------------------- #
@@ -2534,6 +2548,120 @@ def _host_runtime() -> str | None:
     return None
 
 
+def _validate_runtime_capability_input(value: Any, *, allow_unknown_runtime: bool = False) -> list[str]:
+    fields = {
+        "schema", "runtime", "version", "advertised_models", "advertised_efforts",
+    }
+    if not isinstance(value, dict):
+        return ["runtime capability must be an object"]
+    problems = []
+    if set(value) != fields:
+        problems.append("runtime capability fields do not match studio-runtime-capability/v1")
+    if value.get("schema") != RUNTIME_CAPABILITY_SCHEMA:
+        problems.append(f"runtime capability schema must be {RUNTIME_CAPABILITY_SCHEMA}")
+    if value.get("runtime") not in AGENT_RUNTIMES and not (
+        allow_unknown_runtime and value.get("runtime") is None
+    ):
+        problems.append("runtime capability runtime must be claude or codex")
+    version = value.get("version")
+    if version is not None and (not isinstance(version, str) or not version.strip()):
+        problems.append("runtime capability version must be null or a non-empty string")
+    for field in ("advertised_models", "advertised_efforts"):
+        advertised = value.get(field)
+        if advertised is not None and (
+            not isinstance(advertised, list)
+            or any(not isinstance(item, str) or not item.strip() for item in advertised)
+        ):
+            problems.append(f"runtime capability {field} must be null or a string list")
+        elif isinstance(advertised, list) and len(advertised) != len(set(advertised)):
+            problems.append(f"runtime capability {field} must be unique")
+    return problems
+
+
+def _canonical_runtime_capability(
+    raw: Any, selected_runtime: str | None, verified_host_runtime: str | None,
+) -> dict:
+    if raw is not None:
+        problems = _validate_runtime_capability_input(raw)
+        if problems:
+            fail(6, "invalid_runtime_capability", "; ".join(problems), problems=problems)
+        observed_runtime = raw["runtime"]
+        if verified_host_runtime and observed_runtime != verified_host_runtime:
+            fail(6, "runtime_capability_conflict", "runtime capability does not match the verified host runtime")
+        base = {
+            "schema": RUNTIME_CAPABILITY_SCHEMA,
+            "runtime": observed_runtime,
+            "version": raw["version"],
+            "advertised_models": (
+                sorted(raw["advertised_models"])
+                if raw["advertised_models"] is not None else None
+            ),
+            "advertised_efforts": (
+                sorted(raw["advertised_efforts"])
+                if raw["advertised_efforts"] is not None else None
+            ),
+        }
+        verified = True
+    else:
+        observed_runtime = verified_host_runtime
+        base = {
+            "schema": RUNTIME_CAPABILITY_SCHEMA,
+            "runtime": observed_runtime,
+            "version": None,
+            "advertised_models": None,
+            "advertised_efforts": None,
+        }
+        verified = observed_runtime in AGENT_RUNTIMES
+    return {
+        **base,
+        "verified": verified,
+        "dispatch_allowed": bool(
+            selected_runtime is None
+            or (verified and observed_runtime == selected_runtime)
+        ),
+        "digest": canonical_digest(base),
+    }
+
+
+def _profile_validation(profile: dict, runtime_capability: dict | None) -> dict:
+    validation = {}
+    for field, advertised_field, advertised_source in (
+        ("model", "advertised_models", "runtime-advertised-models"),
+        ("effort", "advertised_efforts", "runtime-advertised-efforts"),
+    ):
+        value = profile.get(field)
+        if value is None:
+            validation[field] = {"status": "not-configured", "source": "session-inherit"}
+            continue
+        advertised = (
+            runtime_capability.get(advertised_field)
+            if isinstance(runtime_capability, dict) and runtime_capability.get("verified")
+            else None
+        )
+        if advertised is None:
+            validation[field] = {
+                "status": "unknown", "source": "runtime-advertisement-unavailable",
+            }
+        elif value in advertised:
+            validation[field] = {"status": "supported", "source": advertised_source}
+        else:
+            validation[field] = {"status": "unsupported", "source": advertised_source}
+    return validation
+
+
+def _unsupported_profile_fields(profile: dict) -> list[dict]:
+    return [
+        {
+            "field": field,
+            "value": profile.get(field),
+            "runtime": profile.get("runtime"),
+            "source": verdict.get("source"),
+        }
+        for field, verdict in profile.get("validation", {}).items()
+        if verdict.get("status") == "unsupported"
+    ]
+
+
 def _tool_request(cfg: dict, kind: str, override: str | None, need: bool) -> dict:
     providers = WORKER_PROVIDERS if kind == "worker" else REVIEWER_PROVIDERS
     if override is not None:
@@ -2635,6 +2763,27 @@ def validate_routing_plan(value: Any) -> list[str]:
         problems.append("RoutingPlan.environment_digest must be a sha256 digest")
     if value.get("runtime_profile") not in (*AGENT_RUNTIMES, None):
         problems.append("RoutingPlan.runtime_profile is invalid")
+    runtime_capability = value.get("runtime_capability")
+    sealed_runtime_fields = {
+        "schema", "runtime", "version", "advertised_models", "advertised_efforts",
+        "verified", "dispatch_allowed", "digest",
+    }
+    if not isinstance(runtime_capability, dict) or set(runtime_capability) != sealed_runtime_fields:
+        problems.append("RoutingPlan.runtime_capability fields do not match studio-runtime-capability/v1")
+    else:
+        raw_runtime_capability = {
+            key: runtime_capability[key]
+            for key in ("schema", "runtime", "version", "advertised_models", "advertised_efforts")
+        }
+        problems.extend(_validate_runtime_capability_input(
+            raw_runtime_capability, allow_unknown_runtime=True,
+        ))
+        if not isinstance(runtime_capability.get("verified"), bool):
+            problems.append("RoutingPlan.runtime_capability.verified must be boolean")
+        if not isinstance(runtime_capability.get("dispatch_allowed"), bool):
+            problems.append("RoutingPlan.runtime_capability.dispatch_allowed must be boolean")
+        if runtime_capability.get("digest") != canonical_digest(raw_runtime_capability):
+            problems.append("RoutingPlan.runtime_capability.digest does not match its canonical payload")
     if value.get("review_lease") is not None:
         problems.extend(validate_review_lease(value["review_lease"]))
     expected_digest = _routing_plan_digest(value)
@@ -2652,13 +2801,18 @@ def cmd_routing_plan(args: argparse.Namespace) -> None:
     mission_id = validate_safe_id(args.mission_id, "mission_id")
     environment_digest = _review_digest(args.environment_digest, "environment_digest")
     cfg = _load_optional_config(Path(args.config or CONFIG_PATH_DEFAULT))
-    runtime = args.agent_runtime or _host_runtime()
+    raw_runtime_capability = (
+        load_json_arg(args.runtime_capability, "runtime capability")
+        if args.runtime_capability else None
+    )
     host_runtime = args.host_runtime or _host_runtime()
-    runtime_capability = {
-        "host_runtime": host_runtime,
-        "verified": bool(runtime and host_runtime and runtime == host_runtime),
-        "dispatch_allowed": bool(runtime and host_runtime and runtime == host_runtime),
-    }
+    runtime = args.agent_runtime or (
+        raw_runtime_capability.get("runtime")
+        if isinstance(raw_runtime_capability, dict) else host_runtime
+    )
+    runtime_capability = _canonical_runtime_capability(
+        raw_runtime_capability, runtime, host_runtime,
+    )
     work_need = bool(args.work_need)
     review_lease = load_json_arg(args.review_lease, "review lease") if args.review_lease else None
     if review_lease is not None:
@@ -2734,6 +2888,7 @@ def cmd_routing_plan(args: argparse.Namespace) -> None:
                 statuses[provider] = "unknown"
 
         action = "dispatch"
+        review_replan_required = False
         for route in (worker, reviewer):
             provider = route.get("provider")
             if provider == "native" or (route is reviewer and not route.get("dispatch")):
@@ -2753,19 +2908,38 @@ def cmd_routing_plan(args: argparse.Namespace) -> None:
                 route["selected"] = None
                 route["fallback_used"] = False
                 action = "stop"
+            elif (
+                route is reviewer
+                and review_lease
+                and review_lease["owner"] == "studio"
+                and review_lease["provider"] == "session-review"
+            ):
+                # A signed session-review lease cannot silently turn into a
+                # native review. Require a new canonical native lease instead.
+                route["selected"] = None
+                route["fallback_used"] = False
+                review_replan_required = True
             else:
                 route["selected"] = "native"
                 route["fallback_used"] = True
+
+        if review_replan_required:
+            action = "review-lease-replan-required"
 
         if (
             review_lease and review_lease["owner"] == "task-worker"
             and action == "dispatch" and worker.get("selected") != worker.get("provider")
         ):
             action = "stop"
+        if runtime is not None and not runtime_capability["dispatch_allowed"]:
+            action = "runtime-capability-required"
         agent_profile = resolve_agent_profile(
             cfg, runtime, args.role, args.agent, args.ritual, args.step,
-            {"model": args.model, "effort": args.effort},
+            {"model": args.model, "effort": args.effort}, runtime_capability,
         )
+        unsupported = _unsupported_profile_fields(agent_profile)
+        if unsupported:
+            fail(6, "unsupported_runtime_profile", "resolved agent profile is not advertised by the verified runtime", problems=unsupported)
         plan = {
             "schema": ROUTING_PLAN_SCHEMA,
             "plan_id": "pending",
@@ -2785,7 +2959,7 @@ def cmd_routing_plan(args: argparse.Namespace) -> None:
         plan["plan_id"] = "routing-" + digest.split(":", 1)[1][:16]
         plan["digest"] = _routing_plan_digest(plan)
         edge_changed = False
-        if review_lease:
+        if review_lease and action == "dispatch":
             edges = board.setdefault("review_lease_edges", {})
             prior = edges.get(review_lease["edge_id"])
             if prior is not None and prior != review_lease["digest"]:
@@ -3011,6 +3185,13 @@ def cmd_workflow_dispatch(args: argparse.Namespace) -> None:
     if routing_plan is not None:
         if args.capabilities is not None:
             fail(6, "capability_snapshot_already_pinned", "RoutingPlan dispatch cannot accept a second capability snapshot")
+        runtime_capability = routing_plan["runtime_capability"]
+        if routing_plan["runtime_profile"] is not None and not (
+            runtime_capability.get("verified")
+            and runtime_capability.get("dispatch_allowed")
+            and runtime_capability.get("runtime") == routing_plan["runtime_profile"]
+        ):
+            fail(6, "runtime_not_dispatchable", "RoutingPlan runtime is not verified for the current host harness")
         if routing_plan["action"] != "dispatch":
             fail(6, "routing_not_dispatchable", f"RoutingPlan action is {routing_plan['action']}")
         route_worker = routing_plan["worker"]
@@ -3477,12 +3658,13 @@ def build_parser() -> argparse.ArgumentParser:
             cp.add_argument("--force", action="store_true")
         if name == "resolve":
             cp.add_argument("--agent-runtime", choices=AGENT_RUNTIMES)
+            cp.add_argument("--runtime-capability", help="verified studio-runtime-capability/v1 JSON")
             cp.add_argument("--role")
             cp.add_argument("--agent")
             cp.add_argument("--ritual")
             cp.add_argument("--step")
             cp.add_argument("--model")
-            cp.add_argument("--effort", choices=KNOWN_EFFORTS)
+            cp.add_argument("--effort")
         cp.set_defaults(func=cmd_config)
 
     sp = sub.add_parser("routing", help="deterministic optional-tool routing")
@@ -3499,12 +3681,13 @@ def build_parser() -> argparse.ArgumentParser:
     rtp.add_argument("--capabilities", help="selected provider capability snapshot mapping")
     rtp.add_argument("--agent-runtime", choices=AGENT_RUNTIMES)
     rtp.add_argument("--host-runtime", choices=AGENT_RUNTIMES)
+    rtp.add_argument("--runtime-capability", help="verified studio-runtime-capability/v1 JSON")
     rtp.add_argument("--role")
     rtp.add_argument("--agent")
     rtp.add_argument("--ritual")
     rtp.add_argument("--step")
     rtp.add_argument("--model")
-    rtp.add_argument("--effort", choices=KNOWN_EFFORTS)
+    rtp.add_argument("--effort")
     rtp.set_defaults(func=cmd_routing_plan)
 
     sp = sub.add_parser("board", help="read the operating board")

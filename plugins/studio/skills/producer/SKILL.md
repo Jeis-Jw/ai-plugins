@@ -178,7 +178,7 @@ python3 "$STUDIO" config get   # JSON → common defaults/roles/agents/rituals +
 ```
 그 `config`를 broker args의 `agentPolicy`로 넘긴다. 상황에 따라 동적으로 조일 때
 (예: 예산 잔액 부족)는 `overrides: {effort: "low"}`를 함께 넘긴다. 해석 우선순위는
-브로커가 강제한다: **run override > provider ritual > common ritual > provider agent > common agent > provider role > common role > provider defaults > common defaults > 세션 상속**. blank/null은 다음 층으로 넘어간다. runtime override는 profile 선택일 뿐 실제 harness capability를 만들지 않는다. `.studio.yml`이 없으면 native와 세션 runtime/model/effort를 상속한다.
+브로커가 강제한다: **run override > provider ritual > common ritual > provider agent > common agent > provider role > common role > provider defaults > common defaults > 세션 상속**. blank/null은 다음 층으로 넘어간다. runtime override는 profile 선택일 뿐 실제 harness capability를 만들지 않는다. `.studio.yml`이 없으면 native와 세션 runtime/model/effort를 상속한다. non-null `agentRuntime`은 matching verified `studio-runtime-capability/v1`이 있고 `dispatch_allowed=true`일 때만 broker에 전달한다. advertised model/effort set이 있으면 resolved 값을 fail-closed 검증하고, 광고가 없으면 지원 상태를 `unknown`으로 유지한다.
 
 **소집 대상 선정 (casting policy + 페르소나 frontmatter를 실제로 읽어라):**
 - `rules/casting.md`는 default cast다. 모든 crew를 부르지 말고 mission에 맞는 최소
@@ -204,10 +204,11 @@ python3 "$STUDIO" config get   # JSON → common defaults/roles/agents/rituals +
      scriptPath = "$CLAUDE_PLUGIN_ROOT/broker/brainstorm.workflow.js"
      args = {
        agenda: "<이 run의 안건>",
-       personas: [{name, agentId, role, prior, body}, ...], // stable agentId, 서로 다른 prior 2개 이상
+       personas: [{name, agentId, roleId, role, prior, body}, ...], // roleId/name=정책 key, role=표시용
        criticRubric: "<rubric.md 내용>",
        agentPolicy: <config get의 config>,     // model/effort 정책
-       agentRuntime: "claude|codex",          // 현재 실제 harness profile
+       agentRuntime: "claude|codex",          // verified capability와 일치할 때만
+       runtimeCapability: <RoutingPlan.runtime_capability>,
        overrides: {},                                 // 선택: 이 run만 강제 (예: {effort:"low"})
        maxRounds: 4, dryStop: 2
      }
@@ -235,6 +236,7 @@ Workflow 호출 (백그라운드):
     criticRubric: "<rubric.md 내용>",
     agentPolicy: <config get의 config>,
     agentRuntime: "claude|codex",
+    runtimeCapability: <RoutingPlan.runtime_capability>,
     overrides: {},
     maxRounds: 3,
     reviewCycle: {...<review handoff 출력>, qaMode: "development|delta"} // continuation일 때만
@@ -272,13 +274,13 @@ snapshot으로 만들고, doctor 및 실행 직전 preflight는 **read-only**로
   "mission_id": "mission-...",
   "environment_digest": "sha256:...",
   "status": "available",
-  "contracts": {}
+  "contracts": ["work-packet/v1", "workflow-review-lease/v1", "task-worker.review-permit/v1"]
 }
 ```
 
 probe 결과는 `(mission_id, provider, environment_digest)`당 한 번 재사용한다. 명시 run override가 unavailable이면 STOP하고, 설정 provider이면 그 설정의 `fallback:native|stop`을 따른다. dispatch가 시작된 provider 실패는 같은 lease로 resume하거나 cancel confirmation 뒤에만 다른 executor로 전환한다.
 
-라우팅 판단의 정본은 `studio-routing-plan/v1`이다. canonical fields는 `worker.selected`, `worker.provider`, `reviewer.owner`, `reviewer.provider`, `reviewer.dispatch`, `reviewer.selected`, `review_lease`, `action`, `digest`다. reviewer가 필요한 edge만 exact `workflow-review-lease/v1`을 만든다. `owner=studio`면 task-worker/task-github reviewer dispatch를 금지하고 Studio reviewer가 판단한다. `owner=task-worker`면 Studio reviewer를 추가 소집하지 않는다. task-github를 선택하면 Studio에는 task-github lease 하나만 보이며 내부 task-worker preflight는 adapter 책임이다.
+라우팅 판단의 정본은 `studio-routing-plan/v1`이다. canonical fields는 `worker.selected`, `worker.provider`, `reviewer.owner`, `reviewer.provider`, `reviewer.dispatch`, `reviewer.selected`, `review_lease`, `action`, `digest`다. reviewer가 필요한 edge만 exact `workflow-review-lease/v1`을 만든다. 필드는 `schema, lease_id, owner, provider, episode_id, edge_id, requirement, criteria_digest, evidence_refs, digest`이며 owner는 `studio|task-worker`, provider는 `native|session-review`다. `owner=studio`면 task-worker/task-github reviewer dispatch를 금지하고 Studio reviewer가 판단한다. `owner=task-worker`면 Studio reviewer를 추가 소집하지 않는다. task-github를 선택하면 Studio에는 task-github lease 하나만 보이며 내부 task-worker preflight는 adapter 책임이다. Studio-owned session-review가 unavailable이고 fallback이 native이면 signed lease의 provider를 묵시적으로 바꾸지 않는다. `review-lease-replan-required`에서 native provider의 새 canonical lease를 만든 뒤 다시 계획한다.
 
 1. ContextPack digest와 QualityPlan ref를 포함한 WorkPacket을 `workflow validate-packet`으로
    검증한다.

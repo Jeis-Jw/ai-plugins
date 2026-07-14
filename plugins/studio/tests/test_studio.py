@@ -750,19 +750,19 @@ def main() -> None:
         assert r["config"]["roles"]["creator"]["effort"] == "medium", r
         assert r["config"]["defaults"]["model"] is None, r                  # blank → null → inherit
         assert r["config"]["rituals"]["brainstorm"]["diverge"]["effort"] == "low", r
-        #    bad effort value → hard error on BOTH validate and get (exit 6),
-        #    so a bad config can never reach the brokers via the producer's `get`
-        (tmp / "bad.yml").write_text("defaults:\n  effort: turbo\n", encoding="utf-8")
+        #    effort ids belong to the runtime, but malformed non-string values
+        #    still hard-fail before config can reach a broker.
+        (tmp / "bad.yml").write_text("defaults:\n  effort: 7\n", encoding="utf-8")
         r = run(["config", "validate", "--path", str(tmp / "bad.yml")], tmp, expect=6)
         assert any("effort" in p["msg"] for p in r["problems"]), r
         run(["config", "get", "--path", str(tmp / "bad.yml")], tmp, expect=6)
         #    tab indentation is rejected (silently mis-parses otherwise) → exit 4
         (tmp / "tabs.yml").write_text("roles:\n\tdev:\n\t\teffort: high\n", encoding="utf-8")
         run(["config", "get", "--path", str(tmp / "tabs.yml")], tmp, expect=4)
-        #    unknown model is a warning, not an error (still exit 0)
+        #    dynamic model ids are runtime-owned strings, not global warnings.
         (tmp / "warn.yml").write_text("defaults:\n  model: gpt\n", encoding="utf-8")
         r = run(["config", "validate", "--path", str(tmp / "warn.yml")], tmp)
-        assert r["ok"] and any(p["severity"] == "warning" for p in r["problems"]), r
+        assert r["ok"] and not r["problems"], r
         #    absent config → present False, everything inherits the session
         r = run(["config", "get", "--path", str(tmp / "none.yml")], tmp)
         assert r["present"] is False and r["config"] == {}, r
@@ -833,7 +833,8 @@ def main() -> None:
         native_route = r["routing_plan"]
         assert native_route["worker"]["selected"] == "native" and native_route["probe_targets"] == [], r
         assert native_route["runtime_profile"] == "claude", r
-        assert not native_route["runtime_capability"]["verified"] and not native_route["runtime_capability"]["dispatch_allowed"], r
+        assert native_route["runtime_capability"]["verified"] and not native_route["runtime_capability"]["dispatch_allowed"], r
+        assert native_route["action"] == "runtime-capability-required", r
 
         worker_cfg = tmp / "worker-routing.yml"
         worker_cfg.write_text(

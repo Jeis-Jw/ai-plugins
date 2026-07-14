@@ -37,6 +37,8 @@ Producer는 모든 crew를 부르지 않는다. mission을 분류하고, 가장 
 
 `critic`은 일반 persona가 아니라 ritual 검증 역할이다. `cast suggest`의 `participants`에는
 broker에 넘길 persona만 들어가고, `critic: true`이면 critic rubric을 붙인다.
+brainstorm persona의 설정 key는 `roleId || name`이다. `role`은 화면과 prompt에 쓰는 표시용
+문구이므로 `설계`, `자료수집` 같은 현지화된 값으로 policy lookup을 하지 않는다.
 
 ## Tool policy
 
