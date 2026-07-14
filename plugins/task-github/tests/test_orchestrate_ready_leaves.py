@@ -540,6 +540,28 @@ class MergeEdgeGearTreeTests(unittest.TestCase):
         self.assertEqual(payload["merge_evidence"]["4"]["pr"], 10)
         self.assertEqual(payload["gate_evidence"]["4"]["gate"], "changed-path-stale")
 
+    def test_ledger_records_only_immutable_execution_receipt_refs(self):
+        import tempfile
+
+        projection = {
+            "schema": "task-github.execution-evidence-ref/v1",
+            "receipt_ref": {"receipt_id": "R-1", "digest": "sha256:" + "a" * 64},
+            "evidence_ref": {"evidence_id": "EV-1", "digest": "sha256:" + "b" * 64},
+            "head": "abc123",
+            "result": "pass",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = Path(tmp) / "ledger.json"
+            orchestrate_ledger.record_execution_evidence(ledger, 4, projection)
+            orchestrate_ledger.record_execution_evidence(ledger, 4, dict(projection))
+            with self.assertRaisesRegex(ValueError, "conflicts"):
+                orchestrate_ledger.record_execution_evidence(
+                    ledger, 4, {**projection, "head": "different"},
+                )
+            payload = orchestrate_ledger.load_ledger(ledger)
+
+        self.assertEqual(payload["execution_evidence"]["4"]["R-1"], projection)
+
     def test_ledger_pr_merged_event_records_parent_consumable_merge_evidence(self):
         import tempfile
 

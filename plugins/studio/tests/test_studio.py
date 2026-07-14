@@ -1030,6 +1030,7 @@ def main() -> None:
             "ResultEnvelope 필수 필드",
             "provider가 absent/unknown이면 `context outbox`",
             "`references/review-cycle.md`",
+            "`references/execution-control.md`",
         ):
             assert phrase in producer, phrase
         review_reference = plugin_text("skills/producer/references/review-cycle.md")
@@ -1041,6 +1042,14 @@ def main() -> None:
             "token/time을 coverage와 함께 반환",
         ):
             assert phrase in review_reference, phrase
+        execution_reference = plugin_text("skills/producer/references/execution-control.md")
+        for phrase in (
+            "sha256:7df570d1faaba445865c74fd6dffff73178f0102cd3a5728183abf6791ce2b65",
+            "`execution dispatch --json @request.json`",
+            "consumption digest",
+            "`execution summary --mission-id <id>`는 read-only",
+        ):
+            assert phrase in execution_reference, phrase
 
         # 12) pairing output carries the integration handoff contract
         pairing = plugin_text("broker/pairing.workflow.js")

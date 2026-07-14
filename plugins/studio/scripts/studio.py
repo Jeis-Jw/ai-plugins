@@ -38,6 +38,22 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from execution_control import (
+    CONTRACT_DIGEST as EXECUTION_CONTRACT_DIGEST,
+    ControlError as ExecutionControlError,
+    dispatch as execution_dispatch,
+    efficiency_summary as execution_efficiency_summary,
+    ensure_execution_state,
+    evaluate_golden_case,
+    invalidate_evidence as execution_invalidate_evidence,
+    load_contract as load_execution_contract,
+    record_capability_snapshot,
+    record_closeout as execution_record_closeout,
+    record_evidence as execution_record_evidence,
+    record_result as execution_record_result,
+    validate_instance as validate_execution_instance,
+)
+
 
 JSON_FENCE_RE = re.compile(r"```json[ \t]*\n(.*?)\n```", re.DOTALL)
 # backlog item: "- [ ] text ... (kpi: <token>)"  — the (kpi: ...) tag is mandatory.
@@ -3617,6 +3633,171 @@ def cmd_workflow_promote(args: argparse.Namespace) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# native execution control — permit/profile/claim/receipt/evidence/closeout
+# --------------------------------------------------------------------------- #
+def _execution_contract() -> tuple[dict, Path]:
+    try:
+        return load_execution_contract(plugin_root())
+    except ExecutionControlError as exc:
+        fail(6, exc.code, exc.message, **exc.details)
+
+
+def _execution_failure(exc: ExecutionControlError) -> None:
+    fail(6, exc.code, exc.message, **exc.details)
+
+
+def cmd_execution_contract(args: argparse.Namespace) -> None:
+    contract, path = _execution_contract()
+    results = []
+    try:
+        for case in contract["golden_cases"]:
+            actual = evaluate_golden_case(contract, case)
+            if actual != case["expected"]:
+                raise ExecutionControlError(
+                    "golden_case_failed",
+                    f"canonical golden case failed: {case['id']}",
+                    expected=case["expected"],
+                    actual=actual,
+                )
+            results.append(case["id"])
+    except ExecutionControlError as exc:
+        _execution_failure(exc)
+    ok(
+        schema=contract["schema"],
+        digest=contract["digest"],
+        expected_digest=EXECUTION_CONTRACT_DIGEST,
+        path=str(path),
+        golden_cases=results,
+    )
+
+
+def cmd_execution_golden(args: argparse.Namespace) -> None:
+    contract, _ = _execution_contract()
+    selected = [
+        case for case in contract["golden_cases"]
+        if args.case == "all" or case["id"] == args.case
+    ]
+    if not selected:
+        fail(4, "golden_case_not_found", f"golden case not found: {args.case}")
+    results = {}
+    try:
+        for case in selected:
+            actual = evaluate_golden_case(contract, case)
+            if actual != case["expected"]:
+                raise ExecutionControlError(
+                    "golden_case_failed",
+                    f"canonical golden case failed: {case['id']}",
+                    expected=case["expected"],
+                    actual=actual,
+                )
+            results[case["id"]] = actual
+    except ExecutionControlError as exc:
+        _execution_failure(exc)
+    ok(contract_digest=contract["digest"], results=results)
+
+
+def cmd_execution_dispatch(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    contract, _ = _execution_contract()
+    request = load_json_arg(args.json, "native execution dispatch")
+    try:
+        with board_transaction(ws) as board:
+            state = ensure_execution_state(board)
+            decision = execution_dispatch(state, contract, request)
+    except ExecutionControlError as exc:
+        _execution_failure(exc)
+    ok(contract_digest=contract["digest"], decision=decision)
+
+
+def cmd_execution_capability(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    contract, _ = _execution_contract()
+    snapshot = load_json_arg(args.json, "capability snapshot")
+    try:
+        with board_transaction(ws) as board:
+            state = ensure_execution_state(board)
+            snapshot, changed = record_capability_snapshot(state, contract, snapshot)
+    except ExecutionControlError as exc:
+        _execution_failure(exc)
+    ok(contract_digest=contract["digest"], snapshot=snapshot, changed=changed)
+
+
+def cmd_execution_result(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    contract, _ = _execution_contract()
+    request = load_json_arg(args.json, "native execution result")
+    try:
+        with board_transaction(ws) as board:
+            state = ensure_execution_state(board)
+            decision = execution_record_result(state, contract, request)
+    except ExecutionControlError as exc:
+        _execution_failure(exc)
+    ok(contract_digest=contract["digest"], decision=decision)
+
+
+def cmd_execution_evidence(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    contract, _ = _execution_contract()
+    evidence = load_json_arg(args.json, "verification evidence")
+    try:
+        with board_transaction(ws) as board:
+            state = ensure_execution_state(board)
+            decision = execution_record_evidence(state, contract, evidence)
+    except ExecutionControlError as exc:
+        _execution_failure(exc)
+    ok(contract_digest=contract["digest"], decision=decision)
+
+
+def cmd_execution_invalidate(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    contract, _ = _execution_contract()
+    evidence_id = validate_safe_id(args.evidence_id, "evidence_id")
+    change = load_json_arg(args.change, "evidence change")
+    try:
+        with board_transaction(ws) as board:
+            state = ensure_execution_state(board)
+            decision = execution_invalidate_evidence(state, contract, evidence_id, change)
+    except ExecutionControlError as exc:
+        _execution_failure(exc)
+    ok(contract_digest=contract["digest"], decision=decision)
+
+
+def cmd_execution_closeout(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    contract, _ = _execution_contract()
+    receipt = load_json_arg(args.receipt, "closeout receipt")
+    applicability = load_json_arg(args.applicability, "closeout applicability")
+    try:
+        with board_transaction(ws) as board:
+            state = ensure_execution_state(board)
+            decision = execution_record_closeout(state, contract, receipt, applicability)
+    except ExecutionControlError as exc:
+        _execution_failure(exc)
+    ok(contract_digest=contract["digest"], decision=decision)
+
+
+def cmd_execution_summary(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    contract, _ = _execution_contract()
+    mission_id = validate_safe_id(args.mission_id, "mission_id")
+    try:
+        board = load_board(ws)
+        state = ensure_execution_state(board)
+        summary = execution_efficiency_summary(state, mission_id)
+        validate_execution_instance(contract, "efficiency-summary", summary)
+    except ExecutionControlError as exc:
+        _execution_failure(exc)
+    ok(contract_digest=contract["digest"], summary=summary, read_only=True)
+
+
+# --------------------------------------------------------------------------- #
 # board / evidence (read-only)
 # --------------------------------------------------------------------------- #
 def cmd_board(args: argparse.Namespace) -> None:
@@ -3932,6 +4113,37 @@ def build_parser() -> argparse.ArgumentParser:
     wp.add_argument("--provider-status", required=True, choices=("available", "unavailable", "unknown"))
     wp.add_argument("--owner-approved", action="store_true")
     wp.set_defaults(func=cmd_workflow_promote)
+
+    sp = sub.add_parser("execution", help="provider-neutral native execution control")
+    exsub = sp.add_subparsers(dest="execution_command", required=True)
+    exc = exsub.add_parser("contract", help="validate the exact canonical contract and all golden cases")
+    exc.set_defaults(func=cmd_execution_contract)
+    exg = exsub.add_parser("golden", help="evaluate canonical executable golden cases")
+    exg.add_argument("--case", default="all")
+    exg.set_defaults(func=cmd_execution_golden)
+    exd = exsub.add_parser("dispatch", help="validate command policy and atomically claim a physical run")
+    exd.add_argument("--json", required=True, help="dispatch request JSON (inline, @file, or -)")
+    exd.set_defaults(func=cmd_execution_dispatch)
+    excap = exsub.add_parser("capability", help="pin one mission/capability/environment probe result")
+    excap.add_argument("--json", required=True, help="capability-snapshot/v1 JSON")
+    excap.set_defaults(func=cmd_execution_capability)
+    exr = exsub.add_parser("result", help="ingest a permit-bound command and mutation receipt")
+    exr.add_argument("--json", required=True, help="result request JSON")
+    exr.set_defaults(func=cmd_execution_result)
+    exe = exsub.add_parser("evidence", help="ingest receipt-bound verification evidence")
+    exe.add_argument("--json", required=True, help="verification-evidence/v1 JSON")
+    exe.set_defaults(func=cmd_execution_evidence)
+    exi = exsub.add_parser("invalidate", help="immutably invalidate evidence after an applicability change")
+    exi.add_argument("evidence_id")
+    exi.add_argument("--change", required=True, help="criteria/path/surface change JSON")
+    exi.set_defaults(func=cmd_execution_invalidate)
+    exclose = exsub.add_parser("closeout", help="reconcile integration-head closeout receipts")
+    exclose.add_argument("--receipt", required=True, help="closeout-receipt/v1 JSON")
+    exclose.add_argument("--applicability", required=True, help="ref to integration-head JSON mapping")
+    exclose.set_defaults(func=cmd_execution_closeout)
+    exs = exsub.add_parser("summary", help="read-only mission efficiency summary")
+    exs.add_argument("--mission-id", required=True)
+    exs.set_defaults(func=cmd_execution_summary)
 
     sp = sub.add_parser("cast", help="producer crew casting policy")
     casub = sp.add_subparsers(dest="castcmd", required=True)

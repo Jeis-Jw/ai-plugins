@@ -16,6 +16,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+try:
+    import execution_control
+except ModuleNotFoundError:  # importlib callers may not add this script directory to sys.path
+    _execution_spec = importlib.util.spec_from_file_location(
+        "task_worker_execution_control", Path(__file__).with_name("execution_control.py")
+    )
+    if _execution_spec is None or _execution_spec.loader is None:  # pragma: no cover
+        raise
+    execution_control = importlib.util.module_from_spec(_execution_spec)
+    _execution_spec.loader.exec_module(execution_control)
+
 
 SCHEMA = "task-worker.definition/v1"
 LEGACY_SCHEMAS = {"task-github.definition/v1"}
@@ -1196,13 +1207,15 @@ def record_provider_event(
 
 
 def evidence_fingerprint(request: dict[str, Any]) -> str:
-    required = (
-        "definition_id", "node_id", "head", "command_digest",
-        "environment_digest", "tool_version",
-    )
-    identity = {}
-    for key in required:
-        identity[key] = _require_text(request.get(key), f"evidence.{key}")
+    identity = {
+        key: _require_text(request.get(key), f"evidence.{key}")
+        for key in ("head", "command_digest", "environment_digest", "tool_version")
+    }
+    identity["purpose"] = _require_text(request.get("purpose", "verification"), "evidence.purpose")
+    fresh = request.get("fresh_requirement_id")
+    if fresh is not None:
+        identity["fresh_requirement_id"] = _require_text(fresh, "evidence.fresh_requirement_id")
+    # definition/node/cycle/unit/target/profile identifiers remain attribution-only.
     return stable_digest(identity)
 
 
@@ -1392,6 +1405,53 @@ def build_parser() -> argparse.ArgumentParser:
     evidence_record.add_argument("--token-coverage", choices=("exact", "unavailable"))
     evidence_record.add_argument("--max-physical-runs", type=int, default=3)
     evidence_record.add_argument("--config", default=".task-worker.yml")
+    policy_plan = sub.add_parser("policy-plan")
+    policy_plan.add_argument("--profiles", required=True)
+    policy_plan.add_argument("--impact-rules", required=True)
+    policy_plan.add_argument("--changed-path", action="append", required=True)
+    policy_plan.add_argument("--qa-mode", required=True, choices=sorted(execution_control.QA_MODES))
+    policy_plan.add_argument("--profile-id")
+    policy_plan.add_argument("--argv", help="JSON argv array")
+    policy_plan.add_argument("--purpose")
+    policy_plan.add_argument("--full-qa-reason", help="JSON machine-readable reason")
+    execution_evaluate = sub.add_parser("execution-evaluate")
+    execution_evaluate.add_argument("--request", required=True)
+    execution_claim = sub.add_parser("execution-claim")
+    execution_claim.add_argument("--permit", required=True)
+    execution_claim.add_argument("--state-root", default=".task-worker/local")
+    execution_claim.add_argument("--claimed-by", required=True)
+    execution_claim.add_argument("--evidence")
+    execution_claim.add_argument("--profiles", required=True)
+    execution_claim.add_argument("--impact-rules", required=True)
+    execution_claim.add_argument("--changed-path", action="append", required=True)
+    execution_claim.add_argument("--argv", help="JSON argv array")
+    execution_claim.add_argument("--full-qa-reason", help="JSON machine-readable reason")
+    execution_complete = sub.add_parser("execution-complete")
+    execution_complete.add_argument("--permit", required=True)
+    execution_complete.add_argument("--claim-id", required=True)
+    execution_complete.add_argument("--receipt", required=True)
+    execution_complete.add_argument("--evidence")
+    execution_complete.add_argument("--state-root", default=".task-worker/local")
+    execution_project = sub.add_parser("execution-project")
+    execution_project.add_argument("--receipt", required=True)
+    execution_project.add_argument("--evidence")
+    spend_claim = sub.add_parser("spend-claim")
+    spend_claim.add_argument("--authorization", required=True)
+    spend_claim.add_argument("--mutation", required=True)
+    spend_claim.add_argument("--preflight-receipt", required=True)
+    spend_claim.add_argument("--state-root", default=".task-worker/local")
+    mutation_record = sub.add_parser("mutation-record")
+    mutation_record.add_argument("--consumption", required=True)
+    mutation_record.add_argument("--receipt", required=True)
+    mutation_record.add_argument("--state-root", default=".task-worker/local")
+    capability_plan = sub.add_parser("capability-plan")
+    capability_plan.add_argument("--mission-id", required=True)
+    capability_plan.add_argument("--capability", action="append", required=True)
+    capability_plan.add_argument("--environment-digest", required=True)
+    capability_plan.add_argument("--state-root", default=".task-worker/local")
+    capability_record = sub.add_parser("capability-record")
+    capability_record.add_argument("--snapshot", required=True)
+    capability_record.add_argument("--state-root", default=".task-worker/local")
     provider_event = sub.add_parser("provider-event")
     provider_event.add_argument("--ref", required=True)
     provider_event.add_argument("--provider", required=True)
@@ -1439,12 +1499,20 @@ def main(argv: Iterable[str] | None = None) -> int:
                     "evidence": EVIDENCE_SCHEMA,
                     "review_lease": REVIEW_LEASE_SCHEMA,
                     "review_permit": REVIEW_PERMIT_SCHEMA,
+                    "verification_contract": execution_control.CONTRACT_SCHEMA,
+                    "execution_permit": execution_control.PERMIT_SCHEMA,
+                    "command_profile": execution_control.PROFILE_SCHEMA,
+                    "command_receipt": execution_control.RECEIPT_SCHEMA,
+                    "verification_evidence": execution_control.EVIDENCE_SCHEMA,
                 },
                 "commands": [
                     "create", "revise", "validate", "export", "store", "plan-graph", "ready",
                     "local-start", "local-event", "recover", "receipt", "capabilities",
                     "bind", "resolve", "resume", "evidence-plan", "evidence-record",
                     "provider-event", "review-permit",
+                    "policy-plan", "execution-evaluate", "execution-claim",
+                    "execution-complete", "execution-project",
+                    "spend-claim", "mutation-record", "capability-plan", "capability-record",
                 ],
             }
         elif args.command == "ready":
@@ -1526,6 +1594,96 @@ def main(argv: Iterable[str] | None = None) -> int:
                 require_token_coverage=token_coverage_required(args.config),
             )
             payload = {"ok": True, "reused": reused, "path": str(path), "evidence": evidence}
+        elif args.command == "policy-plan":
+            contract = execution_control.load_contract()
+            payload = {
+                "ok": True,
+                "plan": execution_control.select_execution(
+                    profiles=execution_control.load_command_profiles(args.profiles, contract),
+                    impact_rules=execution_control.load_impact_rules(args.impact_rules),
+                    changed_paths=args.changed_path,
+                    qa_mode=args.qa_mode,
+                    profile_id=args.profile_id,
+                    argv=json.loads(args.argv) if args.argv else None,
+                    purpose=args.purpose,
+                    full_qa_reason=json.loads(args.full_qa_reason) if args.full_qa_reason else None,
+                ),
+            }
+        elif args.command == "execution-evaluate":
+            payload = {"ok": True, "decision": execution_control.evaluate_request(read_json(args.request))}
+        elif args.command == "execution-claim":
+            permit = read_json(args.permit)
+            contract = execution_control.load_contract()
+            policy_plan = execution_control.select_execution(
+                profiles=execution_control.load_command_profiles(args.profiles, contract),
+                impact_rules=execution_control.load_impact_rules(args.impact_rules),
+                changed_paths=args.changed_path,
+                qa_mode=permit.get("qa_mode"),
+                profile_id=permit.get("command_profile_id"),
+                argv=json.loads(args.argv) if args.argv else None,
+                purpose=permit.get("purpose"),
+                full_qa_reason=json.loads(args.full_qa_reason) if args.full_qa_reason else None,
+            )
+            execution_control.validate_permit_policy(permit, policy_plan)
+            capability_plan = execution_control.capability_plan(
+                permit["mission_id"], permit["required_capabilities"],
+                permit["environment_digest"], args.state_root,
+            )
+            if capability_plan["action"] != "dispatch":
+                payload = {"ok": True, "decision": capability_plan}
+            else:
+                payload = {
+                    "ok": True,
+                    "decision": execution_control.claim_execution(
+                    permit, args.state_root, claimed_by=args.claimed_by,
+                    evidence=read_json(args.evidence) if args.evidence else None,
+                    contract=contract,
+                    ),
+                }
+        elif args.command == "execution-complete":
+            payload = {
+                "ok": True,
+                "completion": execution_control.complete_execution(
+                    read_json(args.permit), args.claim_id, read_json(args.receipt), args.state_root,
+                    evidence=read_json(args.evidence) if args.evidence else None,
+                ),
+            }
+        elif args.command == "execution-project":
+            payload = {
+                "ok": True,
+                "projection": execution_control.project_receipts(
+                    read_json(args.receipt), read_json(args.evidence) if args.evidence else None,
+                ),
+            }
+        elif args.command == "spend-claim":
+            payload = {
+                "ok": True,
+                "decision": execution_control.claim_spend_consumption(
+                    read_json(args.authorization), read_json(args.mutation), args.state_root,
+                    preflight_receipt=read_json(args.preflight_receipt),
+                ),
+            }
+        elif args.command == "mutation-record":
+            payload = {
+                "ok": True,
+                "status": execution_control.record_external_mutation(
+                    read_json(args.consumption), read_json(args.receipt), args.state_root,
+                ),
+            }
+        elif args.command == "capability-plan":
+            payload = {
+                "ok": True,
+                "plan": execution_control.capability_plan(
+                    args.mission_id, args.capability, args.environment_digest, args.state_root,
+                ),
+            }
+        elif args.command == "capability-record":
+            payload = {
+                "ok": True,
+                "cache": execution_control.record_capability_snapshot(
+                    read_json(args.snapshot), args.state_root,
+                ),
+            }
         elif args.command == "provider-event":
             binding, path, changed = record_provider_event(
                 args.ref,
@@ -1542,6 +1700,11 @@ def main(argv: Iterable[str] | None = None) -> int:
         return 2
     except DefinitionError as exc:
         print(json.dumps({"ok": False, "error_code": exc.code, "message": exc.message}, ensure_ascii=False))
+        return 2
+    except execution_control.ExecutionControlError as exc:
+        print(json.dumps({
+            "ok": False, "error_code": exc.code, "message": exc.message, "detail": exc.detail,
+        }, ensure_ascii=False))
         return 2
     print(json.dumps(payload, ensure_ascii=False))
     return 0

@@ -25,12 +25,19 @@ REQUIRED_CONTRACTS = {
     "evidence": "task-worker.verification-evidence/v1",
     "review_lease": "workflow-review-lease/v1",
     "review_permit": "task-worker.review-permit/v1",
+    "verification_contract": "studio-verification-contract-set/v1",
+    "execution_permit": "execution-permit/v1",
+    "command_profile": "command-profile/v1",
+    "command_receipt": "command-receipt/v1",
+    "verification_evidence": "verification-evidence/v1",
 }
 REQUIRED_COMMANDS = {
     "create", "revise", "validate", "export", "store", "plan-graph", "ready",
     "local-start", "local-event", "recover", "receipt", "capabilities",
     "bind", "resolve", "resume", "evidence-plan", "evidence-record",
     "provider-event", "review-permit",
+    "policy-plan", "execution-evaluate", "execution-claim", "execution-complete",
+    "execution-project",
 }
 _RESOLUTION_CACHE: dict[tuple[str | None, str], tuple[Path, dict[str, Any]]] = {}
 
@@ -172,6 +179,68 @@ def export_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
 
 def plan_graph(snapshot: dict[str, Any]) -> dict[str, Any]:
     return call_worker(["plan-graph", "--snapshot", "-"], input_value=snapshot)["plan"]
+
+
+def evaluate_execution(request: dict[str, Any]) -> dict[str, Any]:
+    """Consume the canonical provider-neutral decision without reimplementing policy."""
+    return call_worker(["execution-evaluate", "--request", "-"], input_value=request)["decision"]
+
+
+def claim_execution(
+    permit_path: str | Path, *, state_root: str | Path, claimed_by: str,
+    profiles_path: str | Path, impact_rules_path: str | Path,
+    changed_paths: Iterable[str], evidence_path: str | Path | None = None,
+    argv: list[str] | None = None, full_qa_reason: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    args = [
+        "execution-claim", "--permit", str(permit_path), "--state-root", str(state_root),
+        "--claimed-by", claimed_by, "--profiles", str(profiles_path),
+        "--impact-rules", str(impact_rules_path),
+    ]
+    for path in changed_paths:
+        args.extend(["--changed-path", path])
+    if evidence_path is not None:
+        args.extend(["--evidence", str(evidence_path)])
+    if argv is not None:
+        args.extend(["--argv", json.dumps(argv, ensure_ascii=False)])
+    if full_qa_reason is not None:
+        args.extend(["--full-qa-reason", json.dumps(full_qa_reason, ensure_ascii=False)])
+    return call_worker(args)["decision"]
+
+
+def complete_execution(
+    permit_path: str | Path, *, claim_id: str, receipt_path: str | Path,
+    state_root: str | Path, evidence_path: str | Path | None = None,
+) -> dict[str, Any]:
+    args = [
+        "execution-complete", "--permit", str(permit_path), "--claim-id", claim_id,
+        "--receipt", str(receipt_path), "--state-root", str(state_root),
+    ]
+    if evidence_path is not None:
+        args.extend(["--evidence", str(evidence_path)])
+    return call_worker(args)["completion"]
+
+
+def project_execution_receipts(
+    receipt_path: str | Path, *, evidence_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Return immutable refs suitable for a GitHub comment/ledger projection."""
+    args = ["execution-project", "--receipt", str(receipt_path)]
+    if evidence_path is not None:
+        args.extend(["--evidence", str(evidence_path)])
+    projection = call_worker(args)["projection"]
+    if projection.get("schema") != "task-worker.execution-projection/v1":
+        raise TaskWorkerBridgeError(
+            "task_worker_contract_mismatch", "task-worker returned an invalid execution projection",
+            detail=projection,
+        )
+    return {
+        "schema": "task-github.execution-evidence-ref/v1",
+        "receipt_ref": projection["receipt_ref"],
+        "evidence_ref": projection["evidence_ref"],
+        "head": projection["head"],
+        "result": projection["result"],
+    }
 
 
 def bind_artifact(

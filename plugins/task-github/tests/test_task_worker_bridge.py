@@ -184,6 +184,38 @@ class TaskWorkerBridgeTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("task_worker_bridge.plan_graph", ready)
 
+    def test_execution_decision_is_forwarded_without_local_policy(self):
+        decision = {"action": "reuse-evidence", "evidence_refs": ["EV-1"]}
+        with mock.patch.object(
+            bridge, "call_worker", return_value={"decision": decision},
+        ) as call:
+            actual = bridge.evaluate_execution({"permit": {"permit_id": "P-1"}})
+
+        self.assertEqual(actual, decision)
+        call.assert_called_once_with(
+            ["execution-evaluate", "--request", "-"],
+            input_value={"permit": {"permit_id": "P-1"}},
+        )
+
+    def test_projection_keeps_only_immutable_receipt_and_evidence_refs(self):
+        worker_projection = {
+            "schema": "task-worker.execution-projection/v1",
+            "receipt_ref": {"receipt_id": "R-1", "digest": "sha256:receipt"},
+            "evidence_ref": {"evidence_id": "EV-1", "digest": "sha256:evidence"},
+            "head": "abc123",
+            "result": "pass",
+        }
+        with mock.patch.object(
+            bridge, "call_worker", return_value={"projection": worker_projection},
+        ):
+            projected = bridge.project_execution_receipts("receipt.json", evidence_path="evidence.json")
+
+        self.assertEqual(projected["schema"], "task-github.execution-evidence-ref/v1")
+        self.assertEqual(projected["receipt_ref"], worker_projection["receipt_ref"])
+        self.assertEqual(projected["evidence_ref"], worker_projection["evidence_ref"])
+        self.assertNotIn("command", projected)
+        self.assertNotIn("argv", projected)
+
     def test_projection_reuses_same_artifact_validation_in_process(self):
         artifact = {
             "schema": "task-worker.definition/v1",

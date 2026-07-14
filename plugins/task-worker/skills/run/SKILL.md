@@ -20,5 +20,7 @@ python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py
   --artifact {ARTIFACT} --run-state {RUN_STATE} --event run
 ```
 
-코드·설정·제품별 검증 명령은 저장소의 완료 조건과 운영 정책을 따른다. 외부 mutation과 비용 gate는 caller 승인 없이 실행하지 않는다.
+코드·설정·제품별 검증 명령은 저장소의 완료 조건과 운영 정책을 따른다. development check도 physical command라면 `command-profile/v1`·impact rule 기반 `execution-claim` 뒤에만 시작하고 immutable receipt로 완료한다. profile 밖 argv, forbidden argv, reason 없는 full QA는 실행하지 않는다.
+
+외부 mutation은 비용 여부와 무관하게 preflight receipt를 먼저 요구한다. 비용이 있으면 owner-approved `external-spend-authorization/v1`과 mutation request를 `spend-claim`으로 원자 소비한 뒤에만 시작하고, mutation receipt가 consumption id+digest를 교차 참조해야 한다.
 review lease는 reviewer dispatch의 소유권만 정한다. `owner=studio`여도 구현 run과 변경 범위 최소 검증은 그대로 수행한다.
