@@ -1412,6 +1412,8 @@ def build_parser() -> argparse.ArgumentParser:
     policy_plan.add_argument("--qa-mode", required=True, choices=sorted(execution_control.QA_MODES))
     policy_plan.add_argument("--profile-id")
     policy_plan.add_argument("--argv", help="JSON argv array")
+    policy_plan.add_argument("--cwd", required=True, help="repository-relative resolved cwd")
+    policy_plan.add_argument("--environment", required=True, help="JSON resolved environment mapping")
     policy_plan.add_argument("--purpose")
     policy_plan.add_argument("--full-qa-reason", help="JSON machine-readable reason")
     execution_evaluate = sub.add_parser("execution-evaluate")
@@ -1425,12 +1427,17 @@ def build_parser() -> argparse.ArgumentParser:
     execution_claim.add_argument("--impact-rules", required=True)
     execution_claim.add_argument("--changed-path", action="append", required=True)
     execution_claim.add_argument("--argv", help="JSON argv array")
+    execution_claim.add_argument("--cwd", required=True, help="repository-relative resolved cwd")
+    execution_claim.add_argument("--environment", required=True, help="JSON resolved environment mapping")
     execution_claim.add_argument("--full-qa-reason", help="JSON machine-readable reason")
+    execution_claim.add_argument("--authorization")
+    execution_claim.add_argument("--preflight-receipt")
     execution_complete = sub.add_parser("execution-complete")
     execution_complete.add_argument("--permit", required=True)
     execution_complete.add_argument("--claim-id", required=True)
     execution_complete.add_argument("--receipt", required=True)
     execution_complete.add_argument("--evidence")
+    execution_complete.add_argument("--mutation-receipt")
     execution_complete.add_argument("--state-root", default=".task-worker/local")
     execution_project = sub.add_parser("execution-project")
     execution_project.add_argument("--receipt", required=True)
@@ -1605,6 +1612,8 @@ def main(argv: Iterable[str] | None = None) -> int:
                     qa_mode=args.qa_mode,
                     profile_id=args.profile_id,
                     argv=json.loads(args.argv) if args.argv else None,
+                    cwd=args.cwd,
+                    environment=json.loads(args.environment),
                     purpose=args.purpose,
                     full_qa_reason=json.loads(args.full_qa_reason) if args.full_qa_reason else None,
                 ),
@@ -1621,6 +1630,8 @@ def main(argv: Iterable[str] | None = None) -> int:
                 qa_mode=permit.get("qa_mode"),
                 profile_id=permit.get("command_profile_id"),
                 argv=json.loads(args.argv) if args.argv else None,
+                cwd=args.cwd,
+                environment=json.loads(args.environment),
                 purpose=permit.get("purpose"),
                 full_qa_reason=json.loads(args.full_qa_reason) if args.full_qa_reason else None,
             )
@@ -1635,9 +1646,13 @@ def main(argv: Iterable[str] | None = None) -> int:
                 payload = {
                     "ok": True,
                     "decision": execution_control.claim_execution(
-                    permit, args.state_root, claimed_by=args.claimed_by,
-                    evidence=read_json(args.evidence) if args.evidence else None,
-                    contract=contract,
+                        permit, args.state_root, claimed_by=args.claimed_by,
+                        evidence=read_json(args.evidence) if args.evidence else None,
+                        authorization=read_json(args.authorization) if args.authorization else None,
+                        preflight_receipt=(
+                            read_json(args.preflight_receipt) if args.preflight_receipt else None
+                        ),
+                        contract=contract,
                     ),
                 }
         elif args.command == "execution-complete":
@@ -1646,6 +1661,9 @@ def main(argv: Iterable[str] | None = None) -> int:
                 "completion": execution_control.complete_execution(
                     read_json(args.permit), args.claim_id, read_json(args.receipt), args.state_root,
                     evidence=read_json(args.evidence) if args.evidence else None,
+                    mutation_receipt=(
+                        read_json(args.mutation_receipt) if args.mutation_receipt else None
+                    ),
                 ),
             }
         elif args.command == "execution-project":

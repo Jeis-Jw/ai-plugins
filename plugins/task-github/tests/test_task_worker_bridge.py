@@ -197,6 +197,44 @@ class TaskWorkerBridgeTests(unittest.TestCase):
             input_value={"permit": {"permit_id": "P-1"}},
         )
 
+    def test_execution_bridge_forwards_resolved_command_and_mutation_gate(self):
+        with mock.patch.object(
+            bridge, "call_worker", return_value={"decision": {"action": "claimed"}},
+        ) as call:
+            decision = bridge.claim_execution(
+                "permit.json", state_root="state", claimed_by="worker",
+                profiles_path="profiles.json", impact_rules_path="rules.json",
+                changed_paths=["plugins/task-worker/scripts/execution_control.py"],
+                cwd="plugins/task-worker", environment={"PYTHONPATH": "plugins/task-worker"},
+                authorization_path="authorization.json",
+                preflight_receipt_path="preflight.json",
+            )
+
+        self.assertEqual(decision["action"], "claimed")
+        args = call.call_args.args[0]
+        self.assertEqual(args[0], "execution-claim")
+        self.assertEqual(args[args.index("--cwd") + 1], "plugins/task-worker")
+        self.assertEqual(
+            json.loads(args[args.index("--environment") + 1]),
+            {"PYTHONPATH": "plugins/task-worker"},
+        )
+        self.assertEqual(args[args.index("--authorization") + 1], "authorization.json")
+        self.assertEqual(args[args.index("--preflight-receipt") + 1], "preflight.json")
+
+        with mock.patch.object(
+            bridge, "call_worker", return_value={"completion": {"action": "completed"}},
+        ) as complete_call:
+            completion = bridge.complete_execution(
+                "permit.json", claim_id="claim-1", receipt_path="receipt.json",
+                state_root="state", mutation_receipt_path="mutation.json",
+            )
+
+        self.assertEqual(completion["action"], "completed")
+        complete_args = complete_call.call_args.args[0]
+        self.assertEqual(
+            complete_args[complete_args.index("--mutation-receipt") + 1], "mutation.json",
+        )
+
     def test_projection_keeps_only_immutable_receipt_and_evidence_refs(self):
         worker_projection = {
             "schema": "task-worker.execution-projection/v1",

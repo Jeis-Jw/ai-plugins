@@ -17,7 +17,8 @@ physical command 전에 canonical contract digest에 맞는 `execution-permit/v1
 ```bash
 python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py" execution-claim \
   --permit {PERMIT_JSON} --profiles {COMMAND_PROFILES_JSON} --impact-rules {IMPACT_RULES_JSON} \
-  --changed-path {CHANGED_PATH} --claimed-by {EXECUTOR_ID} --state-root .task-worker/local
+  --changed-path {CHANGED_PATH} --cwd {RESOLVED_CWD} --environment '{"KEY":"resolved-value"}' \
+  --claimed-by {EXECUTOR_ID} --state-root .task-worker/local
 ```
 
 실행 뒤에는 exact claim에 묶인 immutable `command-receipt/v1`과 `verification-evidence/v1`로 완료한다. fail-closed permit에서 token coverage가 unavailable이면 완료를 pause하며, report-only일 때만 `tokens:null`을 0으로 바꾸지 않고 보존한다.

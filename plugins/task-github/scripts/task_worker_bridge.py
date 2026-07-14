@@ -189,18 +189,26 @@ def evaluate_execution(request: dict[str, Any]) -> dict[str, Any]:
 def claim_execution(
     permit_path: str | Path, *, state_root: str | Path, claimed_by: str,
     profiles_path: str | Path, impact_rules_path: str | Path,
-    changed_paths: Iterable[str], evidence_path: str | Path | None = None,
+    changed_paths: Iterable[str], cwd: str, environment: dict[str, str],
+    evidence_path: str | Path | None = None,
+    authorization_path: str | Path | None = None,
+    preflight_receipt_path: str | Path | None = None,
     argv: list[str] | None = None, full_qa_reason: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     args = [
         "execution-claim", "--permit", str(permit_path), "--state-root", str(state_root),
         "--claimed-by", claimed_by, "--profiles", str(profiles_path),
-        "--impact-rules", str(impact_rules_path),
+        "--impact-rules", str(impact_rules_path), "--cwd", cwd,
+        "--environment", json.dumps(environment, ensure_ascii=False),
     ]
     for path in changed_paths:
         args.extend(["--changed-path", path])
     if evidence_path is not None:
         args.extend(["--evidence", str(evidence_path)])
+    if authorization_path is not None:
+        args.extend(["--authorization", str(authorization_path)])
+    if preflight_receipt_path is not None:
+        args.extend(["--preflight-receipt", str(preflight_receipt_path)])
     if argv is not None:
         args.extend(["--argv", json.dumps(argv, ensure_ascii=False)])
     if full_qa_reason is not None:
@@ -211,6 +219,7 @@ def claim_execution(
 def complete_execution(
     permit_path: str | Path, *, claim_id: str, receipt_path: str | Path,
     state_root: str | Path, evidence_path: str | Path | None = None,
+    mutation_receipt_path: str | Path | None = None,
 ) -> dict[str, Any]:
     args = [
         "execution-complete", "--permit", str(permit_path), "--claim-id", claim_id,
@@ -218,6 +227,8 @@ def complete_execution(
     ]
     if evidence_path is not None:
         args.extend(["--evidence", str(evidence_path)])
+    if mutation_receipt_path is not None:
+        args.extend(["--mutation-receipt", str(mutation_receipt_path)])
     return call_worker(args)["completion"]
 
 

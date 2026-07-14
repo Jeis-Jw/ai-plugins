@@ -25,6 +25,10 @@ EVIDENCE_SCHEMA = "verification-evidence/v1"
 EXECUTION_STATE_SCHEMA = "task-worker.execution-state/v1"
 IMPACT_RULE_SET_SCHEMA = "impact-rule-set/v1"
 QA_MODES = {"development", "delta", "full", "final", "integration"}
+FRESH_PURPOSES = frozenset((
+    "integration-full", "release-artifact", "device-check", "production-preflight",
+))
+COMMAND_DIGEST_FIELDS = ("executable", "args", "cwd", "environment")
 
 
 class ExecutionControlError(Exception):
@@ -223,14 +227,74 @@ def _forbidden_token(token: str, forbidden: str) -> bool:
     return token == forbidden or token.startswith(forbidden + "=") or fnmatch.fnmatchcase(token, forbidden)
 
 
-def command_digest(profile: dict[str, Any]) -> str:
-    return tagged_digest({"executable": profile["executable"], "args": profile["args"]})
+def resolved_command(
+    profile: dict[str, Any], *, cwd: str, environment: dict[str, str],
+    argv: list[str] | None = None,
+) -> dict[str, Any]:
+    """Return the canonical physical command preimage shared with Studio."""
+    expected_argv = [profile["executable"], *profile["args"]]
+    actual_argv = expected_argv if argv is None else argv
+    if not isinstance(actual_argv, list) or not all(isinstance(item, str) for item in actual_argv):
+        raise ExecutionControlError("argv_profile_mismatch", "argv must be a string list")
+    forbidden = [
+        token for token in actual_argv
+        if any(_forbidden_token(token, pattern) for pattern in profile["forbidden_args"])
+    ]
+    if forbidden:
+        raise ExecutionControlError("forbidden_argv", "command contains forbidden argv", detail={"argv": forbidden})
+    if actual_argv != expected_argv:
+        raise ExecutionControlError("argv_profile_mismatch", "argv must exactly match the immutable command profile")
+    if not isinstance(cwd, str) or not cwd.strip():
+        raise ExecutionControlError("command_cwd_invalid", "resolved command cwd must be non-empty")
+    command_cwd = Path(cwd)
+    scope = Path(profile["cwd_scope"])
+    if command_cwd.is_absolute() or scope.is_absolute() or ".." in command_cwd.parts or ".." in scope.parts:
+        raise ExecutionControlError("command_cwd_invalid", "resolved command cwd must stay repository-relative")
+    if scope.as_posix() not in (".", "repository"):
+        try:
+            command_cwd.relative_to(scope)
+        except ValueError as exc:
+            raise ExecutionControlError("command_cwd_invalid", "resolved command cwd is outside cwd_scope") from exc
+    if not isinstance(environment, dict) or any(
+        not isinstance(key, str) or not isinstance(value, str) for key, value in environment.items()
+    ):
+        raise ExecutionControlError("command_environment_invalid", "resolved environment must be a string mapping")
+    if set(environment) != set(profile["environment_inputs"]):
+        raise ExecutionControlError(
+            "command_environment_invalid", "resolved environment differs from command profile inputs"
+        )
+    return {
+        "executable": profile["executable"],
+        "args": profile["args"],
+        "cwd": cwd,
+        "environment": environment,
+    }
+
+
+def command_digest(command: dict[str, Any]) -> str:
+    if not isinstance(command, dict) or set(command) != set(COMMAND_DIGEST_FIELDS):
+        raise ExecutionControlError(
+            "command_preimage_invalid",
+            "command digest preimage must contain executable, args, cwd, and environment",
+        )
+    if not isinstance(command["executable"], str) or not command["executable"].strip():
+        raise ExecutionControlError("command_preimage_invalid", "command executable must be non-empty")
+    if not isinstance(command["args"], list) or any(not isinstance(item, str) for item in command["args"]):
+        raise ExecutionControlError("command_preimage_invalid", "command args must be a string list")
+    if not isinstance(command["cwd"], str) or not command["cwd"].strip():
+        raise ExecutionControlError("command_preimage_invalid", "command cwd must be non-empty")
+    if not isinstance(command["environment"], dict) or any(
+        not isinstance(key, str) or not isinstance(value, str)
+        for key, value in command["environment"].items()
+    ):
+        raise ExecutionControlError("command_preimage_invalid", "command environment must be a string mapping")
+    return tagged_digest(command)
 
 
 def select_execution(
     *, profiles: dict[str, dict[str, Any]], impact_rules: list[dict[str, Any]],
     changed_paths: Iterable[str], qa_mode: str, profile_id: str | None = None,
-    argv: list[str] | None = None, purpose: str | None = None,
+    cwd: str, environment: dict[str, str], argv: list[str] | None = None, purpose: str | None = None,
     full_qa_reason: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     paths = sorted(set(changed_paths))
@@ -274,23 +338,15 @@ def select_execution(
         if code not in allowed_codes:
             raise ExecutionControlError("full_qa_reason_not_allowed", f"full QA reason is not allowed: {code}")
     profile = profiles[selected]
-    expected_argv = [profile["executable"], *profile["args"]]
-    actual_argv = expected_argv if argv is None else argv
-    forbidden = [
-        token for token in actual_argv
-        if any(_forbidden_token(token, pattern) for pattern in profile["forbidden_args"])
-    ]
-    if forbidden:
-        raise ExecutionControlError("forbidden_argv", "command contains forbidden argv", detail={"argv": forbidden})
-    if actual_argv != expected_argv:
-        raise ExecutionControlError("argv_profile_mismatch", "argv must exactly match the immutable command profile")
+    command = resolved_command(profile, cwd=cwd, environment=environment, argv=argv)
     return {
         "action": "execute",
         "qa_mode": qa_mode,
         "profile_id": selected,
         "command_profile_digest": profile["digest"],
-        "command_digest": command_digest(profile),
-        "argv": actual_argv,
+        "command_digest": command_digest(command),
+        "command": command,
+        "argv": [command["executable"], *command["args"]],
         "impact_set": paths,
         "required_capabilities": sorted(set(profile["required_capabilities"])),
         "fresh_policy": profile["fresh_policy"],
@@ -318,10 +374,42 @@ def validate_permit_policy(permit: dict[str, Any], plan: dict[str, Any]) -> None
             "permit_policy_mismatch", "execution permit differs from selected command policy",
             detail={"mismatch": mismatch, "missing_capabilities": missing_capabilities},
         )
-    if plan["fresh_policy"] == "fresh-required" and permit.get("fresh_requirement_id") is None:
+    if (
+        plan["fresh_policy"] == "fresh-required"
+        or permit.get("purpose") in FRESH_PURPOSES
+        or permit.get("qa_mode") in {"final", "integration"}
+    ) and permit.get("fresh_requirement_id") is None:
         raise ExecutionControlError(
             "fresh_requirement_required", "fresh-required profile needs fresh_requirement_id"
         )
+
+
+def validate_mutation_request(value: Any) -> dict[str, Any]:
+    fields = {
+        "mutation_request_id", "provider", "operation", "resource_kind", "target_ref",
+        "one_time_usd", "monthly_usd", "digest",
+    }
+    if not isinstance(value, dict) or set(value) != fields:
+        raise ExecutionControlError(
+            "invalid_mutation_request", "mutation request fields differ from the canonical permit shape"
+        )
+    for field in ("mutation_request_id", "provider", "operation", "resource_kind", "target_ref"):
+        if not isinstance(value[field], str) or not value[field].strip():
+            raise ExecutionControlError("invalid_mutation_request", f"mutation request {field} must be non-empty")
+    for field in ("one_time_usd", "monthly_usd"):
+        amount = value[field]
+        if not isinstance(amount, (int, float)) or isinstance(amount, bool) or amount < 0:
+            raise ExecutionControlError("invalid_mutation_request", f"mutation request {field} must be non-negative")
+    if value["digest"] != instance_digest(value):
+        raise ExecutionControlError("instance_digest_mismatch", "mutation request digest does not match")
+    return value
+
+
+def fresh_required(permit: dict[str, Any]) -> bool:
+    return bool(
+        permit.get("purpose") in FRESH_PURPOSES
+        or permit.get("qa_mode") in {"final", "integration"}
+    )
 
 
 def physical_identity(permit: dict[str, Any]) -> str:
@@ -466,7 +554,12 @@ def evaluate_spend_claim(
         raise ExecutionControlError("instance_digest_mismatch", "mutation request digest does not match")
     if not authorization_matches(authorization, mutation, contract):
         return {"action": "reject", "error": {"code": "external_spend_not_authorized"}, "mutation_started": False}
-    occurrence = len([item for item in consumptions if item.get("authorization_digest") == authorization["digest"]]) + 1
+    occurrence = len([
+        item for item in consumptions
+        if item.get("authorization_digest") == authorization["digest"]
+        and item.get("mutation_request_digest") == mutation["digest"]
+        and item.get("claim_state") in {"claimed", "consumed"}
+    ]) + 1
     if occurrence > authorization["max_occurrences"]:
         return {"action": "reject", "error": {"code": "external_spend_quota_exhausted"}, "mutation_started": False}
     claim_key = tagged_digest({"authorization_digest": authorization["digest"], "mutation_request_digest": mutation["digest"], "occurrence_index": occurrence})
@@ -479,6 +572,8 @@ def authorization_matches(
     validate_instance(authorization, "external-spend-authorization", contract)
     return bool(
         authorization["owner_approved"]
+        and authorization.get("approved_by") is not None
+        and authorization.get("approved_at") is not None
         and authorization["mutation_request_ref"] == mutation.get("mutation_request_id")
         and authorization["mutation_request_digest"] == mutation.get("digest")
         and authorization["provider"] == mutation.get("provider")
@@ -523,22 +618,134 @@ def _read(path: Path) -> dict[str, Any]:
         raise ExecutionControlError("execution_state_corrupt", str(exc), detail={"path": str(path)}) from exc
 
 
+def _validate_mutation_gate(
+    permit: dict[str, Any], authorization: dict[str, Any] | None,
+    preflight_receipt: dict[str, Any] | None, contract: dict[str, Any], *, now: str,
+) -> tuple[dict[str, Any] | None, bool]:
+    mutation = permit.get("mutation_request")
+    if mutation is None:
+        if authorization is not None or preflight_receipt is not None:
+            raise ExecutionControlError(
+                "mutation_gate_not_applicable", "authorization or preflight requires a mutation request"
+            )
+        return None, False
+    mutation = validate_mutation_request(mutation)
+    if preflight_receipt is None:
+        raise ExecutionControlError("preflight_required", "external mutation requires a preflight receipt")
+    validate_instance(preflight_receipt, "preflight-receipt", contract)
+    if (
+        preflight_receipt["result"] != "pass"
+        or preflight_receipt["environment_digest"] != permit["environment_digest"]
+        or preflight_receipt["target_ref"] != mutation["target_ref"]
+        or preflight_receipt["missing_keys"]
+        or preflight_receipt["condition_failures"]
+        or preflight_receipt["topology_drift"]
+    ):
+        raise ExecutionControlError(
+            "preflight_failed", "external mutation preflight does not authorize this target and environment"
+        )
+    paid = mutation["one_time_usd"] > 0 or mutation["monthly_usd"] > 0
+    if not paid:
+        if authorization is not None or permit["external_authorization_refs"]:
+            raise ExecutionControlError(
+                "external_spend_not_applicable", "free mutation must not bind spend authorization"
+            )
+        return mutation, False
+    if authorization is None:
+        raise ExecutionControlError(
+            "external_spend_not_authorized", "paid mutation requires owner-approved authorization"
+        )
+    validate_instance(authorization, "external-spend-authorization", contract)
+    if authorization["mission_id"] != permit["mission_id"] or not authorization_matches(
+        authorization, mutation, contract,
+    ):
+        raise ExecutionControlError(
+            "external_spend_not_authorized", "authorization does not bind this mission and mutation"
+        )
+    refs = set(permit["external_authorization_refs"])
+    if authorization["authorization_id"] not in refs and authorization["digest"] not in refs:
+        raise ExecutionControlError(
+            "external_spend_not_authorized", "permit does not pin the supplied authorization"
+        )
+    expires_at = _timestamp(authorization.get("expires_at"))
+    if expires_at is not None and expires_at <= _timestamp(now):
+        raise ExecutionControlError(
+            "external_spend_authorization_expired", "external spend authorization expired"
+        )
+    return mutation, True
+
+
+def _claim_spend_locked(
+    root: Path, permit: dict[str, Any], mutation: dict[str, Any], authorization: dict[str, Any],
+    preflight_receipt: dict[str, Any], contract: dict[str, Any], *, claim_id: str,
+) -> dict[str, Any]:
+    _store_immutable(
+        _object_file(root / "spend-authorizations", authorization["authorization_id"]), authorization,
+    )
+    auth_key = authorization["digest"].removeprefix("sha256:")
+    ledger_path = root / "spend" / f"{auth_key}.json"
+    ledger = _read(ledger_path) if ledger_path.exists() else {
+        "schema": "task-worker.spend-ledger/v1",
+        "authorization_digest": authorization["digest"],
+        "consumptions": [],
+    }
+    decision = evaluate_spend_claim(authorization, mutation, ledger["consumptions"], contract)
+    if decision["action"] != "claim-spend-consumption":
+        code = str((decision.get("error") or {}).get("code") or "external_spend_not_authorized")
+        raise ExecutionControlError(code, "external spend claim was rejected", detail=decision)
+    consumption = {
+        "schema": "external-spend-consumption/v1",
+        "consumption_id": "spend-" + decision["claim_key"].removeprefix("sha256:")[:20],
+        "authorization_id": authorization["authorization_id"],
+        "authorization_digest": authorization["digest"],
+        "mutation_request_ref": mutation["mutation_request_id"],
+        "mutation_request_digest": mutation["digest"],
+        "scope": authorization["scope"],
+        "occurrence_index": decision["occurrence_index"],
+        "one_time_usd": authorization["one_time_usd"],
+        "monthly_usd": authorization["monthly_usd"],
+        "claim_id": claim_id,
+        "claim_state": "claimed",
+        "mutation_receipt_ref": None,
+        "consumed_at": None,
+    }
+    consumption["digest"] = instance_digest(consumption)
+    validate_instance(consumption, "external-spend-consumption", contract)
+    ledger["consumptions"].append(consumption)
+    _write_atomic(ledger_path, ledger)
+    _store_immutable(_object_file(root / "spend-consumptions", consumption["consumption_id"]), consumption)
+    _store_immutable(
+        _object_file(root / "spend-preflight", consumption["consumption_id"]),
+        {"receipt_id": preflight_receipt["receipt_id"], "digest": preflight_receipt["digest"]},
+    )
+    return consumption
+
+
 def claim_execution(
     permit: dict[str, Any], state_root: str | Path, *, claimed_by: str,
     evidence: dict[str, Any] | None = None, contract: dict[str, Any] | None = None,
-    now: str | None = None,
+    authorization: dict[str, Any] | None = None,
+    preflight_receipt: dict[str, Any] | None = None, now: str | None = None,
 ) -> dict[str, Any]:
     contract = contract or load_contract()
     validate_instance(permit, "execution-permit", contract)
+    if fresh_required(permit) and permit.get("fresh_requirement_id") is None:
+        raise ExecutionControlError(
+            "fresh_requirement_required", "fresh execution purpose requires fresh_requirement_id"
+        )
     if evidence is not None:
         validate_instance(evidence, "verification-evidence", contract)
+    timestamp = now or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    mutation, paid = _validate_mutation_gate(
+        permit, authorization, preflight_receipt, contract, now=timestamp,
+    )
     key = physical_identity(permit)
     root = Path(state_root) / "execution-control"
     path = root / "executions" / f"{key.removeprefix('sha256:')}.json"
     with _locked(root):
         state = _read(path) if path.exists() else {"schema": EXECUTION_STATE_SCHEMA, "physical_key": key, "claims": []}
         active = next((item for item in state["claims"] if item["state"] == "claimed"), None)
-        if active is None and evidence is None:
+        if active is None and evidence is None and mutation is None:
             for prior in reversed(state["claims"]):
                 if prior.get("state") != "succeeded":
                     continue
@@ -552,18 +759,47 @@ def claim_execution(
                                 "action": "reuse-evidence", "error": None,
                                 "evidence_refs": [evidence_ref], "physical_run_started": False,
                             }
-        decision = evaluate_permit(permit, contract=contract, evidence=evidence, active_claim=active, attempts=len(state["claims"]))
+        decision = evaluate_permit(
+            permit, contract=contract, evidence=None if mutation else evidence,
+            active_claim=active, attempts=len(state["claims"]),
+        )
         if decision["action"] != "claim":
             return decision
         claim_id = "claim-" + uuid.uuid4().hex
+        _store_immutable(_object_file(root / "permits", permit["permit_id"]), permit)
+        if mutation is not None:
+            _store_immutable(
+                _object_file(root / "mutation-requests", mutation["mutation_request_id"]), mutation,
+            )
+        if preflight_receipt is not None:
+            _store_immutable(
+                _object_file(root / "preflight-receipts", preflight_receipt["receipt_id"]),
+                preflight_receipt,
+            )
+        consumption = _claim_spend_locked(
+            root, permit, mutation, authorization, preflight_receipt, contract, claim_id=claim_id,
+        ) if paid else None
         claim = {
-            "claim_id": claim_id, "permit_id": permit["permit_id"], "physical_key": key,
-            "claimed_by": claimed_by, "claimed_at": now or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "claim_id": claim_id, "permit_id": permit["permit_id"], "permit_digest": permit["digest"],
+            "physical_key": key,
+            "claimed_by": claimed_by, "claimed_at": timestamp,
             "state": "claimed", "receipt_ref": None, "evidence_refs": [],
+            "mutation_request_ref": mutation["mutation_request_id"] if mutation else None,
+            "mutation_request_digest": mutation["digest"] if mutation else None,
+            "preflight_receipt_ref": preflight_receipt["receipt_id"] if preflight_receipt else None,
+            "preflight_receipt_digest": preflight_receipt["digest"] if preflight_receipt else None,
+            "spend_consumption_ref": consumption["consumption_id"] if consumption else None,
+            "spend_consumption_digest": consumption["digest"] if consumption else None,
+            "authorization_ref": authorization["authorization_id"] if authorization else None,
+            "authorization_digest": authorization["digest"] if authorization else None,
+            "mutation_receipt_ref": None,
         }
         state["claims"].append(claim)
         _write_atomic(path, state)
-        return {"action": "claimed", "error": None, "physical_key": key, "claim": claim, "path": str(path)}
+        return {
+            "action": "claimed", "error": None, "physical_key": key, "claim": claim,
+            "spend_consumption": consumption, "path": str(path),
+        }
 
 
 def _store_immutable(path: Path, value: dict[str, Any]) -> None:
@@ -579,9 +815,151 @@ def _object_file(directory: Path, object_id: str) -> Path:
     return directory / f"{safe_name}.json"
 
 
+def _validate_mutation_completion(
+    root: Path, permit: dict[str, Any], claim: dict[str, Any], receipt: dict[str, Any],
+    mutation_receipt: dict[str, Any] | None, contract: dict[str, Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
+    mutation = permit.get("mutation_request")
+    if mutation is None:
+        if (
+            mutation_receipt is not None
+            or receipt["spend_consumption_refs"]
+            or receipt["external_mutation_receipt_refs"]
+        ):
+            raise ExecutionControlError(
+                "mutation_receipt_not_applicable", "non-mutation execution cannot report mutation receipts"
+            )
+        return None, None, None
+    mutation = validate_mutation_request(mutation)
+    if (
+        claim.get("mutation_request_ref") != mutation["mutation_request_id"]
+        or claim.get("mutation_request_digest") != mutation["digest"]
+    ):
+        raise ExecutionControlError("mutation_claim_mismatch", "completion mutation differs from claimed request")
+    preflight_path = _object_file(root / "preflight-receipts", claim.get("preflight_receipt_ref") or "")
+    if not preflight_path.exists():
+        raise ExecutionControlError("preflight_receipt_missing", "claimed mutation preflight is missing")
+    stored_preflight = _read(preflight_path)
+    if stored_preflight.get("digest") != claim.get("preflight_receipt_digest"):
+        raise ExecutionControlError("preflight_receipt_mismatch", "claimed mutation preflight digest differs")
+    if mutation_receipt is None:
+        raise ExecutionControlError(
+            "external_mutation_receipt_required", "external mutation requires exactly one completion receipt"
+        )
+    validate_instance(mutation_receipt, "external-mutation-receipt", contract)
+    if receipt["external_mutation_receipt_refs"] != [mutation_receipt["mutation_id"]]:
+        raise ExecutionControlError(
+            "external_mutation_receipt_mismatch", "command receipt must pin the supplied mutation receipt"
+        )
+    expected = {
+        "mutation_request_ref": mutation["mutation_request_id"],
+        "mutation_request_digest": mutation["digest"],
+        "provider": mutation["provider"],
+        "operation": mutation["operation"],
+        "target_ref": mutation["target_ref"],
+        "preflight_receipt_id": claim["preflight_receipt_ref"],
+    }
+    paid = mutation["one_time_usd"] > 0 or mutation["monthly_usd"] > 0
+    status = None
+    final_consumption = None
+    if paid:
+        consumption_ref = claim.get("spend_consumption_ref")
+        consumption_path = _object_file(root / "spend-consumptions", consumption_ref or "")
+        if not consumption_ref or not consumption_path.exists():
+            raise ExecutionControlError("spend_claim_not_found", "paid mutation spend claim is missing")
+        consumption = _read(consumption_path)
+        validate_instance(consumption, "external-spend-consumption", contract)
+        if (
+            consumption["authorization_id"] != claim.get("authorization_ref")
+            or consumption["authorization_digest"] != claim.get("authorization_digest")
+        ):
+            raise ExecutionControlError("spend_claim_mismatch", "execution claim authorization differs")
+        authorization_path = _object_file(
+            root / "spend-authorizations", consumption["authorization_id"],
+        )
+        if not authorization_path.exists() or _read(authorization_path).get("digest") != consumption["authorization_digest"]:
+            raise ExecutionControlError("external_spend_not_authorized", "claimed authorization is missing")
+        claimed_consumption = {
+            **consumption,
+            "claim_state": "claimed",
+            "mutation_receipt_ref": None,
+            "consumed_at": None,
+        }
+        claimed_consumption["digest"] = instance_digest(claimed_consumption)
+        if claimed_consumption["digest"] != claim.get("spend_consumption_digest"):
+            raise ExecutionControlError("spend_claim_mismatch", "execution claim spend digest differs")
+        if receipt["spend_consumption_refs"] != [consumption_ref]:
+            raise ExecutionControlError(
+                "spend_consumption_mismatch", "command receipt must pin its exact spend consumption"
+            )
+        final_consumption = {
+            **claimed_consumption,
+            "claim_state": "consumed" if mutation_receipt["result"] == "applied" else "released",
+            "mutation_receipt_ref": mutation_receipt["mutation_id"],
+            "consumed_at": mutation_receipt["finished_at"],
+        }
+        final_consumption["digest"] = instance_digest(final_consumption)
+        validate_instance(final_consumption, "external-spend-consumption", contract)
+        expected.update({
+            "authorization_id": consumption["authorization_id"],
+            "authorization_digest": consumption["authorization_digest"],
+            "spend_consumption_ref": consumption["consumption_id"],
+            "spend_consumption_digest": final_consumption["digest"],
+        })
+        status = {
+            "schema": "task-worker.spend-consumption-status/v1",
+            "consumption_id": consumption["consumption_id"],
+            "consumption_digest": final_consumption["digest"],
+            "claim_state": final_consumption["claim_state"],
+            "mutation_receipt_ref": mutation_receipt["mutation_id"],
+            "mutation_receipt_digest": mutation_receipt["digest"],
+        }
+    else:
+        if claim.get("authorization_ref") is not None or claim.get("authorization_digest") is not None:
+            raise ExecutionControlError(
+                "external_spend_not_applicable", "free mutation claim contains spend authorization"
+            )
+        if receipt["spend_consumption_refs"]:
+            raise ExecutionControlError(
+                "spend_consumption_not_applicable", "free mutation cannot report spend consumption"
+            )
+        expected.update({
+            "authorization_id": None,
+            "authorization_digest": None,
+            "spend_consumption_ref": None,
+            "spend_consumption_digest": None,
+        })
+    mismatches = [field for field, value in expected.items() if mutation_receipt.get(field) != value]
+    if mismatches:
+        raise ExecutionControlError(
+            "external_mutation_receipt_mismatch",
+            "mutation receipt does not bind its request, preflight, and spend claim",
+            detail={"fields": mismatches},
+        )
+    return mutation_receipt, status, final_consumption
+
+
+def _store_final_consumption(root: Path, consumption: dict[str, Any]) -> None:
+    consumption_path = _object_file(root / "spend-consumptions", consumption["consumption_id"])
+    ledger_path = root / "spend" / f"{consumption['authorization_digest'].removeprefix('sha256:')}.json"
+    if not ledger_path.exists():
+        raise ExecutionControlError("spend_claim_not_found", "authorization spend ledger is missing")
+    ledger = _read(ledger_path)
+    matches = [
+        index for index, item in enumerate(ledger.get("consumptions") or [])
+        if item.get("consumption_id") == consumption["consumption_id"]
+    ]
+    if len(matches) != 1:
+        raise ExecutionControlError("spend_claim_not_found", "authorization spend ledger entry is missing")
+    ledger["consumptions"][matches[0]] = consumption
+    _write_atomic(consumption_path, consumption)
+    _write_atomic(ledger_path, ledger)
+
+
 def complete_execution(
     permit: dict[str, Any], claim_id: str, receipt: dict[str, Any], state_root: str | Path,
-    *, evidence: dict[str, Any] | None = None, contract: dict[str, Any] | None = None,
+    *, evidence: dict[str, Any] | None = None,
+    mutation_receipt: dict[str, Any] | None = None, contract: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     contract = contract or load_contract()
     validate_instance(permit, "execution-permit", contract)
@@ -609,19 +987,57 @@ def complete_execution(
         if len(claims) != 1:
             raise ExecutionControlError("claim_not_found", f"execution claim not found: {claim_id}")
         claim = claims[0]
+        stored_permit_path = _object_file(root / "permits", permit["permit_id"])
+        if (
+            claim.get("permit_digest") != permit["digest"]
+            or not stored_permit_path.exists()
+            or _read(stored_permit_path) != permit
+        ):
+            raise ExecutionControlError("permit_claim_mismatch", "completion permit differs from claimed permit")
+        if claim["state"] not in {"claimed", "succeeded", "failed"}:
+            raise ExecutionControlError("claim_state_conflict", f"claim cannot complete from {claim['state']}")
         receipt_path = _object_file(root / "receipts", receipt["receipt_id"])
-        _store_immutable(receipt_path, receipt)
+        if receipt_path.exists() and _read(receipt_path) != receipt:
+            raise ExecutionControlError("immutable_receipt_conflict", "command receipt id is immutable")
+        completed_mutation, spend_status, final_consumption = _validate_mutation_completion(
+            root, permit, claim, receipt, mutation_receipt, contract,
+        )
         evidence_refs: list[str] = []
         if evidence is not None:
             evidence_path = _object_file(root / "evidence", evidence["evidence_id"])
-            _store_immutable(evidence_path, evidence)
+            if evidence_path.exists() and _read(evidence_path) != evidence:
+                raise ExecutionControlError("immutable_receipt_conflict", "verification evidence id is immutable")
             evidence_refs.append(evidence["evidence_id"])
         next_state = "succeeded" if receipt["result"] == "pass" else "failed"
         if claim["state"] not in {"claimed", next_state}:
             raise ExecutionControlError("claim_state_conflict", f"claim cannot complete from {claim['state']}")
-        claim.update({"state": next_state, "receipt_ref": receipt["receipt_id"], "evidence_refs": evidence_refs})
+        if completed_mutation is not None:
+            _store_immutable(
+                _object_file(root / "mutation-receipts", completed_mutation["mutation_id"]),
+                completed_mutation,
+            )
+        if spend_status is not None:
+            assert final_consumption is not None
+            _store_final_consumption(root, final_consumption)
+            _store_immutable(
+                _object_file(root / "spend-status", spend_status["consumption_id"]), spend_status,
+            )
+        _store_immutable(receipt_path, receipt)
+        if evidence is not None:
+            _store_immutable(_object_file(root / "evidence", evidence["evidence_id"]), evidence)
+        claim.update({
+            "state": next_state,
+            "receipt_ref": receipt["receipt_id"],
+            "evidence_refs": evidence_refs,
+            "mutation_receipt_ref": completed_mutation["mutation_id"] if completed_mutation else None,
+        })
         _write_atomic(path, state)
-        return {"action": "completed", "state": next_state, "receipt_ref": receipt["receipt_id"], "evidence_refs": evidence_refs, "telemetry": telemetry}
+        return {
+            "action": "completed", "state": next_state, "receipt_ref": receipt["receipt_id"],
+            "evidence_refs": evidence_refs,
+            "external_mutation_receipt_ref": completed_mutation["mutation_id"] if completed_mutation else None,
+            "spend_status": spend_status, "telemetry": telemetry,
+        }
 
 
 def _timestamp(value: str | None) -> datetime | None:
@@ -638,18 +1054,22 @@ def _timestamp(value: str | None) -> datetime | None:
 
 def claim_spend_consumption(
     authorization: dict[str, Any], mutation: dict[str, Any], state_root: str | Path,
-    *, preflight_receipt: dict[str, Any] | None = None,
+    *, preflight_receipt: dict[str, Any],
     contract: dict[str, Any] | None = None, now: str | None = None,
 ) -> dict[str, Any]:
     """Atomically reserve one authorized occurrence before an external mutation."""
     contract = contract or load_contract()
     validate_instance(authorization, "external-spend-authorization", contract)
-    if mutation.get("digest") != instance_digest(mutation):
-        raise ExecutionControlError("instance_digest_mismatch", "mutation request digest does not match")
-    if preflight_receipt is not None:
-        validate_instance(preflight_receipt, "preflight-receipt", contract)
-        if preflight_receipt["result"] != "pass":
-            raise ExecutionControlError("preflight_failed", "external mutation preflight did not pass")
+    mutation = validate_mutation_request(mutation)
+    validate_instance(preflight_receipt, "preflight-receipt", contract)
+    if (
+        preflight_receipt["result"] != "pass"
+        or preflight_receipt["target_ref"] != mutation["target_ref"]
+        or preflight_receipt["missing_keys"]
+        or preflight_receipt["condition_failures"]
+        or preflight_receipt["topology_drift"]
+    ):
+        raise ExecutionControlError("preflight_failed", "external mutation preflight did not pass")
     timestamp = now or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     expires_at = _timestamp(authorization.get("expires_at"))
     if expires_at is not None and expires_at <= _timestamp(timestamp):
@@ -658,6 +1078,9 @@ def claim_spend_consumption(
     auth_key = authorization["digest"].removeprefix("sha256:")
     ledger_path = root / "spend" / f"{auth_key}.json"
     with _locked(root):
+        _store_immutable(
+            _object_file(root / "spend-authorizations", authorization["authorization_id"]), authorization,
+        )
         ledger = _read(ledger_path) if ledger_path.exists() else {
             "schema": "task-worker.spend-ledger/v1", "authorization_digest": authorization["digest"],
             "consumptions": [],
@@ -687,14 +1110,12 @@ def claim_spend_consumption(
         ledger["consumptions"].append(consumption)
         _write_atomic(ledger_path, ledger)
         _store_immutable(_object_file(root / "spend-consumptions", consumption["consumption_id"]), consumption)
-        preflight_ref = None
-        if preflight_receipt is not None:
-            preflight_ref = {
-                "receipt_id": preflight_receipt["receipt_id"], "digest": preflight_receipt["digest"],
-            }
-            _store_immutable(
-                _object_file(root / "spend-preflight", consumption["consumption_id"]), preflight_ref,
-            )
+        preflight_ref = {
+            "receipt_id": preflight_receipt["receipt_id"], "digest": preflight_receipt["digest"],
+        }
+        _store_immutable(
+            _object_file(root / "spend-preflight", consumption["consumption_id"]), preflight_ref,
+        )
         return {
             **decision, "claim_id": claim_id, "consumption": consumption,
             "preflight_receipt_ref": preflight_ref,
@@ -709,20 +1130,31 @@ def record_external_mutation(
     contract = contract or load_contract()
     validate_instance(consumption, "external-spend-consumption", contract)
     validate_instance(mutation_receipt, "external-mutation-receipt", contract)
+    final_consumption = {
+        **consumption,
+        "claim_state": "consumed" if mutation_receipt["result"] == "applied" else "released",
+        "mutation_receipt_ref": mutation_receipt["mutation_id"],
+        "consumed_at": mutation_receipt["finished_at"],
+    }
+    final_consumption["digest"] = instance_digest(final_consumption)
+    validate_instance(final_consumption, "external-spend-consumption", contract)
     expected = {
         "mutation_request_ref": consumption["mutation_request_ref"],
         "mutation_request_digest": consumption["mutation_request_digest"],
         "authorization_id": consumption["authorization_id"],
         "authorization_digest": consumption["authorization_digest"],
         "spend_consumption_ref": consumption["consumption_id"],
-        "spend_consumption_digest": consumption["digest"],
+        "spend_consumption_digest": final_consumption["digest"],
     }
     if any(mutation_receipt.get(key) != value for key, value in expected.items()):
         raise ExecutionControlError("mutation_consumption_mismatch", "mutation receipt does not bind spend claim")
     root = Path(state_root) / "execution-control"
     with _locked(root):
         stored_consumption = _object_file(root / "spend-consumptions", consumption["consumption_id"])
-        if not stored_consumption.exists() or _read(stored_consumption) != consumption:
+        if (
+            not stored_consumption.exists()
+            or _read(stored_consumption) not in (consumption, final_consumption)
+        ):
             raise ExecutionControlError("spend_claim_not_found", "immutable spend claim was not recorded")
         preflight_path = _object_file(root / "spend-preflight", consumption["consumption_id"])
         if not preflight_path.exists():
@@ -733,12 +1165,13 @@ def record_external_mutation(
         _store_immutable(
             _object_file(root / "mutation-receipts", mutation_receipt["mutation_id"]), mutation_receipt,
         )
+        _store_final_consumption(root, final_consumption)
         status_path = _object_file(root / "spend-status", consumption["consumption_id"])
         status = {
             "schema": "task-worker.spend-consumption-status/v1",
             "consumption_id": consumption["consumption_id"],
-            "consumption_digest": consumption["digest"],
-            "claim_state": "consumed" if mutation_receipt["result"] == "applied" else "released",
+            "consumption_digest": final_consumption["digest"],
+            "claim_state": final_consumption["claim_state"],
             "mutation_receipt_ref": mutation_receipt["mutation_id"],
             "mutation_receipt_digest": mutation_receipt["digest"],
         }
@@ -768,13 +1201,22 @@ def capability_plan(
                 snapshot = state.get("snapshot")
                 expires = _timestamp(snapshot.get("expires_at")) if isinstance(snapshot, dict) else None
                 if isinstance(snapshot, dict) and (expires is None or expires > current_time):
-                    if snapshot.get("status") == "unavailable":
+                    status = snapshot.get("status")
+                    if status == "available":
+                        continue
+                    if status == "unavailable":
                         blocked.append({
                             "capability_id": capability_id,
                             "snapshot_id": snapshot["snapshot_id"],
                             "reason": "capability_unavailable",
                         })
-                    continue
+                        continue
+                    if status != "unknown":
+                        raise ExecutionControlError(
+                            "capability_snapshot_invalid", f"unexpected capability status: {status!r}"
+                        )
+                    # Unknown is not availability. Replace the cache entry with a
+                    # new probe claim so subsequent callers observe probe-in-progress.
                 if state.get("state") == "probing":
                     pending.append({"capability_id": capability_id, "claim_id": state.get("claim_id")})
                     continue

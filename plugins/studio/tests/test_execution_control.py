@@ -27,8 +27,11 @@ from execution_control import (  # noqa: E402
     evaluate_golden_case,
     load_contract,
     record_closeout,
+    record_closeout_ref,
     record_evidence,
+    record_permit_plan,
     record_result,
+    physical_key,
     sealed_digest,
     validate_instance,
 )
@@ -83,12 +86,13 @@ def permit(
     capabilities: list[str] | None = None,
     mutation: dict | None = None,
     authorization_refs: list[str] | None = None,
+    cycle_id: str | None = None,
 ) -> dict:
     return seal({
         "schema": "execution-permit/v1",
         "permit_id": permit_id,
         "mission_id": "mission-native",
-        "cycle_id": "cycle-native",
+        "cycle_id": cycle_id,
         "unit_id": "STUDIO",
         "qa_mode": qa_mode,
         "purpose": purpose,
@@ -124,9 +128,79 @@ def dispatch_request(pmt: dict, prof: dict | None = None, **overrides: object) -
         "executor": "native",
         "claimed_by": "studio-producer",
         "surface_digest": SURFACE_DIGEST,
+        "permit_source": {
+            "kind": "direct-native",
+            "plan_digest": None,
+            "routing_plan_digest": None,
+        },
     }
     value.update(overrides)
     return value
+
+
+def review_plan(pmt: dict) -> dict:
+    value = {
+        "schema": "studio-review-next-action/v1",
+        "permit_id": pmt["permit_id"],
+        "cycle_id": pmt["cycle_id"],
+        "episode_id": pmt["cycle_id"],
+        "mission_id": pmt["mission_id"],
+        "head": pmt["head"],
+        "physical_key": physical_key(pmt),
+        "action": "delta-qa",
+        "qa_mode": pmt["qa_mode"],
+        "purpose": pmt["purpose"],
+        "impact_set": pmt["impact_set"],
+        "command_profile_id": pmt["command_profile_id"],
+        "command_digest": pmt["command_digest"],
+        "environment_digest": pmt["environment_digest"],
+        "tool_version": pmt["tool_version"],
+        "fresh_requirement_id": pmt["fresh_requirement_id"],
+        "criteria_digest": pmt["criteria_digest"],
+        "surface_digest": SURFACE_DIGEST,
+        "required_independence": None,
+        "allowed_commands": ["unit-tests"],
+        "full_qa_reason": None,
+        "open_findings": [],
+        "reused_evidence": [],
+        "invalidated_evidence": [],
+        "physical_runs": 1,
+        "duplicate_prevented": 0,
+        "telemetry_gate": "open",
+        "dispatchable": True,
+        "digest": "pending",
+    }
+    return seal(value)
+
+
+def closeout_ref(
+    ref_id: str,
+    kind: str,
+    *,
+    lease_digest: str | None = None,
+    evidence_refs: list[str] | None = None,
+) -> dict:
+    state, result = {
+        "track-result": ("succeeded", "pass"),
+        "review-verdict": ("completed", "approved"),
+        "delivery": ("delivered", "pass"),
+        "cleanup": ("cleaned", "pass"),
+        "preserved-user-change": ("preserved", "pass"),
+    }[kind]
+    return seal({
+        "schema": "studio-closeout-ref/v1",
+        "ref_id": ref_id,
+        "kind": kind,
+        "mission_id": "mission-native",
+        "integration_head": "head-a",
+        "criteria_digest": CRITERIA_DIGEST,
+        "state": state,
+        "result": result,
+        "evidence_refs": evidence_refs or ["EV-closeout"],
+        "lease_digest": lease_digest,
+        "recorded_at": LATER,
+        "digest": "pending",
+    })
 
 
 def receipt(
@@ -236,6 +310,54 @@ def test_command_claim_result_evidence_and_reuse(contract: dict) -> None:
     pmt_reuse = permit("permit-a-reuse")
     reused = dispatch(state, contract, dispatch_request(pmt_reuse), now=LATER)
     assert reused["action"] == "reuse-evidence" and reused["evidence_refs"] == ["EV-a"]
+
+
+def test_review_plan_is_consumed_and_cannot_be_bypassed(contract: dict) -> None:
+    state = ensure_execution_state({})
+    pmt = permit("permit-reviewed", cycle_id="cycle-native")
+    plan = review_plan(pmt)
+    entry, changed = record_permit_plan(state, plan)
+    assert changed and entry["consumed_by"] is None
+
+    expect_control_error(
+        "review_plan_required",
+        dispatch,
+        state,
+        contract,
+        dispatch_request(pmt),
+        now=NOW,
+    )
+    mismatched = seal({**pmt, "purpose": "verification", "digest": "pending"})
+    expect_control_error(
+        "review_plan_binding_mismatch",
+        dispatch,
+        state,
+        contract,
+        dispatch_request(
+            mismatched,
+            permit_source={
+                "kind": "review-plan",
+                "plan_digest": plan["digest"],
+                "routing_plan_digest": None,
+            },
+        ),
+        now=NOW,
+    )
+    claimed = dispatch(
+        state,
+        contract,
+        dispatch_request(
+            pmt,
+            permit_source={
+                "kind": "review-plan",
+                "plan_digest": plan["digest"],
+                "routing_plan_digest": None,
+            },
+        ),
+        now=NOW,
+    )
+    assert claimed["action"] == "claim" and claimed["plan_digest"] == plan["digest"]
+    assert state["permit_plans"][plan["digest"]]["consumed_by"] == claimed["claim_id"]
 
 
 def test_fresh_independent_and_run_cap_gates(contract: dict) -> None:
@@ -415,6 +537,79 @@ def test_spend_mutation_closeout_and_read_only_summary(contract: dict) -> None:
     assert result["claim_state"] == "succeeded"
     assert state["spend_consumptions"][consumption["consumption_id"]]["claim_state"] == "consumed"
 
+    free_mutation = seal({
+        **mutation,
+        "mutation_request_id": "mutation-free",
+        "target_ref": "worker-free",
+        "one_time_usd": 0,
+        "monthly_usd": 0,
+        "digest": "pending",
+    })
+    free_preflight = seal({
+        **preflight,
+        "receipt_id": "preflight-free",
+        "target_ref": free_mutation["target_ref"],
+        "digest": "pending",
+    })
+    free_pmt = permit(
+        "permit-free", purpose="production-preflight", fresh_id="preflight-free",
+        mutation=free_mutation,
+    )
+    missing_state = ensure_execution_state({})
+    missing_claim = dispatch(
+        missing_state,
+        contract,
+        dispatch_request(free_pmt, preflight_receipt=free_preflight),
+        now=NOW,
+    )
+    expect_control_error(
+        "external_mutation_receipt_required",
+        record_result,
+        missing_state,
+        contract,
+        {
+            "receipt": receipt(free_pmt, missing_claim["claim_id"], "receipt-free-missing"),
+            "mutation_receipts": [],
+        },
+    )
+    free_claim = dispatch(
+        state,
+        contract,
+        dispatch_request(free_pmt, preflight_receipt=free_preflight),
+        now=NOW,
+    )
+    free_mutation_receipt = seal({
+        "schema": "external-mutation-receipt/v1",
+        "mutation_id": "MUT-FREE",
+        "mutation_request_ref": free_mutation["mutation_request_id"],
+        "mutation_request_digest": free_mutation["digest"],
+        "provider": free_mutation["provider"],
+        "operation": free_mutation["operation"],
+        "target_ref": free_mutation["target_ref"],
+        "authorization_id": None,
+        "authorization_digest": None,
+        "spend_consumption_ref": None,
+        "spend_consumption_digest": None,
+        "preflight_receipt_id": free_preflight["receipt_id"],
+        "result": "applied",
+        "started_at": NOW,
+        "finished_at": LATER,
+        "rollback_ref": None,
+        "digest": "pending",
+    })
+    free_receipt = receipt(
+        free_pmt,
+        free_claim["claim_id"],
+        "receipt-free",
+        mutation_refs=["MUT-FREE"],
+    )
+    free_result = record_result(state, contract, {
+        "receipt": free_receipt,
+        "mutation_receipts": [free_mutation_receipt],
+    })
+    assert free_result["external_mutation_receipts"] == [free_mutation_receipt]
+    assert state["mutation_receipts"]["MUT-FREE"] == free_mutation_receipt
+
     verify_pmt = permit(
         "permit-closeout", purpose="integration-full", qa_mode="integration",
         fresh_id="integration-head-a",
@@ -435,7 +630,7 @@ def test_spend_mutation_closeout_and_read_only_summary(contract: dict) -> None:
         "verification_evidence_refs": ["EV-closeout"],
         "review_lease_refs": ["review-lease-1"],
         "delivery_receipt_refs": ["delivery-1"],
-        "external_mutation_receipt_refs": ["MUT-1"],
+        "external_mutation_receipt_refs": ["MUT-1", "MUT-FREE"],
         "cleanup_receipt_refs": ["cleanup-1"],
         "preserved_user_change_refs": ["user-change-1"],
         "open_findings": [],
@@ -443,16 +638,44 @@ def test_spend_mutation_closeout_and_read_only_summary(contract: dict) -> None:
         "closed_at": LATER,
         "digest": "pending",
     })
-    refs = {
-        ref: "head-a"
-        for field in (
-            "track_result_refs", "verification_evidence_refs", "review_lease_refs",
-            "delivery_receipt_refs", "external_mutation_receipt_refs",
-            "cleanup_receipt_refs", "preserved_user_change_refs",
-        )
-        for ref in closeout[field]
-    }
-    assert record_closeout(state, contract, closeout, refs)["action"] == "close"
+    review_lease = seal({
+        "schema": "workflow-review-lease/v1",
+        "lease_id": "review-lease-1",
+        "owner": "studio",
+        "provider": "native",
+        "episode_id": "cycle-native",
+        "edge_id": "edge-native",
+        "requirement": "independent",
+        "criteria_digest": CRITERIA_DIGEST,
+        "evidence_refs": ["EV-closeout"],
+        "digest": "pending",
+    })
+    typed = (
+        closeout_ref("result-STUDIO", "track-result"),
+        closeout_ref("review-lease-1", "review-verdict", lease_digest=review_lease["digest"]),
+        closeout_ref("delivery-1", "delivery"),
+        closeout_ref("cleanup-1", "cleanup"),
+        closeout_ref("user-change-1", "preserved-user-change"),
+    )
+    fabricated = expect_control_error("closeout_applicability_invalid", record_closeout, state, contract, closeout)
+    assert fabricated.details["ref"] == "result-STUDIO"
+    for item in typed:
+        lease = review_lease if item["kind"] == "review-verdict" else None
+        assert record_closeout_ref(state, item, accepted_review_lease=lease)["changed"]
+    missing_free = seal({
+        **closeout,
+        "closeout_id": "closeout-omits-free",
+        "external_mutation_receipt_refs": ["MUT-1"],
+        "digest": "pending",
+    })
+    expect_control_error(
+        "closeout_applicability_invalid",
+        record_closeout,
+        state,
+        contract,
+        missing_free,
+    )
+    assert record_closeout(state, contract, closeout)["action"] == "close"
     before = canonical_digest(state)
     summary = efficiency_summary(state, "mission-native")
     validate_instance(contract, "efficiency-summary", summary)
@@ -469,6 +692,67 @@ def test_cli_atomic_claim_and_read_only_summary(contract_path: Path) -> None:
         subprocess.run(
             [sys.executable, str(SCRIPT), "--workspace", str(ws), "init"],
             cwd=tmp, env=env, check=True, capture_output=True, text=True,
+        )
+        cycle = {
+            "cycle_id": "cycle-native",
+            "track_id": "track-native",
+            "criteria_digest": CRITERIA_DIGEST,
+            "base_head": "head-base",
+            "quality_plan_ref": "quality-native",
+            "requires_final_qa": False,
+            "requires_integration_gate": False,
+        }
+        subprocess.run(
+            [
+                sys.executable, str(SCRIPT), "--workspace", str(ws),
+                "review", "open", "--json", json.dumps(cycle),
+            ],
+            cwd=tmp, env=env, check=True, capture_output=True, text=True,
+        )
+        reviewed_pmt = permit("permit-cli-reviewed", purpose="development", cycle_id="cycle-native")
+        planned = subprocess.run(
+            [
+                sys.executable, str(SCRIPT), "--workspace", str(ws),
+                "review", "plan-next", "cycle-native",
+                "--mission-id", reviewed_pmt["mission_id"],
+                "--permit-id", reviewed_pmt["permit_id"],
+                "--command-profile-id", reviewed_pmt["command_profile_id"],
+                "--head", reviewed_pmt["head"],
+                "--command-digest", reviewed_pmt["command_digest"],
+                "--environment-digest", reviewed_pmt["environment_digest"],
+                "--tool-version", reviewed_pmt["tool_version"],
+                "--surface-digest", SURFACE_DIGEST,
+                "--purpose", reviewed_pmt["purpose"],
+                "--changed-path", "src/**",
+            ],
+            cwd=tmp, env=env, check=True, capture_output=True, text=True,
+        )
+        review_plan_value = json.loads(planned.stdout)["plan"]
+        assert review_plan_value["dispatchable"]
+        reviewed_request = dispatch_request(
+            reviewed_pmt,
+            permit_source={
+                "kind": "review-plan",
+                "plan_digest": review_plan_value["digest"],
+                "routing_plan_digest": None,
+            },
+        )
+        reviewed = subprocess.run(
+            [
+                sys.executable, str(SCRIPT), "--workspace", str(ws),
+                "execution", "dispatch", "--json", json.dumps(reviewed_request),
+            ],
+            cwd=tmp, env=env, check=True, capture_output=True, text=True,
+        )
+        reviewed_decision = json.loads(reviewed.stdout)["decision"]
+        assert reviewed_decision["action"] == "claim"
+        board_value = json.loads(subprocess.run(
+            [sys.executable, str(SCRIPT), "--workspace", str(ws), "board"],
+            cwd=tmp, env=env, check=True, capture_output=True, text=True,
+        ).stdout)["board"]
+        assert (
+            board_value["execution_control"]["permit_plans"][review_plan_value["digest"]]["consumed_by"]
+            == reviewed_decision["claim_id"]
         )
         payload = json.dumps(dispatch_request(permit("permit-concurrent")), separators=(",", ":"))
         cmd = [
@@ -503,6 +787,7 @@ def main() -> None:
     contract, path = load_contract(PLUGIN_ROOT)
     test_contract_and_all_golden_cases(contract, path)
     test_command_claim_result_evidence_and_reuse(contract)
+    test_review_plan_is_consumed_and_cannot_be_bypassed(contract)
     test_fresh_independent_and_run_cap_gates(contract)
     test_capability_cache_and_telemetry_policies(contract)
     test_spend_mutation_closeout_and_read_only_summary(contract)

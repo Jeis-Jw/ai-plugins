@@ -23,6 +23,28 @@ FRESH_PURPOSES = frozenset((
 ))
 TOKEN_POLICIES = frozenset(("fail-closed", "report-only"))
 ZERO_TIME = "1970-01-01T00:00:00Z"
+PERMIT_SOURCE_KINDS = frozenset(("review-plan", "direct-native"))
+REVIEW_PLAN_FIELDS = frozenset((
+    "schema", "permit_id", "cycle_id", "episode_id", "mission_id", "head",
+    "physical_key", "action", "qa_mode", "purpose", "impact_set",
+    "command_profile_id", "command_digest", "environment_digest", "tool_version",
+    "fresh_requirement_id", "criteria_digest", "surface_digest",
+    "required_independence", "allowed_commands", "full_qa_reason", "open_findings",
+    "reused_evidence", "invalidated_evidence", "physical_runs",
+    "duplicate_prevented", "telemetry_gate", "dispatchable", "digest",
+))
+CLOSEOUT_REF_FIELDS = frozenset((
+    "schema", "ref_id", "kind", "mission_id", "integration_head",
+    "criteria_digest", "state", "result", "evidence_refs", "lease_digest",
+    "recorded_at", "digest",
+))
+CLOSEOUT_REF_RULES = {
+    "track-result": ("succeeded", "pass"),
+    "review-verdict": ("completed", "approved"),
+    "delivery": ("delivered", "pass"),
+    "cleanup": ("cleaned", "pass"),
+    "preserved-user-change": ("preserved", "pass"),
+}
 
 
 class ControlError(ValueError):
@@ -162,6 +184,48 @@ def physical_key(permit: dict) -> str:
     if permit.get("fresh_requirement_id") is not None:
         payload["fresh_requirement_id"] = permit["fresh_requirement_id"]
     return canonical_digest(payload)
+
+
+def record_permit_plan(state: dict, plan: Any) -> tuple[dict, bool]:
+    """Pin one review planner decision before any permit can consume it."""
+    if not isinstance(plan, dict) or set(plan) != REVIEW_PLAN_FIELDS:
+        raise ControlError("invalid_review_plan", "review execution plan fields differ from the native control contract")
+    if plan.get("schema") != "studio-review-next-action/v1" or plan.get("digest") != sealed_digest(plan):
+        raise ControlError("invalid_review_plan", "review execution plan schema or digest is invalid")
+    for field in ("permit_id", "mission_id", "command_profile_id", "surface_digest"):
+        value = plan.get(field)
+        if value is not None and (not isinstance(value, str) or not value.strip()):
+            raise ControlError("invalid_review_plan", f"review execution plan {field} must be non-empty or null")
+    for field in ("impact_set", "allowed_commands", "open_findings", "reused_evidence", "invalidated_evidence"):
+        _require_string_list(plan.get(field), f"review execution plan {field}")
+    if plan.get("required_independence") not in (None, "self", "independent", "not-applicable"):
+        raise ControlError("invalid_review_plan", "review execution plan independence is invalid")
+    should_dispatch = plan.get("action") in ("delta-qa", "full-qa")
+    required_values = (
+        plan.get("permit_id"), plan.get("mission_id"), plan.get("command_profile_id"),
+        plan.get("surface_digest"), plan.get("purpose"), plan.get("qa_mode"),
+        plan.get("impact_set"),
+    )
+    if plan.get("dispatchable") is not bool(should_dispatch and all(required_values)):
+        raise ControlError("invalid_review_plan", "review execution plan dispatchable state is inconsistent")
+    expected_key = physical_key({
+        "head": plan["head"],
+        "command_digest": plan["command_digest"],
+        "environment_digest": plan["environment_digest"],
+        "tool_version": plan["tool_version"],
+        "purpose": plan["purpose"],
+        "fresh_requirement_id": plan["fresh_requirement_id"],
+    })
+    if plan.get("physical_key") != expected_key:
+        raise ControlError("invalid_review_plan", "review execution plan physical key is not canonical")
+    entry = {"plan": plan, "consumed_by": None, "consumed_at": None}
+    prior = state["permit_plans"].get(plan["digest"])
+    if prior is not None:
+        if prior.get("plan") != plan:
+            raise ControlError("review_plan_conflict", "immutable review plan digest conflicts")
+        return prior, False
+    state["permit_plans"][plan["digest"]] = entry
+    return entry, True
 
 
 def fresh_required(permit: dict, profile: dict | None = None) -> bool:
@@ -470,7 +534,8 @@ def ensure_execution_state(board: dict) -> dict:
     for field in (
         "permits", "profiles", "claims", "physical_claims", "receipts", "evidence",
         "capability_snapshots", "preflight_receipts", "spend_authorizations",
-        "spend_consumptions", "spend_claims", "mutation_receipts", "closeouts",
+        "spend_consumptions", "spend_claims", "mutation_receipts", "permit_plans",
+        "closeout_refs", "closeouts",
     ):
         value = state.setdefault(field, {})
         if not isinstance(value, dict):
@@ -547,6 +612,65 @@ def _required_independence(permit: dict, requested: str | None) -> str | None:
     if permit["qa_mode"] == "final":
         return "independent"
     return requested
+
+
+def _permit_source(state: dict, permit: dict, request: dict) -> tuple[dict, dict | None]:
+    source = request.get("permit_source")
+    fields = {"kind", "plan_digest", "routing_plan_digest"}
+    if not isinstance(source, dict) or set(source) != fields or source.get("kind") not in PERMIT_SOURCE_KINDS:
+        raise ControlError("permit_source_required", "dispatch requires an exact review-plan or direct-native permit source")
+    for field in ("plan_digest", "routing_plan_digest"):
+        if source[field] is not None and (not isinstance(source[field], str) or not source[field].startswith("sha256:")):
+            raise ControlError("permit_source_invalid", f"permit source {field} must be a sha256 digest or null")
+    if source["kind"] == "direct-native":
+        if source["plan_digest"] is not None:
+            raise ControlError("permit_source_invalid", "direct-native permit source cannot carry a review plan")
+        if request.get("executor") != "native":
+            raise ControlError("permit_source_invalid", "direct-native permit source requires the native executor")
+        if permit.get("cycle_id") is not None:
+            raise ControlError("review_plan_required", "cycle-bound permits require a consumed review-plan source")
+        matching = [
+            entry for entry in state["permit_plans"].values()
+            if entry["plan"].get("dispatchable")
+            and entry["plan"].get("mission_id") == permit.get("mission_id")
+            and entry["plan"].get("head") == permit.get("head")
+            and entry.get("consumed_by") is None
+        ]
+        if matching:
+            raise ControlError("review_plan_required", "an unconsumed review plan exists for this permit scope")
+        return source, None
+
+    digest = source["plan_digest"]
+    entry = state["permit_plans"].get(digest)
+    if entry is None:
+        raise ControlError("review_plan_not_found", "review permit source is not pinned in the execution ledger")
+    if entry.get("consumed_by") is not None:
+        raise ControlError("review_plan_consumed", "review permit source was already consumed", claim_id=entry["consumed_by"])
+    plan = entry["plan"]
+    if not plan.get("dispatchable"):
+        raise ControlError("review_plan_not_dispatchable", f"review plan action {plan.get('action')} cannot issue a permit")
+    expected = {
+        "permit_id": permit["permit_id"],
+        "cycle_id": permit["cycle_id"],
+        "mission_id": permit["mission_id"],
+        "head": permit["head"],
+        "qa_mode": permit["qa_mode"],
+        "purpose": permit["purpose"],
+        "impact_set": permit["impact_set"],
+        "command_profile_id": permit["command_profile_id"],
+        "command_digest": permit["command_digest"],
+        "environment_digest": permit["environment_digest"],
+        "tool_version": permit["tool_version"],
+        "fresh_requirement_id": permit["fresh_requirement_id"],
+        "criteria_digest": permit["criteria_digest"],
+        "surface_digest": request.get("surface_digest"),
+        "required_independence": _required_independence(permit, request.get("required_independence")),
+        "full_qa_reason": request.get("full_qa_reason"),
+    }
+    mismatches = sorted(field for field, value in expected.items() if plan.get(field) != value)
+    if mismatches:
+        raise ControlError("review_plan_binding_mismatch", "execution permit differs from its review plan", fields=mismatches)
+    return source, entry
 
 
 def _spend_consumption(
@@ -654,10 +778,10 @@ def dispatch(
     *,
     now: str | None = None,
 ) -> dict:
-    required = {"permit", "profile", "command", "executor", "claimed_by"}
+    required = {"permit", "profile", "command", "executor", "claimed_by", "permit_source"}
     allowed = required | {
         "evidence", "capability_snapshots", "authorization", "preflight_receipt",
-        "surface_digest", "required_independence",
+        "surface_digest", "required_independence", "full_qa_reason",
     }
     if not isinstance(request, dict) or not required.issubset(request) or set(request) - allowed:
         raise ControlError("invalid_dispatch_request", "dispatch request fields differ from the native control contract")
@@ -683,6 +807,7 @@ def dispatch(
     if fresh_required(permit, profile) and permit["fresh_requirement_id"] is None:
         raise ControlError("fresh_requirement_required", "fresh execution gate requires fresh_requirement_id")
     independence = _required_independence(permit, request.get("required_independence"))
+    source, plan_entry = _permit_source(state, permit, request)
     _pin(state["permits"], permit["permit_id"], permit, code="execution_permit_conflict")
     _pin(state["profiles"], profile["profile_id"], profile, code="command_profile_conflict")
     _bump(state, "logical_checks", permit["mission_id"])
@@ -755,7 +880,7 @@ def dispatch(
             "error": {"code": "physical_run_cap_reached", "max_physical_runs": permit["max_physical_runs"]},
             "physical_run_started": False,
         }
-    _validate_preflight(state, contract, permit, request.get("preflight_receipt"))
+    preflight = _validate_preflight(state, contract, permit, request.get("preflight_receipt"))
     spend = _claim_spend(state, contract, permit, request.get("authorization"), now=timestamp)
     occurrence = len(physical["runs"]) + 1
     claim_seed = canonical_digest({"permit_digest": permit["digest"], "physical_key": key, "occurrence_index": occurrence})
@@ -773,10 +898,16 @@ def dispatch(
         "completed_at": None,
         "receipt_id": None,
         "spend_consumption_ref": spend["consumption_id"] if spend else None,
+        "preflight_receipt_ref": preflight["receipt_id"] if preflight else None,
+        "permit_source": source,
+        "mutation_receipt_ref": None,
         "evidence_refs": [],
     }
     physical["runs"].append(run)
     state["claims"][claim_id] = run
+    if plan_entry is not None:
+        plan_entry["consumed_by"] = claim_id
+        plan_entry["consumed_at"] = timestamp
     _bump(state, "physical_runs", permit["mission_id"])
     if permit["qa_mode"] == "full" or permit["purpose"] == "integration-full":
         _bump(state, "full_qa_runs", permit["mission_id"])
@@ -785,7 +916,7 @@ def dispatch(
     return {
         "action": "claim", "error": None, "permit_id": permit["permit_id"],
         "claim_id": claim_id, "physical_key": key, "physical_run_started": True,
-        "spend_consumption": spend,
+        "spend_consumption": spend, "plan_digest": source["plan_digest"],
     }
 
 
@@ -814,20 +945,44 @@ def _complete_mutation(
     receipt: dict,
     mutation_receipts: list[dict],
 ) -> list[dict]:
+    permit = state["permits"].get(claim["permit_id"])
+    mutation_request = permit and permit.get("mutation_request")
     consumption_ref = claim.get("spend_consumption_ref")
-    if consumption_ref is None:
-        if receipt["spend_consumption_refs"] or mutation_receipts or receipt["external_mutation_receipt_refs"]:
-            raise ControlError("mutation_receipt_not_authorized", "receipt reports a mutation without a spend claim")
+    if mutation_request is None:
+        if consumption_ref is not None or receipt["spend_consumption_refs"] or mutation_receipts or receipt["external_mutation_receipt_refs"]:
+            raise ControlError("mutation_receipt_not_authorized", "receipt reports a mutation for a non-mutation permit")
         return []
-    consumption = state["spend_consumptions"].get(consumption_ref)
-    if consumption is None or receipt["spend_consumption_refs"] != [consumption_ref]:
-        raise ControlError("spend_consumption_mismatch", "command receipt must pin its exact spend consumption")
     if len(mutation_receipts) != 1:
-        raise ControlError("external_mutation_receipt_required", "authorized mutation requires exactly one mutation receipt")
+        raise ControlError("external_mutation_receipt_required", "every external mutation requires exactly one mutation receipt")
     mutation = mutation_receipts[0]
     validate_instance(contract, "external-mutation-receipt", mutation)
     if receipt["external_mutation_receipt_refs"] != [mutation["mutation_id"]]:
         raise ControlError("external_mutation_receipt_mismatch", "command receipt mutation refs differ from supplied receipts")
+    common = {
+        "mutation_request_ref": mutation_request["mutation_request_id"],
+        "mutation_request_digest": mutation_request["digest"],
+        "provider": mutation_request["provider"],
+        "operation": mutation_request["operation"],
+        "target_ref": mutation_request["target_ref"],
+        "preflight_receipt_id": claim.get("preflight_receipt_ref"),
+    }
+    if any(mutation.get(field) != value for field, value in common.items()):
+        raise ControlError("external_mutation_receipt_mismatch", "mutation receipt differs from its request or preflight")
+    paid = mutation_request["one_time_usd"] > 0 or mutation_request["monthly_usd"] > 0
+    if not paid:
+        nullable_spend = (
+            "authorization_id", "authorization_digest",
+            "spend_consumption_ref", "spend_consumption_digest",
+        )
+        if consumption_ref is not None or receipt["spend_consumption_refs"] or any(mutation[field] is not None for field in nullable_spend):
+            raise ControlError("spend_consumption_mismatch", "free mutation receipts require null authorization and consumption refs")
+        _pin(state["mutation_receipts"], mutation["mutation_id"], mutation, code="external_mutation_receipt_conflict")
+        claim["mutation_receipt_ref"] = mutation["mutation_id"]
+        return [mutation]
+
+    consumption = state["spend_consumptions"].get(consumption_ref)
+    if consumption is None or receipt["spend_consumption_refs"] != [consumption_ref]:
+        raise ControlError("spend_consumption_mismatch", "paid mutation receipt must pin its exact spend consumption")
     final_state = "consumed" if mutation["result"] == "applied" else "released"
     final = {
         **consumption,
@@ -849,6 +1004,7 @@ def _complete_mutation(
     validate_instance(contract, "external-spend-consumption", final)
     state["spend_consumptions"][final["consumption_id"]] = final
     _pin(state["mutation_receipts"], mutation["mutation_id"], mutation, code="external_mutation_receipt_conflict")
+    claim["mutation_receipt_ref"] = mutation["mutation_id"]
     return [mutation]
 
 
@@ -955,51 +1111,123 @@ def invalidate_evidence(
     return {**decision, "evidence": updated, "changed": True}
 
 
+def record_closeout_ref(
+    state: dict,
+    receipt: Any,
+    *,
+    accepted_review_lease: dict | None = None,
+) -> dict:
+    """Store an immutable typed closeout prerequisite, never a caller head assertion."""
+    if not isinstance(receipt, dict) or set(receipt) != CLOSEOUT_REF_FIELDS:
+        raise ControlError("closeout_ref_invalid", "closeout prerequisite receipt fields are invalid")
+    if receipt.get("schema") != "studio-closeout-ref/v1" or receipt.get("digest") != sealed_digest(receipt):
+        raise ControlError("closeout_ref_invalid", "closeout prerequisite schema or digest is invalid")
+    for field in ("ref_id", "mission_id", "integration_head", "criteria_digest", "state", "result", "recorded_at"):
+        if not isinstance(receipt.get(field), str) or not receipt[field].strip():
+            raise ControlError("closeout_ref_invalid", f"closeout prerequisite {field} must be non-empty")
+    _parse_time(receipt["recorded_at"])
+    _require_string_list(receipt.get("evidence_refs"), "closeout prerequisite evidence_refs")
+    expected = CLOSEOUT_REF_RULES.get(receipt.get("kind"))
+    if expected is None or (receipt["state"], receipt["result"]) != expected:
+        raise ControlError("closeout_ref_invalid", "closeout prerequisite kind, state, or result is invalid")
+    if receipt["kind"] == "review-verdict":
+        lease = accepted_review_lease
+        fields = {
+            "schema", "lease_id", "owner", "provider", "episode_id", "edge_id",
+            "requirement", "criteria_digest", "evidence_refs", "digest",
+        }
+        if (
+            not isinstance(lease, dict)
+            or set(lease) != fields
+            or lease.get("schema") != "workflow-review-lease/v1"
+            or lease.get("digest") != sealed_digest(lease)
+            or receipt["ref_id"] != lease.get("lease_id")
+            or receipt["lease_digest"] != lease.get("digest")
+            or receipt["criteria_digest"] != lease.get("criteria_digest")
+            or not set(lease.get("evidence_refs") or []).issubset(set(receipt["evidence_refs"]))
+        ):
+            raise ControlError("closeout_review_invalid", "approved review receipt does not bind an accepted review lease")
+    elif receipt.get("lease_digest") is not None:
+        raise ControlError("closeout_ref_invalid", "only review verdict receipts may carry a lease digest")
+    changed = _pin(state["closeout_refs"], receipt["ref_id"], receipt, code="closeout_ref_conflict")
+    return {"action": "record-closeout-ref", "error": None, "receipt": receipt, "changed": changed}
+
+
 def record_closeout(
     state: dict,
     contract: dict,
     receipt: dict,
-    applicability: dict,
 ) -> dict:
     validate_instance(contract, "closeout-receipt", receipt)
     decision = closeout_decision(receipt)
     if decision["action"] != "close":
         _bump(state, "owner_intervention_count", receipt["mission_id"])
         return {**decision, "changed": False}
-    if not isinstance(applicability, dict) or any(not isinstance(ref, str) or not isinstance(head, str) for ref, head in applicability.items()):
-        raise ControlError("closeout_applicability_invalid", "closeout applicability must map refs to integration heads")
-    all_refs: list[str] = []
-    for field in (
-        "track_result_refs", "verification_evidence_refs", "review_lease_refs",
-        "delivery_receipt_refs", "external_mutation_receipt_refs", "cleanup_receipt_refs",
-        "preserved_user_change_refs",
-    ):
-        all_refs.extend(receipt[field])
-    missing = sorted(ref for ref in all_refs if applicability.get(ref) != receipt["integration_head"])
-    if missing:
-        raise ControlError("closeout_applicability_invalid", "closeout refs are not reconciled to integration_head", refs=missing)
+    evidence_items = []
     for evidence_ref in receipt["verification_evidence_refs"]:
         evidence = state["evidence"].get(evidence_ref)
-        if evidence is None or evidence["head"] != receipt["integration_head"] or evidence["invalidation"] is not None:
+        if (
+            evidence is None
+            or evidence["head"] != receipt["integration_head"]
+            or evidence["result"] != "pass"
+            or evidence["invalidation"] is not None
+        ):
             raise ControlError("closeout_applicability_invalid", "closeout verification evidence is missing, stale, or invalidated")
+        evidence_items.append(evidence)
+    criteria = {item["criteria_digest"] for item in evidence_items}
+    if len(criteria) != 1:
+        raise ControlError("closeout_applicability_invalid", "closeout verification evidence does not share one criteria digest")
+    criteria_digest = next(iter(criteria))
     integration_evidence = [
-        state["evidence"][ref] for ref in receipt["verification_evidence_refs"]
-        if ref in state["evidence"] and state["evidence"][ref]["purpose"] == "integration-full"
+        item for item in evidence_items
+        if item["purpose"] == "integration-full" and item["fresh_requirement_id"] is not None
     ]
     if not integration_evidence:
         raise ControlError("closeout_applicability_invalid", "closeout requires a fresh integration-full evidence receipt")
+
+    typed_fields = {
+        "track_result_refs": "track-result",
+        "review_lease_refs": "review-verdict",
+        "delivery_receipt_refs": "delivery",
+        "cleanup_receipt_refs": "cleanup",
+        "preserved_user_change_refs": "preserved-user-change",
+    }
+    for field, kind in typed_fields.items():
+        for ref in receipt[field]:
+            typed = state["closeout_refs"].get(ref)
+            expected_state, expected_result = CLOSEOUT_REF_RULES[kind]
+            if (
+                typed is None
+                or typed.get("kind") != kind
+                or typed.get("mission_id") != receipt["mission_id"]
+                or typed.get("integration_head") != receipt["integration_head"]
+                or typed.get("criteria_digest") != criteria_digest
+                or typed.get("state") != expected_state
+                or typed.get("result") != expected_result
+                or not set(typed.get("evidence_refs") or []).issubset(set(receipt["verification_evidence_refs"]))
+            ):
+                raise ControlError("closeout_applicability_invalid", f"closeout {kind} receipt is unknown or not applicable", ref=ref)
+
     required_mutations = {
-        mutation_id
-        for mutation_id, mutation in state["mutation_receipts"].items()
-        if mutation.get("result") == "applied"
-        and isinstance(state["spend_authorizations"].get(mutation.get("authorization_id")), dict)
-        and state["spend_authorizations"][mutation["authorization_id"]]["mission_id"] == receipt["mission_id"]
+        claim["mutation_receipt_ref"]
+        for claim in state["claims"].values()
+        if claim.get("mutation_receipt_ref")
+        and state["permits"].get(claim["permit_id"], {}).get("mission_id") == receipt["mission_id"]
+        and state["mutation_receipts"].get(claim["mutation_receipt_ref"], {}).get("result") == "applied"
     }
     if not required_mutations.issubset(set(receipt["external_mutation_receipt_refs"])):
         raise ControlError("closeout_applicability_invalid", "closeout omits a mission external mutation receipt")
     for mutation_ref in receipt["external_mutation_receipt_refs"]:
-        if mutation_ref not in state["mutation_receipts"]:
-            raise ControlError("closeout_applicability_invalid", "closeout mutation receipt is not recorded")
+        claim = next((item for item in state["claims"].values() if item.get("mutation_receipt_ref") == mutation_ref), None)
+        permit = state["permits"].get(claim["permit_id"]) if claim else None
+        mutation = state["mutation_receipts"].get(mutation_ref)
+        if (
+            claim is None or permit is None or mutation is None
+            or mutation.get("result") != "applied"
+            or permit.get("mission_id") != receipt["mission_id"]
+            or permit.get("head") != receipt["integration_head"]
+        ):
+            raise ControlError("closeout_applicability_invalid", "closeout mutation receipt is unknown or not applicable")
     changed = _pin(state["closeouts"], receipt["closeout_id"], receipt, code="closeout_receipt_conflict")
     return {**decision, "receipt": receipt, "changed": changed}
 

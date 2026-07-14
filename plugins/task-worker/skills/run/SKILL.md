@@ -22,5 +22,5 @@ python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py
 
 코드·설정·제품별 검증 명령은 저장소의 완료 조건과 운영 정책을 따른다. development check도 physical command라면 `command-profile/v1`·impact rule 기반 `execution-claim` 뒤에만 시작하고 immutable receipt로 완료한다. profile 밖 argv, forbidden argv, reason 없는 full QA는 실행하지 않는다.
 
-외부 mutation은 비용 여부와 무관하게 preflight receipt를 먼저 요구한다. 비용이 있으면 owner-approved `external-spend-authorization/v1`과 mutation request를 `spend-claim`으로 원자 소비한 뒤에만 시작하고, mutation receipt가 consumption id+digest를 교차 참조해야 한다.
+외부 mutation은 비용 여부와 무관하게 `execution-claim`에 preflight receipt를 함께 전달한다. 비용이 있으면 exact mutation request와 owner-approved `external-spend-authorization/v1`도 함께 전달해 spend quota와 physical claim을 한 transaction으로 소비한다. 비용 여부와 무관하게 `execution-complete`에는 mutation receipt가 필수이며, 유료 mutation만 consumption id+digest를 추가로 교차 참조한다. 독립 `spend-claim`/`mutation-record`는 내부 복구 primitive일 뿐 실행 전후의 선택 절차가 아니다.
 review lease는 reviewer dispatch의 소유권만 정한다. `owner=studio`여도 구현 run과 변경 범위 최소 검증은 그대로 수행한다.
