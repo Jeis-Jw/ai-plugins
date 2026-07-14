@@ -112,6 +112,7 @@ ROUTING_PLAN_SCHEMA = "studio-routing-plan/v1"
 CAPABILITY_SNAPSHOT_SCHEMA = "studio-capability-snapshot/v1"
 RUNTIME_CAPABILITY_SCHEMA = "studio-runtime-capability/v1"
 REVIEW_LEASE_SCHEMA = "workflow-review-lease/v1"
+REVIEW_EDGE_RESERVATION_SCHEMA = "studio-review-edge-reservation/v1"
 
 CASTS = {
     "idea": {
@@ -2524,6 +2525,158 @@ def validate_review_lease(value: Any) -> list[str]:
     return problems
 
 
+def _native_review_fallback_lease(source: dict) -> dict:
+    target = {**source, "provider": "native"}
+    target["digest"] = canonical_digest({
+        key: value for key, value in target.items() if key != "digest"
+    })
+    return target
+
+
+def _review_fallback_authorization(mission_id: str, source: dict) -> dict:
+    payload = {
+        "schema": "studio-review-fallback-authorization/v1",
+        "mission_id": mission_id,
+        "edge_id": source["edge_id"],
+        "source_lease_digest": source["digest"],
+        "target_lease": _native_review_fallback_lease(source),
+    }
+    return {**payload, "digest": canonical_digest(payload)}
+
+
+def _validate_review_edge_reservation(value: Any) -> dict:
+    fields = {
+        "schema", "state", "mission_id", "edge_id", "original_lease",
+        "accepted_lease", "fallback_authorization",
+    }
+    if not isinstance(value, dict) or set(value) != fields:
+        fail(4, "bad_board", "review edge reservation fields are invalid")
+    if value.get("schema") != REVIEW_EDGE_RESERVATION_SCHEMA:
+        fail(4, "bad_board", "review edge reservation schema is invalid")
+    if value.get("state") not in ("pending", "accepted"):
+        fail(4, "bad_board", "review edge reservation state is invalid")
+    if any(
+        not isinstance(value.get(key), str)
+        or not SAFE_ID_RE.fullmatch(value.get(key, ""))
+        for key in ("mission_id", "edge_id")
+    ):
+        fail(4, "bad_board", "review edge reservation identity is invalid")
+    original = value.get("original_lease")
+    problems = validate_review_lease(original)
+    if problems or original.get("edge_id") != value["edge_id"]:
+        fail(4, "bad_board", "review edge original lease is invalid", problems=problems)
+    accepted = value.get("accepted_lease")
+    if value["state"] == "accepted":
+        accepted_problems = validate_review_lease(accepted)
+        if accepted_problems or accepted.get("edge_id") != value["edge_id"]:
+            fail(4, "bad_board", "review edge accepted lease is invalid", problems=accepted_problems)
+    elif accepted is not None:
+        fail(4, "bad_board", "pending review edge cannot have an accepted lease")
+    authorization = value.get("fallback_authorization")
+    if authorization is not None:
+        auth_fields = {
+            "schema", "mission_id", "edge_id", "source_lease_digest",
+            "target_lease", "digest",
+        }
+        if not isinstance(authorization, dict) or set(authorization) != auth_fields:
+            fail(4, "bad_board", "review fallback authorization fields are invalid")
+        auth_payload = {key: item for key, item in authorization.items() if key != "digest"}
+        target = authorization.get("target_lease")
+        target_problems = validate_review_lease(target)
+        if (
+            authorization.get("schema") != "studio-review-fallback-authorization/v1"
+            or authorization.get("mission_id") != value["mission_id"]
+            or authorization.get("edge_id") != value["edge_id"]
+            or authorization.get("source_lease_digest") != original["digest"]
+            or target_problems
+            or target.get("provider") != "native"
+            or target.get("edge_id") != value["edge_id"]
+            or authorization.get("digest") != canonical_digest(auth_payload)
+        ):
+            fail(4, "bad_board", "review fallback authorization is invalid", problems=target_problems)
+    return value
+
+
+def _review_edge_lease_ids(value: Any) -> set[str]:
+    if not isinstance(value, dict):
+        return set()
+    reservation = _validate_review_edge_reservation(value)
+    leases = [reservation["original_lease"], reservation.get("accepted_lease")]
+    authorization = reservation.get("fallback_authorization")
+    if authorization:
+        leases.append(authorization["target_lease"])
+    return {lease["lease_id"] for lease in leases if isinstance(lease, dict)}
+
+
+def _reserve_review_edge(
+    board: dict, *, mission_id: str, review_lease: dict, action: str,
+) -> tuple[bool, dict | None]:
+    """Fence one review edge while allowing one exact authorized native replan."""
+    if action not in {
+        "capability-required", "runtime-capability-required",
+        "review-lease-replan-required", "dispatch",
+    }:
+        return False, None
+    edges = board.setdefault("review_lease_edges", {})
+    edge_id = review_lease["edge_id"]
+    for other_edge, binding in edges.items():
+        if other_edge != edge_id and review_lease["lease_id"] in _review_edge_lease_ids(binding):
+            fail(6, "review_edge_rebind", "review lease id is already reserved for another edge")
+    prior = edges.get(edge_id)
+    if isinstance(prior, str):
+        # Schema-2 boards stored accepted digests directly. Preserve their
+        # immutable meaning; they cannot be retroactively treated as pending.
+        if prior != review_lease["digest"] or action == "review-lease-replan-required":
+            fail(6, "review_edge_rebind", "legacy accepted review edge is immutable")
+        return False, None
+    if prior is None:
+        reservation = {
+            "schema": REVIEW_EDGE_RESERVATION_SCHEMA,
+            "state": "accepted" if action == "dispatch" else "pending",
+            "mission_id": mission_id,
+            "edge_id": edge_id,
+            "original_lease": review_lease,
+            "accepted_lease": review_lease if action == "dispatch" else None,
+            "fallback_authorization": None,
+        }
+    else:
+        reservation = _validate_review_edge_reservation(prior)
+        if reservation["mission_id"] != mission_id:
+            fail(6, "review_edge_rebind", "review edge reservation belongs to another mission")
+        if reservation["state"] == "accepted":
+            if reservation["accepted_lease"] != review_lease:
+                fail(6, "review_edge_rebind", "accepted review edge is immutable")
+            if action == "review-lease-replan-required":
+                fail(6, "review_edge_rebind", "accepted review edge cannot authorize a fallback replan")
+            return False, None
+        authorization = reservation.get("fallback_authorization")
+        if action == "dispatch":
+            expected = authorization["target_lease"] if authorization else reservation["original_lease"]
+            if review_lease != expected:
+                fail(6, "review_edge_rebind", "dispatch lease differs from the pending reservation")
+            reservation = {**reservation, "state": "accepted", "accepted_lease": review_lease}
+        elif review_lease != reservation["original_lease"]:
+            fail(6, "review_edge_rebind", "pending review edge cannot be rebound")
+    authorization = reservation.get("fallback_authorization")
+    if action == "review-lease-replan-required":
+        if (
+            reservation["original_lease"]["owner"] != "studio"
+            or reservation["original_lease"]["provider"] != "session-review"
+        ):
+            fail(6, "review_edge_rebind", "native fallback requires a pending Studio session-review lease")
+        expected_authorization = _review_fallback_authorization(
+            mission_id, reservation["original_lease"],
+        )
+        if authorization is not None and authorization != expected_authorization:
+            fail(6, "review_edge_rebind", "review fallback authorization conflicts with the reservation")
+        reservation = {**reservation, "fallback_authorization": expected_authorization}
+        authorization = expected_authorization
+    changed = prior != reservation
+    if changed:
+        edges[edge_id] = reservation
+    return changed, authorization
+
+
 def _load_optional_config(path: Path) -> dict:
     if not path.is_file():
         return {}
@@ -2940,6 +3093,16 @@ def cmd_routing_plan(args: argparse.Namespace) -> None:
         unsupported = _unsupported_profile_fields(agent_profile)
         if unsupported:
             fail(6, "unsupported_runtime_profile", "resolved agent profile is not advertised by the verified runtime", problems=unsupported)
+        edge_changed, fallback_authorization = (False, None)
+        if review_lease:
+            edge_changed, fallback_authorization = _reserve_review_edge(
+                board,
+                mission_id=mission_id,
+                review_lease=review_lease,
+                action=action,
+            )
+        if fallback_authorization:
+            reviewer = {**reviewer, "replan": fallback_authorization}
         plan = {
             "schema": ROUTING_PLAN_SCHEMA,
             "plan_id": "pending",
@@ -2958,20 +3121,6 @@ def cmd_routing_plan(args: argparse.Namespace) -> None:
         digest = _routing_plan_digest(plan)
         plan["plan_id"] = "routing-" + digest.split(":", 1)[1][:16]
         plan["digest"] = _routing_plan_digest(plan)
-        edge_changed = False
-        # A canonical lease owns its edge as soon as routing accepts it, even
-        # while an external capability probe is pending. The only exception is
-        # the explicit session-review -> native replan path: that action asks
-        # the producer to replace the old provider-specific lease before any
-        # dispatch, so pinning it would make the required replan impossible.
-        if review_lease and action != "review-lease-replan-required":
-            edges = board.setdefault("review_lease_edges", {})
-            prior = edges.get(review_lease["edge_id"])
-            if prior is not None and prior != review_lease["digest"]:
-                fail(6, "review_edge_rebind", "review edge is already bound to another lease")
-            if prior is None:
-                edges[review_lease["edge_id"]] = review_lease["digest"]
-                edge_changed = True
         plans = board.setdefault("routing_plans", {})
         changed = plan["digest"] not in plans
         plans.setdefault(plan["digest"], plan)
