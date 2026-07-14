@@ -21,6 +21,9 @@ def _issue(payload: dict[str, Any], issue: int) -> dict[str, Any]:
 def resume(path: str | Path, issue: int) -> dict[str, Any]:
     payload = load_ledger(path)
     item = _issue(payload, issue)
+    external_review = item.get("external_review")
+    if external_review and external_review.get("status") != "approved":
+        raise ValueError(f"issue #{issue} external review is not approved")
     source = (
         item.get("ready_for_closeout")
         or item.get("closeout_failed")
@@ -39,7 +42,7 @@ def resume(path: str | Path, issue: int) -> dict[str, Any]:
         "base": base,
         "head": head,
     }
-    for key in ("head_sha", "gear", "review_skipped", "pr"):
+    for key in ("head_sha", "gear", "review_skipped", "pr", "review_lease_id"):
         if source.get(key) is not None:
             event[key] = source[key]
     payload = record_event(path, event)

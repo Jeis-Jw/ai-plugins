@@ -26,7 +26,9 @@ RECEIPT_SCHEMA = "workflow-receipt/v1"
 BINDING_SCHEMA = "task-worker.provider-binding/v1"
 CONTEXT_SCHEMA = "task-worker.context-packet/v1"
 EVIDENCE_SCHEMA = "task-worker.verification-evidence/v1"
-PLUGIN_VERSION = "0.3.0"
+REVIEW_LEASE_SCHEMA = "workflow-review-lease/v1"
+REVIEW_PERMIT_SCHEMA = "task-worker.review-permit/v1"
+PLUGIN_VERSION = "0.4.0"
 SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 DELIVERY_MODES = {"local-ff", "external"}
 DISPATCH_MODES = {"worker", "manual"}
@@ -39,6 +41,13 @@ RUN_TRANSITIONS = {
 }
 ACTIVE_STATUSES = {"started", "running", "verified", "done"}
 GRAPH_STATUSES = {"open", "active", "completed", "gated", "failed"}
+REVIEW_LEASE_OWNERS = {"studio", "task-worker"}
+REVIEW_LEASE_PROVIDERS = {"native", "session-review"}
+REVIEW_REQUIREMENTS = {"self", "independent"}
+REVIEW_LEASE_KEYS = {
+    "schema", "lease_id", "owner", "provider", "episode_id", "edge_id",
+    "requirement", "criteria_digest", "evidence_refs", "digest",
+}
 
 
 class DefinitionError(Exception):
@@ -58,6 +67,52 @@ def canonical_json(value: Any) -> str:
 
 def stable_digest(value: Any) -> str:
     return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def tagged_digest(value: Any) -> str:
+    return f"sha256:{stable_digest(value)}"
+
+
+def validate_review_lease(lease: dict[str, Any]) -> dict[str, Any]:
+    """Validate the cross-orchestrator review ownership contract exactly.
+
+    A missing lease means the caller's existing local review policy applies.
+    Keeping this object strict prevents similarly named legacy handoff fields
+    from silently creating a second reviewer owner.
+    """
+    if not isinstance(lease, dict) or lease.get("schema") != REVIEW_LEASE_SCHEMA:
+        raise DefinitionError(
+            "bad_review_lease_schema", f"review lease schema must be {REVIEW_LEASE_SCHEMA!r}"
+        )
+    extra = set(lease) - REVIEW_LEASE_KEYS
+    missing = REVIEW_LEASE_KEYS - set(lease)
+    if extra or missing:
+        raise DefinitionError(
+            "bad_review_lease",
+            f"review lease fields differ from contract (missing={sorted(missing)}, extra={sorted(extra)})",
+        )
+    for key in ("lease_id", "episode_id", "edge_id"):
+        _safe_id(lease.get(key), f"review_lease.{key}")
+    if lease.get("owner") not in REVIEW_LEASE_OWNERS:
+        raise DefinitionError("bad_review_lease", "review_lease.owner must be studio or task-worker")
+    if lease.get("provider") not in REVIEW_LEASE_PROVIDERS:
+        raise DefinitionError("bad_review_lease", "review_lease.provider must be native or session-review")
+    if lease.get("requirement") not in REVIEW_REQUIREMENTS:
+        raise DefinitionError("bad_review_lease", "review_lease.requirement must be self or independent")
+    criteria_digest = lease.get("criteria_digest")
+    if not isinstance(criteria_digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", criteria_digest):
+        raise DefinitionError("bad_review_lease", "review_lease.criteria_digest must be a tagged sha256")
+    evidence_refs = lease.get("evidence_refs")
+    if (
+        not isinstance(evidence_refs, list)
+        or not all(isinstance(value, str) and value.strip() for value in evidence_refs)
+        or len(set(evidence_refs)) != len(evidence_refs)
+    ):
+        raise DefinitionError("bad_review_lease", "review_lease.evidence_refs must be a unique string list")
+    expected = tagged_digest({key: lease[key] for key in REVIEW_LEASE_KEYS if key != "digest"})
+    if lease.get("digest") != expected:
+        raise DefinitionError("review_lease_digest_mismatch", "review lease digest does not match canonical content")
+    return lease
 
 
 def _artifact_payload(artifact: dict[str, Any]) -> dict[str, Any]:
@@ -874,6 +929,19 @@ def validate_binding(binding: dict[str, Any]) -> dict[str, Any]:
         for name, value in providers.items()
     ):
         raise DefinitionError("bad_binding", "providers must be an object of opaque provider objects")
+    review_leases = binding.get("review_leases", [])
+    if not isinstance(review_leases, list):
+        raise DefinitionError("bad_binding", "review_leases must be a list")
+    lease_ids: set[str] = set()
+    review_edges: set[str] = set()
+    for lease in review_leases:
+        validate_review_lease(lease)
+        lease_id = lease["lease_id"]
+        review_edge = lease["edge_id"]
+        if lease_id in lease_ids or review_edge in review_edges:
+            raise DefinitionError("review_lease_conflict", "review lease id and episode/edge must be unique")
+        lease_ids.add(lease_id)
+        review_edges.add(review_edge)
     context = binding.get("context")
     if context is not None and (
         not isinstance(context, dict)
@@ -919,6 +987,7 @@ def upsert_binding(
     provider_data: dict[str, Any] | None = None,
     context: dict[str, Any] | None = None,
     work_graph: dict[str, Any] | None = None,
+    review_leases: Iterable[dict[str, Any]] = (),
     now: str | None = None,
 ) -> tuple[dict[str, Any], Path, bool]:
     validate_artifact(artifact)
@@ -946,6 +1015,29 @@ def upsert_binding(
         if not isinstance(provider_data, dict):
             raise DefinitionError("bad_binding", "provider_data must be an object")
         providers[provider_name] = provider_data
+    leases_by_id = {
+        lease["lease_id"]: json.loads(json.dumps(lease))
+        for lease in (current.get("review_leases", []) if current else [])
+    }
+    edge_to_id = {
+        lease["edge_id"]: lease["lease_id"]
+        for lease in leases_by_id.values()
+    }
+    for raw_lease in review_leases:
+        lease = validate_review_lease(json.loads(json.dumps(raw_lease)))
+        lease_id = lease["lease_id"]
+        edge = lease["edge_id"]
+        existing = leases_by_id.get(lease_id)
+        if existing is not None and existing != lease:
+            raise DefinitionError("review_lease_conflict", f"review lease id is already bound: {lease_id}")
+        existing_id = edge_to_id.get(edge)
+        if existing_id is not None and existing_id != lease_id:
+            raise DefinitionError(
+                "review_lease_conflict",
+                f"review edge is already owned by lease {existing_id}: {edge}",
+            )
+        leases_by_id[lease_id] = lease
+        edge_to_id[edge] = lease_id
     context_ref = current.get("context") if current else None
     if context is not None:
         packet = _context_packet(artifact, context, now=now)
@@ -977,6 +1069,7 @@ def upsert_binding(
         "dispatch": artifact.get("dispatch", "worker"),
         "aliases": sorted(alias_set | set(current.get("aliases", []) if current else [])),
         "providers": providers,
+        "review_leases": sorted(leases_by_id.values(), key=lambda value: value["lease_id"]),
         "context": context_ref,
         "work_graph": work_graph_ref,
         "created_at": current.get("created_at", timestamp) if current else timestamp,
@@ -992,6 +1085,45 @@ def upsert_binding(
     if changed:
         write_json_atomic(path, binding)
     return binding, path, changed
+
+
+def review_permit(
+    ref: str,
+    *,
+    state_root: str | Path,
+    episode_id: str,
+    edge_id: str,
+) -> dict[str, Any]:
+    """Return the only allowed reviewer-dispatch action for one review edge."""
+    episode = _safe_id(episode_id, "episode_id")
+    edge = _safe_id(edge_id, "edge_id")
+    binding, path = resolve_binding(ref, state_root)
+    matches = [
+        lease for lease in binding.get("review_leases", [])
+        if lease["episode_id"] == episode and lease["edge_id"] == edge
+    ]
+    if len(matches) > 1:
+        raise DefinitionError("review_lease_conflict", "multiple review leases own the same edge")
+    if not matches:
+        return {
+            "schema": REVIEW_PERMIT_SCHEMA,
+            "status": "local-policy",
+            "action": "dispatch-or-human-gate",
+            "dispatch_reviewer": True,
+            "review_lease": None,
+            "binding_path": str(path),
+        }
+    lease = validate_review_lease(matches[0])
+    externally_owned = lease["owner"] == "studio"
+    return {
+        "schema": REVIEW_PERMIT_SCHEMA,
+        "status": "externally-owned" if externally_owned else "task-worker-owned",
+        "action": "skip" if externally_owned else "dispatch",
+        "dispatch_reviewer": not externally_owned,
+        "review_lease": lease,
+        "handoff": lease if externally_owned else None,
+        "binding_path": str(path),
+    }
 
 
 def resume_binding(ref: str, state_root: str | Path) -> dict[str, Any]:
@@ -1232,12 +1364,21 @@ def build_parser() -> argparse.ArgumentParser:
     bind.add_argument("--provider-data", help="JSON object path or '-' when --provider is set")
     bind.add_argument("--context", help="compact context JSON object path or '-'")
     bind.add_argument("--work-graph", help="provider-normalized task-worker.work-graph/v1 path or '-'")
+    bind.add_argument(
+        "--review-lease", action="append", default=[],
+        help="workflow-review-lease/v1 JSON object path or '-'; repeat for multiple edges",
+    )
     resolve = sub.add_parser("resolve")
     resolve.add_argument("--ref", required=True)
     resolve.add_argument("--state-root", default=".task-worker/local")
     resume = sub.add_parser("resume")
     resume.add_argument("--ref", required=True)
     resume.add_argument("--state-root", default=".task-worker/local")
+    review_permit_parser = sub.add_parser("review-permit")
+    review_permit_parser.add_argument("--ref", required=True)
+    review_permit_parser.add_argument("--episode-id", required=True)
+    review_permit_parser.add_argument("--edge-id", required=True)
+    review_permit_parser.add_argument("--state-root", default=".task-worker/local")
     evidence_check = sub.add_parser("evidence-plan")
     evidence_check.add_argument("--request", required=True)
     evidence_check.add_argument("--state-root", default=".task-worker/local")
@@ -1296,12 +1437,14 @@ def main(argv: Iterable[str] | None = None) -> int:
                     "binding": BINDING_SCHEMA,
                     "context": CONTEXT_SCHEMA,
                     "evidence": EVIDENCE_SCHEMA,
+                    "review_lease": REVIEW_LEASE_SCHEMA,
+                    "review_permit": REVIEW_PERMIT_SCHEMA,
                 },
                 "commands": [
                     "create", "revise", "validate", "export", "store", "plan-graph", "ready",
                     "local-start", "local-event", "recover", "receipt", "capabilities",
                     "bind", "resolve", "resume", "evidence-plan", "evidence-record",
-                    "provider-event",
+                    "provider-event", "review-permit",
                 ],
             }
         elif args.command == "ready":
@@ -1335,6 +1478,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             provider_data = read_json(args.provider_data) if args.provider_data else None
             context = read_json(args.context) if args.context else None
             work_graph = read_json(args.work_graph) if args.work_graph else None
+            review_leases = [read_json(path) for path in args.review_lease]
             binding, path, changed = upsert_binding(
                 artifact,
                 artifact_path=args.artifact_path or args.artifact,
@@ -1344,6 +1488,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                 provider_data=provider_data,
                 context=context,
                 work_graph=work_graph,
+                review_leases=review_leases,
             )
             payload = {"ok": True, "changed": changed, "path": str(path), "binding": binding}
         elif args.command == "resolve":
@@ -1351,6 +1496,16 @@ def main(argv: Iterable[str] | None = None) -> int:
             payload = {"ok": True, "path": str(path), "binding": binding}
         elif args.command == "resume":
             payload = {"ok": True, "resume": resume_binding(args.ref, args.state_root)}
+        elif args.command == "review-permit":
+            payload = {
+                "ok": True,
+                "permit": review_permit(
+                    args.ref,
+                    state_root=args.state_root,
+                    episode_id=args.episode_id,
+                    edge_id=args.edge_id,
+                ),
+            }
         elif args.command == "evidence-plan":
             payload = {
                 "ok": True,
@@ -1371,7 +1526,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                 require_token_coverage=token_coverage_required(args.config),
             )
             payload = {"ok": True, "reused": reused, "path": str(path), "evidence": evidence}
-        else:
+        elif args.command == "provider-event":
             binding, path, changed = record_provider_event(
                 args.ref,
                 state_root=args.state_root,
@@ -1380,6 +1535,8 @@ def main(argv: Iterable[str] | None = None) -> int:
                 receipt=read_json(args.receipt) if args.receipt else None,
             )
             payload = {"ok": True, "changed": changed, "path": str(path), "binding": binding}
+        else:  # pragma: no cover - argparse prevents this
+            raise DefinitionError("unknown_command", f"unsupported command: {args.command}")
     except json.JSONDecodeError as exc:
         print(json.dumps({"ok": False, "error_code": "json_invalid", "message": str(exc)}, ensure_ascii=False))
         return 2

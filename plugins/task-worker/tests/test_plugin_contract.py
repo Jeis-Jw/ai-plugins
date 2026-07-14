@@ -41,12 +41,15 @@ class PluginContractTests(unittest.TestCase):
         )
         payload = json.loads(result.stdout)
         self.assertEqual(payload["plugin"], "task-worker")
-        self.assertEqual(payload["version"], "0.3.0")
+        self.assertEqual(payload["version"], "0.4.0")
         self.assertEqual(payload["contracts"]["work_graph"], "task-worker.work-graph/v1")
         self.assertEqual(payload["contracts"]["binding"], "task-worker.provider-binding/v1")
+        self.assertEqual(payload["contracts"]["review_lease"], "workflow-review-lease/v1")
+        self.assertEqual(payload["contracts"]["review_permit"], "task-worker.review-permit/v1")
         self.assertIn("resume", payload["commands"])
         self.assertIn("plan-graph", payload["commands"])
         self.assertIn("store", payload["commands"])
+        self.assertIn("review-permit", payload["commands"])
 
 
 if __name__ == "__main__":

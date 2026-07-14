@@ -1,4 +1,5 @@
 import json
+import hashlib
 import sys
 import unittest
 from pathlib import Path
@@ -9,6 +10,24 @@ sys.path.insert(0, str(TASK_GITHUB / "skills" / "orchestrate" / "scripts"))
 import ready_leaves  # noqa: E402
 import orchestrate_ledger  # noqa: E402
 import resume_closeout  # noqa: E402
+
+
+def studio_review_lease(**overrides):
+    lease = {
+        "schema": "workflow-review-lease/v1",
+        "lease_id": "lease-studio-1",
+        "owner": "studio",
+        "provider": "session-review",
+        "episode_id": "episode-1",
+        "edge_id": "pr-22",
+        "requirement": "independent",
+        "criteria_digest": "sha256:" + "a" * 64,
+        "evidence_refs": ["EV-full-baseline"],
+    }
+    lease.update(overrides)
+    encoded = json.dumps(lease, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    lease["digest"] = "sha256:" + hashlib.sha256(encoded.encode()).hexdigest()
+    return lease
 
 
 def node(number, *, state="OPEN", labels=None, blockers=None, children=None):
@@ -626,6 +645,208 @@ class MergeEdgeGearTreeTests(unittest.TestCase):
         self.assertEqual(result["closeout_ready"][0]["pr"], 22)
         self.assertEqual(summary["ready_for_closeout"][0]["mode"], "pr")
         self.assertEqual(summary["ready_for_closeout"][0]["pr"], 22)
+
+    def test_external_review_handoff_is_idempotent_and_blocks_closeout_until_verdict(self):
+        import tempfile
+
+        lease = studio_review_lease()
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = Path(tmp) / "ledger.json"
+            orchestrate_ledger.record_snapshot(ledger, node(1, children=[node(2)]))
+            orchestrate_ledger.record_event(ledger, {
+                "type": "pr_created", "issue": 2, "pr": 22,
+                "base": "task/issue-1", "head": "task/issue-2",
+            })
+            orchestrate_ledger.record_expected_review_lease(
+                ledger, issue=2, review_lease=lease,
+            )
+            _, changed = orchestrate_ledger.record_external_review_handoff(
+                ledger, issue=2, pr=22, base="task/issue-1", head="task/issue-2",
+                review_lease=lease,
+            )
+            _, changed_again = orchestrate_ledger.record_external_review_handoff(
+                ledger, issue=2, pr=22, base="task/issue-1", head="task/issue-2",
+                review_lease=lease,
+            )
+            with self.assertRaisesRegex(ValueError, "not approved"):
+                orchestrate_ledger.record_event(ledger, {
+                    "type": "ready_for_pr_closeout", "issue": 2, "pr": 22,
+                    "base": "task/issue-1", "head": "task/issue-2",
+                })
+            payload = orchestrate_ledger.load_ledger(ledger)
+            tree = orchestrate_ledger.tree_from_ledger(payload)
+            ready = ready_leaves.evaluate_tree(tree)
+
+        self.assertTrue(changed)
+        self.assertFalse(changed_again)
+        self.assertEqual(ready["review_waiting"][0]["pr"], 22)
+        self.assertEqual(ready["review_waiting"][0]["base"], "task/issue-1")
+        self.assertEqual(payload["issues"]["2"]["external_review"]["review_lease"], lease)
+
+    def test_expected_review_lease_pin_is_idempotent_and_rebind_fails_closed(self):
+        import tempfile
+
+        lease = studio_review_lease()
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = Path(tmp) / "ledger.json"
+            orchestrate_ledger.record_snapshot(ledger, node(1, children=[node(2)]))
+            payload, changed = orchestrate_ledger.record_expected_review_lease(
+                ledger, issue=2, review_lease=lease,
+            )
+            same, changed_again = orchestrate_ledger.record_expected_review_lease(
+                ledger, issue=2, review_lease=lease,
+            )
+            with self.assertRaisesRegex(ValueError, "conflicts"):
+                orchestrate_ledger.record_expected_review_lease(
+                    ledger,
+                    issue=2,
+                    review_lease=studio_review_lease(episode_id="episode-2"),
+                )
+            with self.assertRaisesRegex(ValueError, "already pinned"):
+                orchestrate_ledger.record_expected_review_lease(
+                    ledger,
+                    issue=3,
+                    review_lease=lease,
+                )
+
+        self.assertTrue(changed)
+        self.assertFalse(changed_again)
+        self.assertEqual(payload, same)
+        self.assertEqual(payload["issues"]["2"]["expected_review_lease"], lease)
+
+    def test_expected_studio_review_blocks_direct_closeout_before_handoff(self):
+        import tempfile
+
+        lease = studio_review_lease()
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = Path(tmp) / "ledger.json"
+            orchestrate_ledger.record_snapshot(ledger, node(1, children=[node(2)]))
+            orchestrate_ledger.record_expected_review_lease(
+                ledger, issue=2, review_lease=lease,
+            )
+            with self.assertRaisesRegex(ValueError, "no recorded handoff"):
+                orchestrate_ledger.record_event(ledger, {
+                    "type": "ready_for_pr_closeout",
+                    "issue": 2,
+                    "pr": 22,
+                    "base": "task/issue-1",
+                    "head": "task/issue-2",
+                    "review_lease_id": lease["lease_id"],
+                })
+            payload = orchestrate_ledger.load_ledger(ledger)
+
+        self.assertNotEqual(payload["issues"]["2"].get("state"), "closeout_ready")
+
+    def test_external_review_verdict_requires_same_lease_and_evidence_then_queues_once(self):
+        import tempfile
+
+        lease = studio_review_lease()
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = Path(tmp) / "ledger.json"
+            orchestrate_ledger.record_snapshot(ledger, node(1, children=[node(2)]))
+            orchestrate_ledger.record_expected_review_lease(
+                ledger, issue=2, review_lease=lease,
+            )
+            orchestrate_ledger.record_external_review_handoff(
+                ledger, issue=2, pr=22, base="task/issue-1", head="task/issue-2",
+                review_lease=lease,
+            )
+            with self.assertRaisesRegex(ValueError, "lacks required evidence"):
+                orchestrate_ledger.record_external_review_verdict(
+                    ledger, issue=2, review_lease=lease,
+                    verdict="approved", evidence_refs=[],
+                )
+            with self.assertRaisesRegex(ValueError, "does not match"):
+                orchestrate_ledger.record_external_review_verdict(
+                    ledger, issue=2, review_lease=studio_review_lease(episode_id="episode-2"),
+                    verdict="approved", evidence_refs=["EV-full-baseline"],
+                )
+            changed_payload, changed = orchestrate_ledger.record_external_review_verdict(
+                ledger, issue=2, review_lease=lease,
+                verdict="approved", evidence_refs=["EV-full-baseline", "EV-review-verdict"],
+            )
+            same_payload, changed_again = orchestrate_ledger.record_external_review_verdict(
+                ledger, issue=2, review_lease=lease,
+                verdict="approved", evidence_refs=["EV-full-baseline", "EV-review-verdict"],
+            )
+
+        self.assertTrue(changed)
+        self.assertFalse(changed_again)
+        self.assertEqual(changed_payload, same_payload)
+        self.assertEqual(changed_payload["issues"]["2"]["state"], "closeout_ready")
+        closeout_events = [event for event in changed_payload["events"] if event["type"] == "ready_for_pr_closeout"]
+        self.assertEqual(len(closeout_events), 1)
+
+    def test_external_changes_requested_never_queues_closeout(self):
+        import tempfile
+
+        lease = studio_review_lease()
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = Path(tmp) / "ledger.json"
+            orchestrate_ledger.record_snapshot(ledger, node(1, children=[node(2)]))
+            orchestrate_ledger.record_expected_review_lease(
+                ledger, issue=2, review_lease=lease,
+            )
+            orchestrate_ledger.record_external_review_handoff(
+                ledger, issue=2, pr=22, base="task/issue-1", head="task/issue-2",
+                review_lease=lease,
+            )
+            payload, _ = orchestrate_ledger.record_external_review_verdict(
+                ledger, issue=2, review_lease=lease,
+                verdict="changes-requested", evidence_refs=["EV-full-baseline"],
+            )
+
+        self.assertEqual(payload["issues"]["2"]["external_review"]["status"], "changes-requested")
+        self.assertFalse(any(event["type"] == "ready_for_pr_closeout" for event in payload["events"]))
+
+    def test_approved_external_review_allows_one_fenced_closeout_resume(self):
+        import tempfile
+
+        lease = studio_review_lease()
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = Path(tmp) / "ledger.json"
+            orchestrate_ledger.record_snapshot(ledger, node(1, children=[node(2)]))
+            orchestrate_ledger.record_expected_review_lease(
+                ledger, issue=2, review_lease=lease,
+            )
+            orchestrate_ledger.record_external_review_handoff(
+                ledger,
+                issue=2,
+                pr=22,
+                base="task/issue-1",
+                head="task/issue-2",
+                review_lease=lease,
+            )
+            orchestrate_ledger.record_external_review_verdict(
+                ledger,
+                issue=2,
+                review_lease=lease,
+                verdict="approved",
+                evidence_refs=["EV-full-baseline"],
+            )
+            with self.assertRaisesRegex(ValueError, "before closeout_started"):
+                orchestrate_ledger.record_event(ledger, {
+                    "type": "pr_merged",
+                    "issue": 2,
+                    "pr": 22,
+                    "base": "task/issue-1",
+                    "head": "task/issue-2",
+                })
+            orchestrate_ledger.record_event(ledger, {
+                "type": "closeout_started", "issue": 2,
+            })
+            orchestrate_ledger.record_event(ledger, {
+                "type": "closeout_failed", "issue": 2, "reason": "network",
+            })
+            result = resume_closeout.resume(ledger, 2)
+            payload = orchestrate_ledger.load_ledger(ledger)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(payload["issues"]["2"]["state"], "closeout_ready")
+        self.assertEqual(
+            payload["issues"]["2"]["ready_for_closeout"]["review_lease_id"],
+            lease["lease_id"],
+        )
 
     def test_reconcile_snapshot_preserves_closeout_queue_state(self):
         import tempfile

@@ -6,6 +6,10 @@
 
 ---
 
+## 외부 review lease 우선 규칙
+
+외부 review lease가 있는 edge의 ceremony는 gear/review-mode보다 강하다. lease는 review 필요 edge에만 존재하며 `owner=studio`는 리뷰 제거가 아니라 reviewer 소유권 이전이다. verify와 PR/CI/base/head transport는 그대로 수행하고, 동일 lease의 approved verdict와 필수 evidence 전에는 closeout을 금지한다. `review-mode=skip`은 lease를 우회하지 못한다.
+
 ## 0. 역할: Tech Lead
 
 에이전트는 **Tech Lead**로서 사령관(사용자)의 의도를 받아:

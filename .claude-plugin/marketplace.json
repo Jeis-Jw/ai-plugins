@@ -14,8 +14,8 @@
     {
       "name": "task-github",
       "source": "./plugins/task-github",
-      "description": "task-worker 의존 GitHub adapter — Issue Tree projection/import, manual/worker dispatch, PR·merge·Wiki TASK 연계",
-      "version": "0.22.0"
+      "description": "task-worker 의존 GitHub adapter — Issue Tree·PR transport와 externally-owned review closeout gate",
+      "version": "0.23.0"
     },
     {
       "name": "session-review",
@@ -26,14 +26,14 @@
     {
       "name": "studio",
       "source": "./plugins/studio",
-      "description": "살아있는 에이전트 팀 — track별 native/task-worker/task-github 단일 실행 lease, evidence reuse, delta/full QA gate를 유지한다. session-review와 wiki-markdown은 선택적 도구 레이어다.",
-      "version": "0.4.1"
+      "description": "Native-first 에이전트 팀 — 명시적 도구 라우팅, Claude/Codex agent 정책, 단일 review owner와 evidence 재사용",
+      "version": "0.5.0"
     },
     {
       "name": "task-worker",
       "source": "./plugins/task-worker",
-      "description": "Provider-neutral WorkGraph, manual/worker dispatch, 병렬 ready-set, 통합 gate, digest-pinned evidence와 세션 간 resume 플러그인",
-      "version": "0.3.0"
+      "description": "Provider-neutral WorkGraph, 병렬 ready-set, 통합 gate, evidence 재사용과 단일 review owner permit 플러그인",
+      "version": "0.4.0"
     }
   ]
 }

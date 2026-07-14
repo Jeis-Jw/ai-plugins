@@ -134,6 +134,18 @@ Fresh context reason은 `context-unavailable | domain-shift | complexity-boundar
 independence-required | cycle-ledger-invalid` 중 하나여야 한다. 나머지는 worker가 바뀌어도
 compact handoff를 사용한다.
 
+물리 검증 배치는 `개발 중 변경 범위 최소 검증 → 통합 HEAD full QA 1회 → finding 수정 범위 delta QA`다. full integration gate와 독립 판단을 없애지 않는다. 같은 HEAD/command/environment/tool version의 deterministic evidence만 재사용하며 Release/device/production 환경처럼 fresh execution 자체가 완료 조건인 check는 별도 evidence key로 실행한다.
+
+## Review lease
+
+review가 필요한 edge만 exact `workflow-review-lease/v1`을 가진다. 필드는 `schema, lease_id, owner, provider, episode_id, edge_id, requirement, criteria_digest, evidence_refs, digest`다. owner는 `studio|task-worker`, provider는 `native|session-review`, requirement는 `self|independent`다. 리뷰가 없으면 lease도 없다.
+
+- `owner=studio`: Studio만 reviewer를 dispatch한다. task-worker/task-github는 externally-owned handoff를 반환한다.
+- `owner=task-worker`: Studio reviewer dispatch 금지. worker/provider의 기존 review 흐름을 유지한다.
+- task-github의 Studio-owned handoff는 PR/CI/preflight/base/head transport를 유지한다. 동일 lease의 approved verdict와 필수 evidence가 ledger에 돌아오기 전 closeout을 금지한다.
+- Studio-owned `provider=session-review`가 unavailable이고 fallback이 native여도 같은 signed lease로 native reviewer를 dispatch하지 않는다. cached capability로 `review-lease-replan-required`를 재현하고, 그 plan이 제시한 exact native target lease(동일 mission/edge/lease identity, provider만 native)만 pending reservation에서 accepted binding으로 전이한다.
+- 동일 criteria/finding 후속은 같은 episode와 유효 evidence를 이어받는다. clean session 횟수를 성과로 삼지 않는다.
+
 ## Pairing과 physical run 연결
 
 `review handoff` 출력에 `qaMode`만 더해 pairing broker의 `reviewCycle`로 넘긴다. broker가

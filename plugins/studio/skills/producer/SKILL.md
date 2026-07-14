@@ -170,17 +170,15 @@ run = 일감 × ritual × crew 조합의 **백그라운드 1회 실행**. 브로
 오케스트레이션이라 디스크를 못 읽는다 — 너가 페르소나·안건·rubric을 읽어 `args`로
 넘긴다. 이 스킬이 브로커 Workflow 호출을 지시하므로 Workflow 사용은 정당한 opt-in이다.
 
-**agent 정책 주입 (model/effort):** 브로커의 각 서브에이전트가 어떤 모델·에포트로
-돌지는 `.studio.yml`이 정한다. 소집 직전 정책을 읽어 broker args에 실어 넘긴다:
+**agent 정책 주입 (runtime/model/effort):** 브로커의 각 서브에이전트 runtime profile과
+model/effort는 `.studio.yml`이 정한다. 현재 profile은 `claude|codex`만 지원한다. 소집 직전 정책을 읽어 broker args에 실어 넘긴다:
 
 ```bash
-python3 "$STUDIO" config get   # JSON 무조건 출력 → {config: {defaults, roles, rituals}}
+python3 "$STUDIO" config get   # JSON → common defaults/roles/agents/rituals + providers
 ```
 그 `config`를 broker args의 `agentPolicy`로 넘긴다. 상황에 따라 동적으로 조일 때
 (예: 예산 잔액 부족)는 `overrides: {effort: "low"}`를 함께 넘긴다. 해석 우선순위는
-브로커가 강제한다: **run override(overrides) > rituals.<ritual>.<step> > roles.<role>
-> defaults > omit(세션 상속)**. blank/null은 다음 층으로 넘어간다 — 하드코딩보다
-상속이 안전한 기본값이다. `.studio.yml`이 없으면 전부 세션 상속.
+브로커가 강제한다: **run override > provider ritual > common ritual > provider agent > common agent > provider role > common role > provider defaults > common defaults > 세션 상속**. blank/null은 다음 층으로 넘어간다. runtime override는 profile 선택일 뿐 실제 harness capability를 만들지 않는다. `.studio.yml`이 없으면 native와 세션 runtime/model/effort를 상속한다. non-null `agentRuntime`은 matching verified `studio-runtime-capability/v1`이 있고 `dispatch_allowed=true`일 때만 broker에 전달한다. advertised model/effort set이 있으면 resolved 값을 fail-closed 검증하고, 광고가 없으면 지원 상태를 `unknown`으로 유지한다.
 
 **소집 대상 선정 (casting policy + 페르소나 frontmatter를 실제로 읽어라):**
 - `rules/casting.md`는 default cast다. 모든 crew를 부르지 말고 mission에 맞는 최소
@@ -206,9 +204,11 @@ python3 "$STUDIO" config get   # JSON 무조건 출력 → {config: {defaults, r
      scriptPath = "$CLAUDE_PLUGIN_ROOT/broker/brainstorm.workflow.js"
      args = {
        agenda: "<이 run의 안건>",
-       personas: [{name, role, prior, body}, ...],   // 서로 다른 prior 2개 이상
+       personas: [{name, agentId, roleId, role, prior, body}, ...], // roleId/name=정책 key, role=표시용
        criticRubric: "<rubric.md 내용>",
        agentPolicy: <config get의 config>,     // model/effort 정책
+       agentRuntime: "claude|codex",          // verified capability와 일치할 때만
+       runtimeCapability: <RoutingPlan.runtime_capability>,
        overrides: {},                                 // 선택: 이 run만 강제 (예: {effort:"low"})
        maxRounds: 4, dryStop: 2
      }
@@ -232,9 +232,11 @@ Workflow 호출 (백그라운드):
     acceptanceCriteria: ["...", "..."],   // 소집 전 고정 — 변경은 재소집 사유
     worktreePath: ".worktrees/track-<slug>",
     branch: "studio/track-<slug>",
-    personas: { dev: {body}, qa: {body} },
+    personas: { dev: {agentId, body}, qa: {agentId, body} },
     criticRubric: "<rubric.md 내용>",
     agentPolicy: <config get의 config>,
+    agentRuntime: "claude|codex",
+    runtimeCapability: <RoutingPlan.runtime_capability>,
     overrides: {},
     maxRounds: 3,
     reviewCycle: {...<review handoff 출력>, qaMode: "development|delta"} // continuation일 때만
@@ -256,6 +258,8 @@ fallback은 studio 규약을 약화하지 않는다.
 
 ## 3a) optional external executor — task-worker/task-github reference adapter
 
+Studio native harness가 기본이다. native cast는 research/planning/strategy/design/architecture/implementation/creation/QA/review/critic/curation/summarization을 모두 제공한다. 외부 worker/reviewer는 현재 run parameter 또는 `.studio.yml`에 이름이 있을 때만 후보이며, 미설정 plugin을 발견·probe하려고 시도하지 않는다.
+
 Studio는 task-worker/task-github Python/JS callable API를 만들거나 import하지 않는다. GitHub
 기록이 없으면 agent-visible `task-worker:*`, GitHub Issue/PR delivery가 필요하면
 `task-github:*` facade를 선택한다. task-github는 내부에서 task-worker contract를 소비하므로
@@ -265,13 +269,18 @@ snapshot으로 만들고, doctor 및 실행 직전 preflight는 **read-only**로
 
 ```json
 {
-  "schema": 1,
-  "source": "agent-visible-skill-catalog",
-  "catalog": ["task-worker:start", "task-worker:run", "task-worker:done", "task-github:doctor"],
-  "doctor": {"mode": "read-only", "status": "pass"},
-  "preflight": {"mode": "read-only", "status": "pass"}
+  "schema": "studio-capability-snapshot/v1",
+  "provider": "task-github",
+  "mission_id": "mission-...",
+  "environment_digest": "sha256:...",
+  "status": "available",
+  "contracts": ["work-packet/v1", "workflow-review-lease/v1", "task-worker.review-permit/v1"]
 }
 ```
+
+probe 결과는 `(mission_id, provider, environment_digest)`당 한 번 재사용한다. 명시 run override가 unavailable이면 STOP하고, 설정 provider이면 그 설정의 `fallback:native|stop`을 따른다. dispatch가 시작된 provider 실패는 같은 lease로 resume하거나 cancel confirmation 뒤에만 다른 executor로 전환한다.
+
+라우팅 판단의 정본은 `studio-routing-plan/v1`이다. canonical fields는 `worker.selected`, `worker.provider`, `reviewer.owner`, `reviewer.provider`, `reviewer.dispatch`, `reviewer.selected`, `review_lease`, `action`, `digest`다. reviewer가 필요한 edge만 exact `workflow-review-lease/v1`을 만든다. 필드는 `schema, lease_id, owner, provider, episode_id, edge_id, requirement, criteria_digest, evidence_refs, digest`이며 owner는 `studio|task-worker`, provider는 `native|session-review`다. `owner=studio`면 task-worker/task-github reviewer dispatch를 금지하고 Studio reviewer가 판단한다. `owner=task-worker`면 Studio reviewer를 추가 소집하지 않는다. task-github를 선택하면 Studio에는 task-github lease 하나만 보이며 내부 task-worker preflight는 adapter 책임이다. Studio-owned session-review가 unavailable이고 fallback이 native이면 signed lease를 묵시적으로 바꾸지 않는다. `review-lease-replan-required`가 제시한 exact native target lease(동일 mission/edge/lease identity, provider만 native)로만 pending reservation을 accepted binding으로 전이한다. 임의 재바인딩과 accepted/legacy digest binding 변경은 금지한다.
 
 1. ContextPack digest와 QualityPlan ref를 포함한 WorkPacket을 `workflow validate-packet`으로
    검증한다.
@@ -294,7 +303,7 @@ Wiki TASK나 root Issue와의 재개 관계는 task-worker binding에 두며 Stu
 컨텍스트에 provider 세부 상태를 복제하지 않는다. session-review는 major/independence-required
 review edge의 선택적 reviewer provider다. clean session 자체를 목적으로 모든 lane에 소집하지 않는다.
 
-dispatch 전 capability가 unavailable/unknown이면 native fallback한다. 일단 external
+설정 provider의 fallback이 native인 경우에만 dispatch 전 unavailable/unknown을 native로 전환한다. 일단 external
 dispatch가 시작된 뒤 failure가 오면 즉시 native를 중복 실행하지 않는다.
 `workflow recover --action resume`을 우선하고, 불가능할 때만
 `--action cancel-release`로 cancel confirmation과 budget/lease release를 끝낸 뒤 새 native

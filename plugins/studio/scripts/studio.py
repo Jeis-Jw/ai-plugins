@@ -71,7 +71,7 @@ ISSUE_EVENT_SCHEMA = "studio-issue-event/v1"
 QA_MODES = frozenset(("development", "delta", "full", "final", "integration"))
 FULL_QA_REASONS = frozenset((
     "impact-unknown", "shared-contract-changed", "cross-track-change",
-    "dependency-surface-changed", "independence-required",
+    "dependency-surface-changed", "independence-required", "integration-gate",
 ))
 RETRY_CLASSIFICATIONS = frozenset((
     "product-defect", "environment-transient", "tool-unavailable",
@@ -100,8 +100,19 @@ REVIEW_EVENT_FIELDS = {
 # agent policy config (.studio.yml)
 CONFIG_PATH_DEFAULT = ".studio.yml"
 WORKSPACE_PATH_DEFAULT = ".studio"
-KNOWN_MODELS = ("sonnet", "opus", "haiku", "fable")   # blank/omitted = inherit session
-KNOWN_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+# These are Studio's portable scaffold suggestions, not a claim that every
+# runtime supports them. A verified runtime advertisement is authoritative.
+ABSTRACT_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+AGENT_RUNTIMES = ("claude", "codex")
+TOOL_ACTIVATIONS = ("auto", "always", "never")
+TOOL_FALLBACKS = ("native", "stop")
+WORKER_PROVIDERS = ("native", "task-worker", "task-github")
+REVIEWER_PROVIDERS = ("native", "session-review")
+ROUTING_PLAN_SCHEMA = "studio-routing-plan/v1"
+CAPABILITY_SNAPSHOT_SCHEMA = "studio-capability-snapshot/v1"
+RUNTIME_CAPABILITY_SCHEMA = "studio-runtime-capability/v1"
+REVIEW_LEASE_SCHEMA = "workflow-review-lease/v1"
+REVIEW_EDGE_RESERVATION_SCHEMA = "studio-review-edge-reservation/v1"
 
 CASTS = {
     "idea": {
@@ -293,6 +304,10 @@ def migrate_board(board: dict) -> dict:
     board.setdefault("tracks", {})
     board.setdefault("runs", [])
     board.setdefault("review_cycles", {})
+    board.setdefault("capability_cache", {})
+    board.setdefault("routing_plans", {})
+    board.setdefault("review_lease_edges", {})
+    board.setdefault("workflow_counters", {"duplicate_prevented": 0})
     budget = board.setdefault("budget", {})
     budget.setdefault("total_tokens", None)
     budget.setdefault("per_run_default", None)
@@ -433,10 +448,15 @@ def parse_yaml_subset(text: str) -> dict:
 
 def render_default_config() -> str:
     return (
-        "# .studio.yml — crew agent model/effort policy.\n"
-        "# Resolution (most→least specific): run-override > rituals.<ritual>.<step>\n"
-        "#   > roles.<role> > defaults > (omit ⇒ inherit the producer session).\n"
-        "# model: sonnet|opus|haiku|fable  (blank = inherit)   effort: low|medium|high|xhigh|max\n"
+        "# .studio.yml — Studio-owned agent policy and optional tool routing.\n"
+        "# Native Studio is the default. External tools are considered only when an\n"
+        "# uncommented tools.worker/reviewer block explicitly configures one.\n"
+        "# Agent resolution (most→least specific): run override > provider ritual\n"
+        "#   > common ritual > provider agent > common agent > provider role\n"
+        "#   > common role > provider defaults > common defaults > session inherit.\n"
+        "# model/effort: runtime-owned ids (blank = inherit). Scaffold effort names\n"
+        "# are portable policy hints only; a verified runtime advertisement wins.\n"
+        f"# portable effort examples: {','.join(ABSTRACT_EFFORTS)}\n"
         "\n"
         "defaults:\n"
         "  model:            # blank = inherit the session model (recommended default)\n"
@@ -472,6 +492,10 @@ def render_default_config() -> str:
         "  summarizer:\n"
         "    effort: low         # neutral compression; cheap is fine\n"
         "\n"
+        "agents:\n"
+        "  producer:\n"
+        "    effort: high\n"
+        "\n"
         "# ritual layer = override a role FOR ONE STEP. Only meaningful where the\n"
         "# step differs from the role (brainstorm has distinct steps); pairing steps\n"
         "# are the roles themselves, so set those under roles: instead.\n"
@@ -479,6 +503,28 @@ def render_default_config() -> str:
         "  brainstorm:\n"
         "    diverge:\n"
         "      effort: low       # blind opening proposals are cheap; debate/critic inherit roles\n"
+        "\n"
+        "# Provider overlays are optional. Only claude and codex are supported initially.\n"
+        "# providers:\n"
+        "#   claude:\n"
+        "#     roles:\n"
+        "#       architect:\n"
+        "#         model: claude-opus-4-1\n"
+        "#   codex:\n"
+        "#     agents:\n"
+        "#       producer:\n"
+        "#         model: gpt-5\n"
+        "#\n"
+        "# Optional external adapters (examples only; keep commented for native):\n"
+        "# tools:\n"
+        "#   worker:\n"
+        "#     provider: task-worker    # native|task-worker|task-github\n"
+        "#     activation: auto         # auto|always|never\n"
+        "#     fallback: native         # native|stop\n"
+        "#   reviewer:\n"
+        "#     provider: session-review # native|session-review\n"
+        "#     activation: auto\n"
+        "#     fallback: native\n"
     )
 
 
@@ -489,15 +535,19 @@ def cmd_config(args: argparse.Namespace) -> None:
             fail(2, "exists", f"{path} already exists (use --force)")
         path.write_text(render_default_config(), encoding="utf-8")
         ok(path=str(path), created=True)
-    # get / validate both need to parse
+    # get / validate / resolve all need to parse
     if not path.is_file():
         if args.ccmd == "get":
             ok(path=str(path), present=False, config={})  # absent ⇒ all inherit
-        fail(3, "no_config", f"no config at {path} (run: studio.py config scaffold)")
-    try:
-        cfg = parse_yaml_subset(path.read_text(encoding="utf-8"))
-    except ValueError as e:
-        fail(4, "parse", f"{path}: {e}")
+        if args.ccmd == "resolve":
+            cfg = {}
+        else:
+            fail(3, "no_config", f"no config at {path} (run: studio.py config scaffold)")
+    else:
+        try:
+            cfg = parse_yaml_subset(path.read_text(encoding="utf-8"))
+        except ValueError as e:
+            fail(4, "parse", f"{path}: {e}")
 
     problems = _validate_config(cfg)
     # both validate AND get hard-fail on error-severity problems, so a bad
@@ -506,34 +556,166 @@ def cmd_config(args: argparse.Namespace) -> None:
         fail(6, "invalid_config", "config has errors", problems=problems)
     if args.ccmd == "validate":
         ok(path=str(path), problems=problems)
+    if args.ccmd == "resolve":
+        raw_runtime_capability = (
+            load_json_arg(args.runtime_capability, "runtime capability")
+            if args.runtime_capability else None
+        )
+        runtime = args.agent_runtime or (
+            raw_runtime_capability.get("runtime")
+            if isinstance(raw_runtime_capability, dict) else None
+        )
+        runtime_capability = _canonical_runtime_capability(
+            raw_runtime_capability, runtime, raw_runtime_capability.get("runtime")
+            if isinstance(raw_runtime_capability, dict) else None,
+        )
+        run_override = {"model": args.model, "effort": args.effort}
+        profile = resolve_agent_profile(
+            cfg, runtime, args.role, args.agent, args.ritual, args.step,
+            run_override, runtime_capability,
+        )
+        unsupported = _unsupported_profile_fields(profile)
+        if unsupported:
+            fail(6, "unsupported_runtime_profile", "resolved agent profile is not advertised by the verified runtime", problems=unsupported)
+        ok(path=str(path), present=path.is_file(), profile=profile, problems=problems)
     ok(path=str(path), present=True, config=cfg, problems=problems)
 
 
 def _validate_config(cfg: dict) -> list[dict]:
     problems: list[dict] = []
 
+    if not isinstance(cfg, dict):
+        return [{"severity": "error", "where": "config", "msg": "must be a mapping"}]
+
+    allowed_top = {"defaults", "roles", "agents", "rituals", "providers", "tools"}
+    for key in sorted(set(cfg) - allowed_top):
+        problems.append({"severity": "error", "where": key, "msg": "unknown top-level key"})
+
     def check_mefr(block: dict, where: str) -> None:
         if not isinstance(block, dict):
             problems.append({"severity": "error", "where": where, "msg": "must be a mapping"})
             return
+        for key in sorted(set(block) - {"model", "effort"}):
+            problems.append({"severity": "error", "where": f"{where}.{key}", "msg": "unknown agent policy key"})
         m = block.get("model")
-        if m not in (None, "") and m not in KNOWN_MODELS:
-            problems.append({"severity": "warning", "where": where, "msg": f"unknown model {m!r} (known: {', '.join(KNOWN_MODELS)})"})
+        if m not in (None, "") and (not isinstance(m, str) or not m.strip()):
+            problems.append({"severity": "error", "where": where, "msg": "model must be a provider model id string or null"})
         e = block.get("effort")
-        if e not in (None, "") and e not in KNOWN_EFFORTS:
-            problems.append({"severity": "error", "where": where, "msg": f"bad effort {e!r} (must be {', '.join(KNOWN_EFFORTS)})"})
+        if e not in (None, "") and (not isinstance(e, str) or not e.strip()):
+            problems.append({"severity": "error", "where": where, "msg": "effort must be a runtime effort id string or null"})
 
-    if "defaults" in cfg:
-        check_mefr(cfg["defaults"], "defaults")
-    for role, blk in (cfg.get("roles") or {}).items():
-        check_mefr(blk, f"roles.{role}")
-    for ritual, steps in (cfg.get("rituals") or {}).items():
-        if not isinstance(steps, dict):
-            problems.append({"severity": "error", "where": f"rituals.{ritual}", "msg": "must be a mapping of steps"})
-            continue
-        for step, blk in steps.items():
-            check_mefr(blk, f"rituals.{ritual}.{step}")
+    def check_policy(policy: Any, where: str) -> None:
+        if not isinstance(policy, dict):
+            problems.append({"severity": "error", "where": where, "msg": "must be a mapping"})
+            return
+        allowed = {"defaults", "roles", "agents", "rituals"}
+        for key in sorted(set(policy) - allowed):
+            problems.append({"severity": "error", "where": f"{where}.{key}", "msg": "unknown provider policy key"})
+        if "defaults" in policy:
+            check_mefr(policy["defaults"], f"{where}.defaults" if where else "defaults")
+        for collection in ("roles", "agents"):
+            blocks = policy[collection] if collection in policy else {}
+            if not isinstance(blocks, dict):
+                problems.append({"severity": "error", "where": f"{where}.{collection}".strip("."), "msg": "must be a mapping"})
+                continue
+            for name, blk in blocks.items():
+                check_mefr(blk, f"{where}.{collection}.{name}".strip("."))
+        rituals = policy["rituals"] if "rituals" in policy else {}
+        if not isinstance(rituals, dict):
+            problems.append({"severity": "error", "where": f"{where}.rituals".strip("."), "msg": "must be a mapping"})
+        else:
+            for ritual, steps in rituals.items():
+                if not isinstance(steps, dict):
+                    problems.append({"severity": "error", "where": f"{where}.rituals.{ritual}".strip("."), "msg": "must be a mapping of steps"})
+                    continue
+                for step, blk in steps.items():
+                    check_mefr(blk, f"{where}.rituals.{ritual}.{step}".strip("."))
+
+    check_policy({key: cfg[key] for key in ("defaults", "roles", "agents", "rituals") if key in cfg}, "")
+    providers = cfg["providers"] if "providers" in cfg else {}
+    if not isinstance(providers, dict):
+        problems.append({"severity": "error", "where": "providers", "msg": "must be a mapping"})
+    else:
+        for provider in sorted(set(providers) - set(AGENT_RUNTIMES)):
+            problems.append({"severity": "error", "where": f"providers.{provider}", "msg": "unsupported provider profile"})
+        for provider in AGENT_RUNTIMES:
+            if provider in providers:
+                check_policy(providers[provider], f"providers.{provider}")
+
+    tools = cfg["tools"] if "tools" in cfg else {}
+    if not isinstance(tools, dict):
+        problems.append({"severity": "error", "where": "tools", "msg": "must be a mapping"})
+    else:
+        for key in sorted(set(tools) - {"worker", "reviewer"}):
+            problems.append({"severity": "error", "where": f"tools.{key}", "msg": "unknown tool kind"})
+        for kind, providers_allowed in (("worker", WORKER_PROVIDERS), ("reviewer", REVIEWER_PROVIDERS)):
+            if kind not in tools:
+                continue
+            block = tools[kind]
+            where = f"tools.{kind}"
+            if not isinstance(block, dict):
+                problems.append({"severity": "error", "where": where, "msg": "must be a mapping"})
+                continue
+            if set(block) != {"provider", "activation", "fallback"}:
+                problems.append({"severity": "error", "where": where, "msg": "must contain exactly provider, activation, fallback"})
+            if block.get("provider") not in providers_allowed:
+                problems.append({"severity": "error", "where": f"{where}.provider", "msg": f"must be one of {', '.join(providers_allowed)}"})
+            if block.get("activation") not in TOOL_ACTIVATIONS:
+                problems.append({"severity": "error", "where": f"{where}.activation", "msg": f"must be one of {', '.join(TOOL_ACTIVATIONS)}"})
+            if block.get("fallback") not in TOOL_FALLBACKS:
+                problems.append({"severity": "error", "where": f"{where}.fallback", "msg": f"must be one of {', '.join(TOOL_FALLBACKS)}"})
     return problems
+
+
+def _policy_value(block: Any, field: str) -> Any:
+    if not isinstance(block, dict):
+        return None
+    value = block.get(field)
+    return value if value not in (None, "") else None
+
+
+def resolve_agent_profile(
+    cfg: dict, runtime: str | None, role: str | None, agent: str | None,
+    ritual: str | None, step: str | None, run_override: dict | None = None,
+    runtime_capability: dict | None = None,
+) -> dict:
+    """Resolve model/effort independently using the documented ten layers."""
+    provider = (cfg.get("providers") or {}).get(runtime, {}) if runtime else {}
+    common_ritual = ((cfg.get("rituals") or {}).get(ritual, {}) or {}).get(step, {}) if ritual and step else {}
+    provider_ritual = ((provider.get("rituals") or {}).get(ritual, {}) or {}).get(step, {}) if ritual and step else {}
+    layers = [
+        ("run-override", run_override or {}),
+        ("provider-ritual", provider_ritual),
+        ("common-ritual", common_ritual),
+        ("provider-agent", (provider.get("agents") or {}).get(agent, {}) if agent else {}),
+        ("common-agent", (cfg.get("agents") or {}).get(agent, {}) if agent else {}),
+        ("provider-role", (provider.get("roles") or {}).get(role, {}) if role else {}),
+        ("common-role", (cfg.get("roles") or {}).get(role, {}) if role else {}),
+        ("provider-defaults", provider.get("defaults") or {}),
+        ("common-defaults", cfg.get("defaults") or {}),
+    ]
+    resolved, sources = {}, {}
+    for field in ("model", "effort"):
+        for source, block in layers:
+            value = _policy_value(block, field)
+            if value is not None:
+                resolved[field] = value
+                sources[field] = source
+                break
+        else:
+            resolved[field] = None
+            sources[field] = "session-inherit"
+    profile = {
+        "runtime": runtime,
+        "role": role,
+        "agent": agent,
+        "ritual": ritual,
+        "step": step,
+        **resolved,
+        "sources": sources,
+    }
+    profile["validation"] = _profile_validation(profile, runtime_capability)
+    return profile
 
 
 # --------------------------------------------------------------------------- #
@@ -1791,6 +1973,89 @@ def cmd_review_evidence_check(args: argparse.Namespace) -> None:
     ok(decision=review_evidence_decision(evidence, change))
 
 
+def cmd_review_plan_next(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    cycle_id = validate_safe_id(args.cycle_id, "cycle_id")
+    head = _review_text(args.head, "head")
+    command_digest = _review_digest(args.command_digest, "command_digest")
+    environment_digest = _review_digest(args.environment_digest, "environment_digest")
+    tool_version = _review_text(args.tool_version, "tool_version")
+    changed_paths = _review_string_list(args.changed_path or [], "changed_paths")
+    allowed_commands = _review_string_list(args.allowed_command or [], "allowed_commands")
+    requested_reason = args.full_qa_reason
+    if requested_reason is not None and requested_reason not in FULL_QA_REASONS:
+        fail(6, "invalid_full_qa_reason", f"full QA reason must be one of {sorted(FULL_QA_REASONS)}")
+
+    with board_transaction(ws) as board:
+        cycle = _review_cycle_from_board(board, cycle_id)
+        valid = [item for item in cycle["evidence"].values() if item.get("status") == "valid"]
+        invalidated = sorted(
+            item["ref"] for item in cycle["evidence"].values()
+            if item.get("status") == "invalidated"
+        )
+        exact = next((
+            item for item in valid
+            if item["head"] == head
+            and item["command_digest"] == command_digest
+            and item["environment_digest"] == environment_digest
+            and item["tool_version"] == tool_version
+        ), None)
+        physical_key = canonical_digest({
+            "cycle_id": cycle_id, "head": head, "command_digest": command_digest,
+            "environment_digest": environment_digest, "tool_version": tool_version,
+        })
+        reason = "integration-gate" if args.integration_gate else (
+            requested_reason or cycle.get("required_full_qa_reason")
+        )
+        if exact is not None:
+            action, qa_mode, physical_runs = "reuse-evidence", "delta", 0
+            reused = [exact["ref"]]
+            cycle["counters"]["duplicate_prevented"] = int(
+                cycle["counters"].get("duplicate_prevented") or 0
+            ) + 1
+            board.setdefault("workflow_counters", {}).setdefault("duplicate_prevented", 0)
+            board["workflow_counters"]["duplicate_prevented"] += 1
+            _seal_review_cycle(cycle)
+        else:
+            telemetry_paused = False
+            if args.telemetry_policy == "fail-closed":
+                cycle_runs = [run for run in board.get("runs", []) if run.get("review_cycle_id") == cycle_id]
+                telemetry_paused = any(run.get("cost_tokens") is None for run in cycle_runs)
+            if telemetry_paused:
+                action, qa_mode, physical_runs = "pause", None, 0
+            elif reason:
+                action, qa_mode, physical_runs = "full-qa", "full", 1
+            else:
+                action, qa_mode, physical_runs = "delta-qa", "delta", 1
+            reused = sorted(item["ref"] for item in valid)
+
+        open_findings = sorted(
+            item["id"] for item in cycle["findings"].values()
+            if item["status"] != "closed"
+        )
+        plan = {
+            "schema": "studio-review-next-action/v1",
+            "cycle_id": cycle_id,
+            "episode_id": cycle_id,
+            "head": head,
+            "physical_key": physical_key,
+            "action": action,
+            "qa_mode": qa_mode,
+            "impact_set": changed_paths,
+            "allowed_commands": allowed_commands,
+            "full_qa_reason": reason if qa_mode == "full" else None,
+            "open_findings": open_findings,
+            "reused_evidence": reused,
+            "invalidated_evidence": invalidated,
+            "physical_runs": physical_runs,
+            "duplicate_prevented": board.setdefault("workflow_counters", {}).get("duplicate_prevented", 0),
+            "telemetry_gate": "paused" if action == "pause" else "open",
+        }
+        plan["digest"] = canonical_digest(plan)
+    ok(plan=plan)
+
+
 def _review_finding_ids(event: dict) -> list[str]:
     if event.get("type") == "finding-opened":
         return [event["finding"]["id"]]
@@ -2226,6 +2491,642 @@ def cmd_review_read(args: argparse.Namespace) -> None:
     ok(summary=_review_summary(cycle, board))
 
 
+def validate_review_lease(value: Any) -> list[str]:
+    fields = {
+        "schema", "lease_id", "owner", "provider", "episode_id", "edge_id",
+        "requirement", "criteria_digest", "evidence_refs", "digest",
+    }
+    if not isinstance(value, dict):
+        return ["review_lease must be an object"]
+    problems = []
+    if set(value) != fields:
+        problems.append("review_lease fields do not match workflow-review-lease/v1")
+    if value.get("schema") != REVIEW_LEASE_SCHEMA:
+        problems.append(f"review_lease.schema must be {REVIEW_LEASE_SCHEMA}")
+    for key in ("lease_id", "episode_id", "edge_id"):
+        if not isinstance(value.get(key), str) or not SAFE_ID_RE.fullmatch(value.get(key, "")):
+            problems.append(f"review_lease.{key} must be a path-safe identifier")
+    if value.get("owner") not in ("studio", "task-worker"):
+        problems.append("review_lease.owner must be studio or task-worker")
+    if value.get("provider") not in REVIEWER_PROVIDERS:
+        problems.append("review_lease.provider must be native or session-review")
+    if value.get("requirement") not in ("self", "independent"):
+        problems.append("review_lease.requirement must be self or independent")
+    if not isinstance(value.get("criteria_digest"), str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", value.get("criteria_digest", "")):
+        problems.append("review_lease.criteria_digest must be a sha256 digest")
+    refs = value.get("evidence_refs")
+    if not isinstance(refs, list) or any(not isinstance(ref, str) or not ref.strip() for ref in (refs or [])):
+        problems.append("review_lease.evidence_refs must be a string list")
+    elif len(refs) != len(set(refs)):
+        problems.append("review_lease.evidence_refs must be unique")
+    expected = canonical_digest({key: item for key, item in value.items() if key != "digest"})
+    if value.get("digest") != expected:
+        problems.append("review_lease.digest does not match its canonical payload")
+    return problems
+
+
+def _native_review_fallback_lease(source: dict) -> dict:
+    target = {**source, "provider": "native"}
+    target["digest"] = canonical_digest({
+        key: value for key, value in target.items() if key != "digest"
+    })
+    return target
+
+
+def _review_fallback_authorization(mission_id: str, source: dict) -> dict:
+    payload = {
+        "schema": "studio-review-fallback-authorization/v1",
+        "mission_id": mission_id,
+        "edge_id": source["edge_id"],
+        "source_lease_digest": source["digest"],
+        "target_lease": _native_review_fallback_lease(source),
+    }
+    return {**payload, "digest": canonical_digest(payload)}
+
+
+def _validate_review_edge_reservation(value: Any) -> dict:
+    fields = {
+        "schema", "state", "mission_id", "edge_id", "original_lease",
+        "accepted_lease", "fallback_authorization",
+    }
+    if not isinstance(value, dict) or set(value) != fields:
+        fail(4, "bad_board", "review edge reservation fields are invalid")
+    if value.get("schema") != REVIEW_EDGE_RESERVATION_SCHEMA:
+        fail(4, "bad_board", "review edge reservation schema is invalid")
+    if value.get("state") not in ("pending", "accepted"):
+        fail(4, "bad_board", "review edge reservation state is invalid")
+    if any(
+        not isinstance(value.get(key), str)
+        or not SAFE_ID_RE.fullmatch(value.get(key, ""))
+        for key in ("mission_id", "edge_id")
+    ):
+        fail(4, "bad_board", "review edge reservation identity is invalid")
+    original = value.get("original_lease")
+    problems = validate_review_lease(original)
+    if problems or original.get("edge_id") != value["edge_id"]:
+        fail(4, "bad_board", "review edge original lease is invalid", problems=problems)
+    accepted = value.get("accepted_lease")
+    if value["state"] == "accepted":
+        accepted_problems = validate_review_lease(accepted)
+        if accepted_problems or accepted.get("edge_id") != value["edge_id"]:
+            fail(4, "bad_board", "review edge accepted lease is invalid", problems=accepted_problems)
+    elif accepted is not None:
+        fail(4, "bad_board", "pending review edge cannot have an accepted lease")
+    authorization = value.get("fallback_authorization")
+    if authorization is not None:
+        auth_fields = {
+            "schema", "mission_id", "edge_id", "source_lease_digest",
+            "target_lease", "digest",
+        }
+        if not isinstance(authorization, dict) or set(authorization) != auth_fields:
+            fail(4, "bad_board", "review fallback authorization fields are invalid")
+        auth_payload = {key: item for key, item in authorization.items() if key != "digest"}
+        target = authorization.get("target_lease")
+        target_problems = validate_review_lease(target)
+        if (
+            authorization.get("schema") != "studio-review-fallback-authorization/v1"
+            or authorization.get("mission_id") != value["mission_id"]
+            or authorization.get("edge_id") != value["edge_id"]
+            or authorization.get("source_lease_digest") != original["digest"]
+            or target_problems
+            or target.get("provider") != "native"
+            or target.get("edge_id") != value["edge_id"]
+            or authorization.get("digest") != canonical_digest(auth_payload)
+        ):
+            fail(4, "bad_board", "review fallback authorization is invalid", problems=target_problems)
+    return value
+
+
+def _review_edge_lease_ids(value: Any) -> set[str]:
+    if not isinstance(value, dict):
+        return set()
+    reservation = _validate_review_edge_reservation(value)
+    leases = [reservation["original_lease"], reservation.get("accepted_lease")]
+    authorization = reservation.get("fallback_authorization")
+    if authorization:
+        leases.append(authorization["target_lease"])
+    return {lease["lease_id"] for lease in leases if isinstance(lease, dict)}
+
+
+def _reserve_review_edge(
+    board: dict, *, mission_id: str, review_lease: dict, action: str,
+) -> tuple[bool, dict | None]:
+    """Fence one review edge while allowing one exact authorized native replan."""
+    if action not in {
+        "capability-required", "runtime-capability-required",
+        "review-lease-replan-required", "dispatch",
+    }:
+        return False, None
+    edges = board.setdefault("review_lease_edges", {})
+    edge_id = review_lease["edge_id"]
+    for other_edge, binding in edges.items():
+        if other_edge != edge_id and review_lease["lease_id"] in _review_edge_lease_ids(binding):
+            fail(6, "review_edge_rebind", "review lease id is already reserved for another edge")
+    prior = edges.get(edge_id)
+    if isinstance(prior, str):
+        # Schema-2 boards stored accepted digests directly. Preserve their
+        # immutable meaning; they cannot be retroactively treated as pending.
+        if prior != review_lease["digest"] or action == "review-lease-replan-required":
+            fail(6, "review_edge_rebind", "legacy accepted review edge is immutable")
+        return False, None
+    if prior is None:
+        reservation = {
+            "schema": REVIEW_EDGE_RESERVATION_SCHEMA,
+            "state": "accepted" if action == "dispatch" else "pending",
+            "mission_id": mission_id,
+            "edge_id": edge_id,
+            "original_lease": review_lease,
+            "accepted_lease": review_lease if action == "dispatch" else None,
+            "fallback_authorization": None,
+        }
+    else:
+        reservation = _validate_review_edge_reservation(prior)
+        if reservation["mission_id"] != mission_id:
+            fail(6, "review_edge_rebind", "review edge reservation belongs to another mission")
+        if reservation["state"] == "accepted":
+            if reservation["accepted_lease"] != review_lease:
+                fail(6, "review_edge_rebind", "accepted review edge is immutable")
+            if action == "review-lease-replan-required":
+                fail(6, "review_edge_rebind", "accepted review edge cannot authorize a fallback replan")
+            return False, None
+        authorization = reservation.get("fallback_authorization")
+        if action == "dispatch":
+            expected = authorization["target_lease"] if authorization else reservation["original_lease"]
+            if review_lease != expected:
+                fail(6, "review_edge_rebind", "dispatch lease differs from the pending reservation")
+            reservation = {**reservation, "state": "accepted", "accepted_lease": review_lease}
+        elif review_lease != reservation["original_lease"]:
+            fail(6, "review_edge_rebind", "pending review edge cannot be rebound")
+    authorization = reservation.get("fallback_authorization")
+    if action == "review-lease-replan-required":
+        if (
+            reservation["original_lease"]["owner"] != "studio"
+            or reservation["original_lease"]["provider"] != "session-review"
+        ):
+            fail(6, "review_edge_rebind", "native fallback requires a pending Studio session-review lease")
+        expected_authorization = _review_fallback_authorization(
+            mission_id, reservation["original_lease"],
+        )
+        if authorization is not None and authorization != expected_authorization:
+            fail(6, "review_edge_rebind", "review fallback authorization conflicts with the reservation")
+        reservation = {**reservation, "fallback_authorization": expected_authorization}
+        authorization = expected_authorization
+    changed = prior != reservation
+    if changed:
+        edges[edge_id] = reservation
+    return changed, authorization
+
+
+def _load_optional_config(path: Path) -> dict:
+    if not path.is_file():
+        return {}
+    try:
+        cfg = parse_yaml_subset(path.read_text(encoding="utf-8"))
+    except ValueError as exc:
+        fail(4, "parse", f"{path}: {exc}")
+    problems = _validate_config(cfg)
+    if any(problem["severity"] == "error" for problem in problems):
+        fail(6, "invalid_config", "config has errors", problems=problems)
+    return cfg
+
+
+def _host_runtime() -> str | None:
+    explicit = os.environ.get("STUDIO_HOST_RUNTIME")
+    if explicit in AGENT_RUNTIMES:
+        return explicit
+    if os.environ.get("CLAUDE_CODE") or os.environ.get("CLAUDECODE"):
+        return "claude"
+    if os.environ.get("CODEX_HOME") or os.environ.get("CODEX_THREAD_ID"):
+        return "codex"
+    return None
+
+
+def _validate_runtime_capability_input(value: Any, *, allow_unknown_runtime: bool = False) -> list[str]:
+    fields = {
+        "schema", "runtime", "version", "advertised_models", "advertised_efforts",
+    }
+    if not isinstance(value, dict):
+        return ["runtime capability must be an object"]
+    problems = []
+    if set(value) != fields:
+        problems.append("runtime capability fields do not match studio-runtime-capability/v1")
+    if value.get("schema") != RUNTIME_CAPABILITY_SCHEMA:
+        problems.append(f"runtime capability schema must be {RUNTIME_CAPABILITY_SCHEMA}")
+    if value.get("runtime") not in AGENT_RUNTIMES and not (
+        allow_unknown_runtime and value.get("runtime") is None
+    ):
+        problems.append("runtime capability runtime must be claude or codex")
+    version = value.get("version")
+    if version is not None and (not isinstance(version, str) or not version.strip()):
+        problems.append("runtime capability version must be null or a non-empty string")
+    for field in ("advertised_models", "advertised_efforts"):
+        advertised = value.get(field)
+        if advertised is not None and (
+            not isinstance(advertised, list)
+            or any(not isinstance(item, str) or not item.strip() for item in advertised)
+        ):
+            problems.append(f"runtime capability {field} must be null or a string list")
+        elif isinstance(advertised, list) and len(advertised) != len(set(advertised)):
+            problems.append(f"runtime capability {field} must be unique")
+    return problems
+
+
+def _canonical_runtime_capability(
+    raw: Any, selected_runtime: str | None, verified_host_runtime: str | None,
+) -> dict:
+    if raw is not None:
+        problems = _validate_runtime_capability_input(raw)
+        if problems:
+            fail(6, "invalid_runtime_capability", "; ".join(problems), problems=problems)
+        observed_runtime = raw["runtime"]
+        if verified_host_runtime and observed_runtime != verified_host_runtime:
+            fail(6, "runtime_capability_conflict", "runtime capability does not match the verified host runtime")
+        base = {
+            "schema": RUNTIME_CAPABILITY_SCHEMA,
+            "runtime": observed_runtime,
+            "version": raw["version"],
+            "advertised_models": (
+                sorted(raw["advertised_models"])
+                if raw["advertised_models"] is not None else None
+            ),
+            "advertised_efforts": (
+                sorted(raw["advertised_efforts"])
+                if raw["advertised_efforts"] is not None else None
+            ),
+        }
+        verified = True
+    else:
+        observed_runtime = verified_host_runtime
+        base = {
+            "schema": RUNTIME_CAPABILITY_SCHEMA,
+            "runtime": observed_runtime,
+            "version": None,
+            "advertised_models": None,
+            "advertised_efforts": None,
+        }
+        verified = observed_runtime in AGENT_RUNTIMES
+    return {
+        **base,
+        "verified": verified,
+        "dispatch_allowed": bool(
+            selected_runtime is None
+            or (verified and observed_runtime == selected_runtime)
+        ),
+        "digest": canonical_digest(base),
+    }
+
+
+def _profile_validation(profile: dict, runtime_capability: dict | None) -> dict:
+    validation = {}
+    for field, advertised_field, advertised_source in (
+        ("model", "advertised_models", "runtime-advertised-models"),
+        ("effort", "advertised_efforts", "runtime-advertised-efforts"),
+    ):
+        value = profile.get(field)
+        if value is None:
+            validation[field] = {"status": "not-configured", "source": "session-inherit"}
+            continue
+        advertised = (
+            runtime_capability.get(advertised_field)
+            if isinstance(runtime_capability, dict) and runtime_capability.get("verified")
+            else None
+        )
+        if advertised is None:
+            validation[field] = {
+                "status": "unknown", "source": "runtime-advertisement-unavailable",
+            }
+        elif value in advertised:
+            validation[field] = {"status": "supported", "source": advertised_source}
+        else:
+            validation[field] = {"status": "unsupported", "source": advertised_source}
+    return validation
+
+
+def _unsupported_profile_fields(profile: dict) -> list[dict]:
+    return [
+        {
+            "field": field,
+            "value": profile.get(field),
+            "runtime": profile.get("runtime"),
+            "source": verdict.get("source"),
+        }
+        for field, verdict in profile.get("validation", {}).items()
+        if verdict.get("status") == "unsupported"
+    ]
+
+
+def _tool_request(cfg: dict, kind: str, override: str | None, need: bool) -> dict:
+    providers = WORKER_PROVIDERS if kind == "worker" else REVIEWER_PROVIDERS
+    if override is not None:
+        if override not in providers:
+            fail(6, "invalid_routing_override", f"{kind} override must be one of {', '.join(providers)}")
+        return {
+            "source": "run-override", "provider": override, "activation": "always",
+            "fallback": "stop", "need": need, "explicit": True,
+        }
+    configured = (cfg.get("tools") or {}).get(kind)
+    if not configured:
+        return {
+            "source": "native", "provider": "native", "activation": "never",
+            "fallback": "native", "need": need, "explicit": False,
+        }
+    provider = configured["provider"]
+    active = configured["activation"] == "always" or (
+        configured["activation"] == "auto" and need
+    )
+    if configured["activation"] == "never" or not active:
+        provider = "native"
+    return {
+        "source": "config", "provider": provider,
+        "configured_provider": configured["provider"],
+        "activation": configured["activation"], "fallback": configured["fallback"],
+        "need": need, "explicit": False,
+    }
+
+
+CAPABILITY_REQUIRED_CONTRACTS = {
+    "task-worker": {"work-packet/v1", REVIEW_LEASE_SCHEMA, "task-worker.review-permit/v1"},
+    "task-github": {"work-packet/v1", REVIEW_LEASE_SCHEMA, "task-worker.review-permit/v1"},
+    "session-review": {REVIEW_LEASE_SCHEMA},
+}
+
+
+def validate_routing_capability(value: Any, provider: str, mission_id: str, environment_digest: str) -> list[str]:
+    fields = {"schema", "provider", "mission_id", "environment_digest", "status", "contracts"}
+    if not isinstance(value, dict):
+        return [f"{provider} capability snapshot must be an object"]
+    problems = []
+    if set(value) != fields:
+        problems.append(f"{provider} capability fields do not match the contract")
+    if value.get("schema") != CAPABILITY_SNAPSHOT_SCHEMA:
+        problems.append(f"{provider} capability schema must be {CAPABILITY_SNAPSHOT_SCHEMA}")
+    if value.get("provider") != provider:
+        problems.append(f"capability provider must be {provider}")
+    if value.get("mission_id") != mission_id:
+        problems.append("capability mission_id mismatch")
+    if value.get("environment_digest") != environment_digest:
+        problems.append("capability environment_digest mismatch")
+    if value.get("status") not in ("available", "unavailable"):
+        problems.append("capability status must be available or unavailable")
+    contracts = value.get("contracts")
+    if not isinstance(contracts, list) or any(not isinstance(item, str) or not item.strip() for item in (contracts or [])):
+        problems.append("capability contracts must be a string list")
+    elif len(contracts) != len(set(contracts)):
+        problems.append("capability contracts must be unique")
+    elif value.get("status") == "available":
+        missing = sorted(CAPABILITY_REQUIRED_CONTRACTS[provider] - set(contracts))
+        if missing:
+            problems.append(f"available {provider} lacks required contracts: {', '.join(missing)}")
+    return problems
+
+
+def _capability_inputs(raw: Any) -> dict[str, dict]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        fail(6, "invalid_capability_snapshot", "capabilities must be a snapshot or provider mapping")
+    if raw.get("schema") == CAPABILITY_SNAPSHOT_SCHEMA:
+        return {raw.get("provider"): raw}
+    if any(key not in CAPABILITY_REQUIRED_CONTRACTS for key in raw):
+        fail(6, "invalid_capability_snapshot", "capability mapping contains an unsupported provider")
+    return raw
+
+
+def _routing_plan_digest(plan: dict) -> str:
+    return canonical_digest({key: value for key, value in plan.items() if key not in {"digest", "plan_id"}})
+
+
+def validate_routing_plan(value: Any) -> list[str]:
+    if not isinstance(value, dict):
+        return ["RoutingPlan must be an object"]
+    required = {
+        "schema", "plan_id", "mission_id", "environment_digest", "runtime_profile",
+        "runtime_capability", "agent_profile", "worker", "reviewer", "review_lease",
+        "capability_refs", "probe_targets", "action", "digest",
+    }
+    problems = []
+    if set(value) != required:
+        problems.append("RoutingPlan fields do not match studio-routing-plan/v1")
+    if value.get("schema") != ROUTING_PLAN_SCHEMA:
+        problems.append(f"RoutingPlan.schema must be {ROUTING_PLAN_SCHEMA}")
+    for key in ("plan_id", "mission_id"):
+        if not isinstance(value.get(key), str) or not SAFE_ID_RE.fullmatch(value.get(key, "")):
+            problems.append(f"RoutingPlan.{key} must be a path-safe identifier")
+    if not isinstance(value.get("environment_digest"), str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", value.get("environment_digest", "")):
+        problems.append("RoutingPlan.environment_digest must be a sha256 digest")
+    if value.get("runtime_profile") not in (*AGENT_RUNTIMES, None):
+        problems.append("RoutingPlan.runtime_profile is invalid")
+    runtime_capability = value.get("runtime_capability")
+    sealed_runtime_fields = {
+        "schema", "runtime", "version", "advertised_models", "advertised_efforts",
+        "verified", "dispatch_allowed", "digest",
+    }
+    if not isinstance(runtime_capability, dict) or set(runtime_capability) != sealed_runtime_fields:
+        problems.append("RoutingPlan.runtime_capability fields do not match studio-runtime-capability/v1")
+    else:
+        raw_runtime_capability = {
+            key: runtime_capability[key]
+            for key in ("schema", "runtime", "version", "advertised_models", "advertised_efforts")
+        }
+        problems.extend(_validate_runtime_capability_input(
+            raw_runtime_capability, allow_unknown_runtime=True,
+        ))
+        if not isinstance(runtime_capability.get("verified"), bool):
+            problems.append("RoutingPlan.runtime_capability.verified must be boolean")
+        if not isinstance(runtime_capability.get("dispatch_allowed"), bool):
+            problems.append("RoutingPlan.runtime_capability.dispatch_allowed must be boolean")
+        if runtime_capability.get("digest") != canonical_digest(raw_runtime_capability):
+            problems.append("RoutingPlan.runtime_capability.digest does not match its canonical payload")
+    if value.get("review_lease") is not None:
+        problems.extend(validate_review_lease(value["review_lease"]))
+    expected_digest = _routing_plan_digest(value)
+    expected_plan_id = "routing-" + expected_digest.split(":", 1)[1][:16]
+    if value.get("plan_id") != expected_plan_id:
+        problems.append("RoutingPlan.plan_id does not match its canonical payload")
+    if value.get("digest") != expected_digest:
+        problems.append("RoutingPlan.digest does not match its canonical payload")
+    return problems
+
+
+def cmd_routing_plan(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    mission_id = validate_safe_id(args.mission_id, "mission_id")
+    environment_digest = _review_digest(args.environment_digest, "environment_digest")
+    cfg = _load_optional_config(Path(args.config or CONFIG_PATH_DEFAULT))
+    raw_runtime_capability = (
+        load_json_arg(args.runtime_capability, "runtime capability")
+        if args.runtime_capability else None
+    )
+    host_runtime = args.host_runtime or _host_runtime()
+    runtime = args.agent_runtime or (
+        raw_runtime_capability.get("runtime")
+        if isinstance(raw_runtime_capability, dict) else host_runtime
+    )
+    runtime_capability = _canonical_runtime_capability(
+        raw_runtime_capability, runtime, host_runtime,
+    )
+    work_need = bool(args.work_need)
+    review_lease = load_json_arg(args.review_lease, "review lease") if args.review_lease else None
+    if review_lease is not None:
+        lease_problems = validate_review_lease(review_lease)
+        if lease_problems:
+            fail(6, "invalid_review_lease", "; ".join(lease_problems), problems=lease_problems)
+    review_need = bool(args.review_need or review_lease is not None)
+    if review_need and review_lease is None:
+        fail(6, "review_lease_required", "review need requires a canonical review lease")
+
+    worker = _tool_request(cfg, "worker", args.worker, work_need)
+    reviewer = _tool_request(cfg, "reviewer", args.reviewer, review_need)
+    if not review_need:
+        reviewer["provider"] = "native"
+    if review_lease and review_lease["owner"] == "task-worker":
+        if args.reviewer is not None:
+            fail(6, "review_owner_conflict", "worker-owned review forbids a Studio reviewer override")
+        if worker["provider"] not in ("task-worker", "task-github"):
+            fail(6, "review_owner_conflict", "task-worker review ownership requires an external worker lease")
+        reviewer = {
+            **reviewer, "provider": review_lease["provider"], "owner": "task-worker",
+            "dispatch": False, "source": "review-lease",
+        }
+    elif review_lease:
+        reviewer["owner"] = "studio"
+        reviewer["dispatch"] = True
+        if reviewer["provider"] != review_lease["provider"]:
+            fail(6, "review_provider_mismatch", "Studio reviewer route must match review_lease.provider")
+    else:
+        reviewer["owner"] = None
+        reviewer["dispatch"] = False
+
+    external_targets = []
+    if worker["provider"] != "native":
+        external_targets.append(worker["provider"])
+    if reviewer.get("dispatch") and reviewer["provider"] != "native":
+        external_targets.append(reviewer["provider"])
+    if len(external_targets) != len(set(external_targets)):
+        fail(6, "duplicate_external_lease", "one provider may have only one Studio lease")
+
+    raw_capabilities = load_json_arg(args.capabilities, "capabilities") if args.capabilities else None
+    inputs = _capability_inputs(raw_capabilities)
+    if set(inputs) - set(external_targets):
+        fail(6, "unselected_capability_snapshot", "capabilities may be supplied only for selected external providers")
+
+    capability_refs, probe_targets, statuses = {}, [], {}
+    with board_transaction(ws) as board:
+        cache = board.setdefault("capability_cache", {})
+        for provider in external_targets:
+            key = canonical_digest({
+                "mission_id": mission_id, "provider": provider,
+                "environment_digest": environment_digest,
+            })
+            cached = cache.get(key)
+            supplied = inputs.get(provider)
+            if supplied is not None:
+                cap_problems = validate_routing_capability(supplied, provider, mission_id, environment_digest)
+                if cap_problems:
+                    fail(6, "invalid_capability_snapshot", "; ".join(cap_problems), problems=cap_problems)
+                sealed = {**supplied, "digest": canonical_digest(supplied)}
+                if cached is not None and cached != sealed:
+                    fail(6, "capability_snapshot_conflict", "capability result is already pinned for this mission/provider/environment")
+                if cached is None:
+                    cache[key] = sealed
+                    cached = sealed
+                    probe_targets.append(provider)
+            elif cached is None:
+                probe_targets.append(provider)
+            if cached is not None:
+                capability_refs[provider] = {"key": key, "digest": cached["digest"]}
+                statuses[provider] = cached["status"]
+            else:
+                statuses[provider] = "unknown"
+
+        action = "dispatch"
+        review_replan_required = False
+        for route in (worker, reviewer):
+            provider = route.get("provider")
+            if provider == "native" or (route is reviewer and not route.get("dispatch")):
+                route["selected"] = "native" if provider == "native" else provider
+                route["fallback_used"] = False
+                continue
+            status = statuses[provider]
+            route["capability_status"] = status
+            if status == "available":
+                route["selected"] = provider
+                route["fallback_used"] = False
+            elif status == "unknown":
+                route["selected"] = None
+                route["fallback_used"] = False
+                action = "capability-required"
+            elif route["explicit"] or route["fallback"] == "stop":
+                route["selected"] = None
+                route["fallback_used"] = False
+                action = "stop"
+            elif (
+                route is reviewer
+                and review_lease
+                and review_lease["owner"] == "studio"
+                and review_lease["provider"] == "session-review"
+            ):
+                # A signed session-review lease cannot silently turn into a
+                # native review. Require a new canonical native lease instead.
+                route["selected"] = None
+                route["fallback_used"] = False
+                review_replan_required = True
+            else:
+                route["selected"] = "native"
+                route["fallback_used"] = True
+
+        if review_replan_required:
+            action = "review-lease-replan-required"
+
+        if (
+            review_lease and review_lease["owner"] == "task-worker"
+            and action == "dispatch" and worker.get("selected") != worker.get("provider")
+        ):
+            action = "stop"
+        if runtime is not None and not runtime_capability["dispatch_allowed"]:
+            action = "runtime-capability-required"
+        agent_profile = resolve_agent_profile(
+            cfg, runtime, args.role, args.agent, args.ritual, args.step,
+            {"model": args.model, "effort": args.effort}, runtime_capability,
+        )
+        unsupported = _unsupported_profile_fields(agent_profile)
+        if unsupported:
+            fail(6, "unsupported_runtime_profile", "resolved agent profile is not advertised by the verified runtime", problems=unsupported)
+        edge_changed, fallback_authorization = (False, None)
+        if review_lease:
+            edge_changed, fallback_authorization = _reserve_review_edge(
+                board,
+                mission_id=mission_id,
+                review_lease=review_lease,
+                action=action,
+            )
+        if fallback_authorization:
+            reviewer = {**reviewer, "replan": fallback_authorization}
+        plan = {
+            "schema": ROUTING_PLAN_SCHEMA,
+            "plan_id": "pending",
+            "mission_id": mission_id,
+            "environment_digest": environment_digest,
+            "runtime_profile": runtime,
+            "runtime_capability": runtime_capability,
+            "agent_profile": agent_profile,
+            "worker": worker,
+            "reviewer": reviewer,
+            "review_lease": review_lease,
+            "capability_refs": capability_refs,
+            "probe_targets": sorted(probe_targets),
+            "action": action,
+        }
+        digest = _routing_plan_digest(plan)
+        plan["plan_id"] = "routing-" + digest.split(":", 1)[1][:16]
+        plan["digest"] = _routing_plan_digest(plan)
+        plans = board.setdefault("routing_plans", {})
+        changed = plan["digest"] not in plans
+        plans.setdefault(plan["digest"], plan)
+    ok(routing_plan=plan, changed=changed or edge_changed)
+
+
 # --------------------------------------------------------------------------- #
 # workflow adapter — validate and hand off; never import external workflow APIs
 # --------------------------------------------------------------------------- #
@@ -2265,11 +3166,15 @@ def validate_work_packet(packet: Any) -> list[str]:
         problems.append("WorkPacket.acceptance_criteria must be a non-empty string list")
     if not isinstance(packet.get("constraints"), dict):
         problems.append("WorkPacket.constraints must be an object")
+    else:
+        review_lease = packet["constraints"].get("review_lease")
+        if review_lease is not None:
+            problems.extend(validate_review_lease(review_lease))
     gates = packet.get("gates")
     if not isinstance(gates, list) or any(not isinstance(gate, str) or not gate.strip() for gate in gates) or len(gates) != len(set(gates or [])):
         problems.append("WorkPacket.gates must be a unique string list")
-    if packet.get("executor") not in ("native", "task-github"):
-        problems.append("WorkPacket.executor must be native or task-github")
+    if packet.get("executor") not in WORKER_PROVIDERS:
+        problems.append("WorkPacket.executor must be native, task-worker, or task-github")
     return problems
 
 
@@ -2388,6 +3293,14 @@ def cmd_workflow_dispatch(args: argparse.Namespace) -> None:
     if plan["id"] != packet["quality_plan_ref"]:
         fail(6, "quality_plan_mismatch", "WorkPacket quality_plan_ref does not match QualityPlan.id")
     lease_id = validate_safe_id(args.lease_id, "lease_id")
+    routing_plan = load_json_arg(args.routing_plan, "RoutingPlan") if args.routing_plan else None
+    if routing_plan is not None:
+        routing_problems = validate_routing_plan(routing_plan)
+        if routing_problems:
+            fail(6, "invalid_routing_plan", "; ".join(routing_problems), problems=routing_problems)
+    review_lease = packet["constraints"].get("review_lease")
+    if (packet["executor"] == "task-worker" or review_lease is not None) and routing_plan is None:
+        fail(6, "routing_plan_required", "task-worker and canonical review leases require a RoutingPlan")
 
     context_path = _context_path(ws, "pack", packet["context_ref"])
     try:
@@ -2410,11 +3323,39 @@ def cmd_workflow_dispatch(args: argparse.Namespace) -> None:
             "ref": canonical_pack["id"],
             "digest": canonical_pack["digest"],
         },
+        "routing_plan": (
+            {"plan_id": routing_plan["plan_id"], "digest": routing_plan["digest"]}
+            if routing_plan else None
+        ),
+        "review_lease": (
+            {"lease_id": review_lease["lease_id"], "digest": review_lease["digest"]}
+            if review_lease else None
+        ),
     }
 
     snapshot = None
     external_ready = False
-    if packet["executor"] == "task-github":
+    selected_provider = "native"
+    if routing_plan is not None:
+        if args.capabilities is not None:
+            fail(6, "capability_snapshot_already_pinned", "RoutingPlan dispatch cannot accept a second capability snapshot")
+        runtime_capability = routing_plan["runtime_capability"]
+        if routing_plan["runtime_profile"] is not None and not (
+            runtime_capability.get("verified")
+            and runtime_capability.get("dispatch_allowed")
+            and runtime_capability.get("runtime") == routing_plan["runtime_profile"]
+        ):
+            fail(6, "runtime_not_dispatchable", "RoutingPlan runtime is not verified for the current host harness")
+        if routing_plan["action"] != "dispatch":
+            fail(6, "routing_not_dispatchable", f"RoutingPlan action is {routing_plan['action']}")
+        route_worker = routing_plan["worker"]
+        selected_provider = route_worker.get("selected")
+        if selected_provider != packet["executor"]:
+            fail(6, "routing_executor_mismatch", "WorkPacket.executor differs from RoutingPlan worker selection")
+        if routing_plan.get("review_lease") != review_lease:
+            fail(6, "review_lease_mismatch", "WorkPacket review lease differs from RoutingPlan")
+        external_ready = selected_provider in ("task-worker", "task-github")
+    elif packet["executor"] == "task-github":
         if args.capabilities is None:
             snapshot = {
                 "schema": 1, "source": "agent-visible-skill-catalog", "catalog": [],
@@ -2427,10 +3368,15 @@ def cmd_workflow_dispatch(args: argparse.Namespace) -> None:
         if capability_problems:
             fail(6, "invalid_capability_snapshot", "; ".join(capability_problems), problems=capability_problems)
         external_ready = task_github_available(snapshot)
+        selected_provider = "task-github" if external_ready else "native"
 
-    selected = "external" if packet["executor"] == "task-github" and external_ready else "native"
-    fallback = packet["executor"] == "task-github" and selected == "native"
+    selected = "external" if external_ready else "native"
+    fallback = routing_plan is None and packet["executor"] == "task-github" and selected == "native"
     with board_transaction(ws) as board:
+        if routing_plan is not None:
+            pinned = board.setdefault("routing_plans", {}).get(routing_plan["digest"])
+            if pinned != routing_plan:
+                fail(6, "routing_plan_unpinned", "dispatch requires the canonical RoutingPlan pinned on this board")
         lease, _ = _claim_lease(
             board, packet["track_id"], lease_id, selected, packet["budget_reservation_id"]
         )
@@ -2442,20 +3388,28 @@ def cmd_workflow_dispatch(args: argparse.Namespace) -> None:
         lease["dispatch_binding"] = dispatch_binding
         lease["capability_snapshot"] = snapshot
         lease["requested_executor"] = packet["executor"]
+        lease["selected_provider"] = selected_provider
+        lease["review_ownership"] = review_lease["owner"] if review_lease else None
         lease, _ = _transition_lease(board, packet["track_id"], lease_id, "running")
 
     handoff = None
     if selected == "external":
         handoff = {
             "kind": "separate-worker-handoff",
-            "executor": "task-github",
+            "executor": selected_provider,
             "work_packet": packet,
-            "skill_catalog": sorted(TASK_GITHUB_REQUIRED_SKILLS),
+            "skill_catalog": sorted(TASK_GITHUB_REQUIRED_SKILLS) if selected_provider == "task-github" else [],
             "preflight": "read-only-complete",
             "state_contract": "return external_ref, coarse status, and ResultEnvelope only",
+            "review_ownership": (
+                "externally-owned" if review_lease and review_lease["owner"] == "studio"
+                else "worker-owned" if review_lease else "none"
+            ),
+            "review_permit": review_lease,
         }
     ok(
         selected_executor=selected,
+        selected_provider=selected_provider,
         fallback=fallback,
         fallback_reason="pre-dispatch capability unavailable or unknown" if fallback else None,
         lease=lease,
@@ -2480,12 +3434,17 @@ def cmd_workflow_result(args: argparse.Namespace) -> None:
     packet = load_json_arg(args.packet, "WorkPacket")
     plan = load_json_arg(args.plan, "QualityPlan")
     envelope = load_json_arg(args.json, "ResultEnvelope")
+    routing_plan = load_json_arg(args.routing_plan, "RoutingPlan") if args.routing_plan else None
     packet_problems = validate_work_packet(packet)
     result_problems = validate_result_envelope(envelope)
     if packet_problems:
         fail(6, "invalid_work_packet", "; ".join(packet_problems), problems=packet_problems)
     if result_problems:
         fail(6, "invalid_result_envelope", "; ".join(result_problems), problems=result_problems)
+    if routing_plan is not None:
+        routing_problems = validate_routing_plan(routing_plan)
+        if routing_problems:
+            fail(6, "invalid_routing_plan", "; ".join(routing_problems), problems=routing_problems)
     plan_problems = validate_quality_plan(plan)
     if plan_problems:
         fail(6, "invalid_quality_plan", "; ".join(plan_problems), problems=plan_problems)
@@ -2524,6 +3483,21 @@ def cmd_workflow_result(args: argparse.Namespace) -> None:
         context_binding = binding.get("context_pack") or {}
         if context_binding != {"ref": packet["context_ref"], "digest": packet["digest"]}:
             fail(6, "context_binding_mismatch", "ResultEnvelope WorkPacket context differs from the dispatch binding")
+        routing_binding = binding.get("routing_plan")
+        if routing_binding is not None:
+            if routing_plan is None:
+                fail(6, "routing_plan_required", "result requires the canonical RoutingPlan used at dispatch")
+            if routing_binding != {"plan_id": routing_plan["plan_id"], "digest": routing_plan["digest"]}:
+                fail(6, "routing_plan_binding_mismatch", "ResultEnvelope RoutingPlan differs from dispatch")
+        elif routing_plan is not None:
+            fail(6, "routing_plan_binding_mismatch", "legacy dispatch cannot accept a later RoutingPlan")
+        review_lease = packet["constraints"].get("review_lease")
+        expected_review_binding = (
+            {"lease_id": review_lease["lease_id"], "digest": review_lease["digest"]}
+            if review_lease else None
+        )
+        if binding.get("review_lease") != expected_review_binding:
+            fail(6, "review_lease_binding_mismatch", "ResultEnvelope review lease differs from dispatch")
         if lease.get("executor") == "external" and not envelope.get("external_ref"):
             fail(6, "external_ref_required", "external executor ResultEnvelope requires external_ref")
         if lease.get("executor") == "native" and envelope.get("external_ref") is not None:
@@ -2813,17 +3787,62 @@ def build_parser() -> argparse.ArgumentParser:
     rec.add_argument("--evidence", required=True, help="evidence pin JSON")
     rec.add_argument("--change", required=True, help="change impact JSON")
     rec.set_defaults(func=cmd_review_evidence_check)
+    rnext = rvsub.add_parser("plan-next", help="plan the next allowed physical QA action")
+    rnext.add_argument("cycle_id")
+    rnext.add_argument("--head", required=True)
+    rnext.add_argument("--command-digest", required=True)
+    rnext.add_argument("--environment-digest", required=True)
+    rnext.add_argument("--tool-version", required=True)
+    rnext.add_argument("--changed-path", action="append")
+    rnext.add_argument("--allowed-command", action="append")
+    rnext.add_argument("--full-qa-reason", choices=sorted(FULL_QA_REASONS))
+    rnext.add_argument("--integration-gate", action="store_true")
+    rnext.add_argument("--telemetry-policy", choices=("legacy", "fail-closed"), default="legacy")
+    rnext.set_defaults(func=cmd_review_plan_next)
 
     sp = sub.add_parser("config", help="agent model/effort policy (.studio.yml)")
     csub = sp.add_subparsers(dest="ccmd", required=True)
     for name, helptext in (("scaffold", "write a default .studio.yml"),
                            ("validate", "check the config"),
-                           ("get", "parse the config → JSON (for the producer to pass to brokers)")):
+                           ("get", "parse the config → JSON (for the producer to pass to brokers)"),
+                           ("resolve", "resolve one agent profile with provider overlays")):
         cp = csub.add_parser(name, help=helptext)
         cp.add_argument("--path", help=f"config path (default {CONFIG_PATH_DEFAULT})")
         if name == "scaffold":
             cp.add_argument("--force", action="store_true")
+        if name == "resolve":
+            cp.add_argument("--agent-runtime", choices=AGENT_RUNTIMES)
+            cp.add_argument("--runtime-capability", help="verified studio-runtime-capability/v1 JSON")
+            cp.add_argument("--role")
+            cp.add_argument("--agent")
+            cp.add_argument("--ritual")
+            cp.add_argument("--step")
+            cp.add_argument("--model")
+            cp.add_argument("--effort")
         cp.set_defaults(func=cmd_config)
+
+    sp = sub.add_parser("routing", help="deterministic optional-tool routing")
+    rtsub = sp.add_subparsers(dest="routing_command", required=True)
+    rtp = rtsub.add_parser("plan", help="resolve worker, reviewer, runtime profile, and capability probes")
+    rtp.add_argument("--mission-id", required=True)
+    rtp.add_argument("--environment-digest", required=True)
+    rtp.add_argument("--config", help=f"config path (default {CONFIG_PATH_DEFAULT})")
+    rtp.add_argument("--worker", choices=WORKER_PROVIDERS)
+    rtp.add_argument("--reviewer", choices=REVIEWER_PROVIDERS)
+    rtp.add_argument("--work-need", action="store_true")
+    rtp.add_argument("--review-need", action="store_true")
+    rtp.add_argument("--review-lease", help="canonical workflow-review-lease/v1 JSON")
+    rtp.add_argument("--capabilities", help="selected provider capability snapshot mapping")
+    rtp.add_argument("--agent-runtime", choices=AGENT_RUNTIMES)
+    rtp.add_argument("--host-runtime", choices=AGENT_RUNTIMES)
+    rtp.add_argument("--runtime-capability", help="verified studio-runtime-capability/v1 JSON")
+    rtp.add_argument("--role")
+    rtp.add_argument("--agent")
+    rtp.add_argument("--ritual")
+    rtp.add_argument("--step")
+    rtp.add_argument("--model")
+    rtp.add_argument("--effort")
+    rtp.set_defaults(func=cmd_routing_plan)
 
     sp = sub.add_parser("board", help="read the operating board")
     sp.set_defaults(func=cmd_board)
@@ -2893,6 +3912,7 @@ def build_parser() -> argparse.ArgumentParser:
     wd.add_argument("--packet", required=True)
     wd.add_argument("--plan", required=True, help="canonical QualityPlan bound for this lease")
     wd.add_argument("--capabilities", help="agent-visible task-github capability snapshot")
+    wd.add_argument("--routing-plan", help="canonical RoutingPlan pinned by routing plan")
     wd.add_argument("--lease-id", required=True)
     wd.set_defaults(func=cmd_workflow_dispatch)
     wr = wfsub.add_parser("result", help="ingest a coarse ResultEnvelope and evaluate integration readiness")
@@ -2900,6 +3920,7 @@ def build_parser() -> argparse.ArgumentParser:
     wr.add_argument("--plan", required=True)
     wr.add_argument("--json", required=True)
     wr.add_argument("--lease-id", required=True)
+    wr.add_argument("--routing-plan", help="canonical RoutingPlan used at dispatch")
     wr.set_defaults(func=cmd_workflow_result)
     wrec = wfsub.add_parser("recover", help="resume or cancel-confirm+release a failed external run")
     wrec.add_argument("track_id")

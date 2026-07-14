@@ -21,3 +21,11 @@
 ## 배경 (사람용 서술 — 파서는 무시)
 
 미션의 맥락, 제약, 참고 링크 등을 자유롭게 적는다. 머신 상태는 위 json 블록만이다.
+
+## 도구·검증 라우팅 확인표
+
+- run parameter에 worker/reviewer가 명시됐는가? 없으면 `.studio.yml`, 그것도 없으면 native다.
+- 설정되지 않은 plugin은 discovery/probe하지 않는다.
+- 외부 provider를 선택했다면 capability owner와 mission/environment digest를 한 번 고정한다.
+- ready-set 병렬 실행, worktree 격리, 독립 판단, 통합 HEAD full gate를 유지한다.
+- 개발 중 최소 검증 → 통합 full 1회 → finding delta QA로 배치하고 valid evidence를 재사용한다.

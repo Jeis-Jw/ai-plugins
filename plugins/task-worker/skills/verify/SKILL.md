@@ -28,3 +28,4 @@ python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py
 ```
 
 검증 실패 시 `verify` event를 기록하지 않는다. 수정 범위와 invalidation 이유를 남기고 다시 검증한다.
+review lease의 owner/provider와 무관하게 verify evidence는 필수다. 외부 reviewer handoff를 검증 evidence나 integration gate의 대체물로 사용하지 않는다.

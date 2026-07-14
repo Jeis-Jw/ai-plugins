@@ -1,7 +1,7 @@
 {
   "name": "studio",
-  "version": "0.4.1",
-  "description": "Living agent team with one executor lease per track, evidence reuse, and reason-gated delta/full QA.",
+  "version": "0.5.0",
+  "description": "Native-first agent team with explicit tool routing, Claude/Codex profiles, single-owner reviews, and evidence reuse.",
   "author": {
     "name": "Jinwuk-Lee",
     "url": "https://github.com/Jeis-Jw"
@@ -10,7 +10,7 @@
   "interface": {
     "displayName": "Studio",
     "shortDescription": "Run a quality-gated living agent team with local context and optional external executors.",
-    "longDescription": "The owner gives a mission; Studio owns the mission, QualityPlan, Context Kernel, stable review cycle, evidence-based completion, and owner gates. A track leases exactly one of native, task-worker, or task-github execution. session-review and wiki-markdown remain optional tool-layer providers; full QA, independent review, or fresh context requires a structured reason rather than being repeated per lane.",
+    "longDescription": "The owner gives a mission; Studio natively handles research, planning, design, implementation, QA, independent judgment, and integration. Only tools named by a run parameter or repository config become candidates. Each track has one worker lease and each review edge one owner, while valid evidence is reused without weakening ready-set parallelism, worktree isolation, or the integrated full gate.",
     "developerName": "Jinwuk-Lee",
     "category": "Productivity",
     "capabilities": ["Read", "Write", "Workflow", "Validation"],

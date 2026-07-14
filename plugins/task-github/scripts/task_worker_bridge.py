@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
@@ -22,12 +23,14 @@ REQUIRED_CONTRACTS = {
     "binding": "task-worker.provider-binding/v1",
     "context": "task-worker.context-packet/v1",
     "evidence": "task-worker.verification-evidence/v1",
+    "review_lease": "workflow-review-lease/v1",
+    "review_permit": "task-worker.review-permit/v1",
 }
 REQUIRED_COMMANDS = {
     "create", "revise", "validate", "export", "store", "plan-graph", "ready",
     "local-start", "local-event", "recover", "receipt", "capabilities",
     "bind", "resolve", "resume", "evidence-plan", "evidence-record",
-    "provider-event",
+    "provider-event", "review-permit",
 }
 _RESOLUTION_CACHE: dict[tuple[str | None, str], tuple[Path, dict[str, Any]]] = {}
 
@@ -180,6 +183,7 @@ def bind_artifact(
     provider_data_path: str | Path | None = None,
     context_path: str | Path | None = None,
     work_graph_path: str | Path | None = None,
+    review_lease_paths: Iterable[str | Path] = (),
 ) -> dict[str, Any]:
     args = [
         "bind", "--artifact", str(artifact_path), "--artifact-path", str(artifact_path),
@@ -196,6 +200,8 @@ def bind_artifact(
         args.extend(["--context", str(context_path)])
     if work_graph_path is not None:
         args.extend(["--work-graph", str(work_graph_path)])
+    for review_lease_path in review_lease_paths:
+        args.extend(["--review-lease", str(review_lease_path)])
     return call_worker(args)["binding"]
 
 
@@ -203,7 +209,84 @@ def resume(ref: str, *, state_root: str | Path) -> dict[str, Any]:
     return call_worker(["resume", "--ref", ref, "--state-root", str(state_root)])["resume"]
 
 
+def review_permit(
+    ref: str,
+    *,
+    state_root: str | Path,
+    episode_id: str,
+    edge_id: str,
+) -> dict[str, Any]:
+    return call_worker([
+        "review-permit", "--ref", ref,
+        "--episode-id", episode_id,
+        "--edge-id", edge_id,
+        "--state-root", str(state_root),
+    ])["permit"]
+
+
+def expected_review_lease(
+    ref: str,
+    *,
+    state_root: str | Path,
+    episode_id: str,
+    edge_id: str,
+) -> dict[str, Any] | None:
+    """Resolve the exact binding lease that task-github must pin first."""
+    return review_expectation(
+        ref,
+        state_root=state_root,
+        episode_id=episode_id,
+        edge_id=edge_id,
+    )["expected_review_lease"]
+
+
+def review_expectation(
+    ref: str,
+    *,
+    state_root: str | Path,
+    episode_id: str,
+    edge_id: str,
+) -> dict[str, Any]:
+    """Return one atomic expected-lease + permit bootstrap result."""
+    permit = review_permit(
+        ref,
+        state_root=state_root,
+        episode_id=episode_id,
+        edge_id=edge_id,
+    )
+    lease = permit.get("review_lease")
+    if lease is not None and (
+        not isinstance(lease, dict)
+        or lease.get("schema") != REQUIRED_CONTRACTS["review_lease"]
+    ):
+        raise TaskWorkerBridgeError(
+            "task_worker_contract_mismatch",
+            "task-worker review permit returned an invalid review lease",
+            detail=permit,
+        )
+    return {
+        "schema": "task-github.review-expectation/v1",
+        "expected_review_lease": lease,
+        "permit": permit,
+    }
+
+
 def forward_cli(argv: list[str]) -> int:
+    if argv and argv[0] == "review-expectation":
+        parser = argparse.ArgumentParser(prog="task_worker_bridge.py review-expectation")
+        parser.add_argument("--ref", required=True)
+        parser.add_argument("--state-root", required=True)
+        parser.add_argument("--episode-id", required=True)
+        parser.add_argument("--edge-id", required=True)
+        args = parser.parse_args(argv[1:])
+        expectation = review_expectation(
+            args.ref,
+            state_root=args.state_root,
+            episode_id=args.episode_id,
+            edge_id=args.edge_id,
+        )
+        print(json.dumps({"ok": True, **expectation}, ensure_ascii=False))
+        return 0
     root, capability_payload = resolve_task_worker_root()
     if argv == ["preflight"]:
         print(json.dumps({"ok": True, "root": str(root), "capabilities": capability_payload}, ensure_ascii=False))

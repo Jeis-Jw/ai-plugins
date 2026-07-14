@@ -22,3 +22,4 @@ audience: [human, agent]
 - [[session-review-plugin]] — worker/reviewer가 audit snapshot 또는 fast context와 reviewer lease로 리뷰를 수렴시키는 플러그인 설계 정본
 - [[task-github-plugin]] — task-worker를 실행 엔진으로 사용하고 GitHub Issue tree·dependency·PR·merge·closeout을 projection/delivery adapter로 소유하는 설계 정본
 - [[task-worker-plugin]] — provider-neutral 작업 정의·분해·병렬 실행·검증·evidence 재사용을 소유하고 외부 provider가 상태와 delivery를 투영하는 범용 작업 엔진 설계 정본
+- [[studio-plugin]] — native-first 에이전트 팀과 명시적 도구 라우팅, runtime별 agent 정책, 단일 review owner·evidence 재사용 설계 정본

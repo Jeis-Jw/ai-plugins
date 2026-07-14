@@ -21,3 +21,4 @@ python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py
 ```
 
 코드·설정·제품별 검증 명령은 저장소의 완료 조건과 운영 정책을 따른다. 외부 mutation과 비용 gate는 caller 승인 없이 실행하지 않는다.
+review lease는 reviewer dispatch의 소유권만 정한다. `owner=studio`여도 구현 run과 변경 범위 최소 검증은 그대로 수행한다.

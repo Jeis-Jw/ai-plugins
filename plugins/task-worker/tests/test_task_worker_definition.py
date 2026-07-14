@@ -19,6 +19,31 @@ def load_module(name, path):
 worker = load_module("task_worker_definition", PLUGIN / "scripts" / "definition_artifact.py")
 
 
+def review_lease(
+    *,
+    lease_id="lease-studio-1",
+    owner="studio",
+    provider="session-review",
+    episode_id="episode-1",
+    edge_id="pr-22",
+    requirement="independent",
+    evidence_refs=None,
+):
+    lease = {
+        "schema": worker.REVIEW_LEASE_SCHEMA,
+        "lease_id": lease_id,
+        "owner": owner,
+        "provider": provider,
+        "episode_id": episode_id,
+        "edge_id": edge_id,
+        "requirement": requirement,
+        "criteria_digest": "sha256:" + "a" * 64,
+        "evidence_refs": list(evidence_refs or ["EV-full-baseline"]),
+    }
+    lease["digest"] = worker.tagged_digest(lease)
+    return lease
+
+
 def graph_spec():
     return {
         "definition_id": "parallel-work",
@@ -317,6 +342,110 @@ class DefinitionArtifactTests(unittest.TestCase):
                             artifact, artifact_path=path, state_root=state_root,
                             aliases=("owner/repo#1",),
                         )
+
+    def test_studio_review_lease_is_persistent_idempotent_and_skips_dispatch(self):
+        artifact = worker.create_artifact({
+            "definition_id": "studio-review",
+            "root": {"title": "single", "body": "criteria"},
+        })
+        lease = review_lease()
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact_path = worker.store_artifact(Path(tmp) / "definitions", artifact)
+            state_root = Path(tmp) / "state"
+            binding, _, changed = worker.upsert_binding(
+                artifact,
+                artifact_path=artifact_path,
+                state_root=state_root,
+                review_leases=[lease],
+                now="2026-07-14T00:00:00Z",
+            )
+            same, _, changed_again = worker.upsert_binding(
+                artifact,
+                artifact_path=artifact_path,
+                state_root=state_root,
+                review_leases=[lease],
+                now="2026-07-14T00:01:00Z",
+            )
+            permit = worker.review_permit(
+                artifact["definition_id"],
+                state_root=state_root,
+                episode_id=lease["episode_id"],
+                edge_id=lease["edge_id"],
+            )
+
+        self.assertTrue(changed)
+        self.assertFalse(changed_again)
+        self.assertEqual(binding, same)
+        self.assertEqual(binding["review_leases"], [lease])
+        self.assertEqual(permit["status"], "externally-owned")
+        self.assertEqual(permit["action"], "skip")
+        self.assertFalse(permit["dispatch_reviewer"])
+        self.assertEqual(permit["handoff"], lease)
+
+    def test_review_lease_conflicts_and_digest_mismatch_fail_closed(self):
+        artifact = worker.create_artifact({
+            "definition_id": "review-conflict",
+            "root": {"title": "single", "body": "criteria"},
+        })
+        first = review_lease()
+        conflicting_edge = review_lease(
+            lease_id="lease-worker-2",
+            owner="task-worker",
+            provider="native",
+            episode_id="episode-2",
+        )
+        conflicting_id = review_lease(edge_id="pr-24")
+        corrupt = review_lease(lease_id="lease-corrupt", edge_id="pr-23")
+        corrupt["evidence_refs"].append("EV-new")
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact_path = worker.store_artifact(Path(tmp) / "definitions", artifact)
+            state_root = Path(tmp) / "state"
+            worker.upsert_binding(
+                artifact, artifact_path=artifact_path, state_root=state_root,
+                review_leases=[first],
+            )
+            with self.assertRaisesRegex(worker.DefinitionError, "already owned"):
+                worker.upsert_binding(
+                    artifact, artifact_path=artifact_path, state_root=state_root,
+                    review_leases=[conflicting_edge],
+                )
+            with self.assertRaisesRegex(worker.DefinitionError, "already bound"):
+                worker.upsert_binding(
+                    artifact, artifact_path=artifact_path, state_root=state_root,
+                    review_leases=[conflicting_id],
+                )
+            with self.assertRaisesRegex(worker.DefinitionError, "digest"):
+                worker.upsert_binding(
+                    artifact, artifact_path=artifact_path, state_root=state_root,
+                    review_leases=[corrupt],
+                )
+
+    def test_task_worker_or_absent_lease_keeps_local_review_policy(self):
+        artifact = worker.create_artifact({
+            "definition_id": "local-review",
+            "root": {"title": "single", "body": "criteria"},
+        })
+        owned = review_lease(owner="task-worker", provider="native")
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact_path = worker.store_artifact(Path(tmp) / "definitions", artifact)
+            state_root = Path(tmp) / "state"
+            worker.upsert_binding(
+                artifact, artifact_path=artifact_path, state_root=state_root,
+                review_leases=[owned],
+            )
+            local = worker.review_permit(
+                artifact["definition_id"], state_root=state_root,
+                episode_id=owned["episode_id"], edge_id=owned["edge_id"],
+            )
+            absent = worker.review_permit(
+                artifact["definition_id"], state_root=state_root,
+                episode_id="other-episode", edge_id="other-edge",
+            )
+
+        self.assertTrue(local["dispatch_reviewer"])
+        self.assertEqual(local["status"], "task-worker-owned")
+        self.assertTrue(absent["dispatch_reviewer"])
+        self.assertEqual(absent["status"], "local-policy")
 
     def test_provider_closeout_event_is_persistent_and_idempotent(self):
         artifact = worker.create_artifact({

@@ -15,6 +15,12 @@
 - finding 수정: 무효화된 scope만 delta 검증
 - 독립 검토가 명시된 edge: caller가 선택한 reviewer provider 사용
 
+## review lease
+
+review가 필요한 edge만 exact `workflow-review-lease/v1`을 binding의 `review_leases[]`에 둔다. 리뷰가 없으면 lease도 없다. lease owner는 `studio|task-worker`, provider는 `native|session-review`, requirement는 `self|independent`다. 같은 `lease_id` 또는 `edge_id`에 다른 내용이 들어오면 fail-closed한다.
+
+모든 reviewer dispatch 전에 `review-permit`을 조회한다. `owner=studio`는 `externally-owned/skip`, `owner=task-worker`나 lease 없음은 기존 local review policy다. 이 계약은 reviewer 중복 소집만 막으며 run/verify/done/integration gate를 줄이지 않는다.
+
 동일 physical command를 줄이기 위해 논리 node를 합치거나 integration gate를 생략하지 않는다.
 
 ## portable script path

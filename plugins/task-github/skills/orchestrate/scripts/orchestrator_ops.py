@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from typing import Any
 
 GEARS = ("micro", "normal", "major")
@@ -15,6 +16,42 @@ DEFAULT_GEAR_OPTIONS = {
     "normal": {"plan": True, "verify": True, "pr-review": False},
     "major": {"plan": True, "verify": True, "pr-review": True},
 }
+REVIEW_LEASE_SCHEMA = "workflow-review-lease/v1"
+REVIEW_REQUIREMENTS = {"self", "independent"}
+REVIEW_LEASE_KEYS = {
+    "schema", "lease_id", "owner", "provider", "episode_id", "edge_id",
+    "requirement", "criteria_digest", "evidence_refs", "digest",
+}
+
+
+def _tagged_digest(value: dict[str, Any]) -> str:
+    payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def validate_review_lease(lease: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(lease, dict) or set(lease) != REVIEW_LEASE_KEYS:
+        raise ValueError("review lease fields differ from workflow-review-lease/v1")
+    if lease.get("schema") != REVIEW_LEASE_SCHEMA:
+        raise ValueError("review lease schema mismatch")
+    if lease.get("owner") not in {"studio", "task-worker"}:
+        raise ValueError("review lease owner must be studio or task-worker")
+    if lease.get("provider") not in {"native", "session-review"}:
+        raise ValueError("review lease provider must be native or session-review")
+    if lease.get("requirement") not in REVIEW_REQUIREMENTS:
+        raise ValueError("review lease requirement must be self or independent")
+    for key in ("lease_id", "episode_id", "edge_id"):
+        if not isinstance(lease.get(key), str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", lease[key]):
+            raise ValueError(f"review lease {key} must be a path-safe identifier")
+    if not isinstance(lease.get("criteria_digest"), str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", lease["criteria_digest"]):
+        raise ValueError("review lease criteria_digest must be tagged sha256")
+    refs = lease.get("evidence_refs")
+    if not isinstance(refs, list) or not all(isinstance(ref, str) and ref.strip() for ref in refs) or len(set(refs)) != len(refs):
+        raise ValueError("review lease evidence_refs must be a unique string list")
+    expected = _tagged_digest({key: lease[key] for key in REVIEW_LEASE_KEYS if key != "digest"})
+    if lease.get("digest") != expected:
+        raise ValueError("review lease digest mismatch")
+    return lease
 
 
 def issue_branch(number: int) -> str:
@@ -200,7 +237,11 @@ def review_required(
     *,
     gear_options: dict[str, Any] | None = None,
     commander_options: dict[str, Any] | None = None,
+    review_lease: dict[str, Any] | None = None,
 ) -> bool:
+    if review_lease is not None:
+        validate_review_lease(review_lease)
+        return True
     if review_mode == "skip":
         return False
     if review_mode == "all":
@@ -574,6 +615,65 @@ def worker_feedback_handoff(*, issue: int, pr: int, branch: str, feedback: list[
     return {"issue": issue, "pr": pr, "branch": branch, "feedback": feedback, "prompt": prompt}
 
 
+def external_review_handoff(item: dict[str, Any], permit: dict[str, Any]) -> dict[str, Any]:
+    """Preserve GitHub transport while returning reviewer ownership to Studio."""
+    if permit.get("schema") != "task-worker.review-permit/v1":
+        raise ValueError("task-worker review permit schema mismatch")
+    lease = validate_review_lease(permit.get("review_lease"))
+    if permit.get("dispatch_reviewer") is not False or lease["owner"] != "studio":
+        raise ValueError("external review handoff requires a Studio-owned skip permit")
+    required = ("number", "pr", "base", "head")
+    missing = [key for key in required if item.get(key) is None]
+    if missing:
+        raise ValueError(f"external review handoff lacks GitHub transport: {missing}")
+    return {
+        "schema": "task-github.external-review-handoff/v1",
+        "status": "externally-owned",
+        "issue": int(item["number"]),
+        "pr": int(item["pr"]),
+        "base": item["base"],
+        "head": item["head"],
+        "review_lease": lease,
+    }
+
+
+def review_permit_action(
+    expected_review_lease: dict[str, Any],
+    permit: dict[str, Any] | None,
+) -> str:
+    """Fence one pinned review edge before any reviewer dispatch.
+
+    The ledger expectation is the authority. A permit is only a point-in-time
+    proof that task-worker still resolves that exact edge to the same owner.
+    """
+    expected = validate_review_lease(expected_review_lease)
+    if not isinstance(permit, dict):
+        raise ValueError("review_permit_required")
+    if permit.get("schema") != "task-worker.review-permit/v1":
+        raise ValueError("review_permit_mismatch")
+    try:
+        actual = validate_review_lease(permit.get("review_lease"))
+    except ValueError as exc:
+        raise ValueError("review_permit_mismatch") from exc
+    if actual != expected:
+        raise ValueError("review_permit_mismatch")
+    if expected["owner"] == "studio":
+        if (
+            permit.get("status") != "externally-owned"
+            or permit.get("dispatch_reviewer") is not False
+            or permit.get("action") != "skip"
+        ):
+            raise ValueError("review_permit_mismatch")
+        return "external"
+    if (
+        permit.get("status") != "task-worker-owned"
+        or permit.get("dispatch_reviewer") is not True
+        or permit.get("action") != "dispatch"
+    ):
+        raise ValueError("review_permit_mismatch")
+    return "local"
+
+
 def _numbers(items: list[dict[str, Any]] | None) -> list[int]:
     return [int(item["number"]) for item in items or []]
 
@@ -611,6 +711,7 @@ def plan_tick(
     review_command: str | None = None,
     max_workers: int = 1,
     pipeline: bool = False,
+    review_permits: dict[int | str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     pipeline = pipeline or max_workers > 1
 
@@ -675,8 +776,72 @@ def plan_tick(
             }
         return action
 
-    review_waiting = _numbers(ready_state.get("review_waiting"))
+    review_items = list(ready_state.get("review_waiting") or [])
+    review_waiting = _numbers(review_items)
     if review_waiting:
+        external_handoffs = []
+        local_items = []
+        for item in review_items:
+            permit = (review_permits or {}).get(int(item["number"])) or (review_permits or {}).get(str(item["number"]))
+            expected = item.get("expected_review_lease")
+            if not isinstance(expected, dict):
+                # No pinned lease is the standalone contract. Ignore stray
+                # permits and preserve the existing local review flow.
+                local_items.append(item)
+                continue
+            try:
+                permit_action = review_permit_action(expected, permit)
+            except ValueError as exc:
+                reason = str(exc)
+                if reason not in {"review_permit_required", "review_permit_mismatch"}:
+                    reason = "review_permit_mismatch"
+                return {
+                    "action": "stop",
+                    "stop_reason": reason,
+                    "issues": [int(item["number"])],
+                }
+            if permit_action == "external":
+                external_handoffs.append(external_review_handoff(item, permit))
+            else:
+                local_items.append(item)
+        if external_handoffs and not local_items:
+            return {
+                "action": "handoff_external_reviews",
+                "status": "externally-owned",
+                "issues": [item["issue"] for item in external_handoffs],
+                "handoffs": external_handoffs,
+                "ledger_update": "external_review_waiting",
+                "ledger_required": True,
+            }
+        if external_handoffs:
+            command = compose_tool_command(review_tool, review_command)
+            if not command:
+                return {
+                    "action": "stop",
+                    "stop_reason": "human_gate_review",
+                    "issues": _numbers(local_items),
+                    "external_handoffs": external_handoffs,
+                }
+            return {
+                "action": "pipeline",
+                "actions": [
+                    {
+                        "action": "handoff_external_reviews",
+                        "status": "externally-owned",
+                        "issues": [item["issue"] for item in external_handoffs],
+                        "handoffs": external_handoffs,
+                        "ledger_update": "external_review_waiting",
+                    },
+                    {
+                        "action": "dispatch_background_reviews",
+                        "issues": _numbers(local_items),
+                        "command": command,
+                        "retick_on": "review_completion",
+                    },
+                ],
+                "ledger_required": True,
+                "retick_on": "any_lane_completion",
+            }
         command = compose_tool_command(review_tool, review_command)
         if command and not pipeline:
             return {"action": "call_review_tool", "issues": review_waiting, "command": command}
