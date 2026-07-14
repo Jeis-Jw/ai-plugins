@@ -1,5 +1,5 @@
 {
   "name": "studio",
-  "version": "0.4.1",
-  "description": "살아있는 에이전트 팀 — track별 native/task-worker/task-github 단일 실행 lease, evidence reuse, delta/full QA gate를 유지한다. session-review와 wiki-markdown은 선택적 도구 레이어다."
+  "version": "0.5.0",
+  "description": "Native-first 에이전트 팀 — 명시적 도구 라우팅, Claude/Codex agent 정책, 단일 review owner와 evidence 재사용"
 }

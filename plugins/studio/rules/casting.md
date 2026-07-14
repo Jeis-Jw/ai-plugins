@@ -40,11 +40,14 @@ broker에 넘길 persona만 들어가고, `critic: true`이면 critic rubric을 
 
 ## Tool policy
 
-- 과거 결정/맥락 필요: `wiki-markdown recall`.
-- 지속 작업/상태 추적 필요: `task-github`.
-- 독립 검토/승인 필요: `session-review`.
-- durable/parallel execution이 필요: 향후 execution workflow tool.
-- crew 상호작용 자체가 품질을 만들 때: studio ritual run.
+Studio native harness가 기본이며 위 crew catalog 전체를 외부 plugin 없이 사용할 수 있다. 외부 도구는 run parameter 또는 `.studio.yml`에 이름이 있을 때만 후보로 평가한다. 미설정 도구는 discovery/probe하지 않는다.
+
+- worker 후보가 명시됨: `task-worker|task-github` 중 하나만 track lease. task-github 선택 시 task-worker 별도 lease 금지.
+- reviewer 후보가 명시됨: risk/independence-required edge에서만 `session-review`를 고려하고 동일 episode를 재사용.
+- wiki가 명시됨: 굳은 context/decision handoff에만 사용. runtime 상태를 복제하지 않음.
+- 후보 없음: native cast와 critic/reviewer로 완주.
+
+도구 선택 우선순위는 run parameter > `.studio.yml` > native다. explicit unavailable은 STOP, configured unavailable은 선언된 fallback을 따른다.
 
 ## Owner gates
 

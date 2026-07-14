@@ -32,6 +32,12 @@ def item(node: dict[str, Any], *, reason: str | None = None) -> dict[str, Any]:
     }
     if reason:
         out["reason"] = reason
+    if isinstance(node.get("pr_transport"), dict):
+        out.update(node["pr_transport"])
+    elif node.get("pr") is not None:
+        out["pr"] = node["pr"]
+    if isinstance(node.get("external_review"), dict):
+        out["external_review"] = node["external_review"]
     for field in ("ready_for_closeout", "closeout_started", "closeout_failed"):
         if isinstance(node.get(field), dict):
             out.update(node[field])

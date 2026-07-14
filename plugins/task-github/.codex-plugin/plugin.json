@@ -1,7 +1,7 @@
 {
   "name": "task-github",
-  "version": "0.22.0",
-  "description": "GitHub adapter for task-worker Issue Tree projection/import, manual or worker dispatch, PRs, and closeout.",
+  "version": "0.23.0",
+  "description": "GitHub adapter for task-worker Issue Trees, PR transport, externally owned review handoffs, and gated closeout.",
   "author": {
     "name": "Jinwuk-Lee",
     "url": "https://github.com/Jeis-Jw"
@@ -10,7 +10,7 @@
   "interface": {
     "displayName": "Task GitHub",
     "shortDescription": "Project task-worker graphs into GitHub delivery workflows.",
-    "longDescription": "Uses a compatible task-worker as the provider-neutral execution engine, projects complete work graphs to GitHub Issue trees, and owns labels, pull requests, checks, review, merge, and closeout. Existing Issue trees can be imported for manual delegation or worker execution; setup and read-only diagnosis remain usable without the execution dependency.",
+    "longDescription": "Uses a compatible task-worker as the provider-neutral execution engine, projects complete work graphs to GitHub Issue trees, and owns labels, pull requests, checks, merge, and closeout. A Studio-owned review lease preserves PR transport while suppressing only duplicate reviewer dispatch; matching approval evidence is required before closeout.",
     "developerName": "Jinwuk-Lee",
     "category": "Productivity",
     "capabilities": [

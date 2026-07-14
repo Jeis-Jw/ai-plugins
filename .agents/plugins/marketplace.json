@@ -15,8 +15,8 @@
     {
       "name": "task-github",
       "source": { "source": "local", "path": "./plugins/task-github" },
-      "version": "0.22.0",
-      "description": "GitHub adapter for task-worker Issue Tree projection/import, manual or worker dispatch, PRs, and closeout.",
+      "version": "0.23.0",
+      "description": "GitHub adapter for task-worker Issue Trees, PR transport, externally owned review handoffs, and gated closeout.",
       "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
       "category": "Productivity"
     },
@@ -31,8 +31,8 @@
     {
       "name": "studio",
       "source": { "source": "local", "path": "./plugins/studio" },
-      "version": "0.4.1",
-      "description": "Living agent team with one executor lease per track, evidence reuse, and reason-gated delta/full QA.",
+      "version": "0.5.0",
+      "description": "Native-first agent team with explicit tool routing, Claude/Codex profiles, single-owner reviews, and evidence reuse.",
       "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
       "category": "Productivity"
     },
@@ -42,8 +42,8 @@
         "source": "local",
         "path": "./plugins/task-worker"
       },
-      "version": "0.3.0",
-      "description": "Provider-neutral work graphs with manual/worker dispatch, parallel ready sets, integration gates, pinned evidence, and cross-session resume.",
+      "version": "0.4.0",
+      "description": "Provider-neutral work graphs with parallel ready sets, integration gates, pinned evidence, and single-owner review permits.",
       "policy": {
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL"

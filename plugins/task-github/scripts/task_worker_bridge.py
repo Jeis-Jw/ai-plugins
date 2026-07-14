@@ -22,12 +22,14 @@ REQUIRED_CONTRACTS = {
     "binding": "task-worker.provider-binding/v1",
     "context": "task-worker.context-packet/v1",
     "evidence": "task-worker.verification-evidence/v1",
+    "review_lease": "workflow-review-lease/v1",
+    "review_permit": "task-worker.review-permit/v1",
 }
 REQUIRED_COMMANDS = {
     "create", "revise", "validate", "export", "store", "plan-graph", "ready",
     "local-start", "local-event", "recover", "receipt", "capabilities",
     "bind", "resolve", "resume", "evidence-plan", "evidence-record",
-    "provider-event",
+    "provider-event", "review-permit",
 }
 _RESOLUTION_CACHE: dict[tuple[str | None, str], tuple[Path, dict[str, Any]]] = {}
 
@@ -180,6 +182,7 @@ def bind_artifact(
     provider_data_path: str | Path | None = None,
     context_path: str | Path | None = None,
     work_graph_path: str | Path | None = None,
+    review_lease_paths: Iterable[str | Path] = (),
 ) -> dict[str, Any]:
     args = [
         "bind", "--artifact", str(artifact_path), "--artifact-path", str(artifact_path),
@@ -196,11 +199,28 @@ def bind_artifact(
         args.extend(["--context", str(context_path)])
     if work_graph_path is not None:
         args.extend(["--work-graph", str(work_graph_path)])
+    for review_lease_path in review_lease_paths:
+        args.extend(["--review-lease", str(review_lease_path)])
     return call_worker(args)["binding"]
 
 
 def resume(ref: str, *, state_root: str | Path) -> dict[str, Any]:
     return call_worker(["resume", "--ref", ref, "--state-root", str(state_root)])["resume"]
+
+
+def review_permit(
+    ref: str,
+    *,
+    state_root: str | Path,
+    episode_id: str,
+    edge_id: str,
+) -> dict[str, Any]:
+    return call_worker([
+        "review-permit", "--ref", ref,
+        "--episode-id", episode_id,
+        "--edge-id", edge_id,
+        "--state-root", str(state_root),
+    ])["permit"]
 
 
 def forward_cli(argv: list[str]) -> int:

@@ -114,6 +114,8 @@ fi
 
 ORCHESTRATED review-free FF 경로에서는 drift gate 통과 결과를 부모가 재사용할 수 있도록 `gate_evidence`를 먼저 ledger에 기록한다. evidence에는 canonical changed path list, `changed_paths_hash`, `checked_paths_hash`, `drift_surface_hash`, `tool_versions`, `gate_version`, 빈 `changed_path_stale_issues`가 모두 있어야 한다. required field가 빠지면 `ready_for_closeout`을 기록하지 않는다. 실제 FF/issue close 뒤 `ff_merged`/`closeout_done` event는 closeout lane이 기록한다.
 
+외부 `workflow-review-lease/v1`이 있는 edge에서는 `review-mode=skip`으로 FF closeout을 만들지 않는다. `owner=studio`여도 PR 생성·base/head transport·CI/preflight·`review_waiting`은 유지하고 reviewer dispatch만 억제한다. 동일 lease의 approved verdict와 필수 evidence가 ledger에 기록되기 전에는 `ready_for_pr_closeout`이나 merge를 수행하지 않는다.
+
 #### A-1) review 불필요 — FF closeout (PR 없음) — `ROUTE=ff`
 ORCHESTRATED worker는 리프 브랜치를 부모 ref로 직접 전진시키지 않는다. gate evidence를 남긴 뒤, closeout lane의 FIFO queue에 올린다. closeout one-shot agent가 `BASE_BRANCH` lock을 잡고 checkout 없는 FF(`ff_merge_command`; self-fetch refspec — main worktree HEAD는 트렁크를 떠나지 않는다, DEC-2026-07-02-212109 불변식 보존)를 수행한다:
 ```bash

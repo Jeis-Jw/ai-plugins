@@ -16,6 +16,8 @@ export const meta = {
 //     criticRubric: string,                       // critic/rubric.md contents
 //     maxRounds?: number (default 4),
 //     dryStop?: number  (default 2),
+//     agentRuntime?: 'claude'|'codex',
+//     agentPolicy?: { defaults, roles, agents, rituals, providers },
 //   }
 // defensive: a stringified args (caller passed JSON text instead of an object)
 // would otherwise silently yield zero personas — parse it back.
@@ -25,10 +27,14 @@ const PERSONAS = (A.personas || []).filter(Boolean)
 const RUBRIC = A.criticRubric || 'Reject any delta whose changed_what has no concrete anchor.'
 const MAX_ROUNDS = A.maxRounds || 4
 const DRY_STOP = A.dryStop || 2
+const AGENT_RUNTIME = A.agentRuntime || null
 const ANCHORS = ['artifact', 'acceptance-criteria', 'risk', 'rejected-alternative', 'repro-test']
 
 if (PERSONAS.length < 2) {
   return { ritual: 'brainstorm', error: 'brainstorm needs >=2 personas with distinct priors', participants: PERSONAS.map(p => p.name) }
+}
+if (AGENT_RUNTIME && !['claude', 'codex'].includes(AGENT_RUNTIME)) {
+  return { ritual: 'brainstorm', error: 'agentRuntime must be claude or codex', participants: PERSONAS.map(p => p.name) }
 }
 
 const startedMs = Date.now()
@@ -36,18 +42,32 @@ const startedAt = new Date(startedMs).toISOString()
 const runId = A.runId || `RUN-studio-brainstorm-${startedMs}-${Math.random().toString(36).slice(2, 8)}`
 
 // --- agent model/effort policy (from .studio.yml via the producer) ----------
-// precedence: run override > rituals.brainstorm.<step> > roles.<role> > defaults
-// > omit (inherit the session). Blank/null anywhere falls through.
+// precedence: run override > provider ritual > common ritual > provider agent
+// > common agent > provider role > common role > provider defaults > common
+// defaults > omit (inherit the session). Blank/null anywhere falls through.
 const POLICY = A.agentPolicy || {}
 const OVERRIDE = A.overrides || {}
-function policyFor(role, step) {
-  const d = POLICY.defaults || {}
-  const r = (POLICY.roles || {})[role] || {}
-  const s = (((POLICY.rituals || {}).brainstorm || {})[step]) || {}
-  const pick = (k) => OVERRIDE[k] ?? s[k] ?? r[k] ?? d[k] ?? null
+function policyFor(role, step, agentId) {
+  const provider = AGENT_RUNTIME ? ((POLICY.providers || {})[AGENT_RUNTIME] || {}) : {}
+  const commonDefault = POLICY.defaults || {}
+  const providerDefault = provider.defaults || {}
+  const commonRole = (POLICY.roles || {})[role] || {}
+  const providerRole = (provider.roles || {})[role] || {}
+  const commonAgent = (POLICY.agents || {})[agentId] || {}
+  const providerAgent = (provider.agents || {})[agentId] || {}
+  const commonRitual = (((POLICY.rituals || {}).brainstorm || {})[step]) || {}
+  const providerRitual = (((provider.rituals || {}).brainstorm || {})[step]) || {}
+  const nonblank = value => value === null || value === undefined || value === '' ? null : value
+  const pick = (k) => [
+    OVERRIDE[k], providerRitual[k], commonRitual[k],
+    providerAgent[k], commonAgent[k], providerRole[k], commonRole[k],
+    providerDefault[k], commonDefault[k],
+  ].map(nonblank).find(value => value !== null) ?? null
   const opts = {}
   const m = pick('model'); if (m) opts.model = m
   const e = pick('effort'); if (e) opts.effort = e
+  opts.agentId = agentId
+  if (AGENT_RUNTIME) opts.agentRuntime = AGENT_RUNTIME
   return opts
 }
 
@@ -143,7 +163,7 @@ phase('Diverge')
 const seeds = await parallel(
   PERSONAS.map((p, i) => () =>
     agent(personaTurnPrompt('', p, 'Open the room: give your independent take on the agenda. You cannot see the others yet.'),
-      { schema: TURN_SCHEMA, label: `diverge:${p.name}`, phase: 'Diverge', ...policyFor(p.name, 'diverge') })
+      { schema: TURN_SCHEMA, label: `diverge:${p.name}`, phase: 'Diverge', ...policyFor(p.role, 'diverge', p.agentId || p.name) })
       .then(r => ({ name: p.name, ...r }))
   )
 )
@@ -166,7 +186,7 @@ for (let round = 1; round <= MAX_ROUNDS; round++) {
     const turn = await agent(
       personaTurnPrompt(transcript, p,
         `Round ${round}. React to the transcript: rebut, refine, or propose something new — no agreement-summaries. Log any real delta with its anchor.`),
-      { schema: TURN_SCHEMA, label: `debate:r${round}:${p.name}`, phase: 'Debate', ...policyFor(p.name, 'debate') })
+      { schema: TURN_SCHEMA, label: `debate:r${round}:${p.name}`, phase: 'Debate', ...policyFor(p.role, 'debate', p.agentId || p.name) })
     if (!turn) continue
     transcript += `\n\n[r${round}] ${p.name}: ${turn.utterance}`
     // stable id = position in roundSubmitted; the critic echoes it back so
@@ -175,7 +195,7 @@ for (let round = 1; round <= MAX_ROUNDS; round++) {
   }
 
   const critique = await agent(criticPrompt(roundSubmitted),
-    { schema: CRITIC_SCHEMA, label: `critic:r${round}`, phase: 'Debate', ...policyFor('critic', 'critic') })
+    { schema: CRITIC_SCHEMA, label: `critic:r${round}`, phase: 'Debate', ...policyFor('critic', 'critic', 'critic') })
   const byId = new Map(((critique && critique.verified) || []).map(v => [v.id, v]))
   let validThisRound = 0
   for (const s of roundSubmitted) {
@@ -218,7 +238,7 @@ const synth = await agent([
   'List any backlog proposals the crew raised (spontaneous initiatives).',
   '\n--- transcript ---\n' + transcript,
   '\n--- verified deltas (do not add to these) ---\n' + JSON.stringify(deltaLog, null, 2),
-].join('\n'), { schema: SYNTH_SCHEMA, label: 'summarizer', phase: 'Converge', ...policyFor('summarizer', 'converge') }) || { synthesis: '(summarizer failed)', minority: 'none', proposals: [] }
+].join('\n'), { schema: SYNTH_SCHEMA, label: 'summarizer', phase: 'Converge', ...policyFor('summarizer', 'converge', 'summarizer') }) || { synthesis: '(summarizer failed)', minority: 'none', proposals: [] }
 
 // final critic verdict on the accumulated delta_log
 const VERDICT_SCHEMA = {
@@ -231,7 +251,7 @@ const verdict = await agent([
   '(new/changed acceptance-criteria, risks, rejected alternatives, artifacts, or repro-tests).',
   'An empty or anchor-less delta_log means theatre: alive=false.',
   '\n--- verified delta_log ---\n' + JSON.stringify(deltaLog, null, 2),
-].join('\n'), { schema: VERDICT_SCHEMA, label: 'critic:final', phase: 'Converge', ...policyFor('critic', 'verdict') }) || { alive: deltaLog.length > 0, reason: 'critic unavailable; fell back to delta count' }
+].join('\n'), { schema: VERDICT_SCHEMA, label: 'critic:final', phase: 'Converge', ...policyFor('critic', 'verdict', 'critic') }) || { alive: deltaLog.length > 0, reason: 'critic unavailable; fell back to delta count' }
 
 // output delta_log = verified deltas + dry-marked rejects (audit trail for the
 // minutes); studio.py counts only the non-dry, anchored ones as evidence.

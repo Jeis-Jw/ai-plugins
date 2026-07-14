@@ -1,4 +1,5 @@
 import json
+import hashlib
 import os
 import subprocess
 import sys
@@ -15,13 +16,62 @@ import task_worker_bridge as bridge  # noqa: E402
 import github_projection as projection  # noqa: E402
 
 
+def studio_review_lease():
+    lease = {
+        "schema": "workflow-review-lease/v1",
+        "lease_id": "lease-studio-1",
+        "owner": "studio",
+        "provider": "session-review",
+        "episode_id": "episode-1",
+        "edge_id": "pr-22",
+        "requirement": "independent",
+        "criteria_digest": "sha256:" + "a" * 64,
+        "evidence_refs": ["EV-full-baseline"],
+    }
+    encoded = json.dumps(lease, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    lease["digest"] = "sha256:" + hashlib.sha256(encoded.encode()).hexdigest()
+    return lease
+
+
 class TaskWorkerBridgeTests(unittest.TestCase):
     def test_preflight_resolves_sibling_worker_and_exact_contracts(self):
         root, payload = bridge.resolve_task_worker_root()
         self.assertEqual(root.name, "task-worker")
         self.assertEqual(payload["plugin"], "task-worker")
+        self.assertEqual(payload["version"], "0.4.0")
         self.assertEqual(payload["contracts"], bridge.REQUIRED_CONTRACTS)
+        self.assertEqual(payload["contracts"]["review_permit"], "task-worker.review-permit/v1")
         self.assertTrue(bridge.REQUIRED_COMMANDS.issubset(set(payload["commands"])))
+
+    def test_bridge_binds_and_consumes_studio_review_permit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            spec = root / "spec.json"
+            artifact_path = root / "artifact.json"
+            lease_path = root / "lease.json"
+            spec.write_text(json.dumps({
+                "definition_id": "bridge-review",
+                "root": {"title": "root", "body": "criteria"},
+            }), encoding="utf-8")
+            created = bridge.call_worker(["create", "--spec", str(spec), "--store", str(root / "defs")])
+            artifact_path.write_text(json.dumps(created["artifact"]), encoding="utf-8")
+            lease = studio_review_lease()
+            lease_path.write_text(json.dumps(lease), encoding="utf-8")
+            binding = bridge.bind_artifact(
+                artifact_path,
+                state_root=root / "state",
+                review_lease_paths=[lease_path],
+            )
+            permit = bridge.review_permit(
+                binding["definition"]["definition_id"],
+                state_root=root / "state",
+                episode_id=lease["episode_id"],
+                edge_id=lease["edge_id"],
+            )
+
+        self.assertEqual(binding["review_leases"], [lease])
+        self.assertEqual(permit["status"], "externally-owned")
+        self.assertFalse(permit["dispatch_reviewer"])
 
     def test_legacy_cli_path_forwards_to_worker(self):
         result = subprocess.run(

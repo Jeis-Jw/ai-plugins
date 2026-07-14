@@ -141,18 +141,48 @@ python3 plugins/studio/scripts/studio.py review summary RC-issue-58
 head/evidence와 결합해 `review event` 또는 `run record`의 `review_cycle_delta`로 확정해야
 한다. cycle mode pairing만으로는 integration-ready가 되지 않는다.
 
-## agent model/effort 정책 (`.studio.yml`)
+## v0.5 선택적 도구 라우팅과 review owner
+
+Studio의 native harness는 `strategist`, `planner-a/b`, `researcher`, `product-designer`, `visual-designer`, `architect`, `dev`, `creator`, `qa`, `reviewer`, `critic`, `curator`, `summarizer` 역할을 기본 제공한다. 외부 도구가 없어도 리서치→기획→설계→구현→QA→독립 판단→통합을 완주한다.
+
+- 도구 선택은 **run parameter > `.studio.yml` > native**다. 설정·파라미터에 이름이 없는 plugin을 discovery/probe하지 않는다.
+- worker는 track당 `native|task-worker|task-github` 하나만 lease한다. task-github는 내부 task-worker adapter 책임을 포함하므로 Studio가 task-worker를 별도 probe/lease하지 않는다.
+- `activation:auto|always|never`의 `auto`는 설정된 후보를 사용할 필요를 Studio가 판단한다는 뜻이지 미설정 plugin 자동 탐색이 아니다.
+- 명시 run override가 unavailable이면 STOP한다. 설정 provider unavailable은 해당 설정의 `fallback:native|stop`을 따른다.
+- capability는 선택된 외부 provider만 `(mission_id, provider, environment_digest)`당 한 번 확인하고 `studio-capability-snapshot/v1`으로 재사용한다.
+
+결정 결과는 `studio-routing-plan/v1`의 canonical fields `worker.selected`, `worker.provider`, `reviewer.owner`, `reviewer.provider`, `reviewer.dispatch`, `reviewer.selected`, `review_lease`, `action`, `digest`로 고정한다. reviewer가 필요한 edge만 exact `workflow-review-lease/v1`을 만든다. `owner=studio`이면 외부 worker/adapter는 reviewer를 소집하지 않고 Studio가 native/session-review를 실행한다. `owner=task-worker`이면 Studio는 reviewer를 추가 소집하지 않는다.
+
+최적화 단위는 논리 gate가 아니라 물리 실행이다. ready-set 병렬성, worktree 격리, 독립 판단, 통합 HEAD full gate는 유지하고 검증을 다음처럼 배치한다.
+
+```text
+개발 중 변경 범위 최소 검증
+→ 통합 HEAD full QA 1회
+→ finding 수정 범위 delta QA
+```
+
+같은 HEAD/command/environment/tool version의 성공 evidence는 재사용한다. fresh Release/device/production 환경 확인처럼 완료 조건 자체가 새 실행을 요구하는 gate만 별도 evidence key를 쓴다. handoff는 criteria, open finding, changed paths, valid evidence, next action만 전달하고 transcript/repo 재탐색을 반복하지 않는다.
+
+## agent runtime/model/effort 정책 (`.studio.yml`)
 
 crew 서브에이전트가 어떤 모델·에포트로 돌지는 `.task-worker.yml`/`.task-github.yml`과 분리된 repo
-루트 설정파일 `.studio.yml`로 정한다. 4층 해석 (most→least specific):
+루트 설정파일 `.studio.yml`로 정한다. 현재 runtime profile은 `claude|codex`만 지원하며 agent별 stable id를 사용할 수 있다. 해석 순서(most→least specific):
 
 ```
-run override(overrides) > rituals.<ritual>.<step> > roles.<role> > defaults > omit(세션 상속)
+run override
+> providers.<runtime>.rituals.<ritual>.<step>
+> rituals.<ritual>.<step>
+> providers.<runtime>.agents.<agent-id>
+> agents.<agent-id>
+> providers.<runtime>.roles.<role>
+> roles.<role>
+> providers.<runtime>.defaults
+> defaults
+> omit(세션 상속)
 ```
 
 blank/null은 다음 층으로 넘어가고, 아무 층도 안 정하면 producer 세션 모델·에포트를
-그대로 상속한다(하드코딩보다 안전한 기본값). producer가 `studio.py config get --json`으로
-읽어 broker args의 `agentPolicy`로 주입하고, 브로커가 각 `agent()` 호출에 적용한다.
+그대로 상속한다. runtime override는 profile 선택일 뿐 해당 harness capability를 새로 만들지 않는다. producer가 `studio.py config get`으로 읽어 broker args의 `agentPolicy`, `agentRuntime`, stable `agentId`로 주입하고, brainstorm/pairing broker가 같은 resolver를 각 `agent()` 호출에 적용한다.
 예: critic=high(연극 판정 날카롭게), summarizer=low(중립 압축은 싸게), diverge=low.
 
 ```bash
@@ -210,7 +240,7 @@ python3 plugins/studio/scripts/studio.py cast suggest implementation
 
 ## 상태
 
-v0.4.1 — track별 native/task-worker/task-github 단일 executor lease와 선택적 session-review provider 경계를 명문화했다.
+v0.5.0 — native 기본·명시적 외부 도구 라우팅, Claude/Codex agent profile, 단일 review lease owner, capability/evidence 재사용과 development→integration full→finding delta QA 계약.
 
 v0.4.0 — stable review cycle·delta/full QA gate·evidence reuse·compact handoff·Issue event projection.
 기존 schema-v1 workflow receipt·QualityPlan·Context Kernel·optional external executor도 유지한다. 설계 정본은 이 repo

@@ -23,7 +23,7 @@ async function execute(name, args, responder, spentValues = [0, 0]) {
       { spent: () => spentValues[Math.min(spentIndex++, spentValues.length - 1)] },
       value => phases.push(value),
       jobs => Promise.all(jobs.map(job => job())),
-      (_prompt, options) => Promise.resolve(responder(options.label)),
+      (_prompt, options) => Promise.resolve(responder(options.label, options)),
       value => logs.push(value),
     ),
     phases,
@@ -176,5 +176,98 @@ assert.deepEqual(cyclePairing.output.reviewFeedback.findings_defended, ['F-0003'
 assert.deepEqual(cyclePairing.output.reviewFeedback.findings_opened.map(f => f.id), ['F-0004'])
 assert.deepEqual(cyclePairing.output.reviewFeedback.findings_open, ['F-0004'])
 assert.equal(cyclePairing.output.reviewFeedback.result, 'findings-open')
+
+async function resolvedBrainstormOption(agentPolicy, overrides = {}) {
+  let captured = null
+  await execute(
+    'brainstorm.workflow.js',
+    {
+      agenda: 'policy precedence', agentRuntime: 'codex', agentPolicy, overrides,
+      personas: [
+        { name: 'a', agentId: 'planner-a', role: 'planner', prior: 'one', body: 'one' },
+        { name: 'b', agentId: 'planner-b', role: 'reviewer', prior: 'two', body: 'two' },
+      ],
+      maxRounds: 1, dryStop: 1,
+    },
+    (label, options) => {
+      if (label === 'diverge:a') captured = options
+      if (label.startsWith('diverge:') || label.startsWith('debate:')) return { utterance: 'dry', deltas: [] }
+      if (label === 'critic:r1') return { verified: [] }
+      if (label === 'summarizer') return { synthesis: 'done', minority: 'none', proposals: [] }
+      if (label === 'critic:final') return { alive: false, reason: 'dry' }
+      throw new Error(`unexpected policy label: ${label}`)
+    },
+  )
+  return captured
+}
+
+const commonDefault = { defaults: { model: 'common-default' } }
+const providerDefault = { defaults: { model: 'common-default' }, providers: { codex: { defaults: { model: 'provider-default' } } } }
+const commonRole = { ...providerDefault, roles: { planner: { model: 'common-role' } } }
+const providerRole = { ...commonRole, providers: { codex: { ...providerDefault.providers.codex, roles: { planner: { model: 'provider-role' } } } } }
+const commonAgent = { ...providerRole, agents: { 'planner-a': { model: 'common-agent' } } }
+const providerAgent = { ...commonAgent, providers: { codex: { ...providerRole.providers.codex, agents: { 'planner-a': { model: 'provider-agent' } } } } }
+const commonRitual = { ...providerAgent, rituals: { brainstorm: { diverge: { model: 'common-ritual' } } } }
+const providerRitual = { ...commonRitual, providers: { codex: { ...providerAgent.providers.codex, rituals: { brainstorm: { diverge: { model: 'provider-ritual' } } } } } }
+
+const precedenceCases = [
+  [commonDefault, {}, 'common-default'],
+  [providerDefault, {}, 'provider-default'],
+  [commonRole, {}, 'common-role'],
+  [providerRole, {}, 'provider-role'],
+  [commonAgent, {}, 'common-agent'],
+  [providerAgent, {}, 'provider-agent'],
+  [commonRitual, {}, 'common-ritual'],
+  [providerRitual, {}, 'provider-ritual'],
+  [providerRitual, { model: 'run-override' }, 'run-override'],
+  [providerRitual, { model: '' }, 'provider-ritual'],
+]
+for (const [policy, overrides, expected] of precedenceCases) {
+  const options = await resolvedBrainstormOption(policy, overrides)
+  assert.equal(options.model, expected)
+  assert.equal(options.agentRuntime, 'codex')
+  assert.equal(options.agentId, 'planner-a')
+}
+
+let pairingDevOptions = null
+await execute(
+  'pairing.workflow.js',
+  {
+    taskSpec: 'runtime policy', acceptanceCriteria: ['verified'], worktreePath: '/tmp/track',
+    agentRuntime: 'claude',
+    personas: { dev: { agentId: 'builder-7' }, qa: { agentId: 'qa-7' } },
+    agentPolicy: {
+      agents: { 'builder-7': { model: 'common-agent' } },
+      providers: { claude: { agents: { 'builder-7': { model: 'provider-agent' } } } },
+    },
+    maxRounds: 1,
+  },
+  (label, options) => {
+    if (label === 'dev:r1') {
+      pairingDevOptions = options
+      return {
+        summary: 'done', defended: [], unresolved: [], changedFiles: ['x'],
+        verification: [{ command: 'test', result: 'pass' }], blockedChecks: [],
+      }
+    }
+    if (label === 'qa:r1') return { broke: false, failures: [], verification: [{ command: 'test', result: 'pass' }], blockedChecks: [] }
+    if (label === 'critic:verdict') return { alive: true, reason: 'done', defended_count: 0, open_count: 0 }
+    throw new Error(`unexpected pairing policy label: ${label}`)
+  },
+)
+assert.equal(pairingDevOptions.model, 'provider-agent')
+assert.equal(pairingDevOptions.agentRuntime, 'claude')
+assert.equal(pairingDevOptions.agentId, 'builder-7')
+assert.equal(pairingDevOptions.agentType, 'general-purpose')
+
+const badRuntime = await execute(
+  'brainstorm.workflow.js',
+  {
+    agenda: 'bad runtime', agentRuntime: 'other',
+    personas: [{ name: 'a', role: 'planner' }, { name: 'b', role: 'reviewer' }],
+  },
+  () => { throw new Error('invalid runtime must not dispatch agents') },
+)
+assert.match(badRuntime.output.error, /agentRuntime/)
 
 console.log('all broker semantic checks passed')

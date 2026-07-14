@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import orchestrator_ops
+
 STATE_LABELS = {"in-progress", "in-review", "changes-requested"}
 
 
@@ -152,6 +154,7 @@ def _preserve_ledger_issue_state(new_issue: dict[str, Any], old_issue: dict[str,
         return
     for key in (
         "pr", "merged_pr", "ff_merged", "closed_no_pr",
+        "pr_transport", "external_review",
         "ready_for_closeout", "closeout_started", "closeout_failed", "closeout_done",
     ):
         if key in old_issue:
@@ -291,8 +294,63 @@ def apply_event(payload: dict[str, Any], event: dict[str, Any]) -> None:
             _remove_label(issue, str(event["label"]))
         elif kind == "pr_created" and event.get("pr") is not None:
             issue["pr"] = int(event["pr"])
+            issue["pr_transport"] = {
+                key: event.get(key) for key in ("pr", "base", "head", "head_sha")
+                if event.get(key) is not None
+            }
             _remove_label(issue, "in-progress")
             _add_label(issue, "in-review")
+        elif kind == "external_review_waiting":
+            lease = orchestrator_ops.validate_review_lease(event.get("review_lease"))
+            if lease["owner"] != "studio":
+                raise ValueError("external review handoff requires owner=studio")
+            transport = {
+                key: event.get(key) for key in ("pr", "base", "head", "head_sha")
+                if event.get(key) is not None
+            }
+            if not all(transport.get(key) is not None for key in ("pr", "base", "head")):
+                raise ValueError("external review handoff requires PR/base/head transport")
+            current = issue.get("external_review")
+            next_review = {
+                "status": "review_waiting",
+                "review_lease": lease,
+                **transport,
+            }
+            if current and current.get("review_lease") != lease:
+                raise ValueError("external review lease conflicts with the recorded review edge")
+            updated_review = {**(current or {}), **next_review}
+            updated_review.pop("verdict", None)
+            updated_review.pop("verdict_evidence_refs", None)
+            issue["external_review"] = updated_review
+            issue["pr"] = int(transport["pr"])
+            issue["pr_transport"] = transport
+            _remove_label(issue, "in-progress")
+            _add_label(issue, "in-review")
+        elif kind == "external_review_verdict":
+            external = issue.get("external_review")
+            if not isinstance(external, dict):
+                raise ValueError("external review verdict has no waiting handoff")
+            lease = orchestrator_ops.validate_review_lease(event.get("review_lease"))
+            if external.get("review_lease") != lease:
+                raise ValueError("external review verdict lease or episode does not match")
+            verdict = event.get("verdict")
+            if verdict not in {"approved", "changes-requested"}:
+                raise ValueError("external review verdict is invalid")
+            evidence_refs = list(event.get("evidence_refs") or [])
+            if (
+                not all(isinstance(ref, str) and ref.strip() for ref in evidence_refs)
+                or len(set(evidence_refs)) != len(evidence_refs)
+            ):
+                raise ValueError("external review verdict evidence_refs must be a unique string list")
+            missing = set(lease["evidence_refs"]) - set(evidence_refs)
+            if missing:
+                raise ValueError("external review verdict lacks required evidence refs")
+            external["verdict"] = verdict
+            external["verdict_evidence_refs"] = evidence_refs
+            external["status"] = "approved" if verdict == "approved" else "changes-requested"
+            if verdict == "changes-requested":
+                _remove_label(issue, "in-review")
+                _add_label(issue, "changes-requested")
         elif kind == "pr_merged":
             # Idempotent: a re-applied merge event must not regress a CLOSED issue back to
             # close_expected (the thrash the orchestrator saw), and must not wipe evidence
@@ -336,6 +394,15 @@ def apply_event(payload: dict[str, Any], event: dict[str, Any]) -> None:
             issue["ff_merged"] = ff
             _remove_state_labels(issue)
         elif kind in {"ready_for_closeout", "ready_for_pr_closeout"}:
+            external = issue.get("external_review")
+            if external and external.get("status") != "approved":
+                raise ValueError("externally owned review is not approved; closeout is forbidden")
+            if external:
+                if kind != "ready_for_pr_closeout":
+                    raise ValueError("externally owned GitHub review requires PR closeout")
+                for key in ("pr", "base", "head"):
+                    if event.get(key) != external.get(key):
+                        raise ValueError(f"external review closeout {key} differs from approved transport")
             issue["state"] = "closeout_ready"
             closeout = dict(issue.get("ready_for_closeout") or {})
             closeout["mode"] = "pr" if kind == "ready_for_pr_closeout" else closeout.get("mode", "ff")
@@ -403,6 +470,119 @@ def record_event(path: str | Path, event: dict[str, Any]) -> dict[str, Any]:
     payload["events"].append(event)
     apply_event(payload, event)
     return write_ledger(path, payload)
+
+
+def record_external_review_handoff(
+    path: str | Path,
+    *,
+    issue: int,
+    pr: int,
+    base: str,
+    head: str,
+    review_lease: dict[str, Any],
+    head_sha: str | None = None,
+) -> tuple[dict[str, Any], bool]:
+    lease = orchestrator_ops.validate_review_lease(review_lease)
+    if lease["owner"] != "studio":
+        raise ValueError("external review handoff requires owner=studio")
+    payload = load_ledger(path)
+    item = _issue(payload, issue)
+    current = item.get("external_review")
+    semantic = {
+        "status": "review_waiting",
+        "review_lease": lease,
+        "pr": int(pr),
+        "base": base,
+        "head": head,
+    }
+    if head_sha is not None:
+        semantic["head_sha"] = head_sha
+    if current:
+        current_semantic = {
+            key: current.get(key) for key in semantic
+        }
+        if current_semantic == semantic:
+            return payload, False
+        if current.get("review_lease") != lease:
+            raise ValueError("external review handoff conflicts with the recorded lease")
+        if current.get("status") == "approved":
+            raise ValueError("approved external review cannot be replaced")
+    event = {
+        "at": _now(),
+        "type": "external_review_waiting",
+        "issue": int(issue),
+        "pr": int(pr),
+        "base": base,
+        "head": head,
+        "review_lease": lease,
+    }
+    if head_sha is not None:
+        event["head_sha"] = head_sha
+    payload["events"].append(event)
+    apply_event(payload, event)
+    return write_ledger(path, payload), True
+
+
+def record_external_review_verdict(
+    path: str | Path,
+    *,
+    issue: int,
+    review_lease: dict[str, Any],
+    verdict: str,
+    evidence_refs: list[str],
+) -> tuple[dict[str, Any], bool]:
+    lease = orchestrator_ops.validate_review_lease(review_lease)
+    if verdict not in {"approved", "changes-requested"}:
+        raise ValueError("external review verdict must be approved or changes-requested")
+    if (
+        not isinstance(evidence_refs, list)
+        or not all(isinstance(ref, str) and ref.strip() for ref in evidence_refs)
+        or len(set(evidence_refs)) != len(evidence_refs)
+    ):
+        raise ValueError("external review verdict evidence_refs must be a unique string list")
+    missing = sorted(set(lease["evidence_refs"]) - set(evidence_refs))
+    if missing:
+        raise ValueError(f"external review verdict lacks required evidence refs: {missing}")
+
+    payload = load_ledger(path)
+    item = _issue(payload, issue)
+    external = item.get("external_review")
+    if not isinstance(external, dict):
+        raise ValueError("external review verdict has no waiting handoff")
+    if external.get("review_lease") != lease:
+        raise ValueError("external review verdict lease or episode does not match")
+    existing_verdict = external.get("verdict")
+    existing_evidence = external.get("verdict_evidence_refs")
+    if existing_verdict == verdict and existing_evidence == evidence_refs:
+        return payload, False
+    if existing_verdict == "approved":
+        raise ValueError("approved external review verdict is immutable")
+
+    verdict_event = {
+        "at": _now(),
+        "type": "external_review_verdict",
+        "issue": int(issue),
+        "verdict": verdict,
+        "review_lease": lease,
+        "evidence_refs": list(evidence_refs),
+    }
+    payload["events"].append(verdict_event)
+    apply_event(payload, verdict_event)
+    if verdict == "approved":
+        transport = item.get("external_review") or external
+        closeout_event = {
+            "at": _now(),
+            "type": "ready_for_pr_closeout",
+            "issue": int(issue),
+            "pr": transport.get("pr"),
+            "base": transport.get("base"),
+            "head": transport.get("head"),
+            "head_sha": transport.get("head_sha"),
+            "review_lease_id": lease["lease_id"],
+        }
+        payload["events"].append(closeout_event)
+        apply_event(payload, closeout_event)
+    return write_ledger(path, payload), True
 
 
 def record_events(path: str | Path, events: list[dict[str, Any]]) -> dict[str, Any]:
@@ -491,6 +671,23 @@ def compact_summary(payload: dict[str, Any], *, events_tail: int = 5) -> dict[st
         return sorted(out, key=lambda item: (str(item.get("base", "")), item["issue"]))
 
     reads = payload.get("github_reads") or {}
+    external_reviews = []
+    for issue in issues.values():
+        external = issue.get("external_review")
+        if not isinstance(external, dict):
+            continue
+        lease = external.get("review_lease") or {}
+        external_reviews.append({
+            "issue": int(issue["number"]),
+            "status": external.get("status"),
+            "pr": external.get("pr"),
+            "base": external.get("base"),
+            "head": external.get("head"),
+            "lease_id": lease.get("lease_id"),
+            "episode_id": lease.get("episode_id"),
+            "edge_id": lease.get("edge_id"),
+            "evidence_refs": lease.get("evidence_refs", []),
+        })
     return {
         "root": payload.get("root"),
         "spawned": list(payload.get("spawned") or []),
@@ -498,6 +695,7 @@ def compact_summary(payload: dict[str, Any], *, events_tail: int = 5) -> dict[st
         "ready_for_closeout": issue_items("closeout_ready"),
         "running_closeout": issue_items("closeout_started"),
         "failed_closeout": issue_items("closeout_failed"),
+        "external_reviews": sorted(external_reviews, key=lambda item: item["issue"]),
         "events_tail": list(payload.get("events") or [])[-max(0, events_tail):],
         "github_reads": {
             "count": int(reads.get("count") or 0),
@@ -526,6 +724,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--reason")
     parser.add_argument("--message")
     parser.add_argument("--review-skipped", action="store_true")
+    parser.add_argument("--review-lease-json")
+    parser.add_argument("--review-verdict", choices=("approved", "changes-requested"))
+    parser.add_argument("--evidence-ref", action="append", default=[])
     parser.add_argument("--merge-evidence-json")
     parser.add_argument("--gate-evidence-json")
     parser.add_argument("--preflight-evidence-json")
@@ -548,6 +749,30 @@ def main(argv: list[str] | None = None) -> int:
                 payload = record_merge_evidence(args.path, args.issue, json.loads(args.merge_evidence_json))
             else:
                 payload = record_gate_evidence(args.path, args.issue, json.loads(args.gate_evidence_json))
+        elif args.review_lease_json:
+            if args.issue is None:
+                raise ValueError("--issue is required with review lease JSON")
+            lease = json.loads(args.review_lease_json)
+            if args.review_verdict:
+                payload, _ = record_external_review_verdict(
+                    args.path,
+                    issue=args.issue,
+                    review_lease=lease,
+                    verdict=args.review_verdict,
+                    evidence_refs=args.evidence_ref,
+                )
+            else:
+                if args.pr is None or args.base is None or args.head is None:
+                    raise ValueError("--pr, --base, and --head are required for external review handoff")
+                payload, _ = record_external_review_handoff(
+                    args.path,
+                    issue=args.issue,
+                    pr=args.pr,
+                    base=args.base,
+                    head=args.head,
+                    head_sha=args.head_sha,
+                    review_lease=lease,
+                )
         elif args.event:
             event = {"type": args.event}
             for key in ("issue", "pr", "head", "base", "head_sha", "sha_range", "gear", "reason", "message"):

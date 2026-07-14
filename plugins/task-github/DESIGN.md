@@ -11,13 +11,17 @@
 >
 > 충돌 시 신뢰 순서: **실행 명세(SKILL/rules/agents) > DESIGN > README**. 결합 규약(policy)은 mechanism(이 문서)과 **다른 계층**이므로 경쟁하지 않고 보완한다.
 
-> **현재 상태(0.21.0)**: provider-neutral DefinitionArtifact, local lifecycle, ready/integration planner는 `task-worker` 0.2.0으로 이전했다. task-github는 versioned JSON CLI bridge로 이를 소비하고 GitHub projection·Issue snapshot adapter·PR/merge/closeout을 소유한다. 기존 `task-github:*`, Issue-first, `scripts/definition_artifact.py` 호출은 호환 facade로 유지한다. plugin delegation은 subprocess contract 경계이며 추가 agent/session hop이 아니다.
+> **현재 상태(0.23.0)**: provider-neutral DefinitionArtifact, local lifecycle, ready/integration planner와 review lease permit은 `task-worker` 0.4.0이 소유한다. task-github는 versioned JSON CLI bridge로 이를 소비하고 GitHub projection·Issue snapshot adapter·PR/CI/review transport·merge/closeout을 소유한다. 기존 `task-github:*`, Issue-first, `scripts/definition_artifact.py` 호출은 호환 facade로 유지한다. plugin delegation은 subprocess contract 경계이며 추가 agent/session hop이 아니다.
 
 ---
 
 ## 0. 30초 요약
 
 `task-github`는 `task-worker` 실행 엔진에 GitHub Issue/PR/Label provider를 연결하는 adapter/facade다. GitHub workflow에서는 Issue tree와 dependency가 remote 실행 view이며, task-github가 projection·점유·PR·CI·review·merge·closeout을 집행한다. 같은 마켓플레이스의 **`wiki-markdown` 결정 그래프와 `task` 노드로 연결**되어 작업 흐름이 지식 그래프를 키우도록 한다.
+
+### 0.23.0 externally-owned review
+
+task-worker binding에 exact `workflow-review-lease/v1`이 있으면 reviewer 선택권을 lease owner로 fencing한다. `owner=studio`는 reviewer tool/harness dispatch만 억제한다. task-github는 PR 생성, `in-review`/`review_waiting`, base/head transport, CI/preflight와 closeout lane을 계속 소유하고, ledger에 externally-owned handoff를 구조화해 보존한다. 동일 lease의 approved verdict와 required evidence refs가 돌아오기 전에는 `ready_for_pr_closeout`을 만들지 않는다. mismatch, changes-requested, evidence 부족은 merge/closeout을 fail-closed한다. lease 없음/`owner=task-worker`는 기존 provider/human gate 흐름이다.
 
 - **무엇으로**: GitHub Issue(작업 단위·트리) + Label(상태·성격) + Assignee(점유) + PR(코드 변경) + Issue 코멘트(실행 기록)
 - **어떻게 분류하나**: 작업을 **3개 축**으로 분류 — 프로파일(환경) · 기어(파급력) · 플로우(승인 관문)
@@ -147,14 +151,14 @@ root issue body에는 optional **Execution Contract** fenced block을 둔다. `s
 ```json
 {
   "name": "task-github",
-  "version": "0.21.0",
+  "version": "0.23.0",
   "description": "task-worker 기반 GitHub Issue tree·PR·merge adapter와 호환 facade"
 }
 ```
 
 루트 `.claude-plugin/marketplace.json`의 `plugins` 배열에 추가:
 ```json
-{ "name": "task-github", "source": "./plugins/task-github", "version": "0.21.0",
+{ "name": "task-github", "source": "./plugins/task-github", "version": "0.23.0",
   "description": "task-worker 기반 GitHub provider adapter와 wiki-markdown task 노드 연계" }
 ```
 

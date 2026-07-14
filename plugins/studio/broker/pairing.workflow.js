@@ -18,6 +18,8 @@ export const meta = {
 //     personas: { dev: {body}, qa: {body} },
 //     criticRubric: string,
 //     maxRounds?: number (default 3),
+//     agentRuntime?: 'claude'|'codex',
+//     agentPolicy?: { defaults, roles, agents, rituals, providers },
 //     reviewCycle?: {                 // optional continuation; never implies final QA
 //       cycleId: string,
 //       qaMode?: 'development'|'delta',
@@ -36,6 +38,7 @@ const DEV = (A.personas && A.personas.dev) || { body: 'You are the developer. Bu
 const QA = (A.personas && A.personas.qa) || { body: 'You are QA. Your job is to break it with a reproducible failure.' }
 const RUBRIC = A.criticRubric || ''
 const MAX_ROUNDS = A.maxRounds || 3
+const AGENT_RUNTIME = A.agentRuntime || null
 const REVIEW = A.reviewCycle || null
 const REVIEW_ID = REVIEW && (REVIEW.cycleId || REVIEW.cycle_id)
 const REVIEW_MODE = REVIEW && (REVIEW.qaMode || REVIEW.qa_mode || 'development')
@@ -56,6 +59,9 @@ if (REVIEW && (
 )) {
   return { ritual: 'pairing', error: 'reviewCycle continuation is invalid', participants: ['dev', 'qa'] }
 }
+if (AGENT_RUNTIME && !['claude', 'codex'].includes(AGENT_RUNTIME)) {
+  return { ritual: 'pairing', error: 'agentRuntime must be claude or codex', participants: ['dev', 'qa'] }
+}
 
 if (!WT) {
   return { ritual: 'pairing', error: 'pairing needs a producer-prepared worktreePath (track isolation)', participants: ['dev', 'qa'] }
@@ -66,18 +72,32 @@ const startedAt = new Date(startedMs).toISOString()
 const runId = A.runId || `RUN-studio-pairing-${startedMs}-${Math.random().toString(36).slice(2, 8)}`
 
 // --- agent model/effort policy (from .studio.yml via the producer) ----------
-// precedence: run override > rituals.pairing.<step> > roles.<role> > defaults
-// > omit (inherit the session). agentType stays 'general-purpose' regardless.
+// precedence: run override > provider ritual > common ritual > provider agent
+// > common agent > provider role > common role > provider defaults > common
+// defaults > omit (inherit the session). agentType stays general-purpose.
 const POLICY = A.agentPolicy || {}
 const OVERRIDE = A.overrides || {}
-function policyFor(role, step) {
-  const d = POLICY.defaults || {}
-  const r = (POLICY.roles || {})[role] || {}
-  const s = (((POLICY.rituals || {}).pairing || {})[step]) || {}
-  const pick = (k) => OVERRIDE[k] ?? s[k] ?? r[k] ?? d[k] ?? null
+function policyFor(role, step, agentId) {
+  const provider = AGENT_RUNTIME ? ((POLICY.providers || {})[AGENT_RUNTIME] || {}) : {}
+  const commonDefault = POLICY.defaults || {}
+  const providerDefault = provider.defaults || {}
+  const commonRole = (POLICY.roles || {})[role] || {}
+  const providerRole = (provider.roles || {})[role] || {}
+  const commonAgent = (POLICY.agents || {})[agentId] || {}
+  const providerAgent = (provider.agents || {})[agentId] || {}
+  const commonRitual = (((POLICY.rituals || {}).pairing || {})[step]) || {}
+  const providerRitual = (((provider.rituals || {}).pairing || {})[step]) || {}
+  const nonblank = value => value === null || value === undefined || value === '' ? null : value
+  const pick = (k) => [
+    OVERRIDE[k], providerRitual[k], commonRitual[k],
+    providerAgent[k], commonAgent[k], providerRole[k], commonRole[k],
+    providerDefault[k], commonDefault[k],
+  ].map(nonblank).find(value => value !== null) ?? null
   const opts = {}
   const m = pick('model'); if (m) opts.model = m
   const e = pick('effort'); if (e) opts.effort = e
+  opts.agentId = agentId
+  if (AGENT_RUNTIME) opts.agentRuntime = AGENT_RUNTIME
   return opts
 }
 
@@ -189,7 +209,7 @@ for (round = 1; round <= MAX_ROUNDS; round++) {
     '\n--- you (dev) ---\n' + (DEV.body || ''),
   ].join('\n')
   const dev = await agent(devPrompt, {
-    schema: DEV_SCHEMA, agentType: 'general-purpose', label: `dev:r${round}`, phase: round === 1 ? 'Build' : 'Attack', ...policyFor('dev', 'dev'),
+    schema: DEV_SCHEMA, agentType: 'general-purpose', label: `dev:r${round}`, phase: round === 1 ? 'Build' : 'Attack', ...policyFor('dev', 'dev', DEV.agentId || 'dev'),
   })
   if (dev) {
     // implementing against the criteria is itself an artifact delta — otherwise
@@ -227,7 +247,7 @@ for (round = 1; round <= MAX_ROUNDS; round++) {
     '\n--- you (qa) ---\n' + (QA.body || ''),
   ].join('\n')
   const qa = await agent(qaPrompt, {
-    schema: QA_SCHEMA, agentType: 'general-purpose', label: `qa:r${round}`, phase: 'Attack', ...policyFor('qa', 'qa'),
+    schema: QA_SCHEMA, agentType: 'general-purpose', label: `qa:r${round}`, phase: 'Attack', ...policyFor('qa', 'qa', QA.agentId || 'qa'),
   })
   const newFailures = qa && qa.broke ? (qa.failures || []) : []
   if (qa) {
@@ -265,7 +285,7 @@ const verdict = await agent([
   '\n--- defended (failure → test) ---\n' + JSON.stringify(defendedAll, null, 2),
   '\n--- still open ---\n' + JSON.stringify(openFailures.map(f => f.title), null, 2),
   '\n--- acceptance criteria ---\n' + criteriaBlock,
-].join('\n'), { schema: VERDICT_SCHEMA, label: 'critic:verdict', phase: 'Verdict', ...policyFor('critic', 'verdict') })
+].join('\n'), { schema: VERDICT_SCHEMA, label: 'critic:verdict', phase: 'Verdict', ...policyFor('critic', 'verdict', 'critic') })
   || { alive: openFailures.length === 0, reason: 'critic unavailable; fell back to open-failure count', defended_count: defendedAll.length, open_count: openFailures.length }
 
 const verificationComplete = changedFiles.size > 0

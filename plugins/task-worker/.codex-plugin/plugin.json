@@ -1,7 +1,7 @@
 {
   "name": "task-worker",
-  "version": "0.3.0",
-  "description": "Provider-neutral work graphs with manual/worker dispatch, parallel ready sets, integration gates, pinned evidence, and cross-session resume.",
+  "version": "0.4.0",
+  "description": "Provider-neutral work graphs with parallel ready sets, integration gates, pinned evidence, and single-owner review permits.",
   "author": {
     "name": "Jinwuk-Lee",
     "url": "https://github.com/Jeis-Jw"
@@ -10,7 +10,7 @@
   "interface": {
     "displayName": "Task Worker",
     "shortDescription": "Decompose, run, and verify provider-neutral work graphs.",
-    "longDescription": "Defines immutable work graphs, plans every ready leaf and integration candidate from local or provider snapshots, isolates local runs in stable worktrees, and records digest-pinned verification evidence. Persistent aliases support cross-session resume, while manual dispatch exposes the same ready set without creating local runs. GitHub, Studio, wiki, and review providers remain optional adapters.",
+    "longDescription": "Defines immutable work graphs, plans every ready leaf and integration candidate from local or provider snapshots, isolates local runs in stable worktrees, and records digest-pinned verification evidence. Exact review leases fence reviewer ownership without suppressing implementation, verification, or integration gates. GitHub, Studio, wiki, and review providers remain optional adapters.",
     "developerName": "Jinwuk-Lee",
     "category": "Productivity",
     "capabilities": [

@@ -1,3 +1,5 @@
+import hashlib
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -6,6 +8,36 @@ TASK_GITHUB = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TASK_GITHUB / "skills" / "orchestrate" / "scripts"))
 
 import orchestrator_ops  # noqa: E402
+
+
+def studio_review_lease():
+    lease = {
+        "schema": "workflow-review-lease/v1",
+        "lease_id": "lease-studio-1",
+        "owner": "studio",
+        "provider": "session-review",
+        "episode_id": "episode-1",
+        "edge_id": "pr-22",
+        "requirement": "independent",
+        "criteria_digest": "sha256:" + "a" * 64,
+        "evidence_refs": ["EV-full-baseline"],
+    }
+    encoded = json.dumps(lease, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    lease["digest"] = "sha256:" + hashlib.sha256(encoded.encode()).hexdigest()
+    return lease
+
+
+def studio_review_permit():
+    lease = studio_review_lease()
+    return {
+        "schema": "task-worker.review-permit/v1",
+        "status": "externally-owned",
+        "action": "skip",
+        "dispatch_reviewer": False,
+        "review_lease": lease,
+        "handoff": lease,
+        "binding_path": "/tmp/binding.json",
+    }
 
 
 def gate_evidence(paths, **overrides):
@@ -74,6 +106,9 @@ class OrchestratorOpsTests(unittest.TestCase):
         self.assertTrue(orchestrator_ops.review_required("gear", None))
         self.assertFalse(orchestrator_ops.review_required("skip", "gear:major"))
         self.assertTrue(orchestrator_ops.review_required("all", "gear:micro"))
+        self.assertTrue(orchestrator_ops.review_required(
+            "skip", "gear:micro", review_lease=studio_review_lease()
+        ))
 
     def test_flow_policy_defaults_and_overrides(self):
         self.assertEqual(
@@ -245,6 +280,29 @@ class OrchestratorOpsTests(unittest.TestCase):
         )
 
         self.assertEqual(plan, {"action": "stop", "stop_reason": "human_gate_review"})
+
+    def test_plan_tick_studio_lease_preserves_transport_and_never_dispatches_reviewer(self):
+        plan = orchestrator_ops.plan_tick(
+            {
+                "ok": False,
+                "stop_reason": "human_gate_review",
+                "review_waiting": [{
+                    "number": 2,
+                    "pr": 22,
+                    "base": "task/issue-1",
+                    "head": "task/issue-2",
+                }],
+            },
+            review_tool="session-review:request-review",
+            review_command="self turnkey",
+            review_permits={2: studio_review_permit()},
+        )
+
+        self.assertEqual(plan["action"], "handoff_external_reviews")
+        self.assertEqual(plan["status"], "externally-owned")
+        self.assertNotIn("command", plan)
+        self.assertEqual(plan["handoffs"][0]["pr"], 22)
+        self.assertEqual(plan["handoffs"][0]["review_lease"]["owner"], "studio")
 
     def test_plan_tick_ready_spawns_max_workers(self):
         plan = orchestrator_ops.plan_tick(
