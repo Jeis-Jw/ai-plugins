@@ -1,0 +1,27 @@
+{
+  "name": "task-worker",
+  "version": "0.1.0",
+  "description": "Provider-neutral task decomposition, parallel ready-set execution, local lifecycle, and verification evidence.",
+  "author": {
+    "name": "Jinwuk-Lee",
+    "url": "https://github.com/Jeis-Jw"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Task Worker",
+    "shortDescription": "Decompose, run, and verify provider-neutral work graphs.",
+    "longDescription": "Defines immutable work graphs, returns every ready leaf for parallel execution, isolates local runs in stable worktrees, and records structured verification evidence without requiring GitHub, Studio, wiki, or a review provider.",
+    "developerName": "Jinwuk-Lee",
+    "category": "Productivity",
+    "capabilities": [
+      "Read",
+      "Write",
+      "Workflow"
+    ],
+    "defaultPrompt": [
+      "Use $define to create or revise an immutable provider-neutral work graph.",
+      "Use $orchestrate to dispatch every ready leaf in parallel-safe worktrees.",
+      "Use $verify to attach evidence before $done closes a local run."
+    ]
+  }
+}

@@ -24,6 +24,14 @@ class PluginDistributionTests(unittest.TestCase):
         self.assertEqual(manifest["name"], "task-github")
         self.assertEqual(manifest["skills"], "./skills/")
 
+    def test_task_worker_exposes_provider_neutral_workflow_skills(self):
+        manifest = read_json(REPO / "plugins" / "task-worker" / ".codex-plugin" / "plugin.json")
+        skills_root = REPO / "plugins" / "task-worker" / manifest["skills"]
+
+        self.assertEqual(manifest["name"], "task-worker")
+        for skill_name in ("define", "start", "run", "verify", "done", "status", "orchestrate"):
+            self.assertTrue((skills_root / skill_name / "SKILL.md").exists(), skill_name)
+
     def test_session_review_exposes_four_skills_and_helper_to_codex(self):
         manifest = read_json(REPO / "plugins" / "session-review" / ".codex-plugin" / "plugin.json")
         skills_root = REPO / "plugins" / "session-review" / manifest["skills"]
@@ -45,7 +53,7 @@ class PluginDistributionTests(unittest.TestCase):
             plugin["name"]: plugin for plugin in codex_marketplace["plugins"]
         }
 
-        for name in ("wiki-markdown", "task-github", "session-review", "studio"):
+        for name in ("wiki-markdown", "task-github", "session-review", "studio", "task-worker"):
             plugin_root = REPO / "plugins" / name
             claude = read_json(plugin_root / ".claude-plugin" / "plugin.json")
             codex = read_json(plugin_root / ".codex-plugin" / "plugin.json")

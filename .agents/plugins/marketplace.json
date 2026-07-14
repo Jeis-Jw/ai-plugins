@@ -35,6 +35,20 @@
       "description": "Living agent team with stable review cycles, evidence reuse, and reason-gated delta/full QA.",
       "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
       "category": "Productivity"
+    },
+    {
+      "name": "task-worker",
+      "source": {
+        "source": "local",
+        "path": "./plugins/task-worker"
+      },
+      "version": "0.1.0",
+      "description": "Provider-neutral task decomposition, parallel ready-set execution, local lifecycle, and verification evidence.",
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
     }
   ]
 }

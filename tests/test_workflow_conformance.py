@@ -9,7 +9,7 @@ RECEIPT_FIELDS = {
     "schema", "emitter", "workflow", "run_id", "started_at", "finished_at",
     "elapsed_ms", "tokens", "token_coverage", "counters", "quality",
 }
-PLUGINS = ("task-github", "session-review", "studio")
+PLUGINS = ("task-github", "session-review", "studio", "task-worker")
 
 
 def load_module(name: str, path: Path):
@@ -30,6 +30,10 @@ class WorkflowReceiptConformanceTests(unittest.TestCase):
         cls.task_github = load_module(
             "task_github_definition_artifact",
             REPO / "plugins/task-github/scripts/definition_artifact.py",
+        )
+        cls.task_worker = load_module(
+            "task_worker_definition_artifact",
+            REPO / "plugins/task-worker/scripts/definition_artifact.py",
         )
         cls.session_review = load_module(
             "session_review_status",
@@ -54,7 +58,7 @@ class WorkflowReceiptConformanceTests(unittest.TestCase):
         self.assertIsInstance(receipt["counters"], dict)
         self.assertIsInstance(receipt["quality"], dict)
 
-    def test_three_emitters_share_schema_v1_and_null_token_semantics(self):
+    def test_workflow_emitters_share_schema_v1_and_null_token_semantics(self):
         task_state = {
             "schema": self.task_github.RUN_SCHEMA,
             "status": "closed",
@@ -65,6 +69,17 @@ class WorkflowReceiptConformanceTests(unittest.TestCase):
         task_receipts = (
             self.task_github.build_receipt(task_state),
             self.task_github.build_receipt(task_state, tokens=7),
+        )
+        worker_state = {
+            "schema": self.task_worker.RUN_SCHEMA,
+            "status": "closed",
+            "run_id": "worker-60",
+            "started_at": "2026-07-10T00:00:00Z",
+            "finished_at": "2026-07-10T00:00:01Z",
+        }
+        worker_receipts = (
+            self.task_worker.build_receipt(worker_state),
+            self.task_worker.build_receipt(worker_state, tokens=6),
         )
         review_receipts = (
             self.session_review.receipt_from_status(
@@ -96,11 +111,11 @@ class WorkflowReceiptConformanceTests(unittest.TestCase):
         for receipt in studio_receipts:
             self.assertEqual(self.studio.workflow_receipt_problems(receipt), [])
 
-        for receipt in (*task_receipts, *review_receipts, *studio_receipts):
+        for receipt in (*task_receipts, *worker_receipts, *review_receipts, *studio_receipts):
             with self.subTest(emitter=receipt["emitter"], tokens=receipt["tokens"]):
                 self.assert_receipt(receipt)
 
-    def test_central_marketplaces_match_the_three_plugin_manifests(self):
+    def test_central_marketplaces_match_workflow_plugin_manifests(self):
         claude_entries = {
             item["name"]: item for item in read_json(REPO / ".claude-plugin/marketplace.json")["plugins"]
         }

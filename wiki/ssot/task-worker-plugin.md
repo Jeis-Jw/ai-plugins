@@ -11,9 +11,24 @@ affects_paths: [plugins/task-worker/**, plugins/task-github/**]
 
 ### 설계 및 구현 상태
 
-이 문서는 `task-worker` 플러그인의 **목표 아키텍처 정본**이다. 설계는 2026-07-14에 확정했지만 플러그인 소스 분리는 아직 시작하지 않았다. 현재 실제 구현은 `plugins/task-github/` 0.20.0 안의 provider-neutral `DefinitionArtifact`, `record:none` local lifecycle, orchestration, verification 로직에 남아 있다.
+이 문서는 `task-worker` 플러그인의 **목표 아키텍처와 단계별 구현 상태 정본**이다. 2026-07-14에 `plugins/task-worker/` 0.1.0을 생성해 분리 1단계를 완료했다.
 
-구현 완료로 판정하려면 기존 task-github replay fixture에서 다음 결과가 분리 전과 같아야 한다.
+0.1.0이 독립적으로 소유하는 범위는 다음과 같다.
+
+- `task-worker.definition/v1` immutable DefinitionArtifact와 stable node id
+- dependency·parent cycle fail-closed 검증
+- 단일 next action이 아닌 전체 `ready_actions[]` planner
+- node별 stable branch/worktree identity와 execution lease
+- local run `start → run → verify → done → closeout` lifecycle
+- verify event의 구조화 evidence와 `workflow-receipt/v1`
+- 기존 `task-github.definition/v1`, `task-github.local-run/v1` 입력 호환
+- define/start/run/verify/done/status/orchestrate public skill
+
+새 canonical artifact는 provider-specific `record`를 허용하지 않으며 external delivery는 generic `external`로 표현한다. task-worker runtime에는 GitHub 또는 Studio 실행 dependency가 없다.
+
+분리 1단계에서는 **기존 task-github runtime을 제거하거나 위임시키지 않았다.** 따라서 task-github 0.20.0 내부의 DefinitionArtifact/local lifecycle은 compatibility source로 일시 중복되어 있다. GitHub adapter/facade가 task-worker contract를 소비하고 중복 core를 제거하는 작업은 후속 단계다. generic command fingerprint·evidence cache·integration gate planner도 target contract에는 포함되지만 0.1.0 runtime에는 아직 구현되지 않았다.
+
+전체 분리 완료로 판정하려면 후속 task-github adapter 전환 replay에서 다음 결과가 분리 전과 같아야 한다.
 
 - 작업 분해와 dependency graph
 - ready leaf 집합과 병렬 실행 가능성
@@ -23,9 +38,16 @@ affects_paths: [plugins/task-worker/**, plugins/task-github/**]
 - 통합 candidate의 최종 검증
 - 사용자 소유 변경 보존
 
-구현 전까지 이 문서는 target contract이고, 현재 동작 확인은 `plugins/task-github/DESIGN.md`와 소스·테스트를 우선한다. 분리 완료 후에는 이 문서가 task-worker의 living SSOT가 된다.
+0.1.0 동작 확인은 `plugins/task-worker/DESIGN.md`, 소스와 테스트를 우선한다. 아직 task-worker로 이전하지 않은 GitHub orchestration 동작은 `plugins/task-github/DESIGN.md`와 task-github 소스·테스트가 runtime truth다.
 
-관련 GitHub adapter/facade 정본은 [[task-github-plugin]]이다.
+검증 근거:
+
+- task-worker 단독 테스트 14개 통과
+- task-github 기존 테스트 206개 통과
+- 저장소 Python 회귀 470개와 subtest 29개 통과
+- Codex plugin validator와 public skill 7개 validator 통과
+
+관련 GitHub adapter/facade 정본과 후속 migration 경계는 [[task-github-plugin]]이다.
 
 ### 역할
 

@@ -28,6 +28,12 @@
       "source": "./plugins/studio",
       "description": "살아있는 에이전트 팀 — QualityPlan, stable review cycle, evidence reuse와 delta/full QA gate로 품질을 지키면서 반복 handoff·검증 낭비를 줄인다. task-github/wiki-markdown은 agent-visible optional provider다.",
       "version": "0.4.0"
+    },
+    {
+      "name": "task-worker",
+      "source": "./plugins/task-worker",
+      "description": "Provider-neutral 작업 분해·병렬 ready-set 실행·local lifecycle·검증 evidence 플러그인",
+      "version": "0.1.0"
     }
   ]
 }
