@@ -637,6 +637,43 @@ def external_review_handoff(item: dict[str, Any], permit: dict[str, Any]) -> dic
     }
 
 
+def review_permit_action(
+    expected_review_lease: dict[str, Any],
+    permit: dict[str, Any] | None,
+) -> str:
+    """Fence one pinned review edge before any reviewer dispatch.
+
+    The ledger expectation is the authority. A permit is only a point-in-time
+    proof that task-worker still resolves that exact edge to the same owner.
+    """
+    expected = validate_review_lease(expected_review_lease)
+    if not isinstance(permit, dict):
+        raise ValueError("review_permit_required")
+    if permit.get("schema") != "task-worker.review-permit/v1":
+        raise ValueError("review_permit_mismatch")
+    try:
+        actual = validate_review_lease(permit.get("review_lease"))
+    except ValueError as exc:
+        raise ValueError("review_permit_mismatch") from exc
+    if actual != expected:
+        raise ValueError("review_permit_mismatch")
+    if expected["owner"] == "studio":
+        if (
+            permit.get("status") != "externally-owned"
+            or permit.get("dispatch_reviewer") is not False
+            or permit.get("action") != "skip"
+        ):
+            raise ValueError("review_permit_mismatch")
+        return "external"
+    if (
+        permit.get("status") != "task-worker-owned"
+        or permit.get("dispatch_reviewer") is not True
+        or permit.get("action") != "dispatch"
+    ):
+        raise ValueError("review_permit_mismatch")
+    return "local"
+
+
 def _numbers(items: list[dict[str, Any]] | None) -> list[int]:
     return [int(item["number"]) for item in items or []]
 
@@ -746,7 +783,24 @@ def plan_tick(
         local_items = []
         for item in review_items:
             permit = (review_permits or {}).get(int(item["number"])) or (review_permits or {}).get(str(item["number"]))
-            if permit and permit.get("status") == "externally-owned":
+            expected = item.get("expected_review_lease")
+            if not isinstance(expected, dict):
+                # No pinned lease is the standalone contract. Ignore stray
+                # permits and preserve the existing local review flow.
+                local_items.append(item)
+                continue
+            try:
+                permit_action = review_permit_action(expected, permit)
+            except ValueError as exc:
+                reason = str(exc)
+                if reason not in {"review_permit_required", "review_permit_mismatch"}:
+                    reason = "review_permit_mismatch"
+                return {
+                    "action": "stop",
+                    "stop_reason": reason,
+                    "issues": [int(item["number"])],
+                }
+            if permit_action == "external":
                 external_handoffs.append(external_review_handoff(item, permit))
             else:
                 local_items.append(item)

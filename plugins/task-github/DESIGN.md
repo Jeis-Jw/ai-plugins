@@ -21,7 +21,7 @@
 
 ### 0.23.0 externally-owned review
 
-task-worker binding에 exact `workflow-review-lease/v1`이 있으면 reviewer 선택권을 lease owner로 fencing한다. `owner=studio`는 reviewer tool/harness dispatch만 억제한다. task-github는 PR 생성, `in-review`/`review_waiting`, base/head transport, CI/preflight와 closeout lane을 계속 소유하고, ledger에 externally-owned handoff를 구조화해 보존한다. 동일 lease의 approved verdict와 required evidence refs가 돌아오기 전에는 `ready_for_pr_closeout`을 만들지 않는다. mismatch, changes-requested, evidence 부족은 merge/closeout을 fail-closed한다. lease 없음/`owner=task-worker`는 기존 provider/human gate 흐름이다.
+task-worker binding에 exact `workflow-review-lease/v1`이 있으면 reviewer 선택권을 lease owner로 fencing한다. task-github는 edge별 `review-expectation`을 tick/review/closeout 전에 ledger의 immutable expected lease로 먼저 pin한다. pin/permit mismatch나 rebind는 reviewer 호출 전에 fail-closed한다. `owner=studio`는 reviewer tool/harness dispatch만 억제한다. task-github는 PR 생성, `in-review`/`review_waiting`, base/head transport, CI/preflight와 closeout lane을 계속 소유하고, ledger에 externally-owned handoff를 구조화해 보존한다. public closeout/merge/resume은 handoff 기록 순서와 무관하게 pinned lease의 approved verdict와 required evidence refs를 요구한다. mismatch, changes-requested, evidence 부족은 merge/closeout을 fail-closed한다. lease 없음/valid `owner=task-worker`는 기존 provider/human gate 흐름이다.
 
 - **무엇으로**: GitHub Issue(작업 단위·트리) + Label(상태·성격) + Assignee(점유) + PR(코드 변경) + Issue 코멘트(실행 기록)
 - **어떻게 분류하나**: 작업을 **3개 축**으로 분류 — 프로파일(환경) · 기어(파급력) · 플로우(승인 관문)

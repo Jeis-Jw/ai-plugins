@@ -42,7 +42,7 @@ def resume(path: str | Path, issue: int) -> dict[str, Any]:
         "base": base,
         "head": head,
     }
-    for key in ("head_sha", "gear", "review_skipped", "pr"):
+    for key in ("head_sha", "gear", "review_skipped", "pr", "review_lease_id"):
         if source.get(key) is not None:
             event[key] = source[key]
     payload = record_event(path, event)

@@ -38,6 +38,8 @@ def item(node: dict[str, Any], *, reason: str | None = None) -> dict[str, Any]:
         out["pr"] = node["pr"]
     if isinstance(node.get("external_review"), dict):
         out["external_review"] = node["external_review"]
+    if isinstance(node.get("expected_review_lease"), dict):
+        out["expected_review_lease"] = node["expected_review_lease"]
     for field in ("ready_for_closeout", "closeout_started", "closeout_failed"):
         if isinstance(node.get(field), dict):
             out.update(node[field])

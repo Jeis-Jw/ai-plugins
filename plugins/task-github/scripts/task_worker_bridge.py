@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
@@ -223,7 +224,69 @@ def review_permit(
     ])["permit"]
 
 
+def expected_review_lease(
+    ref: str,
+    *,
+    state_root: str | Path,
+    episode_id: str,
+    edge_id: str,
+) -> dict[str, Any] | None:
+    """Resolve the exact binding lease that task-github must pin first."""
+    return review_expectation(
+        ref,
+        state_root=state_root,
+        episode_id=episode_id,
+        edge_id=edge_id,
+    )["expected_review_lease"]
+
+
+def review_expectation(
+    ref: str,
+    *,
+    state_root: str | Path,
+    episode_id: str,
+    edge_id: str,
+) -> dict[str, Any]:
+    """Return one atomic expected-lease + permit bootstrap result."""
+    permit = review_permit(
+        ref,
+        state_root=state_root,
+        episode_id=episode_id,
+        edge_id=edge_id,
+    )
+    lease = permit.get("review_lease")
+    if lease is not None and (
+        not isinstance(lease, dict)
+        or lease.get("schema") != REQUIRED_CONTRACTS["review_lease"]
+    ):
+        raise TaskWorkerBridgeError(
+            "task_worker_contract_mismatch",
+            "task-worker review permit returned an invalid review lease",
+            detail=permit,
+        )
+    return {
+        "schema": "task-github.review-expectation/v1",
+        "expected_review_lease": lease,
+        "permit": permit,
+    }
+
+
 def forward_cli(argv: list[str]) -> int:
+    if argv and argv[0] == "review-expectation":
+        parser = argparse.ArgumentParser(prog="task_worker_bridge.py review-expectation")
+        parser.add_argument("--ref", required=True)
+        parser.add_argument("--state-root", required=True)
+        parser.add_argument("--episode-id", required=True)
+        parser.add_argument("--edge-id", required=True)
+        args = parser.parse_args(argv[1:])
+        expectation = review_expectation(
+            args.ref,
+            state_root=args.state_root,
+            episode_id=args.episode_id,
+            edge_id=args.edge_id,
+        )
+        print(json.dumps({"ok": True, **expectation}, ensure_ascii=False))
+        return 0
     root, capability_payload = resolve_task_worker_root()
     if argv == ["preflight"]:
         print(json.dumps({"ok": True, "root": str(root), "capabilities": capability_payload}, ensure_ascii=False))

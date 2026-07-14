@@ -68,10 +68,25 @@ class TaskWorkerBridgeTests(unittest.TestCase):
                 episode_id=lease["episode_id"],
                 edge_id=lease["edge_id"],
             )
+            expected = bridge.expected_review_lease(
+                binding["definition"]["definition_id"],
+                state_root=root / "state",
+                episode_id=lease["episode_id"],
+                edge_id=lease["edge_id"],
+            )
+            expectation = bridge.review_expectation(
+                binding["definition"]["definition_id"],
+                state_root=root / "state",
+                episode_id=lease["episode_id"],
+                edge_id=lease["edge_id"],
+            )
 
         self.assertEqual(binding["review_leases"], [lease])
         self.assertEqual(permit["status"], "externally-owned")
         self.assertFalse(permit["dispatch_reviewer"])
+        self.assertEqual(expected, lease)
+        self.assertEqual(expectation["expected_review_lease"], lease)
+        self.assertEqual(expectation["permit"], permit)
 
     def test_legacy_cli_path_forwards_to_worker(self):
         result = subprocess.run(

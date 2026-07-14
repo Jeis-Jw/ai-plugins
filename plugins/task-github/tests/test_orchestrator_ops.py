@@ -10,7 +10,7 @@ sys.path.insert(0, str(TASK_GITHUB / "skills" / "orchestrate" / "scripts"))
 import orchestrator_ops  # noqa: E402
 
 
-def studio_review_lease():
+def studio_review_lease(**overrides):
     lease = {
         "schema": "workflow-review-lease/v1",
         "lease_id": "lease-studio-1",
@@ -22,6 +22,7 @@ def studio_review_lease():
         "criteria_digest": "sha256:" + "a" * 64,
         "evidence_refs": ["EV-full-baseline"],
     }
+    lease.update(overrides)
     encoded = json.dumps(lease, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     lease["digest"] = "sha256:" + hashlib.sha256(encoded.encode()).hexdigest()
     return lease
@@ -36,6 +37,28 @@ def studio_review_permit():
         "dispatch_reviewer": False,
         "review_lease": lease,
         "handoff": lease,
+        "binding_path": "/tmp/binding.json",
+    }
+
+
+def task_worker_review_permit():
+    lease = studio_review_lease()
+    lease["owner"] = "task-worker"
+    lease["provider"] = "native"
+    encoded = json.dumps(
+        {key: lease[key] for key in lease if key != "digest"},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    lease["digest"] = "sha256:" + hashlib.sha256(encoded.encode()).hexdigest()
+    return {
+        "schema": "task-worker.review-permit/v1",
+        "status": "task-worker-owned",
+        "action": "dispatch",
+        "dispatch_reviewer": True,
+        "review_lease": lease,
+        "handoff": None,
         "binding_path": "/tmp/binding.json",
     }
 
@@ -291,6 +314,7 @@ class OrchestratorOpsTests(unittest.TestCase):
                     "pr": 22,
                     "base": "task/issue-1",
                     "head": "task/issue-2",
+                    "expected_review_lease": studio_review_lease(),
                 }],
             },
             review_tool="session-review:request-review",
@@ -303,6 +327,85 @@ class OrchestratorOpsTests(unittest.TestCase):
         self.assertNotIn("command", plan)
         self.assertEqual(plan["handoffs"][0]["pr"], 22)
         self.assertEqual(plan["handoffs"][0]["review_lease"]["owner"], "studio")
+
+    def test_plan_tick_expected_lease_without_permit_stops_before_reviewer_dispatch(self):
+        plan = orchestrator_ops.plan_tick(
+            {
+                "ok": False,
+                "stop_reason": "human_gate_review",
+                "review_waiting": [{
+                    "number": 2,
+                    "pr": 22,
+                    "base": "task/issue-1",
+                    "head": "task/issue-2",
+                    "expected_review_lease": studio_review_lease(),
+                }],
+            },
+            review_tool="session-review:request-review",
+            review_command="self turnkey",
+            review_permits={},
+        )
+
+        self.assertEqual(plan, {
+            "action": "stop",
+            "stop_reason": "review_permit_required",
+            "issues": [2],
+        })
+        self.assertNotIn("command", plan)
+
+    def test_plan_tick_expected_lease_mismatch_stops_before_reviewer_dispatch(self):
+        expected = studio_review_lease()
+        mismatched = studio_review_permit()
+        mismatched["review_lease"] = studio_review_lease(episode_id="other")
+        plan = orchestrator_ops.plan_tick(
+            {
+                "ok": False,
+                "stop_reason": "human_gate_review",
+                "review_waiting": [{
+                    "number": 2,
+                    "pr": 22,
+                    "base": "task/issue-1",
+                    "head": "task/issue-2",
+                    "expected_review_lease": expected,
+                }],
+            },
+            review_tool="session-review:request-review",
+            review_permits={2: mismatched},
+        )
+
+        self.assertEqual(plan["action"], "stop")
+        self.assertEqual(plan["stop_reason"], "review_permit_mismatch")
+        self.assertNotIn("command", plan)
+
+    def test_plan_tick_task_worker_owned_expected_lease_uses_existing_local_review(self):
+        permit = task_worker_review_permit()
+        plan = orchestrator_ops.plan_tick(
+            {
+                "ok": False,
+                "stop_reason": "human_gate_review",
+                "review_waiting": [{
+                    "number": 2,
+                    "expected_review_lease": permit["review_lease"],
+                }],
+            },
+            review_tool="session-review:request-review",
+            review_permits={2: permit},
+        )
+
+        self.assertEqual(plan["action"], "call_review_tool")
+
+    def test_plan_tick_no_expected_lease_keeps_standalone_review_flow(self):
+        plan = orchestrator_ops.plan_tick(
+            {
+                "ok": False,
+                "stop_reason": "human_gate_review",
+                "review_waiting": [{"number": 2}],
+            },
+            review_tool="session-review:request-review",
+            review_permits={2: studio_review_permit()},
+        )
+
+        self.assertEqual(plan["action"], "call_review_tool")
 
     def test_plan_tick_ready_spawns_max_workers(self):
         plan = orchestrator_ops.plan_tick(

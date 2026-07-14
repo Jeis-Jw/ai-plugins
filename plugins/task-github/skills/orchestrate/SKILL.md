@@ -110,7 +110,7 @@ python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/skills/orchestrate/scripts/rea
    FF 거부(non-FF) 시 오케스트레이터가 부모를 컨테이너 브랜치가 아닌 **리프 워크트리로** reverse-merge하도록 위임하고, 리프측에서 해소·재검증 후 재시도한다(§Recovery Guards).
 4. `done_parents[]` → 각 부모를 그 item의 computed gear와 review mode대로 위(review-required=PR→`merge`, review-free=`ff_merge_command`→push)와 같이 처리하고 close한 뒤 re-tick한다. 같은 tick의 ready는 버린다.
 5. `closeout_ready[]` → `BASE_BRANCH`별 FIFO closeout lane을 dispatch한다. 같은 base에 `closeout_started`가 있으면 새 closeout agent를 만들지 않고 pending으로 남긴다. 다른 base는 병렬 가능하다. review-free FF edge는 모델이 git/gh/ledger/test를 직접 쪼개 호출하지 않고 `closeout_ff_edge.py` 한 번으로 처리한다.
-6. `review_waiting[]` → task-worker `review-permit`을 먼저 소비한다. lease 없음/`owner=task-worker`는 기존 review-tool 또는 human gate를 유지한다. `owner=studio`는 reviewer tool/harness를 호출하지 않고 PR/base/head와 exact lease를 `external_review_waiting` ledger에 기록한 뒤 `externally-owned` handoff를 Studio에 반환한다.
+6. `review_waiting[]` → **tick/reviewer/closeout보다 먼저** task-worker `review-expectation`을 한 번 소비하고, lease가 있으면 그 exact `workflow-review-lease/v1`을 ledger의 `expected_review_lease_pinned` 이벤트로 pin한다. pin 없이 permit만 전달하지 않는다. pin은 같은 edge에서 멱등이며 mismatch/rebind는 STOP이다. expected lease가 있는데 permit이 없거나 다르면 `review_permit_required|review_permit_mismatch`로 STOP하고 reviewer tool/harness를 호출하지 않는다. lease 없음/valid `owner=task-worker`는 기존 review-tool 또는 human gate를 유지한다. valid `owner=studio`만 PR/base/head와 exact lease를 `external_review_waiting` ledger에 기록한 뒤 `externally-owned` handoff를 Studio에 반환한다.
 7. `ready[]` → 최대 `--max-workers`개 work-agent에 위임.
 
 실제 분기 결정은 `plan_tick(ready_state, review_tool=..., review_command=..., max_workers=..., pipeline=..., review_permits=...)` 결과를 따른다.
@@ -175,6 +175,19 @@ work-agent는 start에서 gear를 판단/보고한다. 오케스트레이터는 
 - **review 필요 edge(기본 major 또는 `--review=all`)**: worker가 PR을 만들고 `review_waiting`으로 넘긴다. PR 생성/리뷰 대기 동안 parent lock을 잡지 않는다. 승인 후 reviewer/orchestrator가 `ready_for_pr_closeout`을 기록하고, PR merge 순간만 `BASE_BRANCH` closeout lane이 lock을 잡는다.
 
 `owner=studio` review도 위 PR/CI/preflight/transport를 그대로 만든다. 달라지는 것은 task-github reviewer dispatch 하나뿐이다. ledger의 external handoff는 `episode_id`, `edge_id`, `evidence_refs`, issue/PR/base/head를 보존한다. Studio가 동일 lease의 `approved` verdict와 lease가 요구한 evidence refs를 반환하기 전에는 `ready_for_pr_closeout`, merge, closeout resume을 모두 거부한다. `changes-requested`는 Studio로 되돌리고 task-github가 임의 worker/reviewer를 소집하지 않는다.
+
+bootstrap은 edge마다 아래 순서를 지킨다. 첫 명령의 `expected_review_lease`와 `permit`은 같은 binding read에서 나온 한 쌍이다. lease가 `null`이면 pin하지 않고 standalone 흐름을 유지한다.
+
+```bash
+EXPECTATION=$(python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/task_worker_bridge.py" review-expectation \
+  --ref "$TASK_REF" --state-root "$TASK_WORKER_STATE" \
+  --episode-id "$EPISODE_ID" --edge-id "$EDGE_ID")
+LEASE=$(python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["expected_review_lease"], separators=(",",":")))' <<<"$EXPECTATION")
+if [ "$LEASE" != "null" ]; then
+  python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/skills/orchestrate/scripts/orchestrate_ledger.py" "$LEDGER" \
+    --issue "$ISSUE" --expected-review-lease-json "$LEASE" --json
+fi
+```
 
 ledger가 queue다. closeout subagent는 상주하지 않는 one-shot job이며, 완료 callback/re-tick 때 같은 base의 다음 pending item을 새 closeout subagent로 처리한다.
 
@@ -279,7 +292,7 @@ PR은 **review 필요한 edge에서만** 생성된다. micro/normal은 로컬 FF
 
 review-tool이 있으면 `compose_tool_command(review-tool, orchestrate.review-command, target args)`로 호출한다.
 task-worker-owned/standalone의 `approved`는 `ready_for_pr_closeout` ledger event로, `changes-requested`는 `worker_feedback_handoff()`로 work-agent 재spawn한다.
-Studio-owned verdict는 `orchestrate_ledger.py --review-lease-json ... --review-verdict approved --evidence-ref ...`로 동일 lease를 확인해 멱등 기록한다. lease/episode mismatch나 evidence 부족이면 closeout을 만들지 않는다.
+Studio-owned verdict는 `orchestrate_ledger.py --review-lease-json ... --review-verdict approved --evidence-ref ...`로 pinned expected lease와 동일한 lease를 확인해 멱등 기록한다. lease/episode/edge mismatch나 evidence 부족이면 closeout을 만들지 않는다. public `ready_for_pr_closeout`, `closeout_started`, merge/resume도 pin의 approved verdict와 required evidence를 다시 확인하므로 handoff 이벤트가 우연히 먼저 기록됐는지에 의존하지 않는다.
 round cap을 넘으면 STOP(`human_gate_review`).
 
 **CRITICAL — 리뷰어/검증자 relay는 punt 금지.** review-tool relay agent(및 통합리뷰·verify 서브에이전트)는 **인라인으로 리뷰하고 자기 최종 메시지로 판정(approved/changes-requested)을 반환**한다. 백그라운드 서브에이전트를 spawn하고 자기 턴을 끝내지 말 것 — 자식 완료 알림은 **최상위 오케스트레이터만** 받으므로, spawn-후-punt한 relay는 판정을 영영 relay하지 못하고 자식 판정이 트랜스크립트에 갇힌다(Wave 2 #10 관찰: 백그라운드 relay가 중첩 백그라운드 리뷰어를 낳고 "완료"로 반환, approved 판정이 유실됨). 백그라운드 spawn-후-재호출(re-tick) 패턴은 **최상위 오케스트레이터 전용**이고, dispatch된 worker/reviewer lane은 **리프**(일하고 데이터 반환)여야 한다. 리뷰어가 꼭 팬아웃해야 하면 자기 턴 안에서 자식을 await한 뒤 판정을 반환한다 — 턴을 끝내며 자식 완료를 기대하지 말 것. (여기서 "인라인"=relay lane 자신의 턴 안이라는 뜻이다. 오케스트레이터가 그 lane을 background로 띄우는지 foreground로 부르는지는 §루프의 background-lane dispatch 규칙 + `plan_tick`이 이미 정한다 — 이 규칙은 그 결정을 되돌리지 않고, dispatch된 lane이 판정을 **자기 최종 메시지로** 반환하게만 한다.)
