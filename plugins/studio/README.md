@@ -19,7 +19,7 @@ dev↔qa 공방)이 **실제 품질을 만드는가**이며, 그 판정을 criti
 | 요소 | 위치 | 역할 |
 |---|---|---|
 | producer 스킬 | `skills/producer/` | 메인스레드 규약: 소집·중계·게이트, 직접 제작·판단 대리 금지 |
-| studio CLI | `scripts/studio.py` | 결정적 상태: schema 2 board, QualityPlan, Context Kernel, fenced lease·budget, WorkPacket/ResultEnvelope |
+| studio CLI | `scripts/studio.py` | 결정적 상태: schema 2 board, QualityPlan, Context Kernel, fenced lease·budget, WorkPacket/ResultEnvelope, native execution permit/receipt/closeout |
 | agent 정책 | `.studio.yml` (repo 루트, `config scaffold`로 생성) | crew 서브에이전트의 model/effort 층별 설정 |
 | 브로커 | `broker/brainstorm.workflow.js`, `broker/pairing.workflow.js` | ritual 실행체(Workflow) — transcript 릴레이, 순수 오케스트레이션(fs 없음) |
 | crew | `crew/*.md` | 페르소나 데이터(name·role·prior·requested_tools·activation) — init이 `.studio/crew/`로 복사 |
