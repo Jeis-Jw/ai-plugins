@@ -1,0 +1,431 @@
+---
+title: task-worker 플러그인
+created_at: 2026-07-14
+summary: provider-neutral 작업 정의·분해·병렬 실행·검증·evidence 재사용을 소유하고 외부 provider가 상태와 delivery를 투영하는 범용 작업 엔진 설계 정본
+tags: [task-worker, workflow, orchestration, execution, evidence]
+verified_at: 2026-07-14
+affects_paths: [plugins/task-worker/**, plugins/task-github/**]
+---
+
+## 현재 상태
+
+### 설계 및 구현 상태
+
+이 문서는 `task-worker` 플러그인의 **목표 아키텍처 정본**이다. 설계는 2026-07-14에 확정했지만 플러그인 소스 분리는 아직 시작하지 않았다. 현재 실제 구현은 `plugins/task-github/` 0.20.0 안의 provider-neutral `DefinitionArtifact`, `record:none` local lifecycle, orchestration, verification 로직에 남아 있다.
+
+구현 완료로 판정하려면 기존 task-github replay fixture에서 다음 결과가 분리 전과 같아야 한다.
+
+- 작업 분해와 dependency graph
+- ready leaf 집합과 병렬 실행 가능성
+- worktree·branch 격리
+- gear 및 merge-edge 품질 gate
+- verification coverage와 P0/P1 검출
+- 통합 candidate의 최종 검증
+- 사용자 소유 변경 보존
+
+구현 전까지 이 문서는 target contract이고, 현재 동작 확인은 `plugins/task-github/DESIGN.md`와 소스·테스트를 우선한다. 분리 완료 후에는 이 문서가 task-worker의 living SSOT가 된다.
+
+관련 GitHub adapter/facade 정본은 [[task-github-plugin]]이다.
+
+### 역할
+
+`task-worker`는 GitHub, Studio, wiki, session-review를 모르는 **provider-neutral 작업 실행 엔진**이다. 작업 정의를 실행 가능한 그래프로 만들고, ready action을 병렬 dispatch하며, worktree에서 산출물을 만들고 검증하고, 재사용 가능한 evidence와 delivery 요청을 반환한다.
+
+`task-worker`는 단일 worker agent를 뜻하지 않는다. 플러그인 내부 용어는 다음처럼 구분한다.
+
+| 용어 | 의미 |
+|---|---|
+| workflow engine | 그래프·상태·gate·evidence를 처리하는 task-worker core |
+| worker lane | 한 ready node를 점유해 구현·검증하는 실행 episode |
+| reviewer provider | 독립 검토가 필요한 edge에 연결되는 선택적 외부 도구 |
+| graph provider | local artifact 또는 외부 시스템에서 WorkGraphSnapshot을 공급하는 adapter |
+| delivery provider | 검증된 변경을 FF, PR, merge 등으로 전달하는 adapter |
+
+### 핵심 불변식
+
+| 불변식 | 계약 |
+|---|---|
+| 논리 구조 보존 | 효율화를 이유로 독립 책임·위험·dependency 단위를 합치지 않는다. |
+| 병렬성 보존 | planner는 단일 next action이 아니라 `ready_actions[]`를 반환한다. |
+| 격리 | 동시에 실행되는 변경 node는 서로 다른 worktree와 execution lease를 사용한다. |
+| 사실 재사용 | 유효한 검증 사실은 receipt로 재사용하고 같은 목적의 physical run을 반복하지 않는다. |
+| 판단 갱신 | scope·ref·risk·criteria가 바뀌면 기존 증거를 무효화하고 필요한 판단을 새로 한다. |
+| 통합 검증 | 병합으로 새 상태가 만들어지면 leaf evidence가 있어도 integration gate를 생략하지 않는다. |
+| no extra hop | plugin delegation 자체를 이유로 fresh agent/session을 추가하지 않는다. |
+| provider neutrality | Issue·PR·label·Studio track·wiki node 같은 외부 식별자를 core schema에 넣지 않는다. |
+| fail closed | graph 불완전, dependency cycle, stale lease, evidence ambiguity에서는 부분 ready set을 실행하지 않는다. |
+| owner gate | 결제·배포·외부 mutation 등 명시된 owner gate는 executor가 우회하지 않는다. |
+
+### 범위
+
+task-worker가 소유한다.
+
+- immutable DefinitionArtifact revision과 stable node id
+- 분해 품질 규칙과 dependency 의미
+- gear, edge policy, review requirement 계산
+- WorkGraphSnapshot 검증
+- local run state와 recovery
+- ready action planning과 bounded parallel dispatch
+- execution lease, worktree, branch 격리
+- worker lane의 compact context packet
+- 변경 범위 기반 검증 계획
+- command profile, execution fingerprint, duplicate guard
+- VerificationReceipt와 evidence invalidation
+- conflict resolution을 child worktree에서 수행하는 규칙
+- local-git delivery와 provider-neutral delivery request
+- workflow telemetry receipt
+
+task-worker가 소유하지 않는다.
+
+- GitHub Issue·dependency API·label·assignee·comment
+- PR 생성, GitHub CI, reviewDecision, remote Issue close
+- Studio mission·track·QualityPlan·owner budget 정본
+- session-review의 reviewer lease·snapshot·review branch 상태 머신
+- wiki task·decision·SSOT 승격
+- 제품별 test command 자체
+
+### 의존성 방향
+
+task-worker core는 다른 workflow plugin에 hard dependency를 갖지 않는다.
+
+```text
+Studio ───────────────▶ task-worker
+task-github ──────────▶ task-worker
+local user ───────────▶ task-worker
+session-review ◀──── optional reviewer provider
+```
+
+task-worker는 provider를 직접 발견하거나 외부 상태를 임의 조회하지 않는다. caller가 digest가 고정된 input packet을 제공하고 task-worker는 action·event·receipt를 반환한다. 외부 provider mutation은 caller 또는 adapter가 수행한다.
+
+### 설정 경계
+
+provider-neutral 실행 설정은 `.task-worker.yml`을 정본으로 한다.
+
+- gear별 plan/verify/review requirement
+- max workers와 resource lock class
+- command profiles와 impact rules
+- evidence invalidation policy
+- retry·flake reproduction policy
+- local delivery mode
+- telemetry 요구 수준
+
+GitHub repository, label, PR, merge, issue projection 설정은 `.task-worker.yml`에 넣지 않는다. 기존 `.task-github.yml`의 generic execution 항목은 migration 기간 동안 task-github가 task-worker config로 번역하며, 호환 기간 종료 뒤 명시적으로 이동한다.
+
+### 완료 상태
+
+task-worker node의 `done`은 외부 시스템이 닫혔다는 뜻이 아니다.
+
+- local delivery: 검증과 local closeout까지 성공하면 `completed`
+- external delivery: 검증 후 `ready_for_delivery`; provider receipt가 돌아온 뒤 `completed`
+- review-required edge: `ready_for_review`; reviewer verdict와 delivery receipt가 모두 유효해야 `completed`
+
+remote PR merge나 Issue close를 task-worker가 추정해서 완료 처리하지 않는다.
+
+## 취지
+
+### 목적
+
+task-worker의 목적은 **작업을 잘 분해하고, 독립 가능한 결과를 병렬로 만들며, 검증 강도를 유지한 채 불필요한 physical run과 context reload만 제거하는 것**이다.
+
+최적화 대상은 논리 작업 수나 품질 gate 수가 아니다. 동일 상태·동일 목적의 명령 재실행, 상위 node의 하위 검증 반복, provider 상태 재조회, fresh agent의 repository 재탐색이 대상이다.
+
+### 보존하는 엔지니어링 방법론
+
+- 분해는 병렬 이득, 위험 격리, 정보 가치 경계, 병렬 해금이 있을 때 수행한다.
+- 검증·문서·runbook 자체를 별도 leaf로 만들지 않고 산출물 node의 완료 조건에 포함한다.
+- 같은 write-set·테스트·맥락을 공유하는 작업은 phase로 묶고, 독립 소유·독립 검증·독립 rollback이 가능한 경우만 나눈다.
+- dependency는 직접 제약만 표현하고 transitive·방어적 blocker를 만들지 않는다.
+- 형제 lane은 실제 shared resource가 없으면 병렬로 실행한다.
+- ceremony는 node 개수에 비례시키지 않고 merge edge의 gear와 risk에 비례시킨다.
+- leaf delta 검증, parent contract 검증, root integration 검증을 구분한다.
+- major 또는 명시적 independence requirement에는 독립 review provider를 사용할 수 있다.
+
+### 효율화 원칙
+
+한 문장 원칙은 다음과 같다.
+
+> 사실은 재사용하고, 판단은 위험이 변할 때 새로 한다.
+
+이를 위해 논리 작업 그래프, evidence 그래프, physical execution plan을 분리한다.
+
+```text
+WorkGraph
+  → valid evidence 계산
+  → missing evidence의 ready action set
+  → 병렬 physical execution
+  → integration/review/delivery gate
+```
+
+작업 node가 10개여도 같은 command를 10번 실행할 이유는 없다. 반대로 physical run을 줄이기 위해 독립 작업 node를 합치거나 root integration QA를 생략해서도 안 된다.
+
+### 플러그인 분리의 목적
+
+기존 task-github는 provider-neutral local workflow와 GitHub projection/delivery라는 서로 다른 변경 이유를 함께 갖고 있다. task-worker 추출은 GitHub 기능을 줄이기 위한 것이 아니라 다음을 가능하게 하기 위한 것이다.
+
+- GitHub 없는 local workflow에서도 같은 분해·실행·검증 방법론 사용
+- Studio가 GitHub를 강제하지 않고 task-worker를 executor로 선택
+- task-github가 remote API·projection·delivery 문제에 집중
+- task-github와 Studio가 같은 execution/evidence 로직을 중복 구현하지 않음
+- session-review를 필요 경계에서만 선택적으로 연결
+
+### 금지되는 최적화
+
+- leaf 수를 줄이는 것을 효율 KPI로 사용
+- single `next_action` planner로 ready set을 직렬화
+- 모든 node를 한 worktree에서 처리
+- parent/root가 child full suite를 무조건 재실행
+- 동일 HEAD·command라는 이유만으로 independent proof까지 차단
+- telemetry 누락 때문에 필수 safety QA 중단
+- plugin 호출마다 새 agent를 소집
+- compact handoff를 근거로 stale 환경정보 재확인을 영구 금지
+- generic receipt가 provider-specific 의미를 대체하도록 확장
+
+### 성공 기준
+
+품질 hard floor가 유지되는 상태에서 다음이 감소해야 한다.
+
+- 동일 execution fingerprint·동일 purpose의 중복 command
+- 변경 없는 scope의 재빌드·재검증
+- worker당 repository/context 재탐색
+- parent/root의 child evidence 재검증
+- orchestration tick당 provider read
+- finding 수정당 fresh worker/reviewer 생성
+
+P0/P1 결함 검출률, integration defect escape, production gate, user-owned change 보존은 악화되면 안 된다.
+
+## 구성요소
+
+### 1. DefinitionArtifact
+
+작업 정의의 provider-neutral 정본이다.
+
+필수 속성:
+
+- `definition_id`, `revision`, `digest`, `previous_digest`
+- stable node id
+- objective와 acceptance criteria
+- parent/child decomposition
+- direct `blocked_by`
+- gear와 risk hints
+- affected paths 또는 scope hints
+- review·delivery requirement
+- owner gate와 external mutation constraints
+
+외부 provider reference는 artifact 본문에 박지 않고 projection binding으로 분리한다.
+
+### 2. WorkGraphSnapshot
+
+실행 시점의 검증된 그래프 입력이다.
+
+```json
+{
+  "schema": 1,
+  "graph_ref": "provider-neutral-ref",
+  "snapshot_digest": "sha256:...",
+  "definition_digest": "sha256:...",
+  "nodes": [],
+  "edges": [],
+  "provider_capabilities": [],
+  "captured_at": "ISO-8601"
+}
+```
+
+planner는 graph가 불완전하거나 dependency cycle·stable id 충돌·definition mismatch가 있으면 아무 node도 dispatch하지 않는다.
+
+### 3. DecompositionPolicy
+
+절단 사유는 네 가지다.
+
+1. **병렬 이득**: 독립 worker가 점유해 끝까지 완료할 수 있음
+2. **위험 격리**: 독립 rollback 또는 별도 owner gate가 필요함
+3. **정보 가치 경계**: 앞 결과가 뒤 계획을 바꾸거나 뒤만 revert할 현실적 가능성이 있음
+4. **병렬 해금**: 공통 계약 artifact가 다른 lane을 실제로 열어줌
+
+다음 조건이면 묶는 것이 기본이다.
+
+- 같은 파일·shared component를 수정
+- 동일 검증 명령과 UI context를 공유
+- 앞 node의 상세 context가 뒤 node 수행에 계속 필요
+- 산출물보다 closeout·review 고정비가 큼
+
+### 4. Planner와 ReadyActionSet
+
+planner 입력은 WorkGraphSnapshot, run ledger, valid evidence, resource lease다. 출력은 단일 행동이 아닌 집합이다.
+
+```json
+{
+  "ready_actions": [],
+  "blocked_actions": [],
+  "closeout_actions": [],
+  "integration_gates": [],
+  "stop_reason": null
+}
+```
+
+- ready node는 dependency·lease·owner gate·runtime capability를 모두 만족해야 한다.
+- partial graph/API failure에서는 일부 ready node만 조용히 실행하지 않는다.
+- lane 내부는 `worker → optional review → delivery` 순서로 직렬화한다.
+- 형제 lane은 실제 공유 자원 lock이 없으면 병렬이다.
+- closeout은 base/delivery target 단위로만 직렬화한다.
+
+### 5. Worker lane과 ContextPacket
+
+worker lane은 한 node의 execution lease를 가진다. 전달 context는 전체 transcript가 아니라 canonical packet이다.
+
+```json
+{
+  "node_id": "...",
+  "definition_digest": "sha256:...",
+  "objective": "...",
+  "acceptance_criteria": [],
+  "constraints": {},
+  "changed_paths": [],
+  "valid_evidence": [],
+  "known_environment": {},
+  "delivery_requirement": {},
+  "owner_gates": []
+}
+```
+
+known fact에는 source, digest, TTL 또는 invalidation trigger를 붙인다. worker는 유효한 사실을 재도출하지 않지만 stale·충돌·불충분 근거가 있으면 reason과 함께 재확인할 수 있다.
+
+### 6. Worktree·branch manager
+
+- 병렬 변경 node마다 전용 worktree와 branch를 사용한다.
+- main worktree HEAD는 orchestration 때문에 trunk를 벗어나지 않는다.
+- conflict는 child worktree에서 reverse merge 후 해소하고 영향 검증을 재실행한다.
+- 사용자 소유 dirty change가 있는 worktree를 자동 정리·덮어쓰기하지 않는다.
+- branch/worktree cleanup은 merge 성공과 별도 상태로 기록하며 cleanup 실패로 이미 성공한 delivery를 실패 처리하지 않는다.
+
+### 7. EdgePolicy
+
+검증·review 강도는 node가 아니라 merge/delivery edge의 누적 위험으로 계산한다.
+
+기본 정책:
+
+| gear | plan | leaf verify | independent review | delivery |
+|---|---:|---:|---:|---|
+| micro | 선택 | 변경 범위 sanity | 없음 | local FF 가능 |
+| normal | 필수 | 변경 범위 검증 | 선택 | local FF 또는 provider delivery |
+| major | 필수 | 변경+contract 검증 | 필수 기본 | 격리된 review delivery |
+
+container gear는 child의 최고 gear와 누적 risk로 승격한다. concrete PR·merge 방식은 delivery provider가 실현하며 core는 GitHub PR을 전제하지 않는다.
+
+### 8. VerificationPlanner
+
+검증은 세 계층으로 나눈다.
+
+| 계층 | 검증 |
+|---|---|
+| leaf | changed test, typecheck, scope-specific command |
+| parent/container | merge conflict, interface, shared contract |
+| root/integration | 전체 통합본 기준 QualityPlan gate |
+
+finding 수정은 영향받은 scope와 실패 조건만 delta 검증한다. 공유 contract·dependency·toolchain이 바뀌면 영향 범위를 확대한다.
+
+### 9. Evidence와 duplicate guard
+
+`ExecutionFingerprint`:
+
+```text
+state_ref + base_ref + command_profile_digest
++ environment_digest + tool_digest
+```
+
+`ExecutionPurpose`:
+
+```text
+delta-proof | integration-proof | independent-proof | flake-reproduction
+```
+
+동일 fingerprint와 동일 purpose의 성공 evidence가 있으면 physical command를 재실행하지 않는다. independent proof나 flake reproduction은 같은 command여도 별도 purpose이므로 명시적으로 허용할 수 있다.
+
+`VerificationReceipt` 필수 필드:
+
+- state/base ref와 scope/criteria digest
+- changed paths와 command profile
+- environment/tool digest
+- coverage와 result
+- output artifact digest
+- timestamp와 token coverage
+- invalidation triggers
+- independence class
+
+무효화 조건:
+
+- state/base 변경
+- relevant path 또는 shared contract 변경
+- dependency/lockfile/toolchain 변경
+- environment digest 변경
+- conflict resolution 또는 generated artifact 변경
+- criteria coverage 부족·ambiguous evidence
+
+### 10. Run ledger와 recovery
+
+local ledger는 event-sourced write-through state다. provider remote state를 복제하는 DB가 아니라 task-worker가 직접 수행한 claim, dispatch, evidence, failure, delivery request를 기록한다.
+
+- successful write는 즉시 ledger에 반영
+- resume은 definition/snapshot digest를 재검증
+- stale lease는 자동 실행하지 않음
+- 같은 finding의 자동 retry는 execution fingerprint 또는 failure class가 바뀔 때만 허용
+- run cap 초과는 owner-visible gate를 만들되 필수 safety verification을 자동 삭제하지 않음
+
+### 11. Provider-neutral event
+
+```text
+node_claimed
+execution_started
+evidence_reused
+verification_completed
+finding_opened
+ready_for_review
+ready_for_delivery
+delivery_completed
+execution_failed
+execution_blocked
+```
+
+event에는 idempotency key, node/run/lease id, state digest, evidence refs를 포함한다. task-github 같은 provider adapter가 이를 외부 상태로 투영한다.
+
+### 12. Public skill surface
+
+| skill | 책임 |
+|---|---|
+| `task-worker:define` | DefinitionArtifact 생성·revision |
+| `task-worker:plan` | node 실행 계획과 완료 조건 정리 |
+| `task-worker:start` | execution lease·worktree 시작 |
+| `task-worker:run` | node 구현 실행 |
+| `task-worker:verify` | evidence 생성·재사용 판정 |
+| `task-worker:done` | local completion 또는 delivery request 생성 |
+| `task-worker:status` | local run/graph 상태와 ready set |
+| `task-worker:orchestrate` | provider-neutral graph의 병렬 실행 |
+
+독립 review 자체는 session-review 또는 다른 reviewer provider의 책임이다. task-worker는 review requirement와 packet/receipt contract만 제공한다.
+
+### 13. Telemetry
+
+항상 다음을 구분해 기록한다.
+
+- logical nodes와 physical runs
+- ready action과 dispatched action
+- evidence eligible/reused/invalidated
+- duplicate prevented
+- full/delta/integration verification
+- elapsed time
+- token value와 coverage (`null/unavailable` 허용, 0으로 치환 금지)
+- owner intervention과 external mutation
+
+telemetry 누락은 선택적 추가 실행을 제한할 수 있지만 필수 품질·안전 gate를 제거하는 근거가 될 수 없다.
+
+### 14. Conformance fixture
+
+분리 구현은 최소 다음을 replay한다.
+
+- 다중 앱 병렬 polish와 integration QA
+- mobile environment 소수 파일 delta QA
+- stacked issue tree의 ready leaf·merge-up·evidence reuse
+- same-parent sibling closeout
+- shared write-set을 잘못 분해한 negative fixture
+- GitHub 없는 `record:none` local lifecycle
+- session-review가 없는 review-required STOP/fallback
+- 사용자 dirty change와 worktree cleanup
