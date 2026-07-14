@@ -1,6 +1,6 @@
 ---
 name: start
-description: 리프 Issue를 점유하거나 record:none DefinitionArtifact node의 local run을 시작한다. 이슈 번호/제목은 기존 Issue 모드, --artifact/--node는 GitHub 기록 없는 local mode다. "task-github:start", "작업 시작하자", "start 10" 등의 요청에 실행하라.
+description: 리프 Issue를 점유하거나 task-worker DefinitionArtifact node의 local run을 시작한다. 이슈 번호/제목은 기존 Issue 모드, --artifact/--node는 GitHub 기록 없는 local facade다. "task-github:start", "작업 시작하자", "start 10" 등의 요청에 실행하라.
 ---
 
 # start — 리프 Issue 점유 + 기어 판단
@@ -18,12 +18,12 @@ $ARGUMENTS:
 
 ## 절차
 
-### 모드 C — record:none DefinitionArtifact mode
+### 모드 C — local DefinitionArtifact facade
 
-artifact의 `record`가 `none`인지 확인하고 immutable revision/node를 local run에 pin한다. `record:github`은 이 모드를 쓰지 않고 full projection 뒤 기존 Issue 번호 모드로 진입한다.
+canonical artifact에는 provider `record` 필드가 없다. local facade 선택을 확인하고 immutable revision/node를 task-worker run에 pin한다. GitHub 기록을 선택한 작업은 full projection 뒤 기존 Issue 번호 모드로 진입한다.
 
 ```bash
-python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py" local-start \
+python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/task_worker_bridge.py" local-start \
   --artifact {PATH} --node {KEY|NODE_ID} --state-dir .task-github/local/runs \
   ${RUN_ID:+--run-id "$RUN_ID"}
 ```

@@ -7,11 +7,16 @@ import argparse
 import json
 import re
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
 import orchestrator_ops
 from orchestrate_ledger import load_ledger, record_github_read, record_read_decision, record_snapshot, tree_from_ledger
+
+TASK_GITHUB_ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(TASK_GITHUB_ROOT / "scripts"))
+import task_worker_bridge  # noqa: E402
 
 STATE_LABELS = {"in-progress", "in-review", "changes-requested"}
 REVIEW_LABELS = {"in-review", "changes-requested"}
@@ -50,21 +55,8 @@ def _walk(node: dict[str, Any]) -> Iterable[dict[str, Any]]:
         yield from _walk(child)
 
 
-def _is_open(node: dict[str, Any]) -> bool:
-    return node.get("state") == "OPEN"
-
-
 def _is_complete_state(state: str | None) -> bool:
     return state in {"CLOSED", "close_expected"}
-
-
-def _is_leaf(node: dict[str, Any]) -> bool:
-    return _summary(node).get("total", 0) == 0
-
-
-def _complete_parent(node: dict[str, Any]) -> bool:
-    summary = _summary(node)
-    return _is_open(node) and summary.get("total", 0) > 0 and summary.get("completed") == summary.get("total")
 
 
 def _effective_gear(node: dict[str, Any]) -> str | None:
@@ -130,6 +122,61 @@ def ledger_number_set(ledger: dict[str, Any], field: str) -> set[int]:
     return {int(part) for part in value}
 
 
+def _graph_status(node: dict[str, Any]) -> str:
+    state = node.get("state")
+    if _is_complete_state(state):
+        return "completed"
+    if state in {"closeout_ready", "closeout_started", "closeout_failed"}:
+        return "active"
+    # GitHub's open_blockers snapshot takes precedence over labels. A node
+    # that became blocked after being claimed/reviewed must not be reported as
+    # merely active or gated and then retried through the wrong recovery lane.
+    if _blocker_numbers(node):
+        return "open"
+    labels = set(node.get("labels") or [])
+    if "in-progress" in labels:
+        return "active"
+    if labels & REVIEW_LABELS:
+        return "gated"
+    return "open"
+
+
+def _work_graph_snapshot(tree: dict[str, Any]) -> dict[str, Any]:
+    flattened = list(_walk(tree))
+    by_number = {node["number"]: node for node in flattened}
+    nodes: list[dict[str, Any]] = []
+
+    def append(node: dict[str, Any], parent: dict[str, Any] | None) -> None:
+        blockers = []
+        for number in _blocker_numbers(node):
+            blocker = by_number.get(number)
+            # GitHub's open_blockers field is authoritative. Keep a stale or
+            # external entry unresolved instead of letting a completed graph
+            # node accidentally satisfy it. Open in-tree blockers retain their
+            # node id so task-worker can still detect dependency cycles.
+            if blocker is not None and _graph_status(blocker) != "completed":
+                blockers.append(str(number))
+            else:
+                blockers.append(f"github-open-blocker-{number}")
+        nodes.append({
+            "node_id": str(node["number"]),
+            "key": f"issue-{node['number']}",
+            "title": node.get("title") or f"Issue #{node['number']}",
+            "parent_id": None if parent is None else str(parent["number"]),
+            "blocked_by": blockers,
+            "status": _graph_status(node),
+        })
+        for child in _children(node):
+            append(child, node)
+
+    append(tree, None)
+    return {
+        "schema": "task-worker.work-graph/v1",
+        "graph_id": f"issue-tree-{tree['number']}",
+        "nodes": nodes,
+    }
+
+
 def evaluate_tree(
     tree: dict[str, Any],
     *,
@@ -143,9 +190,7 @@ def evaluate_tree(
         return _stop(result, "empty_tree")
 
     descendants = list(_walk(tree))[1:]
-    open_numbers = {node["number"] for node in descendants if _is_open(node)}
-    blocked_nodes: list[dict[str, Any]] = []
-
+    by_number = {node["number"]: node for node in _walk(tree)}
     for node in descendants:
         state = node.get("state")
         if state == "closeout_failed":
@@ -156,33 +201,42 @@ def evaluate_tree(
             continue
         if state == "closeout_ready":
             result["closeout_ready"].append(item(node))
-            continue
-        labels = set(node.get("labels") or [])
-        blockers = _blocker_numbers(node)
-        if blockers:
-            blocked = item(node)
-            blocked["open_blockers"] = list(node.get("open_blockers") or [])
-            blocked_nodes.append(blocked)
-            continue
-        if _complete_parent(node):
-            entry = item(node)
-            entry["gear"] = _effective_gear(node)
-            result["done_parents"].append(entry)
-            continue
-        if not _is_open(node) or not _is_leaf(node):
-            continue
-        if "in-progress" in labels:
-            if node["number"] in failed_set:
-                result["stuck"].append(item(node, reason="spawned_failed"))
-            elif node["number"] not in spawned_set:
-                result["stuck"].append(item(node, reason="prior_run"))
-            continue
-        if labels & REVIEW_LABELS:
-            result["review_waiting"].append(item(node))
-            continue
-        result["ready"].append(item(node))
+    try:
+        plan = task_worker_bridge.plan_graph(_work_graph_snapshot(tree))
+    except task_worker_bridge.TaskWorkerBridgeError as exc:
+        if exc.code == "dependency_cycle":
+            return _stop(result, "dep_cycle")
+        raise
 
-    result["blocked"] = blocked_nodes
+    for entry in plan["blocked"]:
+        node = by_number[int(entry["node_id"])]
+        blocked = item(node)
+        blocked["open_blockers"] = list(node.get("open_blockers") or [])
+        result["blocked"].append(blocked)
+    for entry in plan["active"]:
+        node = by_number[int(entry["node_id"])]
+        if node.get("state") in {"closeout_ready", "closeout_started", "closeout_failed"}:
+            continue
+        if node["number"] in failed_set:
+            result["stuck"].append(item(node, reason="spawned_failed"))
+        elif node["number"] not in spawned_set:
+            result["stuck"].append(item(node, reason="prior_run"))
+    for entry in plan["gated"]:
+        node = by_number[int(entry["node_id"])]
+        result["review_waiting"].append(item(node))
+    for entry in plan["ready_actions"]:
+        number = int(entry["node_id"])
+        if number != tree["number"]:
+            result["ready"].append(item(by_number[number]))
+    for entry in plan["integration_candidates"]:
+        number = int(entry["node_id"])
+        node = by_number[number]
+        candidate = item(node)
+        candidate["gear"] = _effective_gear(node)
+        if number == tree["number"]:
+            result["container_done"] = candidate
+        else:
+            result["done_parents"].append(candidate)
 
     # Branch order mirrors the skill loop: stuck first, then completed parents,
     # then review gate, then ready work.
@@ -190,10 +244,7 @@ def evaluate_tree(
         return _stop(result, "stuck")
     if result["closeout_failed"]:
         return _stop(result, "closeout_failed")
-    if _complete_parent(tree) and not _blocker_numbers(tree):
-        entry = item(tree)
-        entry["gear"] = _effective_gear(tree)
-        result["container_done"] = entry
+    if result["container_done"] is not None:
         return result
     if result["done_parents"]:
         return result
@@ -203,9 +254,8 @@ def evaluate_tree(
         return _stop(result, "human_gate_review")
     if result["ready"]:
         return result
-    if blocked_nodes:
-        blocked_by = {number for node in descendants for number in _blocker_numbers(node)}
-        return _stop(result, "dep_cycle" if blocked_by and blocked_by <= open_numbers else "no_progress")
+    if result["blocked"]:
+        return _stop(result, "no_progress")
     return _stop(result, "no_progress")
 
 
@@ -364,6 +414,13 @@ def main(argv: list[str] | None = None) -> int:
                 root=tree.get("number"),
                 result=_decision_summary(payload),
             )
+    except task_worker_bridge.TaskWorkerBridgeError as exc:
+        payload = {
+            **_base_result(),
+            "ok": False,
+            "stop_reason": exc.code,
+            "message": exc.message,
+        }
     except Exception as exc:  # CLI boundary: never silently degrade to ready=[]
         payload = {**_base_result(), "ok": False, "stop_reason": "api_failure", "message": str(exc)}
     print(json.dumps(payload, ensure_ascii=False) if args.as_json else json.dumps(payload, ensure_ascii=False, indent=2))

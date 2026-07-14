@@ -1,5 +1,5 @@
 {
   "name": "task-github",
-  "version": "0.20.0",
-  "description": "DefinitionArtifact 기반 자율 작업 프로토콜 — 선택적 GitHub 전체 기록과 wiki-markdown task 노드 연계"
+  "version": "0.21.0",
+  "description": "task-worker 실행 계약 기반 GitHub provider adapter·호환 facade — Issue tree·PR·merge·wiki task 연계"
 }

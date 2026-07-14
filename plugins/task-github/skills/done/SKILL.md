@@ -1,6 +1,6 @@
 ---
 name: done
-description: Issue 또는 record:none DefinitionArtifact local run을 종료한다. Issue 번호는 기존 PR/FF/close 경로, --artifact/--run-state는 Issue write 없이 delivery와 closeout을 수행한다. "task-github:done", "PR 만들어줘", "작업 마무리해줘", "이슈 닫아줘" 등의 요청에 실행하라.
+description: Issue 또는 task-worker DefinitionArtifact local run을 종료한다. Issue 번호는 기존 PR/FF/close 경로, --artifact/--run-state는 Issue write 없이 delivery와 closeout을 수행하는 facade다. "task-github:done", "PR 만들어줘", "작업 마무리해줘", "이슈 닫아줘" 등의 요청에 실행하라.
 ---
 
 # done — PR 생성 또는 close
@@ -15,28 +15,28 @@ $ARGUMENTS: {N} | --artifact {PATH} --run-state {RUN_JSON}
 
 ## 절차
 
-### record:none DefinitionArtifact mode
+### local DefinitionArtifact facade
 
 `--artifact/--run-state`가 있으면 `recover.next_event`를 확인한다. `done`이면 evidence를 기록하고, PR merge 뒤 재진입한 `closeout`이면 done 전이를 반복하지 않는다. run-state가 node와 stable branch/worktree를 이미 pin한다:
 
 ```bash
-python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py" recover \
+python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/task_worker_bridge.py" recover \
   --artifact {PATH} --run-state {RUN_JSON}
-python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py" local-event \
+python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/task_worker_bridge.py" local-event \
   --artifact {PATH} --run-state {RUN_JSON} --event done --evidence '{테스트/드리프트 결과 JSON object}'
 ```
 
 run-state의 delivery를 그대로 수행한다:
 
 - `local-ff`: stable branch를 configured base에 FF delivery한 뒤 `local-event --event closeout`.
-- `pull-request`: stable branch를 push하고 **Issue closing keyword 없는** PR을 만든다. merge 전에는 state를 `done`으로 두고, merge 확인 뒤 `closeout`한다.
+- `external`: task-github facade는 stable branch를 push하고 **Issue closing keyword 없는** PR을 만든다. merge 전에는 state를 `done`으로 두고, merge 확인 뒤 `closeout`한다.
 
 delivery 완료 뒤 closeout과 receipt를 기록한다:
 
 ```bash
-python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py" local-event \
+python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/task_worker_bridge.py" local-event \
   --artifact {PATH} --run-state {RUN_JSON} --event closeout --evidence '{delivery 결과 JSON object}'
-python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py" receipt \
+python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/task_worker_bridge.py" receipt \
   --run-state {RUN_JSON} --workflow task-github
 ```
 

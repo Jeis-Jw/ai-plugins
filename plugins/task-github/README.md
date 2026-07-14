@@ -1,6 +1,8 @@
 # task-github
 
-provider-neutral DefinitionArtifact 기반 자율 작업 프로토콜. AI 에이전트가 작업을 정의·점유·계획·실행·검증·완료하는 구조를 제공하고, 선택 시 전체 작업 트리를 GitHub Issue/PR/Label에 기록한다. 같은 마켓플레이스의 **`wiki-markdown` 결정 그래프와 `task` 노드로 연계**한다.
+`task-worker`를 실행 엔진으로 사용하는 GitHub provider adapter와 호환 facade다. 작업 트리를 GitHub Issue/dependency로 투영하고, label·assignee·PR·CI·review·merge·closeout을 소유한다. 기존 `task-github:*` 명령 표면과 Issue-first workflow는 유지하며, 같은 마켓플레이스의 **`wiki-markdown` 결정 그래프와 `task` 노드로 연계**한다.
+
+실행 명령은 시작 시 `task-worker` capability와 contract schema를 점검한다. task-worker가 없거나 호환되지 않으면 부분 실행하지 않고 명시적으로 중단한다. setup/open/doctor 같은 GitHub read·진단 기능에는 이 dependency를 강제하지 않는다.
 
 ## 빠른 시작
 
@@ -41,9 +43,9 @@ task-github:reconcile --apply
 `define`의 정본은 stable definition/node id를 가진 immutable revision이다. 각 revision은 `revision`, `digest`, `previous_digest`로 연결되며 local run은 정확한 revision/digest에 pin된다.
 
 ```bash
-# provider-neutral 정의 생성: GitHub Issue write 없음
-python3 plugins/task-github/scripts/definition_artifact.py create \
-  --spec /tmp/definition.json --record none --delivery local-ff
+# provider-neutral 정의 생성: task-worker에 위임, GitHub Issue write 없음
+python3 plugins/task-github/scripts/task_worker_bridge.py create \
+  --spec /tmp/definition.json --delivery local-ff
 
 # record:github 전체 투영: root/descendant/dependency를 checkpoint하며 실패 후 resume
 python3 plugins/task-github/skills/define/scripts/create_issue_tree.py \
@@ -51,12 +53,12 @@ python3 plugins/task-github/skills/define/scripts/create_issue_tree.py \
   --projection-state .task-github/local/projections/DEF.json --strict-deps --json
 ```
 
-- `record:none|github`과 `delivery:local-ff|pull-request`는 독립 축이다.
+- facade의 `record:none|github`과 task-worker의 `delivery:local-ff|external`은 독립 축이다. canonical artifact에는 provider `record`를 저장하지 않는다.
 - `record:none`은 Issue write를 하지 않는다. policy상 PR이 필요한 경우 `record:none + delivery:pull-request`는 허용한다.
 - `record:github`은 full coverage 전 실행을 차단한다. node marker와 node/edge intent checkpoint로 remote write 뒤 local 실패도 동일 Issue/dependency를 재사용한다. 전체 pagination scan은 incomplete node resume에서만 수행한다.
 - exactly-once projection resume은 projection-state 경로당 **단일 process의 순차 실행만** 지원한다. 같은 경로의 concurrent projector는 실행하지 않는다. concurrent writer와 marker의 eventual visibility는 보장하지 않으며 별도 lock도 제공하지 않는다.
-- public `start → run → verify → done`은 `--artifact/--node|--run-state` record:none mode를 제공하고 `recover`로 재진입한다. branch/worktree는 stable node id 기반이라 revision 간 identity가 유지된다.
-- closeout receipt는 binding schema v1 필드(`schema`, `emitter`, `workflow`, `run_id`, 시간/비용/품질)를 방출한다. token 측정값은 `exact`, 없으면 `tokens:null`, `token_coverage:unavailable`이다.
+- public `start → run → verify → done`의 local facade는 `task_worker_bridge.py`를 통해 같은 task-worker lifecycle을 사용하고 `recover`로 재진입한다. branch/worktree는 stable node id 기반이라 revision 간 identity가 유지된다.
+- closeout receipt는 task-worker가 공통 schema v1 필드(`schema`, `emitter`, `workflow`, `run_id`, 시간/비용/품질)로 방출한다. token 측정값은 `exact`, 없으면 `tokens:null`, `token_coverage:unavailable`이다.
 - 기존 `create_issue_tree.py --spec`와 `task/issue-{N}` 기반 Issue-first 흐름은 그대로 지원한다.
 
 ## 3축 분류
@@ -155,6 +157,7 @@ ledger v3는 비용 분석과 evidence reuse를 위해 `github_reads`, `read_dec
 
 ## 변경 이력
 
+- `0.21.0`: provider-neutral 실행 코어를 `task-worker` 0.2.0으로 완전히 위임했다. `task_worker_bridge.py`의 capability preflight와 versioned JSON contract, `github_projection.py`의 GitHub binding checkpoint를 추가했고, 기존 `definition_artifact.py`는 호환 forwarder로 축소했다. GitHub Issue snapshot은 `task-worker.work-graph/v1`로 변환해 공통 ready/integration planner를 사용하며 기존 ready-leaf 병렬성, gear, PR/review, merge/closeout gate는 그대로 유지한다.
 - `0.20.0`: provider-neutral immutable DefinitionArtifact revision과 stable node id, digest/previous_digest/run pinning, local lifecycle/recovery/stable branch-worktree identity를 추가했다. `record:none|github`과 `delivery:local-ff|pull-request`를 분리하고, GitHub full-tree node/edge projection checkpoint·failure resume·coverage 실행 gate, binding receipt schema v1 emitter를 제공한다. 기존 Issue-first `--spec` 경로는 호환 유지한다.
 - `0.19.0`: define 분해 게이트 재합침 원리 — 절단 판정에 헤드라인 질문("다른 워커가 독립 점유해 끝낼 수 있는가")과 **don't-split 프로브**(검증 명령 동일/같은 shared component 수정/context 연속)를 추가해 사유①의 가짜 독립을 잡는다. same-theme write-set 겹침은 `blocked_by` 직렬화보다 **1리프+phase 재합침**을 먼저 검토한다(quality-gates G4·challenge review 기준 반영). `create_issue_tree.py` dry-run에 `siblings_maybe_phases` 경고(공유 단일 선행 뒤 fan-out 3+개 + 공통 feature 테마(필수) + 구조신호(단일 클러스터·동일 검증) 1개 이상)를 추가하고, 재합침한 큰 리프는 phase 체크리스트(phase별 커밋·체크포인트·마지막 full-verify·세션 재진입)로 운영한다(0.18.1 dogfood #119 회고, DEC-2026-07-07-204311).
 - `0.18.1`: FF closeout edge primitive — review-free `ready_for_closeout` 처리에서 git/gh/test/ledger 연쇄를 `closeout_ff_edge.py` 한 번으로 감싸 compact JSON만 모델에 노출한다. 성공 ledger 기록은 closeout events와 completed 정리를 한 write로 적용한다.

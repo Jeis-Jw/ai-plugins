@@ -14,8 +14,8 @@
     {
       "name": "task-github",
       "source": "./plugins/task-github",
-      "description": "DefinitionArtifact 기반 자율 작업 프로토콜 — 선택적 GitHub 전체 기록과 wiki-markdown task 노드 연계",
-      "version": "0.20.0"
+      "description": "task-worker 실행 계약 기반 GitHub provider adapter·호환 facade — Issue tree·PR·merge·wiki task 연계",
+      "version": "0.21.0"
     },
     {
       "name": "session-review",
@@ -32,8 +32,8 @@
     {
       "name": "task-worker",
       "source": "./plugins/task-worker",
-      "description": "Provider-neutral 작업 분해·병렬 ready-set 실행·local lifecycle·검증 evidence 플러그인",
-      "version": "0.1.0"
+      "description": "Provider-neutral WorkGraph 계획·병렬 ready-set 실행·통합 gate·local 검증 lifecycle 플러그인",
+      "version": "0.2.0"
     }
   ]
 }

@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 import tempfile
 import uuid
 from datetime import datetime, timezone
@@ -19,7 +20,9 @@ SCHEMA = "task-worker.definition/v1"
 LEGACY_SCHEMAS = {"task-github.definition/v1"}
 RUN_SCHEMA = "task-worker.local-run/v1"
 LEGACY_RUN_SCHEMAS = {"task-github.local-run/v1"}
+WORK_GRAPH_SCHEMA = "task-worker.work-graph/v1"
 RECEIPT_SCHEMA = "workflow-receipt/v1"
+PLUGIN_VERSION = "0.2.0"
 SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 DELIVERY_MODES = {"local-ff", "external"}
 LEGACY_DELIVERY_MODES = {"local-ff", "pull-request"}
@@ -30,6 +33,7 @@ RUN_TRANSITIONS = {
     "closeout": ("done", "closed"),
 }
 ACTIVE_STATUSES = {"started", "running", "verified", "done"}
+GRAPH_STATUSES = {"open", "active", "completed", "gated", "failed"}
 
 
 class DefinitionError(Exception):
@@ -311,6 +315,167 @@ def validate_artifact(
     return artifact
 
 
+def artifact_to_spec(artifact: dict[str, Any]) -> dict[str, Any]:
+    """Export a provider-neutral define spec without adapter bindings."""
+    validate_artifact(artifact)
+    root = {"title": artifact["root"]["title"], "body": artifact["root"]["body"]}
+    _copy_optional(artifact["root"], root, ("execution_contract", "gear", "risk"))
+    children = []
+    for child in artifact["children"]:
+        item = {
+            "key": child["key"],
+            "title": child["title"],
+            "body": child["body"],
+            "parent": child["parent"],
+            "affects_paths": child.get("affects_paths", []),
+            "blocked_by": child.get("blocked_by", []),
+        }
+        _copy_optional(
+            child,
+            item,
+            ("cross_parent_dependency_reason", "execution_contract", "gear", "risk", "review_required"),
+        )
+        children.append(item)
+    spec: dict[str, Any] = {
+        "root": root,
+        "children": children,
+        "strict_deps": bool(artifact.get("strict_deps")),
+    }
+    _copy_optional(artifact, spec, ("challenge_review", "owner_gates"))
+    return spec
+
+
+def validate_work_graph(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Validate a provider-neutral execution snapshot supplied by an adapter."""
+    if not isinstance(snapshot, dict):
+        raise DefinitionError("bad_work_graph", "work graph snapshot must be an object")
+    if snapshot.get("schema") != WORK_GRAPH_SCHEMA:
+        raise DefinitionError("bad_work_graph_schema", f"schema must be {WORK_GRAPH_SCHEMA!r}")
+    _safe_id(snapshot.get("graph_id"), "graph_id")
+    nodes = snapshot.get("nodes")
+    if not isinstance(nodes, list) or not nodes:
+        raise DefinitionError("bad_work_graph", "nodes must be a non-empty list")
+
+    ids: set[str] = set()
+    normalised: list[dict[str, Any]] = []
+    for index, raw in enumerate(nodes):
+        where = f"nodes[{index}]"
+        if not isinstance(raw, dict):
+            raise DefinitionError("bad_work_graph", f"{where} must be an object")
+        node = dict(raw)
+        node_id_value = _safe_id(node.get("node_id"), f"{where}.node_id")
+        if node_id_value in ids:
+            raise DefinitionError("duplicate_node", f"duplicate node id: {node_id_value}")
+        ids.add(node_id_value)
+        node["node_id"] = node_id_value
+        node["key"] = _safe_id(node.get("key") or node_id_value, f"{where}.key")
+        node["title"] = _require_text(node.get("title") or node["key"], f"{where}.title")
+        parent_id = node.get("parent_id")
+        node["parent_id"] = None if parent_id is None else _safe_id(parent_id, f"{where}.parent_id")
+        node["blocked_by"] = [
+            _safe_id(value, f"{where}.blocked_by")
+            for value in _normalise_string_list(node.get("blocked_by", []), f"{where}.blocked_by")
+        ]
+        status = node.get("status")
+        if status not in GRAPH_STATUSES:
+            raise DefinitionError("bad_work_graph_status", f"{where}.status must be one of {sorted(GRAPH_STATUSES)}")
+        normalised.append(node)
+
+    by_id = {node["node_id"]: node for node in normalised}
+    for node in normalised:
+        parent_id = node["parent_id"]
+        if parent_id is not None and parent_id not in by_id:
+            raise DefinitionError("unknown_parent", f"{node['node_id']} parent is unknown: {parent_id}")
+        if parent_id == node["node_id"]:
+            raise DefinitionError("self_parent", f"{node['node_id']} cannot parent itself")
+        if node["node_id"] in node["blocked_by"]:
+            raise DefinitionError("self_dependency", f"{node['node_id']} cannot block itself")
+
+    _assert_acyclic(
+        {
+            node["node_id"]: [node["parent_id"]] if node["parent_id"] is not None else []
+            for node in normalised
+        },
+        "parent_cycle",
+        "parent",
+    )
+    _assert_acyclic(
+        {
+            node["node_id"]: [target for target in node["blocked_by"] if target in by_id]
+            for node in normalised
+        },
+        "dependency_cycle",
+        "dependency",
+    )
+
+    expected_digest = stable_digest({key: value for key, value in snapshot.items() if key != "digest"})
+    if snapshot.get("digest") not in (None, expected_digest):
+        raise DefinitionError("work_graph_digest_mismatch", "work graph digest does not match canonical content")
+    validated = dict(snapshot)
+    validated["nodes"] = normalised
+    validated["digest"] = expected_digest
+    return validated
+
+
+def _graph_item(node: dict[str, Any]) -> dict[str, Any]:
+    return {"node_id": node["node_id"], "node_key": node["key"], "title": node["title"]}
+
+
+def plan_work_graph(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Return the complete ready set plus integration candidates for one snapshot."""
+    graph = validate_work_graph(snapshot)
+    nodes = graph["nodes"]
+    by_id = {node["node_id"]: node for node in nodes}
+    children: dict[str, list[str]] = {}
+    for node in nodes:
+        if node["parent_id"] is not None:
+            children.setdefault(node["parent_id"], []).append(node["node_id"])
+    completed = {node["node_id"] for node in nodes if node["status"] == "completed"}
+
+    ready: list[dict[str, Any]] = []
+    blocked: list[dict[str, Any]] = []
+    integration: list[dict[str, Any]] = []
+    active: list[dict[str, Any]] = []
+    gated: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+
+    for node in nodes:
+        item = _graph_item(node)
+        status = node["status"]
+        if status == "active":
+            active.append(item)
+        elif status == "gated":
+            gated.append(item)
+        elif status == "failed":
+            failed.append(item)
+        if status != "open":
+            continue
+
+        missing = sorted(set(node["blocked_by"]) - completed)
+        if missing:
+            blocked.append({**item, "missing_blockers": missing})
+            continue
+        child_ids = children.get(node["node_id"], [])
+        if child_ids:
+            if all(child_id in completed for child_id in child_ids):
+                integration.append(item)
+            continue
+        ready.append(item)
+
+    return {
+        "schema": "task-worker.ready-plan/v1",
+        "graph_id": graph["graph_id"],
+        "snapshot_digest": graph["digest"],
+        "ready_actions": ready,
+        "blocked": blocked,
+        "active": active,
+        "gated": gated,
+        "failed": failed,
+        "integration_candidates": integration,
+        "completed": [node["node_id"] for node in nodes if node["node_id"] in completed],
+    }
+
+
 def _run_pin(artifact: dict[str, Any]) -> dict[str, Any]:
     return {
         "definition_id": artifact["definition_id"],
@@ -375,37 +540,46 @@ def ready_plan(artifact: dict[str, Any], state_dir: str | Path) -> dict[str, Any
     if ambiguous:
         raise DefinitionError("ambiguous_run_state", f"multiple pinned runs exist for nodes: {sorted(ambiguous)}")
 
-    completed_ids = {node for node, values in by_node.items() if values[0].get("status") == "closed"}
-    active_ids = {node for node, values in by_node.items() if values[0].get("status") in ACTIVE_STATUSES}
-    parent_ids = {child["parent_node_id"] for child in artifact["children"]}
-    leaves = [node for node in [artifact["root"], *artifact["children"]] if node["node_id"] not in parent_ids]
-
-    ready: list[dict[str, Any]] = []
-    blocked: list[dict[str, Any]] = []
-    for node in leaves:
-        if node["node_id"] in completed_ids or node["node_id"] in active_ids:
-            continue
-        missing = sorted(set(node.get("blocked_by_node_ids", [])) - completed_ids)
-        if missing:
-            blocked.append({"node_id": node["node_id"], "node_key": node["key"], "missing_blockers": missing})
-            continue
-        ready.append({
+    graph_nodes = []
+    for node in [artifact["root"], *artifact["children"]]:
+        run = by_node.get(node["node_id"], [None])[0]
+        if run and run.get("status") == "closed":
+            status = "completed"
+        elif run and run.get("status") in ACTIVE_STATUSES:
+            status = "active"
+        else:
+            status = "open"
+        graph_nodes.append({
             "node_id": node["node_id"],
-            "node_key": node["key"],
+            "key": node["key"],
             "title": node["title"],
-            "identity": execution_identity(artifact, node["node_id"]),
+            "parent_id": None if node["key"] == "root" else node["parent_node_id"],
+            "blocked_by": list(node.get("blocked_by_node_ids", [])),
+            "status": status,
         })
+    graph_plan = plan_work_graph({
+        "schema": WORK_GRAPH_SCHEMA,
+        "graph_id": artifact["definition_id"],
+        "revision": artifact["revision"],
+        "nodes": graph_nodes,
+    })
+    ready = [
+        {**item, "identity": execution_identity(artifact, item["node_id"])}
+        for item in graph_plan["ready_actions"]
+    ]
+    active = []
+    for item in graph_plan["active"]:
+        state = by_node[item["node_id"]][0]
+        active.append({**item, "status": state["status"], "run_id": state["run_id"]})
     return {
         "definition_id": artifact["definition_id"],
         "revision": artifact["revision"],
         "digest": artifact["digest"],
         "ready_actions": ready,
-        "blocked": blocked,
-        "active": [
-            {"node_id": node, "status": by_node[node][0]["status"], "run_id": by_node[node][0]["run_id"]}
-            for node in sorted(active_ids)
-        ],
-        "completed": sorted(completed_ids),
+        "blocked": graph_plan["blocked"],
+        "active": active,
+        "integration_candidates": graph_plan["integration_candidates"],
+        "completed": graph_plan["completed"],
     }
 
 
@@ -581,7 +755,8 @@ def build_receipt(
 
 def read_json(path: str | Path) -> dict[str, Any]:
     try:
-        value = json.loads(Path(path).read_text(encoding="utf-8"))
+        raw = sys.stdin.read() if str(path) == "-" else Path(path).read_text(encoding="utf-8")
+        value = json.loads(raw)
     except OSError as exc:
         raise DefinitionError("read_failed", str(exc)) from exc
     except json.JSONDecodeError as exc:
@@ -637,6 +812,11 @@ def build_parser() -> argparse.ArgumentParser:
     validate = sub.add_parser("validate")
     validate.add_argument("--artifact", required=True)
     validate.add_argument("--previous")
+    export = sub.add_parser("export")
+    export.add_argument("--artifact", required=True)
+    graph = sub.add_parser("plan-graph")
+    graph.add_argument("--snapshot", required=True)
+    sub.add_parser("capabilities")
     ready = sub.add_parser("ready")
     ready.add_argument("--artifact", required=True)
     ready.add_argument("--state-dir", default=".task-worker/runs")
@@ -677,6 +857,28 @@ def main(argv: Iterable[str] | None = None) -> int:
             previous = read_json(args.previous) if args.previous else None
             validate_artifact(artifact, previous=previous)
             payload = {"ok": True, "definition_id": artifact["definition_id"], "revision": artifact["revision"], "digest": artifact["digest"]}
+        elif args.command == "export":
+            artifact = read_json(args.artifact)
+            payload = {"ok": True, "spec": artifact_to_spec(artifact)}
+        elif args.command == "plan-graph":
+            payload = {"ok": True, "plan": plan_work_graph(read_json(args.snapshot))}
+        elif args.command == "capabilities":
+            payload = {
+                "ok": True,
+                "plugin": "task-worker",
+                "version": PLUGIN_VERSION,
+                "contracts": {
+                    "definition": SCHEMA,
+                    "local_run": RUN_SCHEMA,
+                    "work_graph": WORK_GRAPH_SCHEMA,
+                    "ready_plan": "task-worker.ready-plan/v1",
+                    "receipt": RECEIPT_SCHEMA,
+                },
+                "commands": [
+                    "create", "revise", "validate", "export", "plan-graph", "ready",
+                    "local-start", "local-event", "recover", "receipt", "capabilities",
+                ],
+            }
         elif args.command == "ready":
             payload = {"ok": True, "plan": ready_plan(read_json(args.artifact), args.state_dir)}
         elif args.command == "local-start":

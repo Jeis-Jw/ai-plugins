@@ -1,5 +1,5 @@
 {
   "name": "task-worker",
-  "version": "0.1.0",
-  "description": "Provider-neutral 작업 분해·병렬 ready-set 실행·local lifecycle·검증 evidence 플러그인"
+  "version": "0.2.0",
+  "description": "Provider-neutral WorkGraph 계획·병렬 ready-set 실행·통합 gate·local 검증 lifecycle 플러그인"
 }

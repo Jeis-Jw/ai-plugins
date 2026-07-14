@@ -12,4 +12,6 @@ python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py
   --artifact {ARTIFACT} --state-dir .task-worker/runs
 ```
 
-`ready_actions[]`, `blocked[]`, `active[]`, `completed[]`를 그대로 보고한다. 여러 ready action을 임의로 직렬화하지 않는다. 중복 active run이나 schema ambiguity는 fail-closed 오류로 올린다.
+`ready_actions[]`, `blocked[]`, `active[]`, `completed[]`, `integration_candidates[]`를 그대로 보고한다. 여러 ready action을 임의로 직렬화하지 않는다. 중복 active run이나 schema ambiguity는 fail-closed 오류로 올린다.
+
+provider adapter가 공급한 `task-worker.work-graph/v1` 상태는 `plan-graph --snapshot`으로 같은 planner를 사용한다. `integration_candidates[]`는 구현 leaf가 아니라 별도 integration gate 대상이다.

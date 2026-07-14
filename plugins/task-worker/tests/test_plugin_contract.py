@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 
@@ -29,6 +31,19 @@ class PluginContractTests(unittest.TestCase):
         self.assertIn("병렬", text)
         self.assertIn("별도 worktree", text)
         self.assertIn("integration", text)
+
+    def test_capability_contract_is_machine_readable(self):
+        result = subprocess.run(
+            [sys.executable, str(PLUGIN / "scripts" / "definition_artifact.py"), "capabilities"],
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        )
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["plugin"], "task-worker")
+        self.assertEqual(payload["version"], "0.2.0")
+        self.assertEqual(payload["contracts"]["work_graph"], "task-worker.work-graph/v1")
+        self.assertIn("plan-graph", payload["commands"])
 
 
 if __name__ == "__main__":

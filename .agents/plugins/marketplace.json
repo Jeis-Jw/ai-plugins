@@ -15,8 +15,8 @@
     {
       "name": "task-github",
       "source": { "source": "local", "path": "./plugins/task-github" },
-      "version": "0.20.0",
-      "description": "DefinitionArtifact-based task protocol with optional full GitHub recording and wiki integration.",
+      "version": "0.21.0",
+      "description": "GitHub provider adapter and compatibility facade powered by task-worker execution contracts.",
       "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
       "category": "Productivity"
     },
@@ -42,8 +42,8 @@
         "source": "local",
         "path": "./plugins/task-worker"
       },
-      "version": "0.1.0",
-      "description": "Provider-neutral task decomposition, parallel ready-set execution, local lifecycle, and verification evidence.",
+      "version": "0.2.0",
+      "description": "Provider-neutral work-graph planning, parallel ready-set execution, integration gates, and local verification lifecycle.",
       "policy": {
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL"

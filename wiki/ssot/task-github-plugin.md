@@ -11,25 +11,29 @@ affects_paths: [plugins/task-github/**]
 
 ### 설계 및 구현 상태
 
-이 문서는 task-worker 분리 이후 `task-github` 플러그인의 **목표 아키텍처 정본**이다. 2026-07-14에 독립 `plugins/task-worker/` 0.1.0이 생성되어 provider-neutral DefinitionArtifact, ready-set planner, local lifecycle의 신규 canonical contract를 제공한다.
-
-다만 실제 task-github 0.20.0은 아직 task-worker를 dependency로 호출하지 않으며 DefinitionArtifact, local execution, orchestration과 GitHub integration을 한 플러그인에 함께 보유한다. 이는 단계적 migration 중의 의도된 compatibility 상태다. 이번 1단계에서는 task-github source·public skill·GitHub lifecycle을 변경하지 않았고 기존 테스트 206개가 그대로 통과했다.
-
-목표 상태에서 task-github는 `task-worker`를 실행 엔진으로 사용하며 다음 두 역할을 가진다.
+이 문서는 task-worker 분리 이후 `task-github` 플러그인의 **아키텍처와 구현 상태 정본**이다. task-github 0.21.0은 task-worker 0.2.0을 실행 엔진으로 사용하며 다음 두 역할을 가진다.
 
 1. **GitHub provider adapter**: Issue tree·dependency·label·assignee·PR·CI·reviewDecision·merge·Issue close를 소유한다.
 2. **호환 facade**: 기존 `task-github:*` 사용자 명령을 유지하면서 내부 실행을 task-worker에 위임한다.
 
-task-github를 단순 기록기나 Issue comment writer로 축소하지 않는다. GitHub remote lifecycle의 idempotency, reconciliation, merge/closeout 일관성은 task-github 고유 책임으로 남는다.
+task-github를 단순 기록기나 Issue comment writer로 축소하지 않는다. GitHub remote lifecycle의 idempotency, reconciliation, gear, review, merge/closeout 일관성은 task-github 고유 책임으로 남는다.
 
-### 현재 정본과 migration 관계
+현재 구현은 다음 경계를 코드로 강제한다.
 
-- 이 문서: 분리 후 target architecture
+- `scripts/task_worker_bridge.py`: sibling/cache/`TASK_WORKER_ROOT` discovery, capability preflight, exact contract 검증, JSON CLI 위임
+- `scripts/github_projection.py`: GitHub projection checkpoint와 coverage binding
+- `scripts/definition_artifact.py`: 기존 호출자를 위한 얇은 forwarder이며 실행 코어를 포함하지 않음
+- `ready_leaves.py`: GitHub tree를 WorkGraphSnapshot으로 변환하고 task-worker planner 결과에 GitHub gear/closeout 의미만 결합
+- task-worker 누락·contract mismatch·dependency cycle은 부분 실행 없이 fail-closed
+
+### 현재 정본
+
+- 이 문서: 분리 후 architecture와 상태
 - [[task-worker-plugin]]: provider-neutral execution contract
-- `plugins/task-github/DESIGN.md`: 분리 전 현재 구현 상세
-- task-github source/tests: 현재 runtime truth
+- `plugins/task-github/DESIGN.md`: GitHub adapter/facade 상세
+- task-github source/tests: runtime truth
 
-후속 2단계에서 facade를 task-worker contract로 전환하되 기존 동작을 유지해야 한다. task-worker 위임이 추가 agent/session hop을 만들거나 기존 ready set을 직렬화하면 migration 실패다. 전환 전까지 GitHub 실행 기능의 runtime truth는 task-github 0.20.0 소스다.
+task-worker 위임은 subprocess contract call이며 추가 agent/session hop을 만들지 않는다. ready planner는 단일 action이 아니라 전체 ready set을 반환하므로 기존 병렬성도 보존한다.
 
 ### 핵심 불변식
 
@@ -60,6 +64,7 @@ task-github가 소유한다.
 - PR 생성, CI/checks, mergeability, reviewDecision
 - GitHub branch push와 remote delivery
 - review-required edge의 PR lifecycle
+- GitHub gear label과 cumulative container gear를 PR/FF merge edge에 결합
 - merge 성공, linked Issue close, label cleanup
 - GitHub remote state와 local projection reconcile
 - root/container closeout과 downstream 상태 투영
@@ -69,7 +74,7 @@ task-github가 소유한다.
 task-github가 소유하지 않는다.
 
 - DefinitionArtifact 의미·revision schema
-- 분해 payoff 판단과 gear 계산
+- provider-neutral 분해 payoff·ready·integration 판단
 - generic ready planner
 - worker worktree 실행과 command selection
 - generic verification·evidence reuse·duplicate guard

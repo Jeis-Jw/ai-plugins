@@ -1,6 +1,6 @@
 ---
 name: run
-description: Issue 또는 record:none DefinitionArtifact local run을 수행한다. Issue 번호는 기존 경로, --artifact/--run-state는 pinned node를 GitHub Issue write 없이 실행한다. "task-github:run", "작업 수행해줘", "구현 시작해줘" 등의 요청에 실행하라.
+description: Issue 또는 task-worker DefinitionArtifact local run을 수행한다. Issue 번호는 기존 경로, --artifact/--run-state는 pinned node를 GitHub Issue write 없이 실행하는 facade다. "task-github:run", "작업 수행해줘", "구현 시작해줘" 등의 요청에 실행하라.
 ---
 
 # run — 실행
@@ -15,12 +15,12 @@ $ARGUMENTS: {N} | --artifact {PATH} --run-state {RUN_JSON}
 
 ## 절차
 
-### record:none DefinitionArtifact mode
+### local DefinitionArtifact facade
 
 `--artifact/--run-state`가 있으면 먼저 `recover` 결과가 `started` 또는 재개 가능한 `running`인지 확인한다. run-state가 node를 이미 pin하므로 `--node`를 재입력하지 않는다. 출력의 stable branch/worktree가 없으면 주입된 `BASE_BRANCH`에서 만든 뒤 idempotent `run` 전이를 기록하고 artifact node 완료 조건을 실행한다:
 
 ```bash
-python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py" recover \
+python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/task_worker_bridge.py" recover \
   --artifact {PATH} --run-state {RUN_JSON}
 read BRANCH WORKTREE < <(python3 -c 'import json,sys; i=json.load(open(sys.argv[1]))["identity"]; print(i["branch"], i["worktree"])' {RUN_JSON})
 if [ ! -d "$WORKTREE" ]; then
@@ -28,7 +28,7 @@ if [ ! -d "$WORKTREE" ]; then
     && git worktree add "$WORKTREE" "$BRANCH" \
     || git worktree add "$WORKTREE" -b "$BRANCH" "$BASE_BRANCH"
 fi
-python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py" local-event \
+python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/task_worker_bridge.py" local-event \
   --artifact {PATH} --run-state {RUN_JSON} --event run
 ```
 

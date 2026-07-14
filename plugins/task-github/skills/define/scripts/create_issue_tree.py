@@ -21,7 +21,7 @@ TASK_GITHUB_DIR = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(TASK_GITHUB_DIR / "scripts"))
 
 import context_bundle  # noqa: E402
-import definition_artifact  # noqa: E402
+import github_projection as definition_artifact  # noqa: E402
 import task_config  # noqa: E402
 
 
@@ -953,10 +953,10 @@ def execute_projection(
 ) -> dict:
     """Materialize every node/edge, checkpointing after each successful write."""
     definition_artifact.validate_artifact(artifact)
-    if artifact["record"] != "github":
+    if artifact.get("schema") == "task-github.definition/v1" and artifact.get("record") != "github":
         raise IssueTreeError(
             "record_none_forbids_github",
-            "record:none forbids GitHub issue writes; choose record:github in a new revision",
+            "legacy record:none forbids GitHub issue writes; create a canonical task-worker revision or choose record:github",
         )
     resumed = state_path.exists()
     if resumed:

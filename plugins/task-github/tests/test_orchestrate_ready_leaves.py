@@ -99,6 +99,21 @@ class ReadyLeavesTests(unittest.TestCase):
         self.assertEqual(result["stop_reason"], "no_progress")
         self.assertEqual([item["number"] for item in result["blocked"]], [2])
 
+    def test_open_blocker_precedes_in_progress_or_review_labels(self):
+        blocker = [{"number": 9, "title": "external"}]
+        tree = node(1, children=[
+            node(2, labels=["in-progress"], blockers=blocker),
+            node(3, labels=["in-review"], blockers=blocker),
+        ])
+
+        result = ready_leaves.evaluate_tree(tree)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["stop_reason"], "no_progress")
+        self.assertEqual([item["number"] for item in result["blocked"]], [2, 3])
+        self.assertEqual(result["stuck"], [])
+        self.assertEqual(result["review_waiting"], [])
+
     def test_review_waiting_stops_with_single_channel(self):
         result = ready_leaves.evaluate_tree(node(1, children=[node(2, labels=["in-review"])]))
 

@@ -6,7 +6,8 @@
 
 - immutable `DefinitionArtifact`와 stable node identity
 - direct dependency 검증과 cycle 차단
-- 단일 next action이 아닌 `ready_actions[]` 계획
+- DefinitionArtifact와 provider `WorkGraphSnapshot`을 같은 planner로 처리
+- 단일 next action이 아닌 `ready_actions[]`와 `integration_candidates[]` 계획
 - leaf별 branch/worktree identity와 local run lifecycle
 - 검증 evidence를 포함한 idempotent 상태 전이
 - provider-neutral workflow receipt
@@ -29,6 +30,8 @@ python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py
   --spec work.json
 python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py" ready \
   --artifact .task-worker/definitions/example/revision-000001.json
+python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py" plan-graph \
+  --snapshot provider-work-graph.json
 ```
 
-현재 0.1.0은 분리 1단계다. task-github의 GitHub adapter/facade 위임 전환은 후속 단계이며, 기존 task-github 동작은 이 버전에서 변경하지 않는다.
+0.2.0부터 task-github가 versioned JSON CLI contract로 이 planner와 local lifecycle을 소비한다. plugin 경계는 subprocess adapter 경계일 뿐 새 agent/session을 만들지 않는다. task-github의 Issue/PR/merge lifecycle은 adapter에 남고, 범용 실행 코어는 이 플러그인 한 곳에만 존재한다.

@@ -6,7 +6,6 @@ from pathlib import Path
 
 
 PLUGIN = Path(__file__).resolve().parents[1]
-REPO = PLUGIN.parents[1]
 
 
 def load_module(name, path):
@@ -18,10 +17,6 @@ def load_module(name, path):
 
 
 worker = load_module("task_worker_definition", PLUGIN / "scripts" / "definition_artifact.py")
-legacy = load_module(
-    "legacy_task_github_definition",
-    REPO / "plugins" / "task-github" / "scripts" / "definition_artifact.py",
-)
 
 
 def graph_spec():
@@ -94,9 +89,10 @@ class DefinitionArtifactTests(unittest.TestCase):
             worker.create_artifact(spec)
 
     def test_legacy_task_github_artifact_is_read_compatible(self):
-        spec = graph_spec()
-        spec["record"] = "none"
-        old = legacy.create_artifact(spec, created_at="2026-07-14T00:00:00Z")
+        old = worker.create_artifact(graph_spec(), created_at="2026-07-14T00:00:00Z")
+        old["schema"] = "task-github.definition/v1"
+        old["record"] = "none"
+        old["digest"] = worker.artifact_digest(old)
 
         worker.validate_artifact(old)
         successor = worker.create_artifact(graph_spec(), previous=old)
@@ -104,6 +100,49 @@ class DefinitionArtifactTests(unittest.TestCase):
         self.assertEqual(successor["schema"], worker.SCHEMA)
         self.assertEqual(successor["previous_digest"], old["digest"])
         self.assertNotIn("record", successor)
+
+    def test_work_graph_returns_full_ready_set_and_integration_candidates(self):
+        snapshot = {
+            "schema": worker.WORK_GRAPH_SCHEMA,
+            "graph_id": "adapter-graph",
+            "nodes": [
+                {"node_id": "root", "title": "root", "parent_id": None, "status": "open", "blocked_by": []},
+                {"node_id": "A", "title": "A", "parent_id": "root", "status": "open", "blocked_by": []},
+                {"node_id": "B", "title": "B", "parent_id": "root", "status": "open", "blocked_by": []},
+            ],
+        }
+        plan = worker.plan_work_graph(snapshot)
+        self.assertEqual([item["node_id"] for item in plan["ready_actions"]], ["A", "B"])
+        self.assertEqual(plan["integration_candidates"], [])
+
+        for node in snapshot["nodes"][1:]:
+            node["status"] = "completed"
+        plan = worker.plan_work_graph(snapshot)
+        self.assertEqual([item["node_id"] for item in plan["integration_candidates"]], ["root"])
+
+    def test_work_graph_keeps_unknown_external_blocker_blocked(self):
+        plan = worker.plan_work_graph({
+            "schema": worker.WORK_GRAPH_SCHEMA,
+            "graph_id": "external-blocker",
+            "nodes": [{
+                "node_id": "A", "title": "A", "parent_id": None,
+                "status": "open", "blocked_by": ["outside-9"],
+            }],
+        })
+        self.assertEqual(plan["ready_actions"], [])
+        self.assertEqual(plan["blocked"][0]["missing_blockers"], ["outside-9"])
+
+    def test_work_graph_dependency_cycle_fails_closed(self):
+        snapshot = {
+            "schema": worker.WORK_GRAPH_SCHEMA,
+            "graph_id": "cycle-graph",
+            "nodes": [
+                {"node_id": "A", "title": "A", "parent_id": None, "status": "open", "blocked_by": ["B"]},
+                {"node_id": "B", "title": "B", "parent_id": None, "status": "open", "blocked_by": ["A"]},
+            ],
+        }
+        with self.assertRaisesRegex(worker.DefinitionError, "dependency cycle"):
+            worker.plan_work_graph(snapshot)
 
     def test_ready_plan_returns_all_independent_leaves(self):
         artifact = worker.create_artifact(graph_spec())

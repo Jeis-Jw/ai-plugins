@@ -1,4 +1,5 @@
 import json
+import importlib.util
 import sys
 import tempfile
 import unittest
@@ -10,14 +11,19 @@ PLUGIN = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLUGIN / "scripts"))
 sys.path.insert(0, str(PLUGIN / "skills" / "define" / "scripts"))
 
-import definition_artifact as da  # noqa: E402
+import github_projection as da  # noqa: E402
 import create_issue_tree as tree  # noqa: E402
 
+WORKER_PATH = PLUGIN.parent / "task-worker" / "scripts" / "definition_artifact.py"
+WORKER_SPEC = importlib.util.spec_from_file_location("task_worker_definition_for_projection_tests", WORKER_PATH)
+worker = importlib.util.module_from_spec(WORKER_SPEC)
+assert WORKER_SPEC.loader is not None
+WORKER_SPEC.loader.exec_module(worker)
 
-def definition_spec(*, record="none", delivery="local-ff"):
+
+def definition_spec(*, delivery="external"):
     return {
         "definition_id": "payments-v1",
-        "record": record,
         "delivery": delivery,
         "root": {"title": "payments", "body": "root definition"},
         "children": [
@@ -53,142 +59,6 @@ def complete_projection(artifact):
     for edge in da.projection_requirements(artifact)["dependencies"]:
         state["dependencies"][edge] = {"materialized": True}
     return state
-
-
-class DefinitionArtifactTests(unittest.TestCase):
-    def test_revision_chain_keeps_ids_and_pins_previous_digest(self):
-        first = da.create_artifact(definition_spec(), created_at="2026-07-10T00:00:00Z")
-        revised_spec = definition_spec()
-        revised_spec["children"][0]["body"] += "\nchanged"
-        second = da.create_artifact(
-            revised_spec, previous=first, created_at="2026-07-10T00:01:00Z"
-        )
-
-        self.assertEqual(second["revision"], 2)
-        self.assertEqual(second["previous_digest"], first["digest"])
-        self.assertEqual(second["root"]["node_id"], first["root"]["node_id"])
-        self.assertEqual(
-            [child["node_id"] for child in second["children"]],
-            [child["node_id"] for child in first["children"]],
-        )
-        da.validate_artifact(second, previous=first)
-
-        tampered = json.loads(json.dumps(second))
-        tampered["root"]["title"] = "tampered"
-        with self.assertRaisesRegex(da.DefinitionError, "digest"):
-            da.validate_artifact(tampered)
-
-    def test_store_never_overwrites_an_immutable_revision(self):
-        artifact = da.create_artifact(definition_spec(), created_at="2026-07-10T00:00:00Z")
-        with tempfile.TemporaryDirectory() as tmp:
-            path = da.store_artifact(tmp, artifact)
-            self.assertEqual(path, da.store_artifact(tmp, artifact))
-            changed = json.loads(json.dumps(artifact))
-            changed["created_at"] = "2026-07-10T01:00:00Z"
-            changed["digest"] = da.artifact_digest(changed)
-            with self.assertRaisesRegex(da.DefinitionError, "overwrite"):
-                da.store_artifact(tmp, changed)
-
-    def test_local_lifecycle_has_stable_identity_dependency_gate_and_recovery(self):
-        artifact = da.create_artifact(definition_spec(), created_at="2026-07-10T00:00:00Z")
-        with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaisesRegex(da.DefinitionError, "blockers"):
-                da.start_local_run(artifact, node_ref="U2", state_dir=tmp)
-
-            first, first_path, created = da.start_local_run(
-                artifact, node_ref="U1", state_dir=tmp, now="2026-07-10T00:00:00Z"
-            )
-            self.assertTrue(created)
-            self.assertEqual(first["identity"], da.execution_identity(artifact, "U1"))
-            for event, at in (
-                ("run", "2026-07-10T00:00:01Z"),
-                ("verify", "2026-07-10T00:00:02Z"),
-                ("done", "2026-07-10T00:00:03Z"),
-                ("closeout", "2026-07-10T00:00:04Z"),
-            ):
-                first, _ = da.transition_local_run(artifact, first, event, now=at)
-            da.write_json_atomic(first_path, first)
-
-            second, _, _ = da.start_local_run(artifact, node_ref="U2", state_dir=tmp)
-            self.assertEqual(da.recover_local_run(artifact, second)["next_event"], "run")
-            same, _, created = da.start_local_run(
-                artifact, node_ref="U2", state_dir=tmp, run_id=second["run_id"]
-            )
-            self.assertFalse(created)
-            self.assertEqual(same["identity"], second["identity"])
-
-            with self.assertRaisesRegex(da.DefinitionError, "children"):
-                da.start_local_run(artifact, node_ref="root", state_dir=tmp)
-
-            revised = da.create_artifact(definition_spec(), previous=artifact)
-            with self.assertRaisesRegex(da.DefinitionError, "pin"):
-                da.recover_local_run(revised, second)
-
-    def test_record_github_requires_full_projection_but_record_none_does_not(self):
-        local = da.create_artifact(definition_spec(record="none"))
-        github = da.create_artifact(definition_spec(record="github"))
-        with tempfile.TemporaryDirectory() as tmp:
-            da.start_local_run(local, node_ref="U1", state_dir=Path(tmp) / "local")
-            with self.assertRaisesRegex(da.DefinitionError, "full projection"):
-                da.start_local_run(github, node_ref="U1", state_dir=Path(tmp) / "github")
-            state, _, _ = da.start_local_run(
-                github, node_ref="U1", state_dir=Path(tmp) / "github",
-                projection=complete_projection(github),
-            )
-            self.assertEqual(state["record"], "github")
-
-    def test_receipt_preserves_unknown_tokens_as_null_unavailable(self):
-        artifact = da.create_artifact({
-            "definition_id": "single-work",
-            "root": {"title": "single", "body": "single"},
-        })
-        with tempfile.TemporaryDirectory() as tmp:
-            state, _, _ = da.start_local_run(
-                artifact, node_ref="root", state_dir=tmp, run_id="run-single",
-                now="2026-07-10T00:00:00Z",
-            )
-            for event, at in (
-                ("run", "2026-07-10T00:00:01Z"),
-                ("verify", "2026-07-10T00:00:02Z"),
-                ("done", "2026-07-10T00:00:03Z"),
-                ("closeout", "2026-07-10T00:00:04Z"),
-            ):
-                state, _ = da.transition_local_run(artifact, state, event, now=at)
-        receipt = da.build_receipt(state, counters={"github_writes": 0}, quality={"passed": True})
-        self.assertEqual(set(receipt), {
-            "schema", "emitter", "workflow", "run_id", "started_at", "finished_at",
-            "elapsed_ms", "tokens", "token_coverage", "counters", "quality",
-        })
-        self.assertIsNone(receipt["tokens"])
-        self.assertEqual(receipt["token_coverage"], "unavailable")
-        self.assertEqual(receipt["elapsed_ms"], 4000)
-        with self.assertRaisesRegex(da.DefinitionError, "unavailable"):
-            da.build_receipt(state, token_coverage="measured")
-        known = da.build_receipt(state, tokens=42)
-        self.assertEqual(known["token_coverage"], "exact")
-        with self.assertRaisesRegex(da.DefinitionError, "exact"):
-            da.build_receipt(state, tokens=42, token_coverage="measured")
-
-    def test_legacy_issue_identity_is_unchanged(self):
-        self.assertEqual(da.legacy_issue_identity(58), {
-            "branch": "task/issue-58",
-            "worktree": ".worktrees/issue-58",
-        })
-
-    def test_public_lifecycle_skills_expose_record_none_artifact_mode(self):
-        for skill in ("start", "run", "verify", "done"):
-            text = (PLUGIN / "skills" / skill / "SKILL.md").read_text(encoding="utf-8")
-            with self.subTest(skill=skill):
-                self.assertIn("record:none DefinitionArtifact mode", text)
-                self.assertIn("--artifact", text)
-                self.assertIn("definition_artifact.py", text)
-                self.assertIn("Issue 경로", text)
-        self.assertIn("--node", (PLUGIN / "skills" / "start" / "SKILL.md").read_text())
-        for skill in ("run", "verify", "done"):
-            self.assertIn(
-                "--run-state",
-                (PLUGIN / "skills" / skill / "SKILL.md").read_text(encoding="utf-8"),
-            )
 
 
 class FakeProjectionProvider:
@@ -280,7 +150,7 @@ class FakeProjectionProvider:
 
 class ProjectionResumeTests(unittest.TestCase):
     def test_failure_checkpoints_and_resume_fills_missing_nodes_and_edges(self):
-        artifact = da.create_artifact(definition_spec(record="github"))
+        artifact = worker.create_artifact(definition_spec())
         spec = tree.validate_spec(da.artifact_to_issue_spec(artifact))
         with tempfile.TemporaryDirectory() as tmp:
             state_path = Path(tmp) / "projection.json"
@@ -312,9 +182,8 @@ class ProjectionResumeTests(unittest.TestCase):
             self.assertEqual(no_writes.calls, [])
 
     def test_post_create_root_node_id_failure_reuses_marker_issue_on_retry(self):
-        artifact = da.create_artifact({
+        artifact = worker.create_artifact({
             "definition_id": "root-reconcile",
-            "record": "github",
             "root": {"title": "root", "body": "root"},
         })
         spec = tree.validate_spec(da.artifact_to_issue_spec(artifact))
@@ -338,9 +207,8 @@ class ProjectionResumeTests(unittest.TestCase):
             self.assertTrue(any(call[0] == "check" and call[1] == original_number for call in resumed.calls))
 
     def test_post_create_number_checkpoint_failure_scans_marker_and_reuses_issue(self):
-        artifact = da.create_artifact({
+        artifact = worker.create_artifact({
             "definition_id": "checkpoint-reconcile",
-            "record": "github",
             "root": {"title": "root", "body": "root"},
         })
         spec = tree.validate_spec(da.artifact_to_issue_spec(artifact))
@@ -373,9 +241,8 @@ class ProjectionResumeTests(unittest.TestCase):
             self.assertEqual([call[0] for call in resumed.calls].count("find"), 1)
 
     def test_lost_create_response_retry_finds_marker_and_reuses_root_issue(self):
-        artifact = da.create_artifact({
+        artifact = worker.create_artifact({
             "definition_id": "lost-response-reconcile",
-            "record": "github",
             "root": {"title": "root", "body": "root"},
         })
         spec = tree.validate_spec(da.artifact_to_issue_spec(artifact))
@@ -399,9 +266,8 @@ class ProjectionResumeTests(unittest.TestCase):
             self.assertEqual([call[0] for call in resumed.calls].count("find"), 1)
 
     def test_incomplete_legacy_checkpoint_without_marker_fails_closed(self):
-        artifact = da.create_artifact({
+        artifact = worker.create_artifact({
             "definition_id": "legacy-markerless",
-            "record": "github",
             "root": {"title": "root", "body": "root"},
         })
         spec = tree.validate_spec(da.artifact_to_issue_spec(artifact))
@@ -427,7 +293,7 @@ class ProjectionResumeTests(unittest.TestCase):
             self.assertEqual(provider.remote, {})
 
     def test_legacy_status_fields_are_ignored(self):
-        artifact = da.create_artifact(definition_spec(record="github"))
+        artifact = worker.create_artifact(definition_spec())
         spec = tree.validate_spec(da.artifact_to_issue_spec(artifact))
         state = complete_projection(artifact)
         for node in state["nodes"].values():
@@ -446,7 +312,7 @@ class ProjectionResumeTests(unittest.TestCase):
         self.assertEqual(provider.calls, [])
 
     def test_post_create_child_node_id_failure_reuses_marker_issue_on_retry(self):
-        artifact = da.create_artifact(definition_spec(record="github"))
+        artifact = worker.create_artifact(definition_spec())
         spec = tree.validate_spec(da.artifact_to_issue_spec(artifact))
         with tempfile.TemporaryDirectory() as tmp:
             state_path = Path(tmp) / "projection.json"
@@ -466,7 +332,7 @@ class ProjectionResumeTests(unittest.TestCase):
             self.assertTrue(any(call[0] == "check" and call[1] == original_number for call in resumed.calls))
 
     def test_post_add_dependency_checkpoint_failure_reuses_remote_edge_on_retry(self):
-        artifact = da.create_artifact(definition_spec(record="github"))
+        artifact = worker.create_artifact(definition_spec())
         spec = tree.validate_spec(da.artifact_to_issue_spec(artifact))
         with tempfile.TemporaryDirectory() as tmp:
             state_path = Path(tmp) / "projection.json"
@@ -504,7 +370,10 @@ class ProjectionResumeTests(unittest.TestCase):
             )
 
     def test_record_none_fails_before_provider_is_touched(self):
-        artifact = da.create_artifact(definition_spec(record="none"))
+        artifact = worker.create_artifact(definition_spec(delivery="local-ff"))
+        artifact["schema"] = "task-github.definition/v1"
+        artifact["record"] = "none"
+        artifact["digest"] = worker.artifact_digest(artifact)
         spec = tree.validate_spec(da.artifact_to_issue_spec(artifact))
         provider = FakeProjectionProvider()
         with tempfile.TemporaryDirectory() as tmp:

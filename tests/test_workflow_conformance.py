@@ -27,10 +27,6 @@ def read_json(path: Path):
 class WorkflowReceiptConformanceTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.task_github = load_module(
-            "task_github_definition_artifact",
-            REPO / "plugins/task-github/scripts/definition_artifact.py",
-        )
         cls.task_worker = load_module(
             "task_worker_definition_artifact",
             REPO / "plugins/task-worker/scripts/definition_artifact.py",
@@ -59,17 +55,6 @@ class WorkflowReceiptConformanceTests(unittest.TestCase):
         self.assertIsInstance(receipt["quality"], dict)
 
     def test_workflow_emitters_share_schema_v1_and_null_token_semantics(self):
-        task_state = {
-            "schema": self.task_github.RUN_SCHEMA,
-            "status": "closed",
-            "run_id": "task-60",
-            "started_at": "2026-07-10T00:00:00Z",
-            "finished_at": "2026-07-10T00:00:01Z",
-        }
-        task_receipts = (
-            self.task_github.build_receipt(task_state),
-            self.task_github.build_receipt(task_state, tokens=7),
-        )
         worker_state = {
             "schema": self.task_worker.RUN_SCHEMA,
             "status": "closed",
@@ -111,7 +96,7 @@ class WorkflowReceiptConformanceTests(unittest.TestCase):
         for receipt in studio_receipts:
             self.assertEqual(self.studio.workflow_receipt_problems(receipt), [])
 
-        for receipt in (*task_receipts, *worker_receipts, *review_receipts, *studio_receipts):
+        for receipt in (*worker_receipts, *review_receipts, *studio_receipts):
             with self.subTest(emitter=receipt["emitter"], tokens=receipt["tokens"]):
                 self.assert_receipt(receipt)
 

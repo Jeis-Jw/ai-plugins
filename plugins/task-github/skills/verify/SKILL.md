@@ -1,6 +1,6 @@
 ---
 name: verify
-description: Issue 또는 record:none DefinitionArtifact node의 완료 조건을 검증하고 구조화된 evidence를 기록한다. Issue 번호는 코멘트 경로, --artifact/--run-state는 local evidence 경로다. "task-github:verify", "검증해줘", "완료 조건 확인해줘" 등의 요청에 실행하라.
+description: Issue 또는 task-worker DefinitionArtifact node의 완료 조건을 검증하고 구조화된 evidence를 기록한다. Issue 번호는 코멘트 경로, --artifact/--run-state는 local evidence facade다. "task-github:verify", "검증해줘", "완료 조건 확인해줘" 등의 요청에 실행하라.
 ---
 
 # verify — 검증 리포트 생성
@@ -15,14 +15,14 @@ $ARGUMENTS: {N} | --artifact {PATH} --run-state {RUN_JSON}
 
 ## 절차
 
-### record:none DefinitionArtifact mode
+### local DefinitionArtifact facade
 
 `--artifact/--run-state`가 있으면 `recover.next_event == verify`를 확인하고 artifact node의 완료/검증 조건을 대조한다. 구조화한 결과를 run-state evidence로 기록하며 GitHub dependency 조회와 Issue comment는 하지 않는다:
 
 ```bash
-python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py" recover \
+python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/task_worker_bridge.py" recover \
   --artifact {PATH} --run-state {RUN_JSON}
-python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py" local-event \
+python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/task_worker_bridge.py" local-event \
   --artifact {PATH} --run-state {RUN_JSON} --event verify --evidence '{검증 결과 JSON object}'
 ```
 
