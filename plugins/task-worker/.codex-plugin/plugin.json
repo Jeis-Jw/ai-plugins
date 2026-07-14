@@ -1,7 +1,7 @@
 {
   "name": "task-worker",
-  "version": "0.2.0",
-  "description": "Provider-neutral work-graph planning, parallel ready-set execution, integration gates, and local verification lifecycle.",
+  "version": "0.3.0",
+  "description": "Provider-neutral work graphs with manual/worker dispatch, parallel ready sets, integration gates, pinned evidence, and cross-session resume.",
   "author": {
     "name": "Jinwuk-Lee",
     "url": "https://github.com/Jeis-Jw"
@@ -10,7 +10,7 @@
   "interface": {
     "displayName": "Task Worker",
     "shortDescription": "Decompose, run, and verify provider-neutral work graphs.",
-    "longDescription": "Defines immutable work graphs, plans every ready leaf and integration candidate from local or provider snapshots, isolates local runs in stable worktrees, and records structured verification evidence without requiring GitHub, Studio, wiki, or a review provider.",
+    "longDescription": "Defines immutable work graphs, plans every ready leaf and integration candidate from local or provider snapshots, isolates local runs in stable worktrees, and records digest-pinned verification evidence. Persistent aliases support cross-session resume, while manual dispatch exposes the same ready set without creating local runs. GitHub, Studio, wiki, and review providers remain optional adapters.",
     "developerName": "Jinwuk-Lee",
     "category": "Productivity",
     "capabilities": [
@@ -20,8 +20,9 @@
     ],
     "defaultPrompt": [
       "Use $define to create or revise an immutable provider-neutral work graph.",
-      "Use $orchestrate to dispatch every ready leaf in parallel-safe worktrees.",
-      "Use $verify to attach evidence before $done closes a local run."
+      "Use dispatch: manual to expose the ready set without local runs, or dispatch: worker to execute it.",
+      "Use $orchestrate to dispatch every ready leaf in parallel-safe worktrees while preserving integration gates.",
+      "Resume by definition, wiki task, or provider alias and reuse only digest-valid verification evidence."
     ]
   }
 }

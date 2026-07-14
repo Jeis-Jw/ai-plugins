@@ -1,5 +1,5 @@
 {
   "name": "task-github",
-  "version": "0.21.0",
-  "description": "task-worker 실행 계약 기반 GitHub provider adapter·호환 facade — Issue tree·PR·merge·wiki task 연계"
+  "version": "0.22.0",
+  "description": "task-worker 의존 GitHub adapter — Issue Tree projection/import, manual/worker dispatch, PR·merge·Wiki TASK 연계"
 }

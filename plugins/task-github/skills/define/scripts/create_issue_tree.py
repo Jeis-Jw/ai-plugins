@@ -13,6 +13,7 @@ import json
 import re
 import subprocess
 import sys
+import tempfile
 from collections import Counter
 from pathlib import Path
 from typing import Callable, Iterable, List
@@ -23,6 +24,7 @@ sys.path.insert(0, str(TASK_GITHUB_DIR / "scripts"))
 import context_bundle  # noqa: E402
 import github_projection as definition_artifact  # noqa: E402
 import task_config  # noqa: E402
+import task_worker_bridge  # noqa: E402
 
 
 API_VERSION = "2026-03-10"
@@ -254,18 +256,21 @@ def _bool_option(value) -> bool:
 
 
 def review_required_from_config(config_path: Path) -> bool:
-    """Read `define.review-required` from `.task-github.yml` (absent file/key = False)."""
-    if not config_path.exists():
+    """Read `define.review-required` from `.task-worker.yml`.
+
+    A legacy combined `.task-github.yml` remains a fallback during migration.
+    """
+    worker_path = task_config.worker_config_path(config_path)
+    if not config_path.exists() and not worker_path.exists():
         return False
     try:
-        config = task_config.load_config(config_path)
-    except (OSError, ValueError) as exc:
-        raise IssueTreeError("config_invalid", f"failed to read task-github config: {exc}") from exc
-    findings = task_config.validate_config(config)
+        config, findings, _ = task_config.load_worker_config(config_path)
+    except (OSError, ValueError, FileNotFoundError) as exc:
+        raise IssueTreeError("config_invalid", f"failed to read task-worker config: {exc}") from exc
     errors = [finding for finding in findings if finding.get("severity") == "error"]
     if errors:
         codes = ", ".join(finding["code"] for finding in errors)
-        raise IssueTreeError("config_invalid", f"invalid task-github config: {codes}")
+        raise IssueTreeError("config_invalid", f"invalid task-worker config: {codes}")
     define = config.get("define") or {}
     return _bool_option(define.get("review-required"))
 
@@ -273,7 +278,7 @@ def review_required_from_config(config_path: Path) -> bool:
 def _check_challenge_review(spec: dict, *, review_required: bool) -> None:
     """Refuse to build a tree when challenge review is required but absent/blocking.
 
-    `review_required` comes solely from `.task-github.yml`'s `define.review-required`
+    `review_required` comes solely from `.task-worker.yml`'s `define.review-required`
     (the persistent, agent-independent source of truth, read by
     `review_required_from_config`). The spec cannot opt the gate in or out — the
     only field read off `spec.challenge_review` is `verdict`. This turns the
@@ -1058,7 +1063,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--strict-deps", action="store_true")
     parser.add_argument("--json", action="store_true", dest="as_json")
     parser.add_argument("--task-config", default=".task-github.yml",
-                         help="path to .task-github.yml (for define.review-required)")
+                         help="path to .task-github.yml; adjacent .task-worker.yml owns define policy")
+    parser.add_argument("--worker-state-root", default=".task-worker/local")
+    parser.add_argument("--wiki-task", help="optional Wiki root TASK id bound to the definition")
     return parser
 
 
@@ -1102,9 +1109,57 @@ def main(argv: Iterable[str] | None = None) -> int:
                     "--projection-state is required for resumable artifact recording",
                 )
             payload = execute_projection(spec, artifact, Path(args.projection_state))
+            state = definition_artifact.read_json(args.projection_state)
+            provider_data = {
+                "repository": f"{payload['owner']}/{payload['repo']}",
+                "root_issue": payload["root_number"],
+                "projection_state": str(Path(args.projection_state).resolve()),
+                "nodes": {
+                    stable_id: entry.get("number")
+                    for stable_id, entry in state.get("nodes", {}).items()
+                },
+                "remote_state_authority": True,
+            }
+            compact_context = {
+                "source": {
+                    "provider": "github",
+                    "repository": provider_data["repository"],
+                    "root_issue": provider_data["root_issue"],
+                },
+                "objective": spec["root"]["title"],
+                "root_body": spec["root"]["body"],
+                "nodes": [
+                    {"key": child["key"], "title": child["title"], "body": child["body"]}
+                    for child in spec["children"]
+                ],
+            }
+            aliases = [
+                f"{payload['owner']}/{payload['repo']}#{payload['root_number']}",
+                f"github:{payload['owner']}/{payload['repo']}#{payload['root_number']}",
+            ]
+            if args.wiki_task:
+                aliases.append(args.wiki_task)
+            with tempfile.TemporaryDirectory() as tmp:
+                provider_path = Path(tmp) / "provider.json"
+                context_path = Path(tmp) / "context.json"
+                provider_path.write_text(json.dumps(provider_data, ensure_ascii=False), encoding="utf-8")
+                context_path.write_text(json.dumps(compact_context, ensure_ascii=False), encoding="utf-8")
+                binding = task_worker_bridge.bind_artifact(
+                    args.artifact,
+                    state_root=args.worker_state_root,
+                    aliases=aliases,
+                    provider="github",
+                    provider_data_path=provider_path,
+                    context_path=context_path,
+                )
+            payload["binding"] = binding
         else:
             # Compatibility: the historical Issue-first --spec path is unchanged.
             payload = execute(spec)
+    except task_worker_bridge.TaskWorkerBridgeError as exc:
+        emit({"ok": False, "error_code": exc.code, "message": exc.message},
+             as_json=args.as_json)
+        return 2
     except IssueTreeError as exc:
         emit({"ok": False, "error_code": exc.error_code, "message": exc.message},
              as_json=args.as_json)

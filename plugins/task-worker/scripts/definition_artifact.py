@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -22,9 +23,13 @@ RUN_SCHEMA = "task-worker.local-run/v1"
 LEGACY_RUN_SCHEMAS = {"task-github.local-run/v1"}
 WORK_GRAPH_SCHEMA = "task-worker.work-graph/v1"
 RECEIPT_SCHEMA = "workflow-receipt/v1"
-PLUGIN_VERSION = "0.2.0"
+BINDING_SCHEMA = "task-worker.provider-binding/v1"
+CONTEXT_SCHEMA = "task-worker.context-packet/v1"
+EVIDENCE_SCHEMA = "task-worker.verification-evidence/v1"
+PLUGIN_VERSION = "0.3.0"
 SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 DELIVERY_MODES = {"local-ff", "external"}
+DISPATCH_MODES = {"worker", "manual"}
 LEGACY_DELIVERY_MODES = {"local-ff", "pull-request"}
 RUN_TRANSITIONS = {
     "run": ("started", "running"),
@@ -144,6 +149,9 @@ def create_artifact(
     )
     if delivery_mode not in DELIVERY_MODES:
         raise DefinitionError("bad_delivery_mode", f"delivery must be one of {sorted(DELIVERY_MODES)}")
+    dispatch_mode = spec.get("dispatch") or (previous.get("dispatch") if previous else "worker")
+    if dispatch_mode not in DISPATCH_MODES:
+        raise DefinitionError("bad_dispatch_mode", f"dispatch must be one of {sorted(DISPATCH_MODES)}")
 
     root_out: dict[str, Any] = {
         "node_id": node_id(definition_id, "root"),
@@ -192,6 +200,7 @@ def create_artifact(
         "previous_digest": previous_digest,
         "created_at": created_at or utc_now(),
         "delivery": delivery_mode,
+        "dispatch": dispatch_mode,
         "root": root_out,
         "children": child_out,
         "strict_deps": bool(spec.get("strict_deps")),
@@ -238,6 +247,8 @@ def validate_artifact(
     valid_delivery = LEGACY_DELIVERY_MODES if legacy else DELIVERY_MODES
     if delivery not in valid_delivery:
         raise DefinitionError("bad_delivery_mode", f"delivery must be one of {sorted(valid_delivery)}")
+    if artifact.get("dispatch", "worker") not in DISPATCH_MODES:
+        raise DefinitionError("bad_dispatch_mode", f"dispatch must be one of {sorted(DISPATCH_MODES)}")
     if legacy and artifact.get("record") not in {"none", "github"}:
         raise DefinitionError("bad_record_mode", "legacy record must be none or github")
     if not legacy and "record" in artifact:
@@ -340,6 +351,7 @@ def artifact_to_spec(artifact: dict[str, Any]) -> dict[str, Any]:
         "root": root,
         "children": children,
         "strict_deps": bool(artifact.get("strict_deps")),
+        "dispatch": artifact.get("dispatch", "worker"),
     }
     _copy_optional(artifact, spec, ("challenge_review", "owner_gates"))
     return spec
@@ -563,7 +575,8 @@ def ready_plan(artifact: dict[str, Any], state_dir: str | Path) -> dict[str, Any
         "revision": artifact["revision"],
         "nodes": graph_nodes,
     })
-    ready = [
+    dispatch = artifact.get("dispatch", "worker")
+    planned_ready = [
         {**item, "identity": execution_identity(artifact, item["node_id"])}
         for item in graph_plan["ready_actions"]
     ]
@@ -575,7 +588,9 @@ def ready_plan(artifact: dict[str, Any], state_dir: str | Path) -> dict[str, Any
         "definition_id": artifact["definition_id"],
         "revision": artifact["revision"],
         "digest": artifact["digest"],
-        "ready_actions": ready,
+        "dispatch": dispatch,
+        "ready_actions": planned_ready if dispatch == "worker" else [],
+        "manual_actions": planned_ready if dispatch == "manual" else [],
         "blocked": graph_plan["blocked"],
         "active": active,
         "integration_candidates": graph_plan["integration_candidates"],
@@ -592,12 +607,20 @@ def start_local_run(
     now: str | None = None,
 ) -> tuple[dict[str, Any], Path, bool]:
     validate_artifact(artifact)
+    if artifact.get("dispatch", "worker") != "worker":
+        raise DefinitionError("manual_dispatch", "manual dispatch does not create task-worker local runs")
     node = _definition_node(artifact, node_ref)
-    if any(child.get("parent_node_id") == node["node_id"] for child in artifact["children"]):
-        raise DefinitionError("container_not_executable", f"node {node['key']} has children")
     states = Path(state_dir)
     matching_states = _read_matching_states(artifact, states)
     closed = {state["node_id"] for state in matching_states if state["status"] == "closed"}
+    child_ids = {
+        child["node_id"]
+        for child in artifact["children"]
+        if child.get("parent_node_id") == node["node_id"]
+    }
+    missing_children = sorted(child_ids - closed)
+    if missing_children:
+        raise DefinitionError("integration_not_ready", f"container children are not closed: {missing_children}")
     missing = sorted(set(node.get("blocked_by_node_ids", [])) - closed)
     if missing:
         raise DefinitionError("blocked_by_open", f"local blockers are not closed: {missing}")
@@ -625,6 +648,7 @@ def start_local_run(
         "pin": _run_pin(artifact),
         "node_id": node["node_id"],
         "node_key": node["key"],
+        "run_kind": "integration" if child_ids else "work",
         "delivery": _effective_delivery(artifact),
         "identity": execution_identity(artifact, node["node_id"]),
         "status": "started",
@@ -650,6 +674,8 @@ def validate_local_run(artifact: dict[str, Any], state: dict[str, Any]) -> None:
     expected_delivery = artifact.get("delivery") if schema in LEGACY_RUN_SCHEMAS else _effective_delivery(artifact)
     if state.get("delivery") != expected_delivery:
         raise DefinitionError("run_pin_mismatch", "run delivery differs from pinned artifact")
+    if state.get("run_kind", "work") not in {"work", "integration"}:
+        raise DefinitionError("bad_run_kind", "run_kind must be work or integration")
     if state.get("status") not in {*ACTIVE_STATUSES, "closed"}:
         raise DefinitionError("bad_run_status", f"unknown local run status: {state.get('status')!r}")
 
@@ -694,6 +720,7 @@ def recover_local_run(artifact: dict[str, Any], state: dict[str, Any]) -> dict[s
         "next_event": next_events[state["status"]],
         "identity": state["identity"],
         "pin": state["pin"],
+        "run_kind": state.get("run_kind", "work"),
     }
 
 
@@ -714,6 +741,7 @@ def build_receipt(
     token_coverage: str | None = None,
     counters: dict[str, Any] | None = None,
     quality: dict[str, Any] | None = None,
+    require_token_coverage: bool = False,
 ) -> dict[str, Any]:
     if state.get("schema") not in {RUN_SCHEMA, *LEGACY_RUN_SCHEMAS} or state.get("status") != "closed":
         raise DefinitionError("receipt_incomplete", "receipt requires a closed local run")
@@ -723,6 +751,8 @@ def build_receipt(
     if elapsed_ms < 0:
         raise DefinitionError("bad_timestamp", "finished_at precedes started_at")
     if tokens is None:
+        if require_token_coverage:
+            raise DefinitionError("token_coverage_required", "token telemetry is required by task-worker config")
         coverage = token_coverage or "unavailable"
         if coverage != "unavailable":
             raise DefinitionError("bad_token_coverage", "tokens:null requires token_coverage=unavailable")
@@ -800,13 +830,361 @@ def store_artifact(store: str | Path, artifact: dict[str, Any]) -> Path:
     return path
 
 
+def _state_path(state_root: str | Path, kind: str) -> Path:
+    return Path(state_root) / kind
+
+
+def _context_packet(artifact: dict[str, Any], facts: dict[str, Any], *, now: str | None = None) -> dict[str, Any]:
+    if not isinstance(facts, dict):
+        raise DefinitionError("bad_context", "context facts must be an object")
+    digest = stable_digest(facts)
+    return {
+        "schema": CONTEXT_SCHEMA,
+        "definition": _run_pin(artifact),
+        "digest": digest,
+        "created_at": now or utc_now(),
+        "facts": facts,
+    }
+
+
+def validate_binding(binding: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(binding, dict) or binding.get("schema") != BINDING_SCHEMA:
+        raise DefinitionError("bad_binding_schema", f"schema must be {BINDING_SCHEMA!r}")
+    _safe_id(binding.get("binding_id"), "binding_id")
+    pin = binding.get("definition")
+    if not isinstance(pin, dict):
+        raise DefinitionError("bad_binding", "definition pin is required")
+    _safe_id(pin.get("definition_id"), "definition.definition_id")
+    if not isinstance(pin.get("revision"), int) or pin["revision"] < 1:
+        raise DefinitionError("bad_binding", "definition.revision must be positive")
+    if not isinstance(pin.get("digest"), str) or not re.fullmatch(r"[0-9a-f]{64}", pin["digest"]):
+        raise DefinitionError("bad_binding", "definition.digest must be sha256")
+    if binding.get("dispatch") not in DISPATCH_MODES:
+        raise DefinitionError("bad_dispatch_mode", "binding dispatch is invalid")
+    if not isinstance(binding.get("artifact_path"), str) or not binding["artifact_path"]:
+        raise DefinitionError("bad_binding", "artifact_path is required")
+    aliases = binding.get("aliases")
+    if not isinstance(aliases, list) or not all(isinstance(value, str) and value for value in aliases):
+        raise DefinitionError("bad_binding", "aliases must be a non-empty string list")
+    if len(set(aliases)) != len(aliases):
+        raise DefinitionError("bad_binding", "aliases must be unique")
+    providers = binding.get("providers", {})
+    if not isinstance(providers, dict) or not all(
+        isinstance(name, str) and name and isinstance(value, dict)
+        for name, value in providers.items()
+    ):
+        raise DefinitionError("bad_binding", "providers must be an object of opaque provider objects")
+    context = binding.get("context")
+    if context is not None and (
+        not isinstance(context, dict)
+        or not isinstance(context.get("path"), str)
+        or not isinstance(context.get("digest"), str)
+    ):
+        raise DefinitionError("bad_binding", "context must contain path and digest")
+    work_graph = binding.get("work_graph")
+    if work_graph is not None and (
+        not isinstance(work_graph, dict)
+        or not isinstance(work_graph.get("path"), str)
+        or not isinstance(work_graph.get("digest"), str)
+    ):
+        raise DefinitionError("bad_binding", "work_graph must contain path and digest")
+    return binding
+
+
+def _binding_files(state_root: str | Path) -> list[Path]:
+    directory = _state_path(state_root, "bindings")
+    return sorted(directory.glob("*.json")) if directory.is_dir() else []
+
+
+def resolve_binding(ref: str, state_root: str | Path) -> tuple[dict[str, Any], Path]:
+    matches = []
+    for path in _binding_files(state_root):
+        binding = validate_binding(read_json(path))
+        if ref in {binding["binding_id"], binding["definition"]["definition_id"], *binding["aliases"]}:
+            matches.append((binding, path))
+    if not matches:
+        raise DefinitionError("binding_not_found", f"no provider binding matches {ref!r}")
+    if len(matches) != 1:
+        raise DefinitionError("binding_ambiguous", f"multiple provider bindings match {ref!r}")
+    return matches[0]
+
+
+def upsert_binding(
+    artifact: dict[str, Any],
+    *,
+    artifact_path: str | Path,
+    state_root: str | Path,
+    aliases: Iterable[str] = (),
+    provider: str | None = None,
+    provider_data: dict[str, Any] | None = None,
+    context: dict[str, Any] | None = None,
+    work_graph: dict[str, Any] | None = None,
+    now: str | None = None,
+) -> tuple[dict[str, Any], Path, bool]:
+    validate_artifact(artifact)
+    definition_id = artifact["definition_id"]
+    binding_id = f"binding-{definition_id}"
+    path = _state_path(state_root, "bindings") / f"{definition_id}.json"
+    current = validate_binding(read_json(path)) if path.exists() else None
+    if current and current["definition"]["definition_id"] != definition_id:
+        raise DefinitionError("binding_conflict", "binding id belongs to another definition")
+
+    alias_set = {f"task-worker:{definition_id}", definition_id, *aliases}
+    if not all(isinstance(value, str) and value.strip() for value in alias_set):
+        raise DefinitionError("bad_binding", "aliases must be non-empty strings")
+    for other_path in _binding_files(state_root):
+        if other_path == path:
+            continue
+        other = validate_binding(read_json(other_path))
+        overlap = alias_set & set(other["aliases"])
+        if overlap:
+            raise DefinitionError("binding_alias_conflict", f"aliases already bound: {sorted(overlap)}")
+
+    providers = dict(current.get("providers", {})) if current else {}
+    if provider is not None:
+        provider_name = _safe_id(provider, "provider")
+        if not isinstance(provider_data, dict):
+            raise DefinitionError("bad_binding", "provider_data must be an object")
+        providers[provider_name] = provider_data
+    context_ref = current.get("context") if current else None
+    if context is not None:
+        packet = _context_packet(artifact, context, now=now)
+        context_path = _state_path(state_root, "contexts") / definition_id / f"{packet['digest']}.json"
+        if context_path.exists():
+            existing_packet = read_json(context_path)
+            if (
+                existing_packet.get("schema") != CONTEXT_SCHEMA
+                or existing_packet.get("digest") != packet["digest"]
+                or existing_packet.get("facts") != packet["facts"]
+            ):
+                raise DefinitionError("context_digest_mismatch", f"context packet is corrupt: {context_path}")
+        else:
+            write_json_atomic(context_path, packet, immutable=True)
+        context_ref = {"path": str(context_path.resolve()), "digest": packet["digest"]}
+    work_graph_ref = current.get("work_graph") if current else None
+    if work_graph is not None:
+        graph = validate_work_graph(work_graph)
+        graph_path = _state_path(state_root, "graphs") / definition_id / f"{graph['digest']}.json"
+        write_json_atomic(graph_path, graph, immutable=True)
+        work_graph_ref = {"path": str(graph_path.resolve()), "digest": graph["digest"]}
+
+    timestamp = now or utc_now()
+    binding = {
+        "schema": BINDING_SCHEMA,
+        "binding_id": binding_id,
+        "definition": _run_pin(artifact),
+        "artifact_path": str(Path(artifact_path).resolve()),
+        "dispatch": artifact.get("dispatch", "worker"),
+        "aliases": sorted(alias_set | set(current.get("aliases", []) if current else [])),
+        "providers": providers,
+        "context": context_ref,
+        "work_graph": work_graph_ref,
+        "created_at": current.get("created_at", timestamp) if current else timestamp,
+        "updated_at": timestamp,
+    }
+    validate_binding(binding)
+    if current is not None:
+        current_semantic = {key: value for key, value in current.items() if key != "updated_at"}
+        next_semantic = {key: value for key, value in binding.items() if key != "updated_at"}
+        if current_semantic == next_semantic:
+            return current, path, False
+    changed = True
+    if changed:
+        write_json_atomic(path, binding)
+    return binding, path, changed
+
+
+def resume_binding(ref: str, state_root: str | Path) -> dict[str, Any]:
+    binding, binding_path = resolve_binding(ref, state_root)
+    artifact = read_json(binding["artifact_path"])
+    validate_artifact(artifact)
+    validate_run_pin(artifact, binding["definition"])
+    if artifact.get("dispatch", "worker") != binding["dispatch"]:
+        raise DefinitionError("binding_pin_mismatch", "binding dispatch differs from artifact")
+    context = None
+    if binding.get("context"):
+        context = read_json(binding["context"]["path"])
+        if context.get("schema") != CONTEXT_SCHEMA or context.get("digest") != binding["context"]["digest"]:
+            raise DefinitionError("context_digest_mismatch", "bound context packet is invalid")
+        if stable_digest(context.get("facts")) != context["digest"]:
+            raise DefinitionError("context_digest_mismatch", "context facts changed")
+    if binding.get("work_graph"):
+        graph = read_json(binding["work_graph"]["path"])
+        if graph.get("digest") != binding["work_graph"]["digest"]:
+            raise DefinitionError("work_graph_digest_mismatch", "bound work graph digest changed")
+        plan = plan_work_graph(graph)
+        plan["dispatch"] = binding["dispatch"]
+        if binding["dispatch"] == "manual":
+            plan["manual_actions"] = plan.pop("ready_actions")
+            plan["ready_actions"] = []
+    else:
+        plan = ready_plan(artifact, _state_path(state_root, "runs"))
+    return {
+        "binding": binding,
+        "binding_path": str(binding_path),
+        "context": context,
+        "plan": plan,
+    }
+
+
+def record_provider_event(
+    ref: str,
+    *,
+    state_root: str | Path,
+    provider: str,
+    event: str,
+    receipt: dict[str, Any] | None = None,
+    now: str | None = None,
+) -> tuple[dict[str, Any], Path, bool]:
+    binding, path = resolve_binding(ref, state_root)
+    provider_name = _safe_id(provider, "provider")
+    if provider_name not in binding["providers"]:
+        raise DefinitionError("provider_not_bound", f"provider is not bound: {provider_name}")
+    event_name = _safe_id(event, "provider_event")
+    if receipt is not None and not isinstance(receipt, dict):
+        raise DefinitionError("bad_provider_receipt", "provider receipt must be an object")
+    event_id = stable_digest({"provider": provider_name, "event": event_name, "receipt": receipt})
+    updated = json.loads(json.dumps(binding))
+    provider_state = updated["providers"][provider_name]
+    events = provider_state.setdefault("events", [])
+    if any(item.get("event_id") == event_id for item in events if isinstance(item, dict)):
+        return binding, path, False
+    timestamp = now or utc_now()
+    events.append({
+        "event_id": event_id,
+        "event": event_name,
+        "at": timestamp,
+        "receipt": receipt,
+    })
+    provider_state["last_event"] = event_name
+    updated["updated_at"] = timestamp
+    validate_binding(updated)
+    write_json_atomic(path, updated)
+    return updated, path, True
+
+
+def evidence_fingerprint(request: dict[str, Any]) -> str:
+    required = (
+        "definition_id", "node_id", "head", "command_digest",
+        "environment_digest", "tool_version",
+    )
+    identity = {}
+    for key in required:
+        identity[key] = _require_text(request.get(key), f"evidence.{key}")
+    return stable_digest(identity)
+
+
+def evidence_plan(
+    request: dict[str, Any], state_root: str | Path, *, max_physical_runs: int = 3
+) -> dict[str, Any]:
+    if not isinstance(max_physical_runs, int) or isinstance(max_physical_runs, bool) or max_physical_runs < 1:
+        raise DefinitionError("bad_run_limit", "max_physical_runs must be positive")
+    fingerprint = evidence_fingerprint(request)
+    path = _state_path(state_root, "evidence") / f"{fingerprint}.json"
+    if not path.exists():
+        return {"execute": True, "duplicate_prevented": False, "fingerprint": fingerprint, "path": str(path)}
+    evidence = read_json(path)
+    if evidence.get("schema") != EVIDENCE_SCHEMA or evidence.get("fingerprint") != fingerprint:
+        raise DefinitionError("evidence_corrupt", f"invalid evidence file: {path}")
+    attempts = evidence.get("attempts")
+    if not isinstance(attempts, list):
+        raise DefinitionError("evidence_corrupt", "evidence attempts must be a list")
+    successful = next((attempt for attempt in reversed(attempts) if attempt.get("result") == "pass"), None)
+    if successful is not None:
+        return {
+            "execute": False,
+            "duplicate_prevented": True,
+            "reason": "successful_evidence_reused",
+            "fingerprint": fingerprint,
+            "path": str(path),
+            "evidence": evidence,
+        }
+    if len(attempts) >= max_physical_runs:
+        return {
+            "execute": False,
+            "duplicate_prevented": False,
+            "reason": "physical_run_limit_reached",
+            "owner_gate_required": True,
+            "fingerprint": fingerprint,
+            "path": str(path),
+            "evidence": evidence,
+        }
+    return {"execute": True, "duplicate_prevented": False, "fingerprint": fingerprint, "path": str(path)}
+
+
+def record_evidence(
+    request: dict[str, Any],
+    *,
+    result: str,
+    state_root: str | Path,
+    output_digest: str | None = None,
+    tokens: int | None = None,
+    token_coverage: str | None = None,
+    max_physical_runs: int = 3,
+    require_token_coverage: bool = False,
+    now: str | None = None,
+) -> tuple[dict[str, Any], Path, bool]:
+    if result not in {"pass", "fail"}:
+        raise DefinitionError("bad_evidence_result", "evidence result must be pass or fail")
+    plan = evidence_plan(request, state_root, max_physical_runs=max_physical_runs)
+    path = Path(plan["path"])
+    if plan.get("duplicate_prevented"):
+        return plan["evidence"], path, True
+    if plan.get("owner_gate_required"):
+        raise DefinitionError("physical_run_limit_reached", "evidence run limit requires owner gate")
+    if tokens is None:
+        if require_token_coverage:
+            raise DefinitionError("token_coverage_required", "token telemetry is required by task-worker config")
+        coverage = token_coverage or "unavailable"
+        if coverage != "unavailable":
+            raise DefinitionError("bad_token_coverage", "tokens:null requires unavailable coverage")
+    else:
+        if not isinstance(tokens, int) or isinstance(tokens, bool) or tokens < 0:
+            raise DefinitionError("bad_tokens", "tokens must be non-negative")
+        coverage = token_coverage or "exact"
+        if coverage != "exact":
+            raise DefinitionError("bad_token_coverage", "known tokens require exact coverage")
+    evidence = read_json(path) if path.exists() else {
+        "schema": EVIDENCE_SCHEMA,
+        "evidence_id": f"ev-{plan['fingerprint'][:20]}",
+        "fingerprint": plan["fingerprint"],
+        "request": request,
+        "attempts": [],
+    }
+    evidence["attempts"].append({
+        "result": result,
+        "output_digest": output_digest,
+        "tokens": tokens,
+        "token_coverage": coverage,
+        "performed_at": now or utc_now(),
+    })
+    write_json_atomic(path, evidence)
+    return evidence, path, False
+
+
+def token_coverage_required(config_path: str | Path) -> bool:
+    path = Path(config_path)
+    if not path.is_file():
+        return False
+    script = Path(__file__).with_name("task_config.py")
+    spec = importlib.util.spec_from_file_location("task_worker_runtime_config", script)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    config = module.load_config(path)
+    errors = [item for item in module.validate_config(config) if item.get("severity") == "error"]
+    if errors:
+        raise DefinitionError("config_invalid", ",".join(item["code"] for item in errors))
+    return bool((config.get("evidence") or {}).get("token-coverage-required", False))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     for name in ("create", "revise"):
         command = sub.add_parser(name)
         command.add_argument("--spec", required=True)
-        command.add_argument("--store", default=".task-worker/definitions")
+        command.add_argument("--store", default=".task-worker/local/definitions")
         command.add_argument("--previous", required=name == "revise")
         command.add_argument("--delivery", choices=sorted(DELIVERY_MODES))
     validate = sub.add_parser("validate")
@@ -814,16 +1192,19 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument("--previous")
     export = sub.add_parser("export")
     export.add_argument("--artifact", required=True)
+    store = sub.add_parser("store")
+    store.add_argument("--artifact", required=True)
+    store.add_argument("--store", default=".task-worker/local/definitions")
     graph = sub.add_parser("plan-graph")
     graph.add_argument("--snapshot", required=True)
     sub.add_parser("capabilities")
     ready = sub.add_parser("ready")
     ready.add_argument("--artifact", required=True)
-    ready.add_argument("--state-dir", default=".task-worker/runs")
+    ready.add_argument("--state-dir", default=".task-worker/local/runs")
     local_start = sub.add_parser("local-start")
     local_start.add_argument("--artifact", required=True)
     local_start.add_argument("--node", required=True)
-    local_start.add_argument("--state-dir", default=".task-worker/runs")
+    local_start.add_argument("--state-dir", default=".task-worker/local/runs")
     local_start.add_argument("--run-id")
     local_event = sub.add_parser("local-event")
     local_event.add_argument("--artifact", required=True)
@@ -841,6 +1222,41 @@ def build_parser() -> argparse.ArgumentParser:
     receipt.add_argument("--counters", default="{}")
     receipt.add_argument("--quality", default="{}")
     receipt.add_argument("--out")
+    receipt.add_argument("--config", default=".task-worker.yml")
+    bind = sub.add_parser("bind")
+    bind.add_argument("--artifact", required=True)
+    bind.add_argument("--artifact-path", help="stored artifact path; defaults to --artifact")
+    bind.add_argument("--state-root", default=".task-worker/local")
+    bind.add_argument("--alias", action="append", default=[])
+    bind.add_argument("--provider")
+    bind.add_argument("--provider-data", help="JSON object path or '-' when --provider is set")
+    bind.add_argument("--context", help="compact context JSON object path or '-'")
+    bind.add_argument("--work-graph", help="provider-normalized task-worker.work-graph/v1 path or '-'")
+    resolve = sub.add_parser("resolve")
+    resolve.add_argument("--ref", required=True)
+    resolve.add_argument("--state-root", default=".task-worker/local")
+    resume = sub.add_parser("resume")
+    resume.add_argument("--ref", required=True)
+    resume.add_argument("--state-root", default=".task-worker/local")
+    evidence_check = sub.add_parser("evidence-plan")
+    evidence_check.add_argument("--request", required=True)
+    evidence_check.add_argument("--state-root", default=".task-worker/local")
+    evidence_check.add_argument("--max-physical-runs", type=int, default=3)
+    evidence_record = sub.add_parser("evidence-record")
+    evidence_record.add_argument("--request", required=True)
+    evidence_record.add_argument("--result", required=True, choices=("pass", "fail"))
+    evidence_record.add_argument("--state-root", default=".task-worker/local")
+    evidence_record.add_argument("--output-digest")
+    evidence_record.add_argument("--tokens", type=int)
+    evidence_record.add_argument("--token-coverage", choices=("exact", "unavailable"))
+    evidence_record.add_argument("--max-physical-runs", type=int, default=3)
+    evidence_record.add_argument("--config", default=".task-worker.yml")
+    provider_event = sub.add_parser("provider-event")
+    provider_event.add_argument("--ref", required=True)
+    provider_event.add_argument("--provider", required=True)
+    provider_event.add_argument("--event", required=True)
+    provider_event.add_argument("--receipt", help="provider receipt JSON object path or '-'")
+    provider_event.add_argument("--state-root", default=".task-worker/local")
     return parser
 
 
@@ -860,6 +1276,10 @@ def main(argv: Iterable[str] | None = None) -> int:
         elif args.command == "export":
             artifact = read_json(args.artifact)
             payload = {"ok": True, "spec": artifact_to_spec(artifact)}
+        elif args.command == "store":
+            artifact = read_json(args.artifact)
+            path = store_artifact(args.store, artifact)
+            payload = {"ok": True, "artifact": artifact, "path": str(path)}
         elif args.command == "plan-graph":
             payload = {"ok": True, "plan": plan_work_graph(read_json(args.snapshot))}
         elif args.command == "capabilities":
@@ -873,10 +1293,15 @@ def main(argv: Iterable[str] | None = None) -> int:
                     "work_graph": WORK_GRAPH_SCHEMA,
                     "ready_plan": "task-worker.ready-plan/v1",
                     "receipt": RECEIPT_SCHEMA,
+                    "binding": BINDING_SCHEMA,
+                    "context": CONTEXT_SCHEMA,
+                    "evidence": EVIDENCE_SCHEMA,
                 },
                 "commands": [
-                    "create", "revise", "validate", "export", "plan-graph", "ready",
+                    "create", "revise", "validate", "export", "store", "plan-graph", "ready",
                     "local-start", "local-event", "recover", "receipt", "capabilities",
+                    "bind", "resolve", "resume", "evidence-plan", "evidence-record",
+                    "provider-event",
                 ],
             }
         elif args.command == "ready":
@@ -896,14 +1321,65 @@ def main(argv: Iterable[str] | None = None) -> int:
             payload = {"ok": True, "changed": changed, "path": str(state_path), "run": state}
         elif args.command == "recover":
             payload = {"ok": True, "recovery": recover_local_run(read_json(args.artifact), read_json(args.run_state))}
-        else:
+        elif args.command == "receipt":
             receipt = build_receipt(
                 read_json(args.run_state), workflow=args.workflow, tokens=args.tokens,
                 token_coverage=args.token_coverage, counters=json.loads(args.counters), quality=json.loads(args.quality),
+                require_token_coverage=token_coverage_required(args.config),
             )
             if args.out:
                 write_json_atomic(args.out, receipt)
             payload = {"ok": True, "receipt": receipt, "path": args.out}
+        elif args.command == "bind":
+            artifact = read_json(args.artifact)
+            provider_data = read_json(args.provider_data) if args.provider_data else None
+            context = read_json(args.context) if args.context else None
+            work_graph = read_json(args.work_graph) if args.work_graph else None
+            binding, path, changed = upsert_binding(
+                artifact,
+                artifact_path=args.artifact_path or args.artifact,
+                state_root=args.state_root,
+                aliases=args.alias,
+                provider=args.provider,
+                provider_data=provider_data,
+                context=context,
+                work_graph=work_graph,
+            )
+            payload = {"ok": True, "changed": changed, "path": str(path), "binding": binding}
+        elif args.command == "resolve":
+            binding, path = resolve_binding(args.ref, args.state_root)
+            payload = {"ok": True, "path": str(path), "binding": binding}
+        elif args.command == "resume":
+            payload = {"ok": True, "resume": resume_binding(args.ref, args.state_root)}
+        elif args.command == "evidence-plan":
+            payload = {
+                "ok": True,
+                "plan": evidence_plan(
+                    read_json(args.request), args.state_root,
+                    max_physical_runs=args.max_physical_runs,
+                ),
+            }
+        elif args.command == "evidence-record":
+            evidence, path, reused = record_evidence(
+                read_json(args.request),
+                result=args.result,
+                state_root=args.state_root,
+                output_digest=args.output_digest,
+                tokens=args.tokens,
+                token_coverage=args.token_coverage,
+                max_physical_runs=args.max_physical_runs,
+                require_token_coverage=token_coverage_required(args.config),
+            )
+            payload = {"ok": True, "reused": reused, "path": str(path), "evidence": evidence}
+        else:
+            binding, path, changed = record_provider_event(
+                args.ref,
+                state_root=args.state_root,
+                provider=args.provider,
+                event=args.event,
+                receipt=read_json(args.receipt) if args.receipt else None,
+            )
+            payload = {"ok": True, "changed": changed, "path": str(path), "binding": binding}
     except json.JSONDecodeError as exc:
         print(json.dumps({"ok": False, "error_code": "json_invalid", "message": str(exc)}, ensure_ascii=False))
         return 2

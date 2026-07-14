@@ -13,18 +13,19 @@ GitHub가 SoT지만, 실행 중에는 `.task-github/orchestrate/{container}.json
 ```
 $ARGUMENTS:
   {container_issue}
-  [--review gear|all|skip]   # 기본: .task-github.yml orchestrate.review-mode 또는 gear
-  [--max-workers N]          # 기본: .task-github.yml orchestrate.max-workers 또는 3
+  [--review gear|all|skip]   # 기본: .task-worker.yml orchestrate.review-mode 또는 gear
+  [--max-workers N]          # 기본: .task-worker.yml orchestrate.max-workers 또는 3
   [--pipeline]               # worker/review lane을 background dispatch하고 완료 이벤트마다 re-tick
 ```
 
 ## 전제
 
-1. `.task-github.yml`이 있어야 한다. 없으면 STOP: setup 먼저.
+1. `.task-worker.yml`과 `.task-github.yml`이 있어야 한다. 없으면 STOP: setup 먼저. legacy combined config는 warning과 함께 한시적으로 허용한다.
+   `dispatch: manual`이면 `ready_leaves.py`가 `manual_dispatch`로 중단하고 `manual_actions[]`만 보고한다. worker lane을 spawn하지 않는다.
 2. `mode: solo`만 허용한다. `team`이면 STOP.
 3. `base_branch`는 필수다. GitHub default branch를 추론하지 않는다.
 4. reviewer/conflict 자동화는 `review-tool`/`review-command`와 conflict-agent 경로가 있을 때만 실행한다. 없으면 STOP으로 퇴각한다.
-5. flow option 우선순위는 commander 지시 > `.task-github.yml` `orchestrate.gear-options`/`orchestrate.max-workers` > 시스템 기본값이다. `max-workers`는 `review-mode`와 같은 우선순위 규칙을 따른다: commander가 `--max-workers`를 명시하면 그 값, 없으면 config의 `orchestrate.max-workers`, 그것도 없으면 시스템 기본값 3.
+5. flow option 우선순위는 commander 지시 > `.task-worker.yml` `orchestrate.gear-options`/`orchestrate.max-workers` > 시스템 기본값이다. `max-workers`는 `review-mode`와 같은 우선순위 규칙을 따른다: commander가 `--max-workers`를 명시하면 그 값, 없으면 config의 `orchestrate.max-workers`, 그것도 없으면 시스템 기본값 3.
 6. `task-worker` capability preflight가 exact contract schema를 확인해야 한다. 누락·불일치면 STOP하고 부분 ready set이나 task-github 자체 planner로 fallback하지 않는다.
 
 설정 확인:
@@ -311,4 +312,4 @@ conflict-agent 산출물은 [agents/conflict-resolver.md](../../agents/conflict-
 - **웨이브 동결**: 컨테이너 머지업 개시 전 pending-work 스캔(미커밋 리프 워크트리 → STOP `pending_work`; 커밋된 미통합은 `child_merge_evidence`가 별도 게이트), 개시 후 발견 수정은 웨이브에 끼우지 않고 새 micro 이슈로 뒤따른다([[workflow.md §6]]). base가 뒤처진 통합 PR은 dead-STOP이 아니라 `gh pr update-branch` 복구 후 재검증(merge Step 3).
 - **핸드오프는 구조화 job spec(env 블록)** — 오케스트레이터가 실행 세부를 산문으로 재서술하지 않는다. `TASK_GITHUB_ROOT`(절대경로)·`BASE_BRANCH`·`LEDGER`(절대)·`RUN_NOTES`(절대)를 주입하고, worker 프롬프트에 "제공된 사실 재도출 금지, 플로우는 워커 스킬 소유"를 명시한다.
 - **mechanism friction 집계(F)**: 루트 완료 보고에 이번 런의 워크플로 마찰(미해소 경로·스킵 스텝·수동 ledger 보정·재도출 지식)을 worker들의 friction 보고에서 모아 한 절로 남긴다 — consumer wiki가 아니라 런 보고에(운영/메커니즘 회고 채널).
-- `--max-workers` 기본은 commander 지시 > `.task-github.yml orchestrate.max-workers` > 시스템 기본값(3) 순으로 정한다. ledger는 spawned/failed뿐 아니라 root snapshot, derived issue/PR state, events를 보관한다. 문제 발생 시 `--reconcile-github`로 GitHub SoT를 다시 덮어쓴다.
+- `--max-workers` 기본은 commander 지시 > `.task-worker.yml orchestrate.max-workers` > 시스템 기본값(3) 순으로 정한다. ledger는 spawned/failed뿐 아니라 root snapshot, derived issue/PR state, events를 보관한다. 문제 발생 시 `--reconcile-github`로 GitHub SoT를 다시 덮어쓴다.

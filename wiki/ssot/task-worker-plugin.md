@@ -11,9 +11,9 @@ affects_paths: [plugins/task-worker/**, plugins/task-github/**]
 
 ### 설계 및 구현 상태
 
-이 문서는 `task-worker` 플러그인의 **아키텍처와 구현 상태 정본**이다. 2026-07-14에 0.1.0으로 독립 플러그인을 만들었고, 0.2.0에서 task-github 위임 전환까지 완료했다.
+이 문서는 `task-worker` 플러그인의 **아키텍처와 구현 상태 정본**이다. 2026-07-14에 0.1.0으로 독립 플러그인을 만들었고, 0.2.0에서 task-github 위임 전환, 0.3.0에서 설정·binding·resume·evidence 실행 계약까지 완료했다.
 
-0.2.0이 독립적으로 소유하는 범위는 다음과 같다.
+0.3.0이 독립적으로 소유하는 범위는 다음과 같다.
 
 - `task-worker.definition/v1` immutable DefinitionArtifact와 stable node id
 - dependency·parent cycle fail-closed 검증
@@ -22,16 +22,23 @@ affects_paths: [plugins/task-worker/**, plugins/task-github/**]
 - 자식 완료로 새 통합 상태가 생긴 container/root의 `integration_candidates[]`
 - node별 stable branch/worktree identity와 execution lease
 - local run `start → run → verify → done → closeout` lifecycle
+- child 완료 뒤 container/root를 `run_kind: integration`으로 실행하는 통합 gate
 - verify event의 구조화 evidence와 `workflow-receipt/v1`
+- `.task-worker.yml` provider-neutral 실행 설정
+- `dispatch: worker|manual`과 `delivery: local-ff|external` 독립 축
+- `task-worker.provider-binding/v1`과 digest-pinned context/work-graph checkpoint
+- TASK ID, GitHub root ref, definition id 기반 세션 간 `resume`
+- definition/node/HEAD/command/environment/tool version fingerprint 기반 성공 evidence 재사용
+- provider closeout event의 idempotent receipt 기록
 - 기존 `task-github.definition/v1`, `task-github.local-run/v1` 입력 호환
-- define/start/run/verify/done/status/orchestrate public skill
+- define/plan/start/run/verify/done/status/orchestrate public skill
 - exact schema/command를 공개하는 `capabilities` contract
 
 새 canonical artifact는 provider-specific `record`를 허용하지 않으며 external delivery는 generic `external`로 표현한다. task-worker runtime에는 GitHub 또는 Studio 실행 dependency가 없다.
 
-task-github 0.21.0은 `task_worker_bridge.py`를 통해 이 JSON CLI contract를 소비한다. task-github의 구 `definition_artifact.py`는 CLI forwarder만 남았고 DefinitionArtifact 생성, local lifecycle, generic ready planner의 중복 구현은 제거됐다. GitHub Issue snapshot도 WorkGraphSnapshot으로 변환한 뒤 task-worker planner를 호출한다.
+task-github 0.22.0은 `task_worker_bridge.py`를 통해 이 JSON CLI contract를 소비한다. task-github의 구 `definition_artifact.py`는 CLI forwarder만 남았고 DefinitionArtifact 생성, local lifecycle, generic ready planner의 중복 구현은 제거됐다. 기존 GitHub Issue Tree도 import하면 WorkGraphSnapshot·context·provider binding으로 고정해 `manual|worker` 두 dispatch에서 재사용한다.
 
-generic command fingerprint·cross-run evidence cache는 아직 task-worker runtime에 구현되지 않았다. 기존 task-github의 merge/gate evidence reuse는 GitHub adapter 책임으로 유지한다. 이 기능들을 core로 옮기는 일은 이번 분리 완료 조건이 아니며 별도 계약·replay가 필요한 후속 범위다.
+generic execution fingerprint와 cross-run evidence cache는 0.3.0 runtime에 구현됐다. GitHub PR/merge preflight evidence는 provider semantics가 필요하므로 계속 task-github adapter가 소유한다. 현재 core는 command를 직접 실행하지 않고 `evidence-plan`으로 실행 허용·재사용·physical run cap을 결정한 뒤 `evidence-record`를 받는다.
 
 분리 replay에서 다음 결과를 보존했다.
 
@@ -102,7 +109,7 @@ task-worker가 소유한다.
 - local-git delivery와 provider-neutral delivery request
 - workflow telemetry receipt
 
-위 목록 중 command profile, execution fingerprint, cross-run duplicate guard와 generic evidence invalidation cache는 **목표 범위**이며 0.2.0에는 아직 없다. 현재 구현 범위는 DefinitionArtifact, WorkGraphSnapshot planner, local lifecycle/evidence, receipt다. GitHub gear label과 merge-edge review 계산은 task-github adapter가 기존 호환 계약으로 유지한다.
+command profile의 프로젝트별 argv 정의는 config/tool layer가 소유하고, task-worker core는 그 digest와 environment/tool version을 evidence key로 사용한다. scope·HEAD·environment·tool version이 바뀌면 fingerprint가 달라져 기존 evidence가 자동 재사용되지 않는다. GitHub gear label과 merge-edge review 계산은 task-github adapter가 기존 호환 계약으로 유지한다.
 
 task-worker가 소유하지 않는다.
 
@@ -138,6 +145,8 @@ provider-neutral 실행 설정은 `.task-worker.yml`을 정본으로 한다.
 - local delivery mode
 - telemetry 요구 수준
 
+현재 schema는 `mode`, `state-root`, `dispatch`, `delivery`, planning/verify/review tool, `orchestrate`, `define`, `evidence`, `recovery`다. 예시는 `plugins/task-worker/config.example.yml`이며 consumer workspace의 실제 파일은 local config로 취급한다.
+
 GitHub repository, label, PR, merge, issue projection 설정은 `.task-worker.yml`에 넣지 않는다. 기존 `.task-github.yml`의 generic execution 항목은 migration 기간 동안 task-github가 task-worker config로 번역하며, 호환 기간 종료 뒤 명시적으로 이동한다.
 
 ### 완료 상태
@@ -149,6 +158,12 @@ task-worker node의 `done`은 외부 시스템이 닫혔다는 뜻이 아니다.
 - review-required edge: `ready_for_review`; reviewer verdict와 delivery receipt가 모두 유효해야 `completed`
 
 remote PR merge나 Issue close를 task-worker가 추정해서 완료 처리하지 않는다.
+
+### provider binding과 Wiki 관계
+
+task-worker core는 provider ref를 opaque alias/data로 저장할 뿐 Wiki/GitHub API를 호출하지 않는다. Wiki TASK는 작업지시·취지의 durable root 문서이고 task-worker binding은 실행 pin과 재개 위치다. Wiki `relations.tasks`에는 `task-worker:DEFINITION`을 연결할 수 있다.
+
+작업 종료 시 adapter가 Wiki `complete` 또는 GitHub Issue close를 수행하고 receipt를 `provider-event`로 기록한다. 따라서 세션이 바뀌어도 TASK ID나 `owner/repo#N` alias로 binding을 찾아 미완료 provider closeout을 이어갈 수 있다. Wiki에는 runtime 중간 상태를 복제하지 않고 active/done만 투영한다.
 
 ## 취지
 

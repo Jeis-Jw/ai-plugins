@@ -156,6 +156,37 @@ class DefinitionArtifactTests(unittest.TestCase):
             plan["ready_actions"][1]["identity"]["worktree"],
         )
 
+    def test_manual_dispatch_exposes_ready_set_without_local_execution(self):
+        spec = graph_spec()
+        spec["dispatch"] = "manual"
+        artifact = worker.create_artifact(spec)
+        with tempfile.TemporaryDirectory() as tmp:
+            plan = worker.ready_plan(artifact, tmp)
+            with self.assertRaisesRegex(worker.DefinitionError, "manual dispatch"):
+                worker.start_local_run(artifact, node_ref="A", state_dir=tmp)
+
+        self.assertEqual(plan["dispatch"], "manual")
+        self.assertEqual(plan["ready_actions"], [])
+        self.assertEqual([item["node_key"] for item in plan["manual_actions"]], ["A", "C"])
+
+    def test_completed_children_unlock_executable_integration_gate(self):
+        artifact = worker.create_artifact(graph_spec())
+        with tempfile.TemporaryDirectory() as tmp:
+            for node in ("A", "C"):
+                state, path, _ = worker.start_local_run(artifact, node_ref=node, state_dir=tmp)
+                worker.write_json_atomic(path, close_run(artifact, state))
+            state, path, _ = worker.start_local_run(artifact, node_ref="B", state_dir=tmp)
+            worker.write_json_atomic(path, close_run(artifact, state))
+
+            plan = worker.ready_plan(artifact, tmp)
+            self.assertEqual([item["node_key"] for item in plan["integration_candidates"]], ["root"])
+            integration, _, created = worker.start_local_run(
+                artifact, node_ref="root", state_dir=tmp
+            )
+
+        self.assertTrue(created)
+        self.assertEqual(integration["run_kind"], "integration")
+
     def test_closed_blocker_unlocks_only_affected_leaf(self):
         artifact = worker.create_artifact(graph_spec())
         with tempfile.TemporaryDirectory() as tmp:
@@ -234,6 +265,144 @@ class DefinitionArtifactTests(unittest.TestCase):
         self.assertIsNone(receipt["tokens"])
         self.assertEqual(receipt["token_coverage"], "unavailable")
         self.assertEqual(receipt["elapsed_ms"], 4000)
+
+        with self.assertRaisesRegex(worker.DefinitionError, "token telemetry"):
+            worker.build_receipt(state, require_token_coverage=True)
+
+    def test_binding_resumes_from_wiki_or_github_alias_without_session_context(self):
+        artifact = worker.create_artifact(graph_spec())
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact_path = worker.store_artifact(Path(tmp) / "definitions", artifact)
+            state_root = Path(tmp) / "state"
+            binding, _, changed = worker.upsert_binding(
+                artifact,
+                artifact_path=artifact_path,
+                state_root=state_root,
+                aliases=("TASK-2026-07-14-000000-example", "owner/repo#42"),
+                provider="github",
+                provider_data={"repository": "owner/repo", "root_issue": 42},
+                context={"objective": "ship", "criteria": ["tests pass"]},
+                now="2026-07-14T00:00:00Z",
+            )
+
+            resumed = worker.resume_binding("TASK-2026-07-14-000000-example", state_root)
+            github_resumed = worker.resume_binding("owner/repo#42", state_root)
+
+        self.assertTrue(changed)
+        self.assertEqual(binding["providers"]["github"]["root_issue"], 42)
+        self.assertEqual(resumed["binding"]["definition"], github_resumed["binding"]["definition"])
+        self.assertEqual(
+            [item["node_key"] for item in resumed["plan"]["ready_actions"]],
+            ["A", "C"],
+        )
+        self.assertEqual(resumed["context"]["facts"]["objective"], "ship")
+
+    def test_binding_alias_conflict_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_root = Path(tmp) / "state"
+            for definition_id in ("one", "two"):
+                artifact = worker.create_artifact({
+                    "definition_id": definition_id,
+                    "root": {"title": definition_id, "body": "criteria"},
+                })
+                path = worker.store_artifact(Path(tmp) / "definitions", artifact)
+                if definition_id == "one":
+                    worker.upsert_binding(
+                        artifact, artifact_path=path, state_root=state_root,
+                        aliases=("owner/repo#1",),
+                    )
+                else:
+                    with self.assertRaisesRegex(worker.DefinitionError, "already bound"):
+                        worker.upsert_binding(
+                            artifact, artifact_path=path, state_root=state_root,
+                            aliases=("owner/repo#1",),
+                        )
+
+    def test_provider_closeout_event_is_persistent_and_idempotent(self):
+        artifact = worker.create_artifact({
+            "definition_id": "closeout-binding",
+            "root": {"title": "single", "body": "criteria"},
+        })
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact_path = worker.store_artifact(Path(tmp) / "definitions", artifact)
+            state_root = Path(tmp) / "state"
+            worker.upsert_binding(
+                artifact, artifact_path=artifact_path, state_root=state_root,
+                aliases=("TASK-2026-07-14-000000-closeout",),
+                provider="wiki", provider_data={"task_id": "TASK-2026-07-14-000000-closeout"},
+            )
+            updated, _, changed = worker.record_provider_event(
+                artifact["definition_id"], state_root=state_root, provider="wiki",
+                event="completed", receipt={"path": "wiki/task/done/TASK.md"},
+            )
+            same, _, changed_again = worker.record_provider_event(
+                artifact["definition_id"], state_root=state_root, provider="wiki",
+                event="completed", receipt={"path": "wiki/task/done/TASK.md"},
+            )
+
+        self.assertTrue(changed)
+        self.assertFalse(changed_again)
+        self.assertEqual(updated, same)
+        self.assertEqual(updated["providers"]["wiki"]["last_event"], "completed")
+
+    def test_successful_evidence_is_reused_by_physical_execution_fingerprint(self):
+        request = {
+            "definition_id": "example",
+            "node_id": "node-A",
+            "head": "abc123",
+            "command_digest": "cmd-sha",
+            "environment_digest": "env-sha",
+            "tool_version": "pytest-9",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            before = worker.evidence_plan(request, tmp)
+            evidence, _, reused = worker.record_evidence(
+                request, result="pass", state_root=tmp, output_digest="output-sha"
+            )
+            after = worker.evidence_plan(request, tmp)
+            same, _, duplicate = worker.record_evidence(
+                request, result="pass", state_root=tmp, output_digest="ignored"
+            )
+
+        self.assertTrue(before["execute"])
+        self.assertFalse(reused)
+        self.assertFalse(after["execute"])
+        self.assertTrue(after["duplicate_prevented"])
+        self.assertTrue(duplicate)
+        self.assertEqual(len(same["attempts"]), 1)
+        self.assertEqual(evidence["evidence_id"], same["evidence_id"])
+
+    def test_failed_evidence_hits_owner_visible_run_cap(self):
+        request = {
+            "definition_id": "example",
+            "node_id": "node-A",
+            "head": "abc123",
+            "command_digest": "cmd-sha",
+            "environment_digest": "env-sha",
+            "tool_version": "pytest-9",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            worker.record_evidence(request, result="fail", state_root=tmp)
+            worker.record_evidence(request, result="fail", state_root=tmp)
+            plan = worker.evidence_plan(request, tmp, max_physical_runs=2)
+
+        self.assertFalse(plan["execute"])
+        self.assertTrue(plan["owner_gate_required"])
+
+    def test_evidence_token_coverage_can_fail_closed(self):
+        request = {
+            "definition_id": "example",
+            "node_id": "node-A",
+            "head": "abc123",
+            "command_digest": "cmd-sha",
+            "environment_digest": "env-sha",
+            "tool_version": "pytest-9",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(worker.DefinitionError, "token telemetry"):
+                worker.record_evidence(
+                    request, result="pass", state_root=tmp, require_token_coverage=True
+                )
 
 
 if __name__ == "__main__":

@@ -19,10 +19,15 @@ REQUIRED_CONTRACTS = {
     "work_graph": "task-worker.work-graph/v1",
     "ready_plan": "task-worker.ready-plan/v1",
     "receipt": "workflow-receipt/v1",
+    "binding": "task-worker.provider-binding/v1",
+    "context": "task-worker.context-packet/v1",
+    "evidence": "task-worker.verification-evidence/v1",
 }
 REQUIRED_COMMANDS = {
-    "create", "revise", "validate", "export", "plan-graph", "ready",
+    "create", "revise", "validate", "export", "store", "plan-graph", "ready",
     "local-start", "local-event", "recover", "receipt", "capabilities",
+    "bind", "resolve", "resume", "evidence-plan", "evidence-record",
+    "provider-event",
 }
 _RESOLUTION_CACHE: dict[tuple[str | None, str], tuple[Path, dict[str, Any]]] = {}
 
@@ -164,6 +169,38 @@ def export_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
 
 def plan_graph(snapshot: dict[str, Any]) -> dict[str, Any]:
     return call_worker(["plan-graph", "--snapshot", "-"], input_value=snapshot)["plan"]
+
+
+def bind_artifact(
+    artifact_path: str | Path,
+    *,
+    state_root: str | Path,
+    aliases: Iterable[str] = (),
+    provider: str | None = None,
+    provider_data_path: str | Path | None = None,
+    context_path: str | Path | None = None,
+    work_graph_path: str | Path | None = None,
+) -> dict[str, Any]:
+    args = [
+        "bind", "--artifact", str(artifact_path), "--artifact-path", str(artifact_path),
+        "--state-root", str(state_root),
+    ]
+    for alias in aliases:
+        args.extend(["--alias", alias])
+    if provider:
+        args.extend(["--provider", provider])
+        if provider_data_path is None:
+            raise TaskWorkerBridgeError("provider_data_required", "provider_data_path is required")
+        args.extend(["--provider-data", str(provider_data_path)])
+    if context_path is not None:
+        args.extend(["--context", str(context_path)])
+    if work_graph_path is not None:
+        args.extend(["--work-graph", str(work_graph_path)])
+    return call_worker(args)["binding"]
+
+
+def resume(ref: str, *, state_root: str | Path) -> dict[str, Any]:
+    return call_worker(["resume", "--ref", ref, "--state-root", str(state_root)])["resume"]
 
 
 def forward_cli(argv: list[str]) -> int:

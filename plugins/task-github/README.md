@@ -13,6 +13,9 @@ task-github:setup
 # 2. 업무 정의 (immutable DefinitionArtifact + 선택적 GitHub 전체 기록)
 task-github:define
 
+# 기존 Issue Tree를 외부 개발자 위임용으로 연결
+task-github:import {ROOT} --dispatch manual
+
 # 3. 작업 시작 (리프 점유 + 기어 판단)
 task-github:start {N}
 
@@ -49,7 +52,7 @@ python3 plugins/task-github/scripts/task_worker_bridge.py create \
 
 # record:github 전체 투영: root/descendant/dependency를 checkpoint하며 실패 후 resume
 python3 plugins/task-github/skills/define/scripts/create_issue_tree.py \
-  --artifact .task-github/local/definitions/DEF/revision-000001.json \
+  --artifact .task-worker/local/definitions/DEF/revision-000001.json \
   --projection-state .task-github/local/projections/DEF.json --strict-deps --json
 ```
 
@@ -63,7 +66,7 @@ python3 plugins/task-github/skills/define/scripts/create_issue_tree.py \
 
 ## 3축 분류
 
-- **프로파일**(환경): `.task-github.yml` `mode: solo|team` (`solo` 기본)
+- **프로파일**(환경): `.task-worker.yml` `mode: solo|team` (`solo` 기본)
 - **기어**(파급력): `micro` / `normal` / `major` — 영향 반경으로만 판단
 - **flow options**: `plan` / `verify` / `pr-review`
 
@@ -110,7 +113,7 @@ co-design(정착된 분해 제안 / 사령관 확인 게이트, [[DEC-2026-07-02
 - **경계**: 1 challenge 라운드, blocking 판정만 게이트(advisory는 로그), 사람이 blocking을 판정, auto-loop 없음.
 - **복잡도 넛지**(off-default 유지): 제안 트리 리프 수/깊이가 임계 초과면(plan 시점 task-count warn 재사용) `--review`를 권하는 non-blocking 힌트를 낸다. 여전히 기본 off이며, 넛지는 가장 값진 케이스(크고 복잡한 트리)를 조용히 건너뛰지 않게 할 뿐이다.
 
-`.task-github.yml`은 orchestrate의 review-tool 패턴을 그대로 미러링한다(`scripts/task_config.py`로 읽음):
+challenge review와 orchestrate 실행 정책은 `.task-worker.yml`에 둔다. `.task-github.yml`의 기존 위치는 migration fallback으로만 읽고 warning을 낸다.
 
 ```yaml
 define:
@@ -129,7 +132,13 @@ ledger v3는 비용 분석과 evidence reuse를 위해 `github_reads`, `read_dec
 
 ## Orchestrate Gear Options
 
-기본값은 `micro = plan:x verify:o pr-review:x`, `normal = plan:o verify:o pr-review:x`, `major = plan:o verify:o pr-review:o`다. 우선순위는 commander 지시 > `.task-github.yml` `orchestrate.gear-options` > 기본값이다.
+기본값은 `micro = plan:x verify:o pr-review:x`, `normal = plan:o verify:o pr-review:x`, `major = plan:o verify:o pr-review:o`다. 우선순위는 commander 지시 > `.task-worker.yml` `orchestrate.gear-options` > 기본값이다.
+
+## 설정 분리
+
+`.task-worker.yml`은 mode, dispatch, delivery, planning/review tool, gear, max-workers, evidence, recovery를 소유한다. `.task-github.yml`은 base branch, Issue projection, GitHub closeout만 소유한다. 각 예시는 [task-worker config](../task-worker/config.example.yml)와 [task-github config](config.example.yml)에 있다.
+
+기존 combined `.task-github.yml`은 한 호환 기간 동안 읽지만 `legacy_execution_config`/`legacy_worker_config_fallback` 경고를 낸다. 새 설정이 있으면 legacy generic key를 무시한다.
 
 ## Knowledge Capture Audit
 
@@ -149,7 +158,7 @@ ledger v3는 비용 분석과 evidence reuse를 위해 `github_reads`, `read_dec
 | `rules/dependencies.md` | GitHub Issue dependencies 기반 선후관계·차단 |
 | `rules/knowledge-capture.md` | 작업 종료 전 지식 기록 감사 |
 | `rules/wiki-bridge.md` | 위키 감지·호출·task 노드 연동 (mechanism) |
-| `skills/*` (14종) | setup·open·define·start·plan·run·verify·done·review·merge·status·orchestrate·doctor·reconcile |
+| `skills/*` (15종) | setup·open·define·import·start·plan·run·verify·done·review·merge·status·orchestrate·doctor·reconcile |
 | `agents/pr-verifier.md` | PR 독립 검증 서브에이전트 |
 | `agents/conflict-resolver.md` | merge conflict 해소 전용 서브에이전트 |
 
@@ -157,6 +166,7 @@ ledger v3는 비용 분석과 evidence reuse를 위해 `github_reads`, `read_dec
 
 ## 변경 이력
 
+- `0.22.0`: `.task-worker.yml`/`.task-github.yml` 설정 경계를 분리하고 legacy translation warning을 추가했다. 기존 Issue Tree를 `manual|worker` dispatch의 DefinitionArtifact/work-graph/binding으로 가져오는 import 경로와 TASK/root Issue 기반 세션 재개를 추가했다.
 - `0.21.0`: provider-neutral 실행 코어를 `task-worker` 0.2.0으로 완전히 위임했다. `task_worker_bridge.py`의 capability preflight와 versioned JSON contract, `github_projection.py`의 GitHub binding checkpoint를 추가했고, 기존 `definition_artifact.py`는 호환 forwarder로 축소했다. GitHub Issue snapshot은 `task-worker.work-graph/v1`로 변환해 공통 ready/integration planner를 사용하며 기존 ready-leaf 병렬성, gear, PR/review, merge/closeout gate는 그대로 유지한다.
 - `0.20.0`: provider-neutral immutable DefinitionArtifact revision과 stable node id, digest/previous_digest/run pinning, local lifecycle/recovery/stable branch-worktree identity를 추가했다. `record:none|github`과 `delivery:local-ff|pull-request`를 분리하고, GitHub full-tree node/edge projection checkpoint·failure resume·coverage 실행 gate, binding receipt schema v1 emitter를 제공한다. 기존 Issue-first `--spec` 경로는 호환 유지한다.
 - `0.19.0`: define 분해 게이트 재합침 원리 — 절단 판정에 헤드라인 질문("다른 워커가 독립 점유해 끝낼 수 있는가")과 **don't-split 프로브**(검증 명령 동일/같은 shared component 수정/context 연속)를 추가해 사유①의 가짜 독립을 잡는다. same-theme write-set 겹침은 `blocked_by` 직렬화보다 **1리프+phase 재합침**을 먼저 검토한다(quality-gates G4·challenge review 기준 반영). `create_issue_tree.py` dry-run에 `siblings_maybe_phases` 경고(공유 단일 선행 뒤 fan-out 3+개 + 공통 feature 테마(필수) + 구조신호(단일 클러스터·동일 검증) 1개 이상)를 추가하고, 재합침한 큰 리프는 phase 체크리스트(phase별 커밋·체크포인트·마지막 full-verify·세션 재진입)로 운영한다(0.18.1 dogfood #119 회고, DEC-2026-07-07-204311).

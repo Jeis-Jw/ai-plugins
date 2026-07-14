@@ -14,7 +14,9 @@ python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/doctor.py" --input /tm
 진단 항목:
 - labels
 - gh auth
-- `.task-github.yml` parse/required keys (`mode`, `base_branch`, `orchestrate.review-mode`)
+- `.task-worker.yml` 실행 정책 parse/required keys와 task-worker capability schema
+- `.task-github.yml` provider 정책 parse/required keys (`base_branch`, `projection`, `closeout`)
+- legacy combined `.task-github.yml` 사용 여부(deprecation warning)
 - dependency API
 - `.worktrees/` ignore
 - `.worktreeinclude`

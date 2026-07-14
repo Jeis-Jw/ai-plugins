@@ -69,6 +69,7 @@ python3 "$CLI" complete TASK-...   # active → task/done/ (reopen to undo)
 
 # 3. Relate / recall.
 python3 "$CLI" relate DEC-... --add-tasks owner/repo#18
+python3 "$CLI" relate TASK-... --add-tasks task-worker:release-graph
 python3 "$CLI" recall "auth" --json                 # Stage 1: frontmatter only (~2KB guard)
 python3 "$CLI" recall "auth" --stage 2 --section 취지 # Stage 2: one section
 python3 "$CLI" recall "auth" --pack --json            # context pack: labels + section snippets, authority-ranked

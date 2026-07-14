@@ -1,0 +1,39 @@
+# Provider-neutral execution policy. Copy to workspace root as `.task-worker.yml`.
+mode: solo
+state-root: .task-worker/local
+dispatch: worker
+delivery: local-ff
+planning-tool:
+verify-tool:
+review-tool:
+command-profiles: .task-worker/commands.json
+impact-rules: .task-worker/impact-rules.json
+orchestrate:
+  verify-command:
+  review-mode: gear
+  review-command:
+  max-workers: 3
+  gear-options:
+    micro:
+      plan: false
+      verify: true
+      pr-review: false
+    normal:
+      plan: true
+      verify: true
+      pr-review: false
+    major:
+      plan: true
+      verify: true
+      pr-review: true
+define:
+  review-tool:
+  review-command:
+  review-required: false
+evidence:
+  reuse: true
+  duplicate-guard: true
+  token-coverage-required: false
+  max-physical-runs: 3
+recovery:
+  lease-ttl-seconds: 3600

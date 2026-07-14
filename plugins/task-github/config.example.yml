@@ -1,0 +1,9 @@
+# GitHub adapter policy. Copy to workspace root as `.task-github.yml`.
+base_branch: main
+projection:
+  record: github
+  strict-deps: true
+  state-root: .task-github/local/projections
+closeout:
+  branch-prefix: task/issue-
+  delete-merged-branches: true

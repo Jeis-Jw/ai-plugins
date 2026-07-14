@@ -2690,18 +2690,19 @@ class WikiCliTaskTests(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertEqual(json.loads(r.stdout)["issues"], [])
 
-    def test_task_refs_accept_plain_and_github_prefixed(self):
+    def test_task_refs_accept_worker_plain_and_github_prefixed(self):
         with tempfile.TemporaryDirectory() as tmp:
             self._init(tmp)
             _, dec_id = self._seed_decision(tmp)
             r = run_cli("relate", dec_id, "--add-tasks",
-                        "owner/repo#42,github:owner/repo#9",
+                        "task-worker:release-graph,owner/repo#42,github:owner/repo#9",
                         "--json", cwd=tmp)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             text = (Path(tmp) / "wiki" / "context" / "decision"
                     / f"{dec_id}.md").read_text()
             self.assertIn("owner/repo#42", text)
             self.assertIn("github:owner/repo#9", text)
+            self.assertIn("task-worker:release-graph", text)
             chk = run_cli("refresh", "--check", "task-ref", "--strict", "--json", cwd=tmp)
             self.assertEqual(chk.returncode, 0, chk.stdout + chk.stderr)
 
@@ -2711,6 +2712,11 @@ class WikiCliTaskTests(unittest.TestCase):
             bad = run_cli("relate", dec_id, "--add-tasks", "owner/repo!9",
                           "--json", cwd=tmp)
             self.assertEqual(bad.returncode, 4, bad.stdout + bad.stderr)
+
+            bad_worker = run_cli(
+                "relate", dec_id, "--add-tasks", "task-worker:bad id", "--json", cwd=tmp
+            )
+            self.assertEqual(bad_worker.returncode, 4, bad_worker.stdout + bad_worker.stderr)
 
     def test_relate_adds_task_ref_to_decision_idempotently(self):
         with tempfile.TemporaryDirectory() as tmp:

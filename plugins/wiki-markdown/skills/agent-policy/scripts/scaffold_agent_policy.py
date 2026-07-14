@@ -46,14 +46,12 @@ def concurrency_line(value: str) -> str:
 def tracker_line(value: str) -> str:
     if value == "task-github":
         return (
-            "Use task-github for tracked work. The wiki work-definition (task node) "
-            "is the work order/instruction, created FIRST; the GitHub root issue is "
-            "the execution view, created and linked afterward. On a plan/prepare-work "
-            "request, task-github:define detects the wiki, uses or waits for that task "
-            "node (capturing it first if absent), and confirms before creating the "
-            "linked issue. With only one plugin present, each does its own part "
-            "standalone (wiki: the work-definition doc; task-github: an issue from "
-            "session context)."
+            "Use task-github for tracked work. Create the wiki root task work order "
+            "FIRST, then project and bind the GitHub root Issue. Do not create wiki "
+            "task nodes for Issue leaves. `dispatch: manual` creates/uses the Issue "
+            "Tree without local worker runs; `dispatch: worker` executes the same "
+            "ready set through task-worker. Persist TASK/root-Issue aliases in the "
+            "task-worker binding so resume and closeout never depend on session context."
         )
     return "No external task tracker is bound; keep task state in the active conversation."
 
@@ -67,6 +65,14 @@ def render_policy(profile: str, tracker: str, concurrency: str) -> str:
         "- Scope: these auto-loaded entry files are the source for working-environment policy.",
         f"- Concurrency: {concurrency_line(concurrency)}",
         f"- Tracker: {tracker_line(tracker)}",
+        (
+            "- Execution: task-worker owns provider-neutral decomposition, dependency "
+            "planning, ready-set parallelism, worktree isolation, verification evidence, "
+            "and integration gates. task-github owns only GitHub projection/delivery; "
+            "wiki-markdown owns only durable work-definition and knowledge state. Do not "
+            "reduce independent verification or root integration gates to save runs; "
+            "remove only duplicate physical execution with valid pinned evidence."
+        ),
         (
             "- Knowledge capture: use wiki-markdown for product, system, and design "
             "knowledge; do not store working-environment operating policy in a "

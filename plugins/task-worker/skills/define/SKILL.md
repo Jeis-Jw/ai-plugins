@@ -16,11 +16,20 @@ description: provider-neutral DefinitionArtifact로 작업을 정의하거나 re
 
 ## 실행
 
-spec은 `definition_id`, `delivery`, `root`, `children[]`를 갖는다. 새 정의에는 provider-specific `record`를 넣지 않는다.
+spec은 `definition_id`, `dispatch`, `delivery`, `root`, `children[]`를 갖는다. 새 정의에는 provider-specific `record`를 넣지 않는다. `dispatch: worker`는 local 실행, `dispatch: manual`은 ready graph만 제공하고 실행은 외부 담당자에게 남긴다.
 
 ```bash
 python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py" create \
-  --spec {SPEC} --store .task-worker/definitions
+  --spec {SPEC} --store .task-worker/local/definitions
 ```
 
 기존 revision을 바꿔야 하면 overwrite하지 않고 `revise --previous {ARTIFACT}`를 사용한다. 출력 artifact path와 digest를 다음 단계에 전달한다.
+
+Wiki TASK나 provider ref로 다른 세션에서 재개해야 하면 provider API를 artifact에 섞지 말고 binding을 만든다.
+
+```bash
+python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py" bind \
+  --artifact {ARTIFACT} --state-root .task-worker/local \
+  --alias {TASK-ID} --provider wiki --provider-data {WIKI_BINDING_JSON} \
+  --context {COMPACT_CONTEXT_JSON}
+```

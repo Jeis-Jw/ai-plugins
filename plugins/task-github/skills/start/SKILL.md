@@ -24,7 +24,7 @@ canonical artifact에는 provider `record` 필드가 없다. local facade 선택
 
 ```bash
 python3 "${TASK_GITHUB_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/task_worker_bridge.py" local-start \
-  --artifact {PATH} --node {KEY|NODE_ID} --state-dir .task-github/local/runs \
+  --artifact {PATH} --node {KEY|NODE_ID} --state-dir .task-worker/local/runs \
   ${RUN_ID:+--run-id "$RUN_ID"}
 ```
 

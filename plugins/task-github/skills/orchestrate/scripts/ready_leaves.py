@@ -17,6 +17,7 @@ from orchestrate_ledger import load_ledger, record_github_read, record_read_deci
 TASK_GITHUB_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(TASK_GITHUB_ROOT / "scripts"))
 import task_worker_bridge  # noqa: E402
+import task_config  # noqa: E402
 
 STATE_LABELS = {"in-progress", "in-review", "changes-requested"}
 REVIEW_LABELS = {"in-review", "changes-requested"}
@@ -374,6 +375,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--reconcile-github", help="refresh ledger from GitHub, then evaluate")
     parser.add_argument("--read-reason", help="reason for GitHub reads written to the orchestrate ledger")
     parser.add_argument("--fixture-json", help="read a tree fixture instead of calling gh")
+    parser.add_argument("--dispatch", choices=("worker", "manual"), help="override .task-worker.yml dispatch")
     parser.add_argument("--json", action="store_true", dest="as_json")
     args = parser.parse_args(argv)
 
@@ -406,6 +408,18 @@ def main(argv: list[str] | None = None) -> int:
             spawned |= ledger_number_set(ledger, "spawned")
             failed |= ledger_number_set(ledger, "failed")
         payload = evaluate_tree(tree, spawned_set=spawned, failed_set=failed)
+        dispatch = args.dispatch
+        if dispatch is None and Path(".task-worker.yml").is_file():
+            worker_config, findings, _ = task_config.load_worker_config(".task-github.yml")
+            errors = [item for item in findings if item.get("severity") == "error"]
+            if errors:
+                raise ValueError("invalid task-worker config: " + ",".join(item["code"] for item in errors))
+            dispatch = worker_config.get("dispatch", "worker")
+        if dispatch == "manual":
+            payload["manual_actions"] = payload.pop("ready")
+            payload["ready"] = []
+            payload["ok"] = False
+            payload["stop_reason"] = "manual_dispatch"
         if args.from_ledger:
             record_read_decision(
                 args.from_ledger,

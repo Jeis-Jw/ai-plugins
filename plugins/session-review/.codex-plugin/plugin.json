@@ -1,7 +1,7 @@
 {
   "name": "session-review",
-  "version": "0.5.1",
-  "description": "Wiki snapshot and git review-branch protocol for worker/reviewer loops with self-mode fast/audit profiles.",
+  "version": "0.5.2",
+  "description": "Review-episode protocol that resumes valid context and reserves clean audit mode for independence-required edges.",
   "author": {
     "name": "Jinwuk-Lee",
     "url": "https://github.com/Jeis-Jw"
@@ -10,13 +10,14 @@
   "interface": {
     "displayName": "Session Review",
     "shortDescription": "Coordinate worker/reviewer review loops with audit or fast self-mode.",
-    "longDescription": "Runs an internal session-review protocol where a worker and reviewer converge code or document work using wiki snapshot audit mode, fast self-mode, parseable status blocks, lock enforcement, and profile-aware completion gates.",
+    "longDescription": "Runs an internal session-review protocol where a worker and reviewer converge code or document work using wiki snapshot audit mode or fast self-mode, parseable status blocks, lock enforcement, and profile-aware completion gates. Existing review episodes should be resumed when their target remains valid; clean audit context is reserved for independence-required reviews.",
     "developerName": "Jinwuk-Lee",
     "category": "Productivity",
     "capabilities": ["Read", "Write", "Validation", "Workflow"],
     "defaultPrompt": [
-      "Use $request-review to start a review loop.",
+      "Use $request-review to start or resume a review loop; do not create a clean episode merely to repeat the same context.",
       "Use $review to inspect the requested review branch.",
+      "Choose audit mode when independent context is required and fast self-mode for lower-risk feedback loops.",
       "Use $complete after reviewer approval and the selected completion gate."
     ]
   }

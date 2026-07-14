@@ -32,9 +32,15 @@ def diagnose(snapshot: dict[str, Any]) -> dict[str, Any]:
     if prereq.get("nested_repo_guard") is False:
         findings.append(_finding("nested_repo_guard_failed", "nested repository boundary is unclear", "error"))
 
-    cfg = snapshot.get("task_config")
+    cfg = snapshot.get("task_github_config", snapshot.get("task_config"))
     if cfg is not None:
         findings.extend(task_config.validate_config(cfg))
+    worker_cfg = snapshot.get("task_worker_config")
+    if worker_cfg is not None:
+        try:
+            findings.extend(task_config._load_worker_module().validate_config(worker_cfg))
+        except FileNotFoundError as exc:
+            findings.append(_finding("task_worker_missing", str(exc), "error"))
 
     bundle = snapshot.get("context_bundle") or {}
     for item in (bundle.get("integrity") or {}).get("errors") or []:

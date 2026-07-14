@@ -87,10 +87,8 @@ class DoctorTests(unittest.TestCase):
 
     def test_doctor_reports_task_config_errors(self):
         snapshot = {
-            "task_config": {
-                "mode": "solo",
-                "orchestrate": {"review-mode": "sometimes"},
-            }
+            "task_github_config": {"projection": {}, "closeout": {}},
+            "task_worker_config": {"dispatch": "sometimes"},
         }
 
         result = doctor.diagnose(snapshot)
@@ -98,7 +96,7 @@ class DoctorTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(
             [item["code"] for item in result["findings"]],
-            ["base_branch_required", "bad_orchestrate_review_mode"],
+            ["base_branch_required", "bad_dispatch"],
         )
 
 

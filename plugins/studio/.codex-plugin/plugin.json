@@ -1,7 +1,7 @@
 {
   "name": "studio",
-  "version": "0.4.0",
-  "description": "Living agent team with stable review cycles, evidence reuse, and reason-gated delta/full QA.",
+  "version": "0.4.1",
+  "description": "Living agent team with one executor lease per track, evidence reuse, and reason-gated delta/full QA.",
   "author": {
     "name": "Jinwuk-Lee",
     "url": "https://github.com/Jeis-Jw"
@@ -10,7 +10,7 @@
   "interface": {
     "displayName": "Studio",
     "shortDescription": "Run a quality-gated living agent team with local context and optional external executors.",
-    "longDescription": "The owner gives a mission; Studio owns the mission, QualityPlan, Context Kernel, stable review cycle, evidence-based completion, and owner gates. Findings keep their identity across physical runs, unaffected evidence can be reused by deterministic pins, and full QA or fresh context requires a structured reason. task-github and wiki-markdown remain optional agent-visible providers rather than hard dependencies.",
+    "longDescription": "The owner gives a mission; Studio owns the mission, QualityPlan, Context Kernel, stable review cycle, evidence-based completion, and owner gates. A track leases exactly one of native, task-worker, or task-github execution. session-review and wiki-markdown remain optional tool-layer providers; full QA, independent review, or fresh context requires a structured reason rather than being repeated per lane.",
     "developerName": "Jinwuk-Lee",
     "category": "Productivity",
     "capabilities": ["Read", "Write", "Workflow", "Validation"],
@@ -19,6 +19,8 @@
       "The producer convenes crew into background runs; it never makes artifacts itself.",
       "Require artifact and context evidence to pass QualityPlan floors before integration.",
       "Continue fixes and delta QA in one stable review cycle; require a reason for full QA or fresh context.",
+      "Use task-worker without GitHub, task-github for GitHub delivery, and never lease both for one track.",
+      "Use session-review selectively for major or independence-required review edges.",
       "Owner gates: mission contract, new epic, irreversible, external-publish, budget-raise."
     ]
   }

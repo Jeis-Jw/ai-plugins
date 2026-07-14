@@ -1,186 +1,101 @@
-import sys
+import io
+import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+import sys
+
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
-
 import task_config  # noqa: E402
 
 
-class TaskConfigTests(unittest.TestCase):
-    def test_parse_tool_and_orchestrate_commands(self):
-        cfg = task_config.parse_config("""
-mode: solo
-base_branch: main
-planning-tool:
-verify-tool: session-review:request-review
-review-tool: session-review:request-review
-orchestrate:
-  verify-command: "self turnkey"
-  review-mode: gear
-  review-command: "self turnkey"
-  gear-options:
-    micro:
-      plan: false
-      verify: true
-      pr-review: false
-    normal:
-      plan: true
-      verify: o
-      pr-review: x
-""")
+class TaskGithubConfigTests(unittest.TestCase):
+    def test_default_provider_config_is_valid_and_has_no_execution_policy(self):
+        config = task_config.parse_config(task_config.render_default_config(base_branch="main"))
 
-        self.assertEqual(cfg["mode"], "solo")
-        self.assertEqual(cfg["base_branch"], "main")
-        self.assertIsNone(cfg["planning-tool"])
-        self.assertEqual(cfg["verify-tool"], "session-review:request-review")
-        self.assertEqual(cfg["orchestrate"]["review-command"], "self turnkey")
-        self.assertFalse(cfg["orchestrate"]["gear-options"]["micro"]["plan"])
-        self.assertEqual(cfg["orchestrate"]["gear-options"]["normal"]["verify"], "o")
+        self.assertEqual(task_config.validate_config(config), [])
+        self.assertEqual(config["projection"]["record"], "github")
+        self.assertEqual(config["closeout"]["branch-prefix"], "task/issue-")
+        for moved in ("mode", "verify-tool", "orchestrate", "define"):
+            self.assertNotIn(moved, config)
 
-    def test_validate_requires_base_branch_and_review_mode(self):
-        findings = task_config.validate_config({
-            "mode": "solo",
-            "orchestrate": {"review-mode": "sometimes"},
-        })
-
-        self.assertEqual(
-            [finding["code"] for finding in findings],
-            ["base_branch_required", "bad_orchestrate_review_mode"],
+    def test_legacy_execution_keys_are_accepted_with_deprecation_findings(self):
+        config = task_config.parse_config(
+            "mode: solo\nbase_branch: main\norchestrate:\n  max-workers: 4\n"
         )
 
-    def test_command_requires_matching_tool(self):
-        findings = task_config.validate_config({
-            "mode": "solo",
-            "base_branch": "main",
-            "orchestrate": {
-                "review-mode": "gear",
-                "verify-command": "self turnkey",
-                "review-command": "self turnkey",
-            },
-        })
+        findings = task_config.validate_config(config)
 
         self.assertEqual(
-            [finding["code"] for finding in findings],
-            ["verify_tool_required", "review_tool_required"],
+            [item["code"] for item in findings],
+            ["legacy_execution_config", "legacy_execution_config"],
+        )
+        self.assertTrue(all(item["severity"] == "warning" for item in findings))
+
+    def test_validate_provider_specific_values(self):
+        config = task_config.parse_config(
+            "base_branch: main\nprojection:\n  record: jira\ncloseout:\n  delete-merged-branches: maybe\n"
         )
 
-    def test_validate_gear_options(self):
-        findings = task_config.validate_config({
-            "mode": "solo",
-            "base_branch": "main",
-            "orchestrate": {
-                "review-mode": "gear",
-                "gear-options": {
-                    "micro": {"plan": "x", "verify": "o", "pr-review": False},
-                    "major": {"plan": "maybe"},
-                    "huge": {"plan": True},
-                },
-            },
-        })
+        errors = {
+            item["code"]
+            for item in task_config.validate_config(config)
+            if item["severity"] == "error"
+        }
 
-        self.assertEqual(
-            [finding["code"] for finding in findings],
-            ["bad_orchestrate_gear_option", "unknown_orchestrate_gear"],
-        )
+        self.assertEqual(errors, {"bad_projection_record", "bad_closeout_delete_branches"})
 
-    def test_validate_max_workers(self):
-        findings = task_config.validate_config({
-            "mode": "solo",
-            "base_branch": "main",
-            "orchestrate": {"review-mode": "gear", "max-workers": "0"},
-        })
-        self.assertEqual([f["code"] for f in findings], ["bad_orchestrate_max_workers"])
+    def test_combined_validate_loads_adjacent_worker_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            github = root / ".task-github.yml"
+            worker = root / ".task-worker.yml"
+            github.write_text(task_config.render_default_config(), encoding="utf-8")
+            worker.write_text(
+                "mode: solo\nstate-root: .task-worker/local\ndispatch: worker\ndelivery: local-ff\n"
+                "orchestrate:\n  review-mode: gear\n  max-workers: 3\n"
+                "define:\n  review-required: false\n"
+                "evidence:\n  max-physical-runs: 3\n"
+                "recovery:\n  lease-ttl-seconds: 3600\n",
+                encoding="utf-8",
+            )
 
-        findings = task_config.validate_config({
-            "mode": "solo",
-            "base_branch": "main",
-            "orchestrate": {"review-mode": "gear", "max-workers": "not-a-number"},
-        })
-        self.assertEqual([f["code"] for f in findings], ["bad_orchestrate_max_workers"])
+            config, findings, source = task_config.load_worker_config(github)
 
-        findings = task_config.validate_config({
-            "mode": "solo",
-            "base_branch": "main",
-            "orchestrate": {"review-mode": "gear", "max-workers": "3"},
-        })
-        self.assertEqual(findings, [])
+        self.assertEqual(config["dispatch"], "worker")
+        self.assertFalse([item for item in findings if item["severity"] == "error"])
+        self.assertTrue(source.endswith(".task-worker.yml"))
 
-        findings = task_config.validate_config({
-            "mode": "solo",
-            "base_branch": "main",
-            "orchestrate": {"review-mode": "gear"},
-        })
-        self.assertEqual(findings, [])
+    def test_get_routes_execution_keys_to_worker_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            github = root / ".task-github.yml"
+            worker = root / ".task-worker.yml"
+            github.write_text(task_config.render_default_config(base_branch="develop"), encoding="utf-8")
+            worker.write_text("dispatch: manual\n", encoding="utf-8")
 
-    def test_scaffold_contains_required_keys(self):
-        text = task_config.render_default_config(base_branch="main")
+            output = io.StringIO()
+            with redirect_stdout(output):
+                rc = task_config.main(["get", "dispatch", "--path", str(github)])
 
-        cfg = task_config.parse_config(text)
+        self.assertEqual(rc, 0)
+        self.assertEqual(output.getvalue().strip(), "manual")
 
-        self.assertEqual(task_config.validate_config(cfg), [])
-        self.assertIn("max-workers", cfg["orchestrate"])
-        self.assertIn("verify-command", cfg["orchestrate"])
-        self.assertIn("review-command", cfg["orchestrate"])
-        self.assertTrue(cfg["orchestrate"]["gear-options"]["major"]["pr-review"])
-
-    def test_get_returns_value_or_exit_one(self):
-        import io
-        import tempfile
-        from contextlib import redirect_stdout
-
+    def test_legacy_combined_config_is_worker_fallback(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / ".task-github.yml"
-            path.write_text(task_config.render_default_config(base_branch="develop"), encoding="utf-8")
+            path.write_text(
+                "mode: solo\nbase_branch: main\ndefine:\n  review-required: true\n",
+                encoding="utf-8",
+            )
 
-            buf = io.StringIO()
-            with redirect_stdout(buf):
-                rc = task_config.main(["get", "base_branch", "--path", str(path)])
-            self.assertEqual(rc, 0)
-            self.assertEqual(buf.getvalue().strip(), "develop")
+            worker, findings, source = task_config.load_worker_config(path)
 
-            # absent file → exit 1, no output (caller falls back to main)
-            self.assertEqual(task_config.main(["get", "base_branch", "--path", str(Path(tmp) / "none.yml")]), 1)
-            # missing key → exit 1
-            self.assertEqual(task_config.main(["get", "nope", "--path", str(path)]), 1)
-
-
-    def test_parse_and_validate_define_section(self):
-        cfg = task_config.parse_config(
-            "mode: solo\n"
-            "base_branch: main\n"
-            "define:\n"
-            "  review-tool: session-review:review\n"
-            "  review-command: \"self doc\"\n"
-        )
-        self.assertEqual(cfg["define"]["review-tool"], "session-review:review")
-        self.assertEqual(cfg["define"]["review-command"], "self doc")
-        self.assertEqual(task_config.validate_config(cfg), [])
-
-    def test_define_review_command_requires_tool(self):
-        findings = task_config.validate_config({
-            "mode": "solo",
-            "base_branch": "main",
-            "orchestrate": {"review-mode": "gear"},
-            "define": {"review-command": "self doc"},
-        })
-        self.assertEqual([f["code"] for f in findings], ["define_review_tool_required"])
-
-    def test_unknown_define_key_warns(self):
-        findings = task_config.validate_config({
-            "mode": "solo",
-            "base_branch": "main",
-            "orchestrate": {"review-mode": "gear"},
-            "define": {"reviewtool": "x"},
-        })
-        self.assertEqual([f["code"] for f in findings], ["unknown_define_key"])
-
-    def test_scaffold_includes_define_section(self):
-        cfg = task_config.parse_config(task_config.render_default_config())
-        self.assertIn("define", cfg)
-        self.assertIn("review-tool", cfg["define"])
-        self.assertEqual(task_config.validate_config(cfg), [])
+        self.assertTrue(worker["define"]["review-required"])
+        self.assertIn("legacy_worker_config_fallback", {item["code"] for item in findings})
+        self.assertEqual(source, str(path))
 
 
 if __name__ == "__main__":

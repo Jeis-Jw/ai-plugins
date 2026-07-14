@@ -53,6 +53,9 @@ class AgentPolicyScaffoldTests(unittest.TestCase):
                 self.assertIn("Profile: solo", text)
                 self.assertIn("Use git worktrees for concurrent tasks", text)
                 self.assertIn("task-github", text)
+                self.assertIn("task-worker", text)
+                self.assertIn("dispatch: manual", text)
+                self.assertIn("ready-set parallelism", text)
                 self.assertIn("Rationale commits", text)
 
     def test_scaffold_includes_capture_threshold_and_gear_budget(self):

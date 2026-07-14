@@ -88,6 +88,26 @@ class ReadyLeavesTests(unittest.TestCase):
         self.assertEqual(payload["stop_reason"], "api_failure")
         self.assertEqual(payload["ready"], [])
 
+    def test_manual_dispatch_reports_ready_issues_without_spawning_them(self):
+        import io
+        import tempfile
+        from contextlib import redirect_stdout
+
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = Path(tmp) / "tree.json"
+            fixture.write_text(json.dumps(node(1, children=[node(2), node(3)])), encoding="utf-8")
+            output = io.StringIO()
+            with redirect_stdout(output):
+                rc = ready_leaves.main([
+                    "1", "--fixture-json", str(fixture), "--dispatch", "manual", "--json",
+                ])
+        payload = json.loads(output.getvalue())
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(payload["stop_reason"], "manual_dispatch")
+        self.assertEqual(payload["ready"], [])
+        self.assertEqual([item["number"] for item in payload["manual_actions"]], [2, 3])
+
     def test_blocked_parent_is_not_silently_dropped(self):
         tree = node(1, children=[
             node(2, blockers=[{"number": 9, "title": "external"}], children=[node(4, state="CLOSED")]),

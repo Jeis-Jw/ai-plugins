@@ -12,10 +12,11 @@ description: task-worker work graph의 모든 ready leaf를 bounded parallel로 
 3. 각 lane은 `start → run → verify → done`을 수행한다.
 4. 완료 receipt를 반영하고 다음 ready set을 계산한다.
 5. `integration_candidates[]`가 생기면 변경된 통합 상태에 대한 명시적 gate를 수행한다. leaf evidence는 입력으로 재사용하되 통합 gate 자체를 생략하지 않는다.
+6. `dispatch: manual`이면 같은 graph를 계산하되 `manual_actions[]`를 보고하고 worker lane을 만들지 않는다.
 
 ```bash
 python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py" ready \
-  --artifact {ARTIFACT} --state-dir .task-worker/runs
+  --artifact {ARTIFACT} --state-dir .task-worker/local/runs
 ```
 
 외부 provider graph는 `task-worker.work-graph/v1` snapshot을 `plan-graph`에 전달한다. 출력의 `ready_actions[]`는 병렬 dispatch 대상, `integration_candidates[]`는 자식 완료로 새 상태가 만들어진 container/root gate 대상이다.

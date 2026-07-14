@@ -1,6 +1,6 @@
 {
   "name": "wiki-markdown",
-  "version": "0.19.2",
+  "version": "0.20.0",
   "description": "Markdown-backed AI-native filesystem wiki management and agent policy scaffolding for AI agents.",
   "author": {
     "name": "Jinwuk-Lee",
@@ -15,7 +15,8 @@
     "category": "Productivity",
     "capabilities": ["Read", "Write", "Validation", "Scaffold"],
     "defaultPrompt": [
-      "Use $wiki to recall the project context before changing code.",
+      "Use $wiki once at task bootstrap when durable design or policy context is relevant, then reuse that context.",
+      "For a concrete runtime defect, inspect code and runtime evidence first instead of repeatedly recalling the wiki.",
       "Use $wiki to capture this decision and refresh indexes.",
       "Use $wiki to validate wiki consistency.",
       "Use $agent-policy to scaffold Claude/Codex operating policy files."

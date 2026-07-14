@@ -9,31 +9,31 @@
       "name": "wiki-markdown",
       "source": "./plugins/wiki-markdown",
       "description": "Markdown-backed AI-native wiki — filesystem-primary decision graph with deterministic CLI, task bridge nodes, integrity checks, and Claude/Codex agent policy scaffolding.",
-      "version": "0.19.2"
+      "version": "0.20.0"
     },
     {
       "name": "task-github",
       "source": "./plugins/task-github",
-      "description": "task-worker 실행 계약 기반 GitHub provider adapter·호환 facade — Issue tree·PR·merge·wiki task 연계",
-      "version": "0.21.0"
+      "description": "task-worker 의존 GitHub adapter — Issue Tree projection/import, manual/worker dispatch, PR·merge·Wiki TASK 연계",
+      "version": "0.22.0"
     },
     {
       "name": "session-review",
       "source": "./plugins/session-review",
-      "description": "Wiki snapshot + git review-branch protocol for worker/reviewer loops with self-mode fast/audit profiles and turnkey completion.",
-      "version": "0.5.1"
+      "description": "Wiki snapshot + git review-branch protocol. 기존 review episode를 재개하고, independence-required edge에만 clean audit context를 사용한다.",
+      "version": "0.5.2"
     },
     {
       "name": "studio",
       "source": "./plugins/studio",
-      "description": "살아있는 에이전트 팀 — QualityPlan, stable review cycle, evidence reuse와 delta/full QA gate로 품질을 지키면서 반복 handoff·검증 낭비를 줄인다. task-github/wiki-markdown은 agent-visible optional provider다.",
-      "version": "0.4.0"
+      "description": "살아있는 에이전트 팀 — track별 native/task-worker/task-github 단일 실행 lease, evidence reuse, delta/full QA gate를 유지한다. session-review와 wiki-markdown은 선택적 도구 레이어다.",
+      "version": "0.4.1"
     },
     {
       "name": "task-worker",
       "source": "./plugins/task-worker",
-      "description": "Provider-neutral WorkGraph 계획·병렬 ready-set 실행·통합 gate·local 검증 lifecycle 플러그인",
-      "version": "0.2.0"
+      "description": "Provider-neutral WorkGraph, manual/worker dispatch, 병렬 ready-set, 통합 gate, digest-pinned evidence와 세션 간 resume 플러그인",
+      "version": "0.3.0"
     }
   ]
 }

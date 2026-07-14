@@ -99,7 +99,7 @@ Canonical relations are YAML plain IDs in frontmatter — *not* body wikilinks.
 | `task` | `intents`, `decisions`, `ssot`, `tasks` |
 | `ssot`, `runbook` | (none — `relations` key forbidden) |
 
-Each sub-key takes an inline list. Wiki refs are **always full basenames**; `tasks` alone takes external work refs (`owner/repo#N`, `github:owner/repo#N`). These refs are links, not runtime dependencies; wiki-markdown validates their shape but does not call or interpret external systems.
+Each sub-key takes an inline list. Wiki refs are **always full basenames**; `tasks` alone takes external work refs (`task-worker:DEFINITION`, `owner/repo#N`, `github:owner/repo#N`). These refs are links, not runtime dependencies; wiki-markdown validates their shape but does not call or interpret external systems. Resume and completion projection are performed by task-worker bindings or provider adapters, never by wiki-markdown itself.
 
 ```yaml
 relations:
@@ -284,7 +284,7 @@ This is deliberately **wiki-local**: GitHub issue close, branch/label handling, 
 | `stale` | `verified_at` older than the per-type threshold |
 | `supersede` | Both ends of a supersede edge agree |
 | `broken-rel` | A `relations.*` ref points at nothing (or at an index file) |
-| `task-ref` | Malformed `tasks` entries (must be a supported external work ref such as `owner/repo#N` or `github:owner/repo#N`; quoted human edits are accepted) |
+| `task-ref` | Malformed `tasks` entries (must be `task-worker:DEFINITION`, `owner/repo#N`, or `github:owner/repo#N`; quoted human edits are accepted) |
 | `orphan` | Record with neither backlinks nor outbound relations |
 | `index` | Index file missing or out-of-sync with the folder |
 | `retired-in-index` | Index still lists a retired record |

@@ -1,51 +1,60 @@
 #!/usr/bin/env python3
-"""Small `.task-github.yml` reader/writer for task-github.
+"""Restricted task-github provider config with task-worker migration support.
 
-This intentionally supports only the config shape task-github owns. It is not a
-general YAML parser.
+`.task-github.yml` owns only GitHub projection and delivery mechanics. Generic
+execution policy is read from the adjacent `.task-worker.yml`. Legacy combined
+files remain readable for one compatibility window and emit deprecation
+findings instead of silently becoming a second execution-policy source.
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
-import sys
+import os
 from pathlib import Path
 from typing import Any
 
-TOP_KEYS = {"mode", "base_branch", "planning-tool", "verify-tool", "review-tool", "orchestrate", "define"}
-ORCH_KEYS = {"verify-command", "review-mode", "review-command", "gear-options", "max-workers"}
-DEFINE_KEYS = {"review-tool", "review-command", "review-required"}
-GEARS = {"micro", "normal", "major"}
-GEAR_OPTION_KEYS = {"plan", "verify", "pr-review"}
-REVIEW_MODES = {"gear", "all", "skip"}
-MODES = {"solo", "team"}
-MAPPING_KEYS = {"orchestrate", "define", "gear-options", *GEARS}
+
+PROVIDER_KEYS = {"base_branch", "projection", "closeout"}
+PROJECTION_KEYS = {"record", "strict-deps", "state-root"}
+CLOSEOUT_KEYS = {"branch-prefix", "delete-merged-branches"}
+LEGACY_EXECUTION_KEYS = {
+    "mode", "planning-tool", "verify-tool", "review-tool", "orchestrate", "define"
+}
+TOP_KEYS = PROVIDER_KEYS | LEGACY_EXECUTION_KEYS
+MAPPING_KEYS = {"projection", "closeout", "orchestrate", "define", "gear-options", "micro", "normal", "major"}
+RECORD_MODES = {"none", "github"}
 
 
 def _strip_comment(line: str) -> str:
     quote = None
     out = []
-    for ch in line:
-        if ch in {"'", '"'}:
-            quote = None if quote == ch else ch if quote is None else quote
-        if ch == "#" and quote is None:
+    for char in line:
+        if char in {"'", '"'}:
+            quote = None if quote == char else char if quote is None else quote
+        if char == "#" and quote is None:
             break
-        out.append(ch)
+        out.append(char)
     return "".join(out).rstrip()
 
 
-def _parse_value(raw: str) -> str | None:
+def _parse_value(raw: str) -> Any:
     value = raw.strip()
     if value == "":
         return None
-    if value.lower() in {"true", "yes", "on"}:
+    lowered = value.lower()
+    if lowered in {"true", "yes", "on"}:
         return True
-    if value.lower() in {"false", "no", "off"}:
+    if lowered in {"false", "no", "off"}:
         return False
     if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
         return value[1:-1]
-    return value
+    try:
+        return int(value)
+    except ValueError:
+        return value
 
 
 def parse_config(text: str) -> dict[str, Any]:
@@ -70,7 +79,8 @@ def parse_config(text: str) -> dict[str, Any]:
             stack.append((indent, child))
         else:
             parent[key] = _parse_value(raw_value)
-    config.setdefault("orchestrate", {})
+    config.setdefault("projection", {})
+    config.setdefault("closeout", {})
     return config
 
 
@@ -78,108 +88,65 @@ def _finding(code: str, message: str, severity: str = "error") -> dict[str, str]
     return {"code": code, "message": message, "severity": severity}
 
 
-def _valid_bool(value: Any) -> bool:
-    if value is None or value == "":
-        return True
-    if isinstance(value, bool):
-        return True
-    return str(value).strip().lower() in {"1", "0", "true", "false", "yes", "no", "on", "off", "o", "x"}
-
-
-def _valid_positive_int(value: Any) -> bool:
-    if value is None or value == "":
-        return True
-    try:
-        return int(str(value).strip()) > 0
-    except ValueError:
-        return False
+def _validate_mapping(
+    findings: list[dict[str, str]], value: Any, *, name: str, allowed: set[str]
+) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        findings.append(_finding(f"bad_{name}", f"{name} must be a mapping"))
+        return None
+    for key in sorted(set(value) - allowed):
+        findings.append(_finding(f"unknown_{name}_key", f"unknown {name} key: {key}", "warning"))
+    return value
 
 
 def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
     findings: list[dict[str, str]] = []
-    unknown = sorted(set(config) - TOP_KEYS)
-    for key in unknown:
+    for key in sorted(set(config) - TOP_KEYS):
         findings.append(_finding("unknown_key", f"unknown top-level key: {key}", "warning"))
+    for key in sorted(set(config) & LEGACY_EXECUTION_KEYS):
+        findings.append(_finding(
+            "legacy_execution_config",
+            f"{key} moved to .task-worker.yml; legacy value is read only as fallback",
+            "warning",
+        ))
 
-    if config.get("mode") not in MODES:
-        findings.append(_finding("bad_mode", "mode must be solo or team"))
     if not isinstance(config.get("base_branch"), str) or not config.get("base_branch", "").strip():
         findings.append(_finding("base_branch_required", "base_branch is required"))
 
-    orchestrate = config.get("orchestrate")
-    if not isinstance(orchestrate, dict):
-        findings.append(_finding("bad_orchestrate", "orchestrate must be a mapping"))
-        return findings
-    for key in sorted(set(orchestrate) - ORCH_KEYS):
-        findings.append(_finding("unknown_orchestrate_key", f"unknown orchestrate key: {key}", "warning"))
-    if orchestrate.get("review-mode", "gear") not in REVIEW_MODES:
-        findings.append(_finding("bad_orchestrate_review_mode", "orchestrate.review-mode must be gear, all, or skip"))
-    gear_options = orchestrate.get("gear-options", {})
-    if gear_options is not None and not isinstance(gear_options, dict):
-        findings.append(_finding("bad_orchestrate_gear_options", "orchestrate.gear-options must be a mapping"))
-    elif isinstance(gear_options, dict):
-        for gear, options in gear_options.items():
-            if gear not in GEARS:
-                findings.append(_finding("unknown_orchestrate_gear", f"unknown orchestrate gear: {gear}", "warning"))
-                continue
-            if not isinstance(options, dict):
-                findings.append(_finding("bad_orchestrate_gear", f"orchestrate.gear-options.{gear} must be a mapping"))
-                continue
-            for option, value in options.items():
-                if option not in GEAR_OPTION_KEYS:
-                    findings.append(_finding("unknown_orchestrate_gear_option", f"unknown gear option: {gear}.{option}", "warning"))
-                elif not _valid_bool(value):
-                    findings.append(_finding("bad_orchestrate_gear_option", f"{gear}.{option} must be boolean/o/x"))
-    if not _valid_positive_int(orchestrate.get("max-workers")):
-        findings.append(_finding("bad_orchestrate_max_workers", "orchestrate.max-workers must be a positive integer"))
-    if orchestrate.get("verify-command") and not config.get("verify-tool"):
-        findings.append(_finding("verify_tool_required", "orchestrate.verify-command requires verify-tool"))
-    if orchestrate.get("review-command") and not config.get("review-tool"):
-        findings.append(_finding("review_tool_required", "orchestrate.review-command requires review-tool"))
+    projection = _validate_mapping(
+        findings, config.get("projection", {}), name="projection", allowed=PROJECTION_KEYS
+    )
+    if projection is not None:
+        if projection.get("record", "github") not in RECORD_MODES:
+            findings.append(_finding("bad_projection_record", "projection.record must be none or github"))
+        if projection.get("strict-deps") not in (None, True, False):
+            findings.append(_finding("bad_projection_strict_deps", "projection.strict-deps must be boolean"))
+        state_root = projection.get("state-root", ".task-github/local/projections")
+        if not isinstance(state_root, str) or not state_root.strip():
+            findings.append(_finding("bad_projection_state_root", "projection.state-root must be a non-empty path"))
 
-    define = config.get("define")
-    if define is not None:
-        if not isinstance(define, dict):
-            findings.append(_finding("bad_define", "define must be a mapping"))
-        else:
-            for key in sorted(set(define) - DEFINE_KEYS):
-                findings.append(_finding("unknown_define_key", f"unknown define key: {key}", "warning"))
-            if define.get("review-command") and not define.get("review-tool"):
-                findings.append(_finding("define_review_tool_required", "define.review-command requires define.review-tool"))
-            if not _valid_bool(define.get("review-required")):
-                findings.append(_finding("bad_define_review_required", "define.review-required must be a boolean"))
+    closeout = _validate_mapping(
+        findings, config.get("closeout", {}), name="closeout", allowed=CLOSEOUT_KEYS
+    )
+    if closeout is not None:
+        prefix = closeout.get("branch-prefix", "task/issue-")
+        if not isinstance(prefix, str) or not prefix.strip():
+            findings.append(_finding("bad_closeout_branch_prefix", "closeout.branch-prefix must be a non-empty string"))
+        if closeout.get("delete-merged-branches") not in (None, True, False):
+            findings.append(_finding("bad_closeout_delete_branches", "closeout.delete-merged-branches must be boolean"))
     return findings
 
 
 def render_default_config(*, base_branch: str = "main") -> str:
     return (
-        "mode: solo\n"
         f"base_branch: {base_branch}\n"
-        "planning-tool:\n"
-        "verify-tool:\n"
-        "review-tool:\n"
-        "orchestrate:\n"
-        "  verify-command:\n"
-        "  review-mode: gear\n"
-        "  review-command:\n"
-        "  max-workers:\n"
-        "  gear-options:\n"
-        "    micro:\n"
-        "      plan: false\n"
-        "      verify: true\n"
-        "      pr-review: false\n"
-        "    normal:\n"
-        "      plan: true\n"
-        "      verify: true\n"
-        "      pr-review: false\n"
-        "    major:\n"
-        "      plan: true\n"
-        "      verify: true\n"
-        "      pr-review: true\n"
-        "define:\n"
-        "  review-tool:\n"       # 비면 --review 시 내장 challenge(harness). 지정하면 그 도구로 relay.
-        "  review-command:\n"
-        "  review-required: false\n"  # true면 create_issue_tree.py가 challenge_review.verdict==approved 없이는 이슈 생성을 거부한다.
+        "projection:\n"
+        "  record: github\n"
+        "  strict-deps: true\n"
+        "  state-root: .task-github/local/projections\n"
+        "closeout:\n"
+        "  branch-prefix: task/issue-\n"
+        "  delete-merged-branches: true\n"
     )
 
 
@@ -187,54 +154,124 @@ def load_config(path: str | Path = ".task-github.yml") -> dict[str, Any]:
     return parse_config(Path(path).read_text(encoding="utf-8"))
 
 
+def worker_config_path(github_path: str | Path, explicit: str | Path | None = None) -> Path:
+    if explicit is not None:
+        return Path(explicit)
+    environment = os.environ.get("TASK_WORKER_CONFIG")
+    if environment:
+        return Path(environment)
+    return Path(github_path).parent / ".task-worker.yml"
+
+
+def _load_worker_module():
+    explicit = os.environ.get("TASK_WORKER_ROOT")
+    roots = [Path(explicit)] if explicit else [Path(__file__).resolve().parents[2] / "task-worker"]
+    for root in roots:
+        script = root / "scripts" / "task_config.py"
+        if script.is_file():
+            spec = importlib.util.spec_from_file_location("task_worker_task_config", script)
+            module = importlib.util.module_from_spec(spec)
+            assert spec.loader is not None
+            spec.loader.exec_module(module)
+            return module
+    raise FileNotFoundError("task-worker config reader is unavailable")
+
+
+def load_worker_config(
+    github_path: str | Path = ".task-github.yml", worker_path: str | Path | None = None
+) -> tuple[dict[str, Any], list[dict[str, str]], str]:
+    """Load worker policy, falling back to legacy combined keys if necessary."""
+    path = worker_config_path(github_path, worker_path)
+    if path.is_file():
+        module = _load_worker_module()
+        config = module.load_config(path)
+        return config, module.validate_config(config), str(path)
+
+    provider = load_config(github_path)
+    legacy = {key: provider[key] for key in LEGACY_EXECUTION_KEYS if key in provider}
+    if legacy:
+        module = _load_worker_module()
+        legacy.setdefault("orchestrate", {})
+        legacy.setdefault("define", {})
+        legacy.setdefault("evidence", {})
+        legacy.setdefault("recovery", {})
+        return legacy, [
+            *module.validate_config(legacy),
+            _finding(
+                "legacy_worker_config_fallback",
+                ".task-worker.yml is missing; using execution keys from .task-github.yml",
+                "warning",
+            ),
+        ], str(github_path)
+    return {}, [_finding("worker_config_missing", ".task-worker.yml is required", "error")], str(path)
+
+
+def _get(value: dict[str, Any], dotted: str) -> Any:
+    node: Any = value
+    for part in dotted.split("."):
+        if not isinstance(node, dict) or part not in node:
+            raise KeyError(dotted)
+        node = node[part]
+    return node
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
-    p_validate = sub.add_parser("validate")
-    p_validate.add_argument("--path", default=".task-github.yml")
-    p_validate.add_argument("--json", action="store_true", dest="as_json")
-    p_scaffold = sub.add_parser("scaffold")
-    p_scaffold.add_argument("--path", default=".task-github.yml")
-    p_scaffold.add_argument("--base-branch", default="main")
-    p_scaffold.add_argument("--json", action="store_true", dest="as_json")
-    p_get = sub.add_parser("get")
-    p_get.add_argument("key", help="top-level or dotted key, e.g. base_branch / orchestrate.review-mode")
-    p_get.add_argument("--path", default=".task-github.yml")
+    validate = sub.add_parser("validate")
+    validate.add_argument("--path", default=".task-github.yml")
+    validate.add_argument("--worker-path")
+    validate.add_argument("--json", action="store_true", dest="as_json")
+    scaffold = sub.add_parser("scaffold")
+    scaffold.add_argument("--path", default=".task-github.yml")
+    scaffold.add_argument("--base-branch", default="main")
+    scaffold.add_argument("--json", action="store_true", dest="as_json")
+    get = sub.add_parser("get")
+    get.add_argument("key")
+    get.add_argument("--path", default=".task-github.yml")
+    get.add_argument("--worker-path")
     args = parser.parse_args(argv)
-
-    if args.cmd == "get":
-        # Prints the value (exit 0) or nothing (exit 1 — absent file/key/empty).
-        # Lets shell snippets prefer config base_branch without inferring the repo default.
-        try:
-            node: Any = load_config(args.path)
-        except OSError:
-            return 1
-        for part in args.key.split("."):
-            if not isinstance(node, dict) or part not in node:
-                return 1
-            node = node[part]
-        if node is None or node == "":
-            return 1
-        print(node)
-        return 0
 
     if args.cmd == "scaffold":
         path = Path(args.path)
-        if path.exists():
-            payload = {"ok": True, "created": False, "path": str(path)}
-        else:
+        created = not path.exists()
+        if created:
             path.write_text(render_default_config(base_branch=args.base_branch), encoding="utf-8")
-            payload = {"ok": True, "created": True, "path": str(path)}
+        payload = {"ok": True, "created": created, "path": str(path)}
         print(json.dumps(payload, ensure_ascii=False) if args.as_json else payload)
         return 0
 
+    if args.cmd == "get":
+        try:
+            provider = load_config(args.path)
+            try:
+                value = _get(provider, args.key)
+            except KeyError:
+                worker, findings, _ = load_worker_config(args.path, args.worker_path)
+                if any(item["severity"] == "error" for item in findings):
+                    return 1
+                value = _get(worker, args.key)
+        except (OSError, ValueError, KeyError):
+            return 1
+        if value in (None, ""):
+            return 1
+        print(value)
+        return 0
+
     try:
-        config = load_config(args.path)
-        findings = validate_config(config)
+        provider = load_config(args.path)
+        worker, worker_findings, worker_source = load_worker_config(args.path, args.worker_path)
+        findings = [*validate_config(provider), *worker_findings]
     except (OSError, ValueError) as exc:
+        provider, worker, worker_source = None, None, None
         findings = [_finding("config_read_failed", str(exc))]
-        config = None
-    payload = {"ok": not any(f["severity"] == "error" for f in findings), "config": config, "findings": findings}
+    payload = {
+        "ok": not any(item["severity"] == "error" for item in findings),
+        "config": provider,
+        "worker_config": worker,
+        "worker_config_source": worker_source,
+        "findings": findings,
+    }
     print(json.dumps(payload, ensure_ascii=False) if args.as_json else payload)
     return 0 if payload["ok"] else 1
 

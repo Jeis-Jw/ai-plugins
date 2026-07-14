@@ -1,7 +1,7 @@
 {
   "name": "task-github",
-  "version": "0.21.0",
-  "description": "GitHub provider adapter and compatibility facade powered by task-worker execution contracts.",
+  "version": "0.22.0",
+  "description": "GitHub adapter for task-worker Issue Tree projection/import, manual or worker dispatch, PRs, and closeout.",
   "author": {
     "name": "Jinwuk-Lee",
     "url": "https://github.com/Jeis-Jw"
@@ -10,7 +10,7 @@
   "interface": {
     "displayName": "Task GitHub",
     "shortDescription": "Project task-worker graphs into GitHub delivery workflows.",
-    "longDescription": "Uses task-worker as the provider-neutral execution engine, projects complete work graphs to GitHub Issue trees, and owns labels, pull requests, checks, review, merge, and closeout. Preserves existing task-github commands and Issue-first workflows while integrating wiki-markdown task bridge nodes when available.",
+    "longDescription": "Uses a compatible task-worker as the provider-neutral execution engine, projects complete work graphs to GitHub Issue trees, and owns labels, pull requests, checks, review, merge, and closeout. Existing Issue trees can be imported for manual delegation or worker execution; setup and read-only diagnosis remain usable without the execution dependency.",
     "developerName": "Jinwuk-Lee",
     "category": "Productivity",
     "capabilities": [
@@ -20,10 +20,11 @@
       "Workflow"
     ],
     "defaultPrompt": [
-      "Use $define to create a task-worker definition and choose local or GitHub recording.",
+      "Use $define to project a task-worker definition into a linked GitHub Issue tree.",
+      "Use $import to bind an existing Issue tree with manual or worker dispatch.",
       "Use $start to claim and load a legacy or projected issue.",
       "Use $status to inspect current task state.",
-      "Use $orchestrate to run a GitHub issue tree in solo mode.",
+      "Use $orchestrate only for worker dispatch; manual dispatch must never create local worker runs.",
       "Use $done or $merge to close out work through gear-gated PR or FF merge paths."
     ]
   }

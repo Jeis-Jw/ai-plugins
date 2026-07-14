@@ -239,8 +239,10 @@ CONTEXT_FOLDERS: List[Tuple[str, ...]] = [
 LIVING_FOLDER_NAMES = ("ssot", "runbook")
 INDEX_HEADER = "## 노트"
 
-TASK_REF_FORMAT = "owner/repo#N or github:owner/repo#N"
-TASK_REF_RE = re.compile(r"^(?:github:)?[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+#\d+$")
+TASK_REF_FORMAT = "task-worker:DEFINITION or owner/repo#N or github:owner/repo#N"
+TASK_REF_RE = re.compile(
+    r"^(?:task-worker:[A-Za-z0-9][A-Za-z0-9._\-]{0,127}|(?:github:)?[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+#\d+)$"
+)
 RECORD_ID_RE = re.compile(r"^[A-Z]{3}-\d{4}-\d{2}-\d{2}-\d{6}-(.+)$")
 SNAPSHOT_ID_RE = re.compile(r"^SNAP-(.+)$")
 ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
