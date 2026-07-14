@@ -11,7 +11,7 @@ affects_paths: [plugins/task-github/**]
 
 ### 설계 및 구현 상태
 
-이 문서는 task-worker 분리 이후 `task-github` 플러그인의 **아키텍처와 구현 상태 정본**이다. task-github 0.23.0은 task-worker 0.4.0을 실행 엔진으로 사용하며 다음 두 역할을 가진다.
+이 문서는 task-worker 분리 이후 `task-github` 플러그인의 **아키텍처와 구현 상태 정본**이다. task-github 0.24.0은 task-worker 0.5.0을 실행 엔진으로 사용하며 다음 두 역할을 가진다.
 
 1. **GitHub provider adapter**: Issue tree·dependency·label·assignee·PR·CI·reviewDecision·merge·Issue close를 소유한다.
 2. **호환 facade**: 기존 `task-github:*` 사용자 명령을 유지하면서 내부 실행을 task-worker에 위임한다.

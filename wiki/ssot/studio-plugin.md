@@ -3,13 +3,13 @@ title: Studio 플러그인
 created_at: 2026-07-14
 summary: native-first 에이전트 팀과 명시적 외부 도구 라우팅, runtime별 agent 정책, 단일 review owner 및 evidence 재사용 설계 정본
 tags: [studio, orchestration, routing, review, qa, evidence]
-verified_at: 2026-07-14
+verified_at: 2026-07-15
 affects_paths: [plugins/studio/**, plugins/task-worker/**, plugins/task-github/**]
 ---
 
 ## 현재 상태
 
-Studio 0.5.0은 owner의 미션을 research, planning, strategy, design, architecture, implementation, creation, QA, independent review, critique, curation, summarization 역할로 분해하고 ready-set을 병렬 실행하는 상위 orchestration layer다. native harness만으로 전체 흐름을 완주하며 외부 plugin은 기능 필수가 아니다.
+Studio 0.6.0은 owner의 미션을 research, planning, strategy, design, architecture, implementation, creation, QA, independent review, critique, curation, summarization 역할로 분해하고 ready-set을 병렬 실행하는 상위 orchestration layer다. native harness만으로 전체 흐름을 완주하며 외부 plugin은 기능 필수가 아니다. canonical execution permit·atomic claim·immutable evidence로 동일 물리 실행만 차단한다.
 
 ## 핵심 불변식
 

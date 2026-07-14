@@ -1,0 +1,1541 @@
+{
+  "schema": "studio-verification-contract-set/v1",
+  "version": 1,
+  "conformance": {
+    "artifact_digest_ref": "$.digest",
+    "required_consumers": [
+      "STUDIO",
+      "WORKER"
+    ],
+    "require_exact_digest": true,
+    "policy": "STUDIO and WORKER MUST consume this exact artifact digest and reject schema or fixture drift."
+  },
+  "schemas": {
+    "execution-permit": {
+      "schema_value": "execution-permit/v1",
+      "fields": [
+        "schema",
+        "permit_id",
+        "mission_id",
+        "cycle_id",
+        "unit_id",
+        "qa_mode",
+        "purpose",
+        "target",
+        "head",
+        "command_profile_id",
+        "command_digest",
+        "environment_digest",
+        "tool_version",
+        "fresh_requirement_id",
+        "criteria_digest",
+        "impact_set",
+        "required_capabilities",
+        "max_physical_runs",
+        "telemetry_policy",
+        "mutation_request",
+        "external_authorization_refs",
+        "state",
+        "claim_id",
+        "claimed_by",
+        "claimed_at",
+        "completed_at",
+        "evidence_refs",
+        "digest"
+      ],
+      "types": {
+        "schema": "string",
+        "permit_id": "string",
+        "mission_id": "string",
+        "cycle_id": "string|null",
+        "unit_id": "string|null",
+        "qa_mode": "string",
+        "purpose": "string",
+        "target": "string",
+        "head": "string",
+        "command_profile_id": "string",
+        "command_digest": "string",
+        "environment_digest": "string",
+        "tool_version": "string",
+        "fresh_requirement_id": "string|null",
+        "criteria_digest": "string",
+        "impact_set": "array",
+        "required_capabilities": "array",
+        "max_physical_runs": "integer",
+        "telemetry_policy": "string",
+        "mutation_request": "object|null",
+        "external_authorization_refs": "array",
+        "state": "string",
+        "claim_id": "string|null",
+        "claimed_by": "string|null",
+        "claimed_at": "string|null",
+        "completed_at": "string|null",
+        "evidence_refs": "array",
+        "digest": "string"
+      },
+      "required": [
+        "schema",
+        "permit_id",
+        "mission_id",
+        "cycle_id",
+        "unit_id",
+        "qa_mode",
+        "purpose",
+        "target",
+        "head",
+        "command_profile_id",
+        "command_digest",
+        "environment_digest",
+        "tool_version",
+        "fresh_requirement_id",
+        "criteria_digest",
+        "impact_set",
+        "required_capabilities",
+        "max_physical_runs",
+        "telemetry_policy",
+        "mutation_request",
+        "external_authorization_refs",
+        "state",
+        "claim_id",
+        "claimed_by",
+        "claimed_at",
+        "completed_at",
+        "evidence_refs",
+        "digest"
+      ],
+      "nullable": [
+        "cycle_id",
+        "unit_id",
+        "fresh_requirement_id",
+        "mutation_request",
+        "claim_id",
+        "claimed_by",
+        "claimed_at",
+        "completed_at"
+      ],
+      "const": {
+        "schema": "execution-permit/v1"
+      },
+      "enums": {
+        "purpose": [
+          "verification",
+          "development",
+          "delta",
+          "integration-full",
+          "finding-delta",
+          "release-artifact",
+          "device-check",
+          "production-preflight",
+          "capability-probe"
+        ],
+        "qa_mode": [
+          "development",
+          "delta",
+          "full",
+          "final",
+          "integration"
+        ],
+        "telemetry_policy": [
+          "fail-closed",
+          "report-only"
+        ],
+        "state": [
+          "planned",
+          "claimed",
+          "succeeded",
+          "failed",
+          "cancelled"
+        ]
+      },
+      "shapes": {
+        "mutation_request": [
+          "mutation_request_id",
+          "provider",
+          "operation",
+          "resource_kind",
+          "target_ref",
+          "one_time_usd",
+          "monthly_usd",
+          "digest"
+        ]
+      }
+    },
+    "command-profile": {
+      "schema_value": "command-profile/v1",
+      "fields": [
+        "schema",
+        "profile_id",
+        "executable",
+        "args",
+        "forbidden_args",
+        "cwd_scope",
+        "environment_inputs",
+        "required_capabilities",
+        "output_contract",
+        "fresh_policy",
+        "digest"
+      ],
+      "types": {
+        "schema": "string",
+        "profile_id": "string",
+        "executable": "string",
+        "args": "array",
+        "forbidden_args": "array",
+        "cwd_scope": "string",
+        "environment_inputs": "array",
+        "required_capabilities": "array",
+        "output_contract": "object",
+        "fresh_policy": "string",
+        "digest": "string"
+      },
+      "required": [
+        "schema",
+        "profile_id",
+        "executable",
+        "args",
+        "forbidden_args",
+        "cwd_scope",
+        "environment_inputs",
+        "required_capabilities",
+        "output_contract",
+        "fresh_policy",
+        "digest"
+      ],
+      "nullable": [],
+      "const": {
+        "schema": "command-profile/v1"
+      },
+      "enums": {
+        "fresh_policy": [
+          "reusable",
+          "fresh-required"
+        ]
+      }
+    },
+    "command-receipt": {
+      "schema_value": "command-receipt/v1",
+      "fields": [
+        "schema",
+        "receipt_id",
+        "permit_id",
+        "claim_id",
+        "profile_id",
+        "purpose",
+        "target",
+        "head",
+        "command_digest",
+        "environment_digest",
+        "tool_version",
+        "fresh_requirement_id",
+        "started_at",
+        "finished_at",
+        "exit_code",
+        "result",
+        "output_digest",
+        "tokens",
+        "token_coverage",
+        "executor",
+        "spend_consumption_refs",
+        "external_mutation_receipt_refs",
+        "digest"
+      ],
+      "types": {
+        "schema": "string",
+        "receipt_id": "string",
+        "permit_id": "string",
+        "claim_id": "string",
+        "profile_id": "string",
+        "purpose": "string",
+        "target": "string",
+        "head": "string",
+        "command_digest": "string",
+        "environment_digest": "string",
+        "tool_version": "string",
+        "fresh_requirement_id": "string|null",
+        "started_at": "string",
+        "finished_at": "string",
+        "exit_code": "integer|null",
+        "result": "string",
+        "output_digest": "string|null",
+        "tokens": "integer|null",
+        "token_coverage": "string",
+        "executor": "string",
+        "spend_consumption_refs": "array",
+        "external_mutation_receipt_refs": "array",
+        "digest": "string"
+      },
+      "required": [
+        "schema",
+        "receipt_id",
+        "permit_id",
+        "claim_id",
+        "profile_id",
+        "purpose",
+        "target",
+        "head",
+        "command_digest",
+        "environment_digest",
+        "tool_version",
+        "fresh_requirement_id",
+        "started_at",
+        "finished_at",
+        "exit_code",
+        "result",
+        "output_digest",
+        "tokens",
+        "token_coverage",
+        "executor",
+        "spend_consumption_refs",
+        "external_mutation_receipt_refs",
+        "digest"
+      ],
+      "nullable": [
+        "fresh_requirement_id",
+        "exit_code",
+        "output_digest",
+        "tokens"
+      ],
+      "const": {
+        "schema": "command-receipt/v1"
+      },
+      "enums": {
+        "purpose": [
+          "verification",
+          "development",
+          "delta",
+          "integration-full",
+          "finding-delta",
+          "release-artifact",
+          "device-check",
+          "production-preflight",
+          "capability-probe"
+        ],
+        "result": [
+          "pass",
+          "fail",
+          "error",
+          "cancelled"
+        ],
+        "token_coverage": [
+          "exact",
+          "estimated",
+          "unavailable"
+        ]
+      }
+    },
+    "verification-evidence": {
+      "schema_value": "verification-evidence/v1",
+      "fields": [
+        "schema",
+        "evidence_id",
+        "source_receipt_id",
+        "purpose",
+        "independence",
+        "target",
+        "head",
+        "command_digest",
+        "environment_digest",
+        "tool_version",
+        "fresh_requirement_id",
+        "criteria_digest",
+        "covered_paths",
+        "surface_digest",
+        "impact_set",
+        "result",
+        "created_at",
+        "invalidation",
+        "digest"
+      ],
+      "types": {
+        "schema": "string",
+        "evidence_id": "string",
+        "source_receipt_id": "string|null",
+        "purpose": "string",
+        "independence": "string",
+        "target": "string",
+        "head": "string",
+        "command_digest": "string",
+        "environment_digest": "string",
+        "tool_version": "string",
+        "fresh_requirement_id": "string|null",
+        "criteria_digest": "string",
+        "covered_paths": "array",
+        "surface_digest": "string",
+        "impact_set": "array",
+        "result": "string",
+        "created_at": "string",
+        "invalidation": "object|null",
+        "digest": "string"
+      },
+      "required": [
+        "schema",
+        "evidence_id",
+        "source_receipt_id",
+        "purpose",
+        "independence",
+        "target",
+        "head",
+        "command_digest",
+        "environment_digest",
+        "tool_version",
+        "fresh_requirement_id",
+        "criteria_digest",
+        "covered_paths",
+        "surface_digest",
+        "impact_set",
+        "result",
+        "created_at",
+        "invalidation",
+        "digest"
+      ],
+      "nullable": [
+        "source_receipt_id",
+        "fresh_requirement_id",
+        "invalidation"
+      ],
+      "const": {
+        "schema": "verification-evidence/v1"
+      },
+      "enums": {
+        "purpose": [
+          "verification",
+          "development",
+          "delta",
+          "integration-full",
+          "finding-delta",
+          "release-artifact",
+          "device-check",
+          "production-preflight",
+          "capability-probe"
+        ],
+        "independence": [
+          "self",
+          "independent",
+          "not-applicable"
+        ],
+        "result": [
+          "pass",
+          "fail"
+        ],
+        "invalidation.reason": [
+          "criteria-changed",
+          "path-overlap",
+          "surface-changed",
+          "environment-changed",
+          "tool-changed",
+          "shared-contract-changed",
+          "impact-unknown",
+          "superseded"
+        ]
+      },
+      "shapes": {
+        "invalidation": [
+          "reason",
+          "changed_paths",
+          "surface_digest",
+          "invalidated_at"
+        ]
+      }
+    },
+    "capability-snapshot": {
+      "schema_value": "capability-snapshot/v1",
+      "fields": [
+        "schema",
+        "snapshot_id",
+        "mission_id",
+        "capability_id",
+        "environment_digest",
+        "status",
+        "owner",
+        "probe_receipt_id",
+        "reason",
+        "observed_at",
+        "expires_at",
+        "digest"
+      ],
+      "types": {
+        "schema": "string",
+        "snapshot_id": "string",
+        "mission_id": "string",
+        "capability_id": "string",
+        "environment_digest": "string",
+        "status": "string",
+        "owner": "string|null",
+        "probe_receipt_id": "string|null",
+        "reason": "string|null",
+        "observed_at": "string",
+        "expires_at": "string|null",
+        "digest": "string"
+      },
+      "required": [
+        "schema",
+        "snapshot_id",
+        "mission_id",
+        "capability_id",
+        "environment_digest",
+        "status",
+        "owner",
+        "probe_receipt_id",
+        "reason",
+        "observed_at",
+        "expires_at",
+        "digest"
+      ],
+      "nullable": [
+        "owner",
+        "probe_receipt_id",
+        "reason",
+        "expires_at"
+      ],
+      "const": {
+        "schema": "capability-snapshot/v1"
+      },
+      "enums": {
+        "status": [
+          "available",
+          "unavailable",
+          "unknown"
+        ]
+      }
+    },
+    "preflight-adapter": {
+      "schema_value": "preflight-adapter/v1",
+      "fields": [
+        "schema",
+        "adapter_id",
+        "provider",
+        "target_kind",
+        "required_keys",
+        "conditional_requirements",
+        "topology_contract",
+        "command_profile_ids",
+        "digest"
+      ],
+      "types": {
+        "schema": "string",
+        "adapter_id": "string",
+        "provider": "string",
+        "target_kind": "string",
+        "required_keys": "array",
+        "conditional_requirements": "array",
+        "topology_contract": "object|null",
+        "command_profile_ids": "array",
+        "digest": "string"
+      },
+      "required": [
+        "schema",
+        "adapter_id",
+        "provider",
+        "target_kind",
+        "required_keys",
+        "conditional_requirements",
+        "topology_contract",
+        "command_profile_ids",
+        "digest"
+      ],
+      "nullable": [
+        "topology_contract"
+      ],
+      "const": {
+        "schema": "preflight-adapter/v1"
+      },
+      "enums": {}
+    },
+    "preflight-receipt": {
+      "schema_value": "preflight-receipt/v1",
+      "fields": [
+        "schema",
+        "receipt_id",
+        "adapter_id",
+        "target_ref",
+        "environment_digest",
+        "manifest_digest",
+        "checked_keys",
+        "missing_keys",
+        "condition_failures",
+        "topology_drift",
+        "result",
+        "checked_at",
+        "digest"
+      ],
+      "types": {
+        "schema": "string",
+        "receipt_id": "string",
+        "adapter_id": "string",
+        "target_ref": "string",
+        "environment_digest": "string",
+        "manifest_digest": "string",
+        "checked_keys": "array",
+        "missing_keys": "array",
+        "condition_failures": "array",
+        "topology_drift": "array",
+        "result": "string",
+        "checked_at": "string",
+        "digest": "string"
+      },
+      "required": [
+        "schema",
+        "receipt_id",
+        "adapter_id",
+        "target_ref",
+        "environment_digest",
+        "manifest_digest",
+        "checked_keys",
+        "missing_keys",
+        "condition_failures",
+        "topology_drift",
+        "result",
+        "checked_at",
+        "digest"
+      ],
+      "nullable": [],
+      "const": {
+        "schema": "preflight-receipt/v1"
+      },
+      "enums": {
+        "result": [
+          "pass",
+          "fail"
+        ]
+      }
+    },
+    "external-spend-authorization": {
+      "schema_value": "external-spend-authorization/v1",
+      "fields": [
+        "schema",
+        "authorization_id",
+        "mission_id",
+        "mutation_request_ref",
+        "mutation_request_digest",
+        "provider",
+        "resource_kind",
+        "scope",
+        "one_time_usd",
+        "monthly_usd",
+        "max_occurrences",
+        "owner_approved",
+        "approved_by",
+        "approved_at",
+        "expires_at",
+        "digest"
+      ],
+      "types": {
+        "schema": "string",
+        "authorization_id": "string",
+        "mission_id": "string",
+        "mutation_request_ref": "string",
+        "mutation_request_digest": "string",
+        "provider": "string",
+        "resource_kind": "string",
+        "scope": "string",
+        "one_time_usd": "number",
+        "monthly_usd": "number",
+        "max_occurrences": "integer",
+        "owner_approved": "boolean",
+        "approved_by": "string|null",
+        "approved_at": "string|null",
+        "expires_at": "string|null",
+        "digest": "string"
+      },
+      "required": [
+        "schema",
+        "authorization_id",
+        "mission_id",
+        "mutation_request_ref",
+        "mutation_request_digest",
+        "provider",
+        "resource_kind",
+        "scope",
+        "one_time_usd",
+        "monthly_usd",
+        "max_occurrences",
+        "owner_approved",
+        "approved_by",
+        "approved_at",
+        "expires_at",
+        "digest"
+      ],
+      "nullable": [
+        "approved_by",
+        "approved_at",
+        "expires_at"
+      ],
+      "const": {
+        "schema": "external-spend-authorization/v1"
+      },
+      "enums": {}
+    },
+    "external-spend-consumption": {
+      "schema_value": "external-spend-consumption/v1",
+      "fields": [
+        "schema",
+        "consumption_id",
+        "authorization_id",
+        "authorization_digest",
+        "mutation_request_ref",
+        "mutation_request_digest",
+        "scope",
+        "occurrence_index",
+        "one_time_usd",
+        "monthly_usd",
+        "claim_id",
+        "claim_state",
+        "mutation_receipt_ref",
+        "consumed_at",
+        "digest"
+      ],
+      "types": {
+        "schema": "string",
+        "consumption_id": "string",
+        "authorization_id": "string",
+        "authorization_digest": "string",
+        "mutation_request_ref": "string",
+        "mutation_request_digest": "string",
+        "scope": "string",
+        "occurrence_index": "integer",
+        "one_time_usd": "number",
+        "monthly_usd": "number",
+        "claim_id": "string",
+        "claim_state": "string",
+        "mutation_receipt_ref": "string|null",
+        "consumed_at": "string|null",
+        "digest": "string"
+      },
+      "required": [
+        "schema",
+        "consumption_id",
+        "authorization_id",
+        "authorization_digest",
+        "mutation_request_ref",
+        "mutation_request_digest",
+        "scope",
+        "occurrence_index",
+        "one_time_usd",
+        "monthly_usd",
+        "claim_id",
+        "claim_state",
+        "mutation_receipt_ref",
+        "consumed_at",
+        "digest"
+      ],
+      "nullable": [
+        "mutation_receipt_ref",
+        "consumed_at"
+      ],
+      "const": {
+        "schema": "external-spend-consumption/v1"
+      },
+      "enums": {
+        "claim_state": [
+          "claimed",
+          "consumed",
+          "released"
+        ]
+      }
+    },
+    "external-mutation-receipt": {
+      "schema_value": "external-mutation-receipt/v1",
+      "fields": [
+        "schema",
+        "mutation_id",
+        "mutation_request_ref",
+        "mutation_request_digest",
+        "provider",
+        "operation",
+        "target_ref",
+        "authorization_id",
+        "authorization_digest",
+        "spend_consumption_ref",
+        "spend_consumption_digest",
+        "preflight_receipt_id",
+        "result",
+        "started_at",
+        "finished_at",
+        "rollback_ref",
+        "digest"
+      ],
+      "types": {
+        "schema": "string",
+        "mutation_id": "string",
+        "mutation_request_ref": "string",
+        "mutation_request_digest": "string",
+        "provider": "string",
+        "operation": "string",
+        "target_ref": "string",
+        "authorization_id": "string|null",
+        "authorization_digest": "string|null",
+        "spend_consumption_ref": "string|null",
+        "spend_consumption_digest": "string|null",
+        "preflight_receipt_id": "string|null",
+        "result": "string",
+        "started_at": "string",
+        "finished_at": "string",
+        "rollback_ref": "string|null",
+        "digest": "string"
+      },
+      "required": [
+        "schema",
+        "mutation_id",
+        "mutation_request_ref",
+        "mutation_request_digest",
+        "provider",
+        "operation",
+        "target_ref",
+        "authorization_id",
+        "authorization_digest",
+        "spend_consumption_ref",
+        "spend_consumption_digest",
+        "preflight_receipt_id",
+        "result",
+        "started_at",
+        "finished_at",
+        "rollback_ref",
+        "digest"
+      ],
+      "nullable": [
+        "authorization_id",
+        "authorization_digest",
+        "spend_consumption_ref",
+        "spend_consumption_digest",
+        "preflight_receipt_id",
+        "rollback_ref"
+      ],
+      "const": {
+        "schema": "external-mutation-receipt/v1"
+      },
+      "enums": {
+        "result": [
+          "applied",
+          "rejected",
+          "failed",
+          "rolled-back"
+        ]
+      }
+    },
+    "closeout-receipt": {
+      "schema_value": "closeout-receipt/v1",
+      "fields": [
+        "schema",
+        "closeout_id",
+        "mission_id",
+        "definition_ref",
+        "integration_head",
+        "track_result_refs",
+        "verification_evidence_refs",
+        "review_lease_refs",
+        "delivery_receipt_refs",
+        "external_mutation_receipt_refs",
+        "cleanup_receipt_refs",
+        "preserved_user_change_refs",
+        "open_findings",
+        "result",
+        "closed_at",
+        "digest"
+      ],
+      "types": {
+        "schema": "string",
+        "closeout_id": "string",
+        "mission_id": "string",
+        "definition_ref": "string|null",
+        "integration_head": "string",
+        "track_result_refs": "array",
+        "verification_evidence_refs": "array",
+        "review_lease_refs": "array",
+        "delivery_receipt_refs": "array",
+        "external_mutation_receipt_refs": "array",
+        "cleanup_receipt_refs": "array",
+        "preserved_user_change_refs": "array",
+        "open_findings": "array",
+        "result": "string",
+        "closed_at": "string|null",
+        "digest": "string"
+      },
+      "required": [
+        "schema",
+        "closeout_id",
+        "mission_id",
+        "definition_ref",
+        "integration_head",
+        "track_result_refs",
+        "verification_evidence_refs",
+        "review_lease_refs",
+        "delivery_receipt_refs",
+        "external_mutation_receipt_refs",
+        "cleanup_receipt_refs",
+        "preserved_user_change_refs",
+        "open_findings",
+        "result",
+        "closed_at",
+        "digest"
+      ],
+      "nullable": [
+        "definition_ref",
+        "closed_at"
+      ],
+      "const": {
+        "schema": "closeout-receipt/v1"
+      },
+      "enums": {
+        "result": [
+          "complete",
+          "blocked"
+        ]
+      }
+    },
+    "efficiency-summary": {
+      "schema_value": "efficiency-summary/v1",
+      "fields": [
+        "schema",
+        "summary_id",
+        "mission_id",
+        "window_started_at",
+        "window_finished_at",
+        "logical_checks",
+        "physical_runs",
+        "full_qa_runs",
+        "delta_qa_runs",
+        "evidence_reuse_count",
+        "duplicate_prevented_count",
+        "capability_probe_count",
+        "capability_failure_reuse_count",
+        "token_coverage",
+        "measured_tokens",
+        "unmeasured_runs",
+        "owner_intervention_count",
+        "external_spend_one_time_usd",
+        "external_spend_monthly_usd",
+        "digest"
+      ],
+      "types": {
+        "schema": "string",
+        "summary_id": "string",
+        "mission_id": "string",
+        "window_started_at": "string",
+        "window_finished_at": "string",
+        "logical_checks": "integer",
+        "physical_runs": "integer",
+        "full_qa_runs": "integer",
+        "delta_qa_runs": "integer",
+        "evidence_reuse_count": "integer",
+        "duplicate_prevented_count": "integer",
+        "capability_probe_count": "integer",
+        "capability_failure_reuse_count": "integer",
+        "token_coverage": "string",
+        "measured_tokens": "integer",
+        "unmeasured_runs": "integer",
+        "owner_intervention_count": "integer",
+        "external_spend_one_time_usd": "number",
+        "external_spend_monthly_usd": "number",
+        "digest": "string"
+      },
+      "required": [
+        "schema",
+        "summary_id",
+        "mission_id",
+        "window_started_at",
+        "window_finished_at",
+        "logical_checks",
+        "physical_runs",
+        "full_qa_runs",
+        "delta_qa_runs",
+        "evidence_reuse_count",
+        "duplicate_prevented_count",
+        "capability_probe_count",
+        "capability_failure_reuse_count",
+        "token_coverage",
+        "measured_tokens",
+        "unmeasured_runs",
+        "owner_intervention_count",
+        "external_spend_one_time_usd",
+        "external_spend_monthly_usd",
+        "digest"
+      ],
+      "nullable": [],
+      "const": {
+        "schema": "efficiency-summary/v1"
+      },
+      "enums": {
+        "token_coverage": [
+          "exact",
+          "partial",
+          "unavailable"
+        ]
+      }
+    }
+  },
+  "invariants": [
+    {
+      "id": "B1",
+      "rule": "A physical execution identity is the canonical hash of head, command_digest, environment_digest, tool_version, and purpose; when fresh execution is required, fresh_requirement_id is an additional mandatory identity component. target, cycle_id, and unit_id are attribution only and are never identity components."
+    },
+    {
+      "id": "B2",
+      "rule": "At most one active claim may exist for a physical execution identity. A succeeded identity returns reusable evidence, an active identity rejects a duplicate claim, and retries may not exceed max_physical_runs without an owner-visible gate."
+    },
+    {
+      "id": "B3",
+      "rule": "Evidence reuse requires both matching physical identity and applicable criteria_digest, covered_paths, surface_digest, purpose, independence, and impact_set. Invalidation is explicit and immutable. Development verification, one integration-head full gate, independent review, and finding-scoped delta verification remain mandatory where required."
+    },
+    {
+      "id": "B4",
+      "rule": "Required capabilities and preflight checks fail closed before dispatch or external mutation. A capability probe result is cached by mission_id, capability_id, and environment_digest so an unavailable capability is not repeatedly probed by parallel tracks. A paid mutation permit must pin one mutation_request and matching authorization; authorization quota is atomically claimed by authorization_digest, mutation_request_digest, and occurrence_index before mutation, and the consumption and mutation receipts must cross-reference each other."
+    },
+    {
+      "id": "B5",
+      "rule": "Agent token budgets and external spend authorizations are separate domains. External mutations with cost require an unexpired owner-approved authorization and matching preflight receipt; null token telemetry is never counted as zero; closeout requires integration, verification, review, delivery, mutation, cleanup, and preserved-user-change receipts applicable to the integration head."
+    }
+  ],
+  "compatibility": {
+    "studio-evidence-pin": {
+      "from": "studio evidence pin",
+      "to": "verification-evidence",
+      "mappings": {
+        "id": "evidence_id",
+        "head": "head",
+        "command_digest": "command_digest",
+        "environment_digest": "environment_digest",
+        "tool_version": "tool_version",
+        "criteria_digest": "criteria_digest",
+        "covered_paths": "covered_paths",
+        "surface_digest": "surface_digest",
+        "impact_set": "impact_set",
+        "result": "result"
+      },
+      "defaults": {
+        "purpose": "verification",
+        "independence": "not-applicable",
+        "target": "repository",
+        "fresh_requirement_id": null,
+        "source_receipt_id": null,
+        "invalidation": null
+      }
+    },
+    "task-worker-evidence": {
+      "from": "task-worker verification evidence",
+      "to": "verification-evidence",
+      "mappings": {
+        "evidence_id": "evidence_id",
+        "head": "head",
+        "command_digest": "command_digest",
+        "environment_digest": "environment_digest",
+        "tool_version": "tool_version",
+        "criteria_digest": "criteria_digest",
+        "covered_paths": "covered_paths",
+        "surface_digest": "surface_digest",
+        "impact_set": "impact_set",
+        "result": "result",
+        "receipt_id": "source_receipt_id"
+      },
+      "defaults": {
+        "purpose": "verification",
+        "independence": "not-applicable",
+        "target": "repository",
+        "fresh_requirement_id": null,
+        "invalidation": null
+      }
+    }
+  },
+  "golden_cases": [
+    {
+      "id": "valid-permit",
+      "input": {
+        "permit": {
+          "schema": "execution-permit/v1",
+          "permit_id": "permit-config-tests",
+          "mission_id": "mission-efficiency",
+          "cycle_id": "cycle-1",
+          "unit_id": "STUDIO",
+          "qa_mode": "delta",
+          "purpose": "delta",
+          "target": "repository",
+          "head": "abc1234",
+          "command_profile_id": "mobile:config-tests",
+          "command_digest": "sha256:1e1f892f60388c44671af5b5f9f8b305263ec1940421d64b885ba4e8c5548e62",
+          "environment_digest": "sha256:c84eb03e51f590591c8eede1db3bef997f10636b6e1bb42f74a387d3cae1307d",
+          "tool_version": "studio/0.6.0",
+          "fresh_requirement_id": null,
+          "criteria_digest": "sha256:872569000b34e531380ba5ed29d0aabca35e7c27602e4e0d856f1bcc94bd13a6",
+          "impact_set": [
+            "apps/mobile/src/config/**"
+          ],
+          "required_capabilities": [],
+          "max_physical_runs": 3,
+          "telemetry_policy": "fail-closed",
+          "mutation_request": null,
+          "external_authorization_refs": [],
+          "state": "planned",
+          "claim_id": null,
+          "claimed_by": null,
+          "claimed_at": null,
+          "completed_at": null,
+          "evidence_refs": [],
+          "digest": "sha256:5e68fe1474bf4f2f04930709fa8992d2bbde72cf98bfea3424078fc64364717a"
+        }
+      },
+      "expected": {
+        "action": "claim",
+        "error": null,
+        "permit_id": "permit-config-tests",
+        "physical_key": "sha256:92949ce27788bcb1feb543718180b47411fd0c8e0ef833ebdb5c287ab21cce42"
+      },
+      "input_digest": "sha256:59da11894c6f069ccb0e9d16ff00278276233d801c0abd185506b055524b7e9b"
+    },
+    {
+      "id": "active-duplicate",
+      "input": {
+        "permit": {
+          "schema": "execution-permit/v1",
+          "permit_id": "permit-duplicate",
+          "mission_id": "mission-efficiency",
+          "cycle_id": "cycle-1",
+          "unit_id": "STUDIO",
+          "qa_mode": "delta",
+          "purpose": "delta",
+          "target": "repository",
+          "head": "abc1234",
+          "command_profile_id": "mobile:config-tests",
+          "command_digest": "sha256:1e1f892f60388c44671af5b5f9f8b305263ec1940421d64b885ba4e8c5548e62",
+          "environment_digest": "sha256:c84eb03e51f590591c8eede1db3bef997f10636b6e1bb42f74a387d3cae1307d",
+          "tool_version": "studio/0.6.0",
+          "fresh_requirement_id": null,
+          "criteria_digest": "sha256:872569000b34e531380ba5ed29d0aabca35e7c27602e4e0d856f1bcc94bd13a6",
+          "impact_set": [
+            "apps/mobile/src/config/**"
+          ],
+          "required_capabilities": [],
+          "max_physical_runs": 3,
+          "telemetry_policy": "fail-closed",
+          "mutation_request": null,
+          "external_authorization_refs": [],
+          "state": "planned",
+          "claim_id": null,
+          "claimed_by": null,
+          "claimed_at": null,
+          "completed_at": null,
+          "evidence_refs": [],
+          "digest": "sha256:4012b3497b69d44afd4f3deb7f01a42c1f379cd3be5a400c39307765876710ed"
+        },
+        "active_claim": {
+          "claim_id": "claim-active",
+          "physical_key": "sha256:92949ce27788bcb1feb543718180b47411fd0c8e0ef833ebdb5c287ab21cce42",
+          "state": "claimed"
+        }
+      },
+      "expected": {
+        "action": "reject",
+        "error": {
+          "code": "duplicate_active",
+          "claim_id": "claim-active"
+        },
+        "physical_run_started": false
+      },
+      "input_digest": "sha256:efdc57b5e39c86b5682f47f5bdda970790577d774cd63222823d94ee2213c21e"
+    },
+    {
+      "id": "success-reuse",
+      "input": {
+        "permit": {
+          "schema": "execution-permit/v1",
+          "permit_id": "permit-reuse",
+          "mission_id": "mission-efficiency",
+          "cycle_id": "cycle-1",
+          "unit_id": "STUDIO",
+          "qa_mode": "delta",
+          "purpose": "delta",
+          "target": "repository",
+          "head": "abc1234",
+          "command_profile_id": "mobile:config-tests",
+          "command_digest": "sha256:1e1f892f60388c44671af5b5f9f8b305263ec1940421d64b885ba4e8c5548e62",
+          "environment_digest": "sha256:c84eb03e51f590591c8eede1db3bef997f10636b6e1bb42f74a387d3cae1307d",
+          "tool_version": "studio/0.6.0",
+          "fresh_requirement_id": null,
+          "criteria_digest": "sha256:872569000b34e531380ba5ed29d0aabca35e7c27602e4e0d856f1bcc94bd13a6",
+          "impact_set": [
+            "apps/mobile/src/config/**"
+          ],
+          "required_capabilities": [],
+          "max_physical_runs": 3,
+          "telemetry_policy": "fail-closed",
+          "mutation_request": null,
+          "external_authorization_refs": [],
+          "state": "planned",
+          "claim_id": null,
+          "claimed_by": null,
+          "claimed_at": null,
+          "completed_at": null,
+          "evidence_refs": [],
+          "digest": "sha256:e2be81b41bd628f1eb51b2b6e6ef12a6c9c5fda9935ddde4d5d6542a9df51192"
+        },
+        "evidence": {
+          "schema": "verification-evidence/v1",
+          "evidence_id": "EV-config",
+          "source_receipt_id": "receipt-config",
+          "purpose": "delta",
+          "independence": "self",
+          "target": "repository",
+          "head": "abc1234",
+          "command_digest": "sha256:1e1f892f60388c44671af5b5f9f8b305263ec1940421d64b885ba4e8c5548e62",
+          "environment_digest": "sha256:c84eb03e51f590591c8eede1db3bef997f10636b6e1bb42f74a387d3cae1307d",
+          "tool_version": "studio/0.6.0",
+          "fresh_requirement_id": null,
+          "criteria_digest": "sha256:872569000b34e531380ba5ed29d0aabca35e7c27602e4e0d856f1bcc94bd13a6",
+          "covered_paths": [
+            "apps/mobile/src/config/**"
+          ],
+          "surface_digest": "sha256:6cfc16974c98863bd35e2c6617d0990296b59fbc6706d743d1b46304b0048e60",
+          "impact_set": [
+            "apps/mobile/src/config/**"
+          ],
+          "result": "pass",
+          "created_at": "2026-07-15T00:00:00Z",
+          "invalidation": null,
+          "digest": "sha256:44c60057b51ea889cef08d03e4efab93d1edd09627086212da3add56371ec068"
+        }
+      },
+      "expected": {
+        "action": "reuse-evidence",
+        "error": null,
+        "evidence_refs": [
+          "EV-config"
+        ],
+        "physical_run_started": false
+      },
+      "input_digest": "sha256:f483de2c57b08bb57916672bb9fb6d0fc61667e08cc623ad81f30e52257a099a"
+    },
+    {
+      "id": "fresh-execution",
+      "input": {
+        "permit": {
+          "schema": "execution-permit/v1",
+          "permit_id": "permit-fresh",
+          "mission_id": "mission-efficiency",
+          "cycle_id": "cycle-1",
+          "unit_id": "STUDIO",
+          "qa_mode": "delta",
+          "purpose": "release-artifact",
+          "target": "repository",
+          "head": "abc1234",
+          "command_profile_id": "mobile:config-tests",
+          "command_digest": "sha256:1e1f892f60388c44671af5b5f9f8b305263ec1940421d64b885ba4e8c5548e62",
+          "environment_digest": "sha256:c84eb03e51f590591c8eede1db3bef997f10636b6e1bb42f74a387d3cae1307d",
+          "tool_version": "studio/0.6.0",
+          "fresh_requirement_id": "release-build-2",
+          "criteria_digest": "sha256:872569000b34e531380ba5ed29d0aabca35e7c27602e4e0d856f1bcc94bd13a6",
+          "impact_set": [
+            "apps/mobile/src/config/**"
+          ],
+          "required_capabilities": [],
+          "max_physical_runs": 3,
+          "telemetry_policy": "fail-closed",
+          "mutation_request": null,
+          "external_authorization_refs": [],
+          "state": "planned",
+          "claim_id": null,
+          "claimed_by": null,
+          "claimed_at": null,
+          "completed_at": null,
+          "evidence_refs": [],
+          "digest": "sha256:c8619b77066ce3d29a92d6e198a1eeb85bad09b0b198eefc6f14032d73d69238"
+        },
+        "existing_evidence": {
+          "schema": "verification-evidence/v1",
+          "evidence_id": "EV-release-1",
+          "source_receipt_id": "receipt-config",
+          "purpose": "release-artifact",
+          "independence": "self",
+          "target": "repository",
+          "head": "abc1234",
+          "command_digest": "sha256:1e1f892f60388c44671af5b5f9f8b305263ec1940421d64b885ba4e8c5548e62",
+          "environment_digest": "sha256:c84eb03e51f590591c8eede1db3bef997f10636b6e1bb42f74a387d3cae1307d",
+          "tool_version": "studio/0.6.0",
+          "fresh_requirement_id": "release-build-1",
+          "criteria_digest": "sha256:872569000b34e531380ba5ed29d0aabca35e7c27602e4e0d856f1bcc94bd13a6",
+          "covered_paths": [
+            "apps/mobile/src/config/**"
+          ],
+          "surface_digest": "sha256:6cfc16974c98863bd35e2c6617d0990296b59fbc6706d743d1b46304b0048e60",
+          "impact_set": [
+            "apps/mobile/src/config/**"
+          ],
+          "result": "pass",
+          "created_at": "2026-07-15T00:00:00Z",
+          "invalidation": null,
+          "digest": "sha256:84a1eb5d200195417b01d2a8ff04e28e9bf8cc9399acfe789d8dd2dcf5a3351b"
+        }
+      },
+      "expected": {
+        "action": "claim",
+        "error": null,
+        "reason": "fresh_requirement_changed",
+        "physical_run_started": true
+      },
+      "input_digest": "sha256:8ceaf139c9a1b3fce2b03d25e4aff4e363b408a1fd54a7266b6dec23cc6bc9a5"
+    },
+    {
+      "id": "evidence-invalidation",
+      "input": {
+        "evidence": {
+          "schema": "verification-evidence/v1",
+          "evidence_id": "EV-config",
+          "source_receipt_id": "receipt-config",
+          "purpose": "delta",
+          "independence": "self",
+          "target": "repository",
+          "head": "abc1234",
+          "command_digest": "sha256:1e1f892f60388c44671af5b5f9f8b305263ec1940421d64b885ba4e8c5548e62",
+          "environment_digest": "sha256:c84eb03e51f590591c8eede1db3bef997f10636b6e1bb42f74a387d3cae1307d",
+          "tool_version": "studio/0.6.0",
+          "fresh_requirement_id": null,
+          "criteria_digest": "sha256:872569000b34e531380ba5ed29d0aabca35e7c27602e4e0d856f1bcc94bd13a6",
+          "covered_paths": [
+            "apps/mobile/src/config/**"
+          ],
+          "surface_digest": "sha256:6cfc16974c98863bd35e2c6617d0990296b59fbc6706d743d1b46304b0048e60",
+          "impact_set": [
+            "apps/mobile/src/config/**"
+          ],
+          "result": "pass",
+          "created_at": "2026-07-15T00:00:00Z",
+          "invalidation": null,
+          "digest": "sha256:44c60057b51ea889cef08d03e4efab93d1edd09627086212da3add56371ec068"
+        },
+        "change": {
+          "criteria_digest": "sha256:948af4620b34ff894f7038bc6d55cc3fab06f31964a68e07e265fe36fa17a4e0",
+          "changed_paths": [
+            "apps/mobile/src/config/runtime.ts"
+          ],
+          "surface_digest": "sha256:6cfc16974c98863bd35e2c6617d0990296b59fbc6706d743d1b46304b0048e60",
+          "impact_set": [
+            "apps/mobile/src/config/**"
+          ]
+        }
+      },
+      "expected": {
+        "action": "delta-qa",
+        "error": null,
+        "invalidated_evidence": [
+          "EV-config"
+        ],
+        "reason": "criteria-changed"
+      },
+      "input_digest": "sha256:8fee727a831dd9cf9a21bd2e16fe3a76731b44aa04666bc29f91b1c7e08a4b15"
+    },
+    {
+      "id": "unavailable-capability-cache",
+      "input": {
+        "mission_id": "mission-efficiency",
+        "required_capabilities": [
+          "browser:embedded"
+        ],
+        "environment_digest": "sha256:c84eb03e51f590591c8eede1db3bef997f10636b6e1bb42f74a387d3cae1307d",
+        "snapshot": {
+          "schema": "capability-snapshot/v1",
+          "snapshot_id": "CAP-browser-unavailable",
+          "mission_id": "mission-efficiency",
+          "capability_id": "browser:embedded",
+          "environment_digest": "sha256:c84eb03e51f590591c8eede1db3bef997f10636b6e1bb42f74a387d3cae1307d",
+          "status": "unavailable",
+          "owner": "integration-owner",
+          "probe_receipt_id": "receipt-browser-probe",
+          "reason": "crew runtime has no embedded browser",
+          "observed_at": "2026-07-15T00:00:00Z",
+          "expires_at": null,
+          "digest": "sha256:6a5613f9158840a570419176f3914e14bc56453f8166c4015859195d2596ab7f"
+        }
+      },
+      "expected": {
+        "action": "block-dispatch",
+        "error": {
+          "code": "capability_unavailable",
+          "capability_id": "browser:embedded"
+        },
+        "probe_required": false,
+        "snapshot_id": "CAP-browser-unavailable"
+      },
+      "input_digest": "sha256:292b6388e413ef5bee351d8023fe7cb43ebfd8abfe6e05da669c06dfd1cc2681"
+    },
+    {
+      "id": "unauthorized-spend-rejection",
+      "input": {
+        "permit": {
+          "schema": "execution-permit/v1",
+          "permit_id": "permit-paid-mutation",
+          "mission_id": "mission-efficiency",
+          "cycle_id": "cycle-1",
+          "unit_id": "STUDIO",
+          "qa_mode": "delta",
+          "purpose": "production-preflight",
+          "target": "repository",
+          "head": "abc1234",
+          "command_profile_id": "mobile:config-tests",
+          "command_digest": "sha256:1e1f892f60388c44671af5b5f9f8b305263ec1940421d64b885ba4e8c5548e62",
+          "environment_digest": "sha256:c84eb03e51f590591c8eede1db3bef997f10636b6e1bb42f74a387d3cae1307d",
+          "tool_version": "studio/0.6.0",
+          "fresh_requirement_id": null,
+          "criteria_digest": "sha256:872569000b34e531380ba5ed29d0aabca35e7c27602e4e0d856f1bcc94bd13a6",
+          "impact_set": [
+            "apps/mobile/src/config/**"
+          ],
+          "required_capabilities": [],
+          "max_physical_runs": 3,
+          "telemetry_policy": "fail-closed",
+          "mutation_request": {
+            "mutation_request_id": "mutation-worker-create",
+            "provider": "render",
+            "operation": "create",
+            "resource_kind": "background-worker",
+            "target_ref": "lightning-pay-worker",
+            "one_time_usd": 0,
+            "monthly_usd": 7,
+            "digest": "sha256:b2422027f3c3370aa0534965c0843ff6d86975b1bb65b9239bd38cd84a771624"
+          },
+          "external_authorization_refs": [],
+          "state": "planned",
+          "claim_id": null,
+          "claimed_by": null,
+          "claimed_at": null,
+          "completed_at": null,
+          "evidence_refs": [],
+          "digest": "sha256:4704cba3d40fe05488d6e4001b53643e02855fcbc81edbb609d326067653ecaf"
+        },
+        "authorization": null
+      },
+      "expected": {
+        "action": "reject",
+        "error": {
+          "code": "external_spend_not_authorized",
+          "mutation_request_id": "mutation-worker-create"
+        },
+        "mutation_started": false
+      },
+      "input_digest": "sha256:997236495705516109397460e0ccd26f3d2828664f7b7d3707fc5b87a3e7df14"
+    },
+    {
+      "id": "atomic-spend-consumption",
+      "input": {
+        "authorization": {
+          "schema": "external-spend-authorization/v1",
+          "authorization_id": "AUTH-worker",
+          "mission_id": "mission-efficiency",
+          "mutation_request_ref": "mutation-worker-create",
+          "mutation_request_digest": "sha256:b2422027f3c3370aa0534965c0843ff6d86975b1bb65b9239bd38cd84a771624",
+          "provider": "render",
+          "resource_kind": "background-worker",
+          "scope": "lightning-pay-worker",
+          "one_time_usd": 0,
+          "monthly_usd": 7,
+          "max_occurrences": 1,
+          "owner_approved": true,
+          "approved_by": "owner",
+          "approved_at": "2026-07-15T00:00:00Z",
+          "expires_at": "2026-07-16T00:00:00Z",
+          "digest": "sha256:705098a64a479829ae1cd0a1dc57e8d5ae55ba0cf537111eb7c96083091443fc"
+        },
+        "mutation_request": {
+          "mutation_request_id": "mutation-worker-create",
+          "provider": "render",
+          "operation": "create",
+          "resource_kind": "background-worker",
+          "target_ref": "lightning-pay-worker",
+          "one_time_usd": 0,
+          "monthly_usd": 7,
+          "digest": "sha256:b2422027f3c3370aa0534965c0843ff6d86975b1bb65b9239bd38cd84a771624"
+        },
+        "existing_consumptions": []
+      },
+      "expected": {
+        "action": "claim-spend-consumption",
+        "error": null,
+        "occurrence_index": 1,
+        "claim_state": "claimed",
+        "claim_key": "sha256:fc84146412d2ca3723547d3818dd9105fdfa72e6d19603fcb1b68428ad09bbfd"
+      },
+      "input_digest": "sha256:f8d1d1013771762d94f8042765f5351d533619534d16f00a79f3eaad17c739d8"
+    },
+    {
+      "id": "telemetry-pause",
+      "input": {
+        "telemetry_policy": "fail-closed",
+        "receipt": {
+          "schema": "command-receipt/v1",
+          "receipt_id": "receipt-unmeasured",
+          "permit_id": "permit-config-tests",
+          "claim_id": "claim-config",
+          "profile_id": "mobile:config-tests",
+          "purpose": "delta",
+          "target": "repository",
+          "head": "abc1234",
+          "command_digest": "sha256:1e1f892f60388c44671af5b5f9f8b305263ec1940421d64b885ba4e8c5548e62",
+          "environment_digest": "sha256:c84eb03e51f590591c8eede1db3bef997f10636b6e1bb42f74a387d3cae1307d",
+          "tool_version": "studio/0.6.0",
+          "fresh_requirement_id": null,
+          "started_at": "2026-07-15T00:00:00Z",
+          "finished_at": "2026-07-15T00:00:10Z",
+          "exit_code": 0,
+          "result": "pass",
+          "output_digest": "sha256:6cfc16974c98863bd35e2c6617d0990296b59fbc6706d743d1b46304b0048e60",
+          "tokens": null,
+          "token_coverage": "unavailable",
+          "executor": "native",
+          "spend_consumption_refs": [],
+          "external_mutation_receipt_refs": [],
+          "digest": "sha256:e31d00b3674f282a2741b9708241d06fdceba600ca4b1798d31b51d28ad495cb"
+        }
+      },
+      "expected": {
+        "action": "pause",
+        "error": {
+          "code": "token_coverage_unavailable",
+          "receipt_id": "receipt-unmeasured"
+        },
+        "tokens_counted": null
+      },
+      "input_digest": "sha256:d9fa6ad8a5966d7d5aeeedb3fe68238b804ececc48e297dcdbbfc23c5030ae73"
+    },
+    {
+      "id": "closeout-blocked",
+      "input": {
+        "receipt": {
+          "schema": "closeout-receipt/v1",
+          "closeout_id": "closeout-1",
+          "mission_id": "mission-efficiency",
+          "definition_ref": "studio-execution-efficiency-v1",
+          "integration_head": "abc1234",
+          "track_result_refs": [
+            "result-STUDIO",
+            "result-WORKER"
+          ],
+          "verification_evidence_refs": [],
+          "review_lease_refs": [],
+          "delivery_receipt_refs": [],
+          "external_mutation_receipt_refs": [],
+          "cleanup_receipt_refs": [],
+          "preserved_user_change_refs": [],
+          "open_findings": [
+            "F-1"
+          ],
+          "result": "blocked",
+          "closed_at": null,
+          "digest": "sha256:5bae58d37ca18bd9bb5c5bc5d8f780cf17a298cb6899835ab83d72fedfb485e4"
+        }
+      },
+      "expected": {
+        "action": "reject",
+        "error": {
+          "code": "closeout_incomplete",
+          "missing": [
+            "verification_evidence_refs",
+            "review_lease_refs",
+            "delivery_receipt_refs",
+            "cleanup_receipt_refs"
+          ],
+          "open_findings": [
+            "F-1"
+          ]
+        }
+      },
+      "input_digest": "sha256:2d67e3136c6724cbfa5dc51bebb606f7eda2690758c54ad05179777c992fd1af"
+    }
+  ],
+  "digest": "sha256:7df570d1faaba445865c74fd6dffff73178f0102cd3a5728183abf6791ce2b65"
+}

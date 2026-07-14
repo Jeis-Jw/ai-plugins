@@ -30,6 +30,12 @@ started → running → verified → done → closed
 
 각 전이는 idempotent하다. `verify` event에는 구조화된 evidence를 붙인다. `ready`는 같은 artifact digest에 pin된 closed blocker만 완료로 인정하며, active run이 중복되면 fail-closed한다. provider snapshot에서는 unknown blocker를 미해결로 유지하고 dependency cycle이면 부분 ready set도 반환하지 않는다.
 
+## 0.5.0 execution control
+
+Studio와 task-worker는 repo root `tests/fixtures/studio-verification-contract-v1.json`의 `studio-verification-contract-set/v1`을 공유한다. task-worker는 command profile과 impact rule로 허용 QA mode/명령을 결정하고, profile과 다른 argv·사유 없는 full QA·동일 physical identity의 중복 claim을 실행 전에 거부한다.
+
+physical identity는 `head + command_digest + environment_digest + tool_version + purpose + optional fresh_requirement_id`만 사용한다. definition/node/cycle/unit/target/profile id는 attribution이며 identity에 섞지 않는다. 성공 결과는 immutable command receipt와 verification evidence의 digest/source binding이 유효할 때만 재사용한다. 이 제어층은 logical node 분해, 전체 ready set, worktree 격리, 독립 review와 root integration gate를 줄이지 않는다.
+
 ## 0.4.0 review lease
 
 `review_leases[]`는 provider dependency가 아니라 reviewer 소유권 fencing이다. exact fields는 `schema, lease_id, owner, provider, episode_id, edge_id, requirement, criteria_digest, evidence_refs, digest`이며 canonical digest와 `lease_id`/`edge_id` 유일성을 검증한다.

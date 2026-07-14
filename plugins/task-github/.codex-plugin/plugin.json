@@ -1,6 +1,6 @@
 {
   "name": "task-github",
-  "version": "0.23.0",
+  "version": "0.24.0",
   "description": "GitHub adapter for task-worker Issue Trees, PR transport, externally owned review handoffs, and gated closeout.",
   "author": {
     "name": "Jinwuk-Lee",

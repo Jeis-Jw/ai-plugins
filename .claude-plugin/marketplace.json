@@ -15,7 +15,7 @@
       "name": "task-github",
       "source": "./plugins/task-github",
       "description": "task-worker 의존 GitHub adapter — Issue Tree·PR transport와 externally-owned review closeout gate",
-      "version": "0.23.0"
+      "version": "0.24.0"
     },
     {
       "name": "session-review",
@@ -27,13 +27,13 @@
       "name": "studio",
       "source": "./plugins/studio",
       "description": "Native-first 에이전트 팀 — 명시적 도구 라우팅, Claude/Codex agent 정책, 단일 review owner와 evidence 재사용",
-      "version": "0.5.0"
+      "version": "0.6.0"
     },
     {
       "name": "task-worker",
       "source": "./plugins/task-worker",
       "description": "Provider-neutral WorkGraph, 병렬 ready-set, 통합 gate, evidence 재사용과 단일 review owner permit 플러그인",
-      "version": "0.4.0"
+      "version": "0.5.0"
     }
   ]
 }

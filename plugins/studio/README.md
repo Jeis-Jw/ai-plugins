@@ -245,6 +245,8 @@ python3 plugins/studio/scripts/studio.py cast suggest implementation
 
 ## 상태
 
+v0.6.0 — canonical command profile·impact permit, atomic physical execution claim, immutable receipt/evidence, run cap·telemetry·external spend gate를 추가했다. 분해·ready-set 병렬성·독립 검증·통합 HEAD full gate는 유지하고 동일 물리 실행과 stale context 재수집만 차단한다.
+
 v0.5.0 — native 기본·명시적 외부 도구 라우팅, Claude/Codex agent profile, 단일 review lease owner, capability/evidence 재사용과 development→integration full→finding delta QA 계약.
 
 v0.4.0 — stable review cycle·delta/full QA gate·evidence reuse·compact handoff·Issue event projection.
