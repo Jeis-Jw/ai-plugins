@@ -2959,7 +2959,12 @@ def cmd_routing_plan(args: argparse.Namespace) -> None:
         plan["plan_id"] = "routing-" + digest.split(":", 1)[1][:16]
         plan["digest"] = _routing_plan_digest(plan)
         edge_changed = False
-        if review_lease and action == "dispatch":
+        # A canonical lease owns its edge as soon as routing accepts it, even
+        # while an external capability probe is pending. The only exception is
+        # the explicit session-review -> native replan path: that action asks
+        # the producer to replace the old provider-specific lease before any
+        # dispatch, so pinning it would make the required replan impossible.
+        if review_lease and action != "review-lease-replan-required":
             edges = board.setdefault("review_lease_edges", {})
             prior = edges.get(review_lease["edge_id"])
             if prior is not None and prior != review_lease["digest"]:
