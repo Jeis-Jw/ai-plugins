@@ -168,6 +168,7 @@ ledger v3는 비용 분석과 evidence reuse를 위해 `github_reads`, `read_dec
 
 ## 변경 이력
 
+- `0.24.0`: task-worker 0.5.0의 execution-control preflight·claim·completion을 exact bridge로 소비하고 immutable receipt/evidence reference만 GitHub ledger에 투영한다. GitHub adapter는 planner·중복 실행 판단·QA 범위를 재구현하지 않으며 Issue Tree·PR/CI/review·merge/closeout 책임은 유지한다.
 - `0.23.0`: task-worker 0.4.0의 exact review lease/permit preflight를 추가했다. Studio-owned review는 GitHub PR/CI/transport를 유지한 externally-owned ledger handoff로 전환하고, 동일 lease의 approved verdict와 evidence 전 closeout을 차단한다. standalone/task-worker-owned review 흐름은 유지한다.
 - `0.22.0`: `.task-worker.yml`/`.task-github.yml` 설정 경계를 분리하고 legacy translation warning을 추가했다. 기존 Issue Tree를 `manual|worker` dispatch의 DefinitionArtifact/work-graph/binding으로 가져오는 import 경로와 TASK/root Issue 기반 세션 재개를 추가했다.
 - `0.21.0`: provider-neutral 실행 코어를 `task-worker` 0.2.0으로 완전히 위임했다. `task_worker_bridge.py`의 capability preflight와 versioned JSON contract, `github_projection.py`의 GitHub binding checkpoint를 추가했고, 기존 `definition_artifact.py`는 호환 forwarder로 축소했다. GitHub Issue snapshot은 `task-worker.work-graph/v1`로 변환해 공통 ready/integration planner를 사용하며 기존 ready-leaf 병렬성, gear, PR/review, merge/closeout gate는 그대로 유지한다.

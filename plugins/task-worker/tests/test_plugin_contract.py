@@ -41,7 +41,7 @@ class PluginContractTests(unittest.TestCase):
         )
         payload = json.loads(result.stdout)
         self.assertEqual(payload["plugin"], "task-worker")
-        self.assertEqual(payload["version"], "0.4.0")
+        self.assertEqual(payload["version"], "0.5.0")
         self.assertEqual(payload["contracts"]["work_graph"], "task-worker.work-graph/v1")
         self.assertEqual(payload["contracts"]["binding"], "task-worker.provider-binding/v1")
         self.assertEqual(payload["contracts"]["review_lease"], "workflow-review-lease/v1")

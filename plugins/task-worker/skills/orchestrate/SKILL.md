@@ -26,6 +26,8 @@ python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py
 - `owner=task-worker`: 선택한 native/session-review reviewer를 기존 흐름으로 dispatch한다.
 - `owner=studio`: reviewer를 dispatch하지 않고 `externally-owned` handoff를 Studio에 반환한다.
 - permit은 reviewer dispatch만 제어한다. `run`, `verify`, `done`, integration evidence와 gate는 어떤 owner에서도 생략하지 않는다.
+- 각 lane의 physical command는 실행 직전 atomic execution claim을 가져야 한다. 같은 identity의 active claim은 중복 dispatch하지 않고, 성공 evidence는 applicability가 맞을 때만 재사용하며, run cap은 owner-visible STOP으로 올린다.
+- merge로 새 head가 생긴 `integration_candidates[]`는 `purpose: integration-full`로 별도 identity를 만들고 최종 integration gate를 1회 수행한다. leaf delta receipt나 reviewer receipt로 이를 대체하지 않는다.
 
 ```bash
 python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py" ready \

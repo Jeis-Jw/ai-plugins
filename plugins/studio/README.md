@@ -19,7 +19,7 @@ dev↔qa 공방)이 **실제 품질을 만드는가**이며, 그 판정을 criti
 | 요소 | 위치 | 역할 |
 |---|---|---|
 | producer 스킬 | `skills/producer/` | 메인스레드 규약: 소집·중계·게이트, 직접 제작·판단 대리 금지 |
-| studio CLI | `scripts/studio.py` | 결정적 상태: schema 2 board, QualityPlan, Context Kernel, fenced lease·budget, WorkPacket/ResultEnvelope |
+| studio CLI | `scripts/studio.py` | 결정적 상태: schema 2 board, QualityPlan, Context Kernel, fenced lease·budget, WorkPacket/ResultEnvelope, native execution permit/receipt/closeout |
 | agent 정책 | `.studio.yml` (repo 루트, `config scaffold`로 생성) | crew 서브에이전트의 model/effort 층별 설정 |
 | 브로커 | `broker/brainstorm.workflow.js`, `broker/pairing.workflow.js` | ritual 실행체(Workflow) — transcript 릴레이, 순수 오케스트레이션(fs 없음) |
 | crew | `crew/*.md` | 페르소나 데이터(name·role·prior·requested_tools·activation) — init이 `.studio/crew/`로 복사 |
@@ -244,6 +244,8 @@ python3 plugins/studio/scripts/studio.py cast suggest implementation
 외부 공개(발행·배포·계정) / 예산 상향.
 
 ## 상태
+
+v0.6.0 — canonical command profile·impact permit, atomic physical execution claim, immutable receipt/evidence, run cap·telemetry·external spend gate를 추가했다. 분해·ready-set 병렬성·독립 검증·통합 HEAD full gate는 유지하고 동일 물리 실행과 stale context 재수집만 차단한다.
 
 v0.5.0 — native 기본·명시적 외부 도구 라우팅, Claude/Codex agent profile, 단일 review lease owner, capability/evidence 재사용과 development→integration full→finding delta QA 계약.
 

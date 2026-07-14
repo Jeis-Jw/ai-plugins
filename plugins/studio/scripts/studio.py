@@ -29,6 +29,7 @@ import contextlib
 import datetime
 import fcntl
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -37,6 +38,35 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any
+
+try:
+    import execution_control as _execution_control
+except ModuleNotFoundError:  # importlib callers may not add this script directory to sys.path
+    _execution_spec = importlib.util.spec_from_file_location(
+        "studio_execution_control", Path(__file__).with_name("execution_control.py")
+    )
+    if _execution_spec is None or _execution_spec.loader is None:  # pragma: no cover
+        raise
+    _execution_control = importlib.util.module_from_spec(_execution_spec)
+    _execution_spec.loader.exec_module(_execution_control)
+
+EXECUTION_CONTRACT_DIGEST = _execution_control.CONTRACT_DIGEST
+ExecutionControlError = _execution_control.ControlError
+execution_dispatch = _execution_control.dispatch
+execution_evidence_applicability = _execution_control.evidence_applicability
+execution_efficiency_summary = _execution_control.efficiency_summary
+ensure_execution_state = _execution_control.ensure_execution_state
+evaluate_golden_case = _execution_control.evaluate_golden_case
+execution_invalidate_evidence = _execution_control.invalidate_evidence
+load_execution_contract = _execution_control.load_contract
+execution_physical_key = _execution_control.physical_key
+record_capability_snapshot = _execution_control.record_capability_snapshot
+execution_record_closeout = _execution_control.record_closeout
+execution_record_closeout_ref = _execution_control.record_closeout_ref
+execution_record_evidence = _execution_control.record_evidence
+execution_record_permit_plan = _execution_control.record_permit_plan
+execution_record_result = _execution_control.record_result
+validate_execution_instance = _execution_control.validate_instance
 
 
 JSON_FENCE_RE = re.compile(r"```json[ \t]*\n(.*?)\n```", re.DOTALL)
@@ -1983,34 +2013,54 @@ def cmd_review_plan_next(args: argparse.Namespace) -> None:
     tool_version = _review_text(args.tool_version, "tool_version")
     changed_paths = _review_string_list(args.changed_path or [], "changed_paths")
     allowed_commands = _review_string_list(args.allowed_command or [], "allowed_commands")
+    mission_id = validate_safe_id(args.mission_id or cycle_id, "mission_id")
+    permit_id = validate_safe_id(args.permit_id, "permit_id") if args.permit_id else None
+    command_profile_id = validate_safe_id(args.command_profile_id, "command_profile_id") if args.command_profile_id else None
+    surface_digest = _review_digest(args.surface_digest, "surface_digest") if args.surface_digest else None
+    fresh_requirement_id = validate_safe_id(args.fresh_requirement_id, "fresh_requirement_id") if args.fresh_requirement_id else None
+    required_independence = args.required_independence
     requested_reason = args.full_qa_reason
     if requested_reason is not None and requested_reason not in FULL_QA_REASONS:
         fail(6, "invalid_full_qa_reason", f"full QA reason must be one of {sorted(FULL_QA_REASONS)}")
 
     with board_transaction(ws) as board:
         cycle = _review_cycle_from_board(board, cycle_id)
-        valid = [item for item in cycle["evidence"].values() if item.get("status") == "valid"]
+        state = ensure_execution_state(board)
         invalidated = sorted(
             item["ref"] for item in cycle["evidence"].values()
             if item.get("status") == "invalidated"
         )
-        exact = next((
-            item for item in valid
-            if item["head"] == head
-            and item["command_digest"] == command_digest
-            and item["environment_digest"] == environment_digest
-            and item["tool_version"] == tool_version
-        ), None)
-        physical_key = canonical_digest({
-            "cycle_id": cycle_id, "head": head, "command_digest": command_digest,
-            "environment_digest": environment_digest, "tool_version": tool_version,
-        })
         reason = "integration-gate" if args.integration_gate else (
             requested_reason or cycle.get("required_full_qa_reason")
         )
+        intended_qa_mode = "full" if reason else "delta"
+        purpose = args.purpose or ("integration-full" if args.integration_gate else (
+            "verification" if reason else "delta"
+        ))
+        permit_shape = {
+            "head": head,
+            "command_digest": command_digest,
+            "environment_digest": environment_digest,
+            "tool_version": tool_version,
+            "purpose": purpose,
+            "target": "repository",
+            "fresh_requirement_id": fresh_requirement_id,
+            "criteria_digest": cycle["criteria_digest"],
+            "impact_set": changed_paths,
+        }
+        physical_key = execution_physical_key(permit_shape)
+        exact = next((
+            item for item in state["evidence"].values()
+            if surface_digest is not None and changed_paths and execution_evidence_applicability(
+                permit_shape,
+                item,
+                surface_digest=surface_digest,
+                required_independence=required_independence,
+            )[0]
+        ), None)
         if exact is not None:
-            action, qa_mode, physical_runs = "reuse-evidence", "delta", 0
-            reused = [exact["ref"]]
+            action, qa_mode, physical_runs = "reuse-evidence", intended_qa_mode, 0
+            reused = [exact["evidence_id"]]
             cycle["counters"]["duplicate_prevented"] = int(
                 cycle["counters"].get("duplicate_prevented") or 0
             ) + 1
@@ -2028,7 +2078,7 @@ def cmd_review_plan_next(args: argparse.Namespace) -> None:
                 action, qa_mode, physical_runs = "full-qa", "full", 1
             else:
                 action, qa_mode, physical_runs = "delta-qa", "delta", 1
-            reused = sorted(item["ref"] for item in valid)
+            reused = []
 
         open_findings = sorted(
             item["id"] for item in cycle["findings"].values()
@@ -2038,11 +2088,22 @@ def cmd_review_plan_next(args: argparse.Namespace) -> None:
             "schema": "studio-review-next-action/v1",
             "cycle_id": cycle_id,
             "episode_id": cycle_id,
+            "permit_id": permit_id,
+            "mission_id": mission_id,
             "head": head,
             "physical_key": physical_key,
             "action": action,
             "qa_mode": qa_mode,
+            "purpose": purpose,
             "impact_set": changed_paths,
+            "command_profile_id": command_profile_id,
+            "command_digest": command_digest,
+            "environment_digest": environment_digest,
+            "tool_version": tool_version,
+            "fresh_requirement_id": fresh_requirement_id,
+            "criteria_digest": cycle["criteria_digest"],
+            "surface_digest": surface_digest,
+            "required_independence": required_independence,
             "allowed_commands": allowed_commands,
             "full_qa_reason": reason if qa_mode == "full" else None,
             "open_findings": open_findings,
@@ -2051,8 +2112,13 @@ def cmd_review_plan_next(args: argparse.Namespace) -> None:
             "physical_runs": physical_runs,
             "duplicate_prevented": board.setdefault("workflow_counters", {}).get("duplicate_prevented", 0),
             "telemetry_gate": "paused" if action == "pause" else "open",
+            "dispatchable": bool(
+                action in ("delta-qa", "full-qa")
+                and permit_id and command_profile_id and surface_digest and changed_paths
+            ),
         }
         plan["digest"] = canonical_digest(plan)
+        execution_record_permit_plan(state, plan)
     ok(plan=plan)
 
 
@@ -3617,6 +3683,239 @@ def cmd_workflow_promote(args: argparse.Namespace) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# native execution control — permit/profile/claim/receipt/evidence/closeout
+# --------------------------------------------------------------------------- #
+def _execution_contract() -> tuple[dict, Path]:
+    try:
+        return load_execution_contract(plugin_root())
+    except ExecutionControlError as exc:
+        fail(6, exc.code, exc.message, **exc.details)
+
+
+def _execution_failure(exc: ExecutionControlError) -> None:
+    fail(6, exc.code, exc.message, **exc.details)
+
+
+def cmd_execution_contract(args: argparse.Namespace) -> None:
+    contract, path = _execution_contract()
+    results = []
+    try:
+        for case in contract["golden_cases"]:
+            actual = evaluate_golden_case(contract, case)
+            if actual != case["expected"]:
+                raise ExecutionControlError(
+                    "golden_case_failed",
+                    f"canonical golden case failed: {case['id']}",
+                    expected=case["expected"],
+                    actual=actual,
+                )
+            results.append(case["id"])
+    except ExecutionControlError as exc:
+        _execution_failure(exc)
+    ok(
+        schema=contract["schema"],
+        digest=contract["digest"],
+        expected_digest=EXECUTION_CONTRACT_DIGEST,
+        path=str(path),
+        golden_cases=results,
+    )
+
+
+def cmd_execution_golden(args: argparse.Namespace) -> None:
+    contract, _ = _execution_contract()
+    selected = [
+        case for case in contract["golden_cases"]
+        if args.case == "all" or case["id"] == args.case
+    ]
+    if not selected:
+        fail(4, "golden_case_not_found", f"golden case not found: {args.case}")
+    results = {}
+    try:
+        for case in selected:
+            actual = evaluate_golden_case(contract, case)
+            if actual != case["expected"]:
+                raise ExecutionControlError(
+                    "golden_case_failed",
+                    f"canonical golden case failed: {case['id']}",
+                    expected=case["expected"],
+                    actual=actual,
+                )
+            results[case["id"]] = actual
+    except ExecutionControlError as exc:
+        _execution_failure(exc)
+    ok(contract_digest=contract["digest"], results=results)
+
+
+def _validate_execution_routing_source(board: dict, request: Any) -> None:
+    if not isinstance(request, dict) or not isinstance(request.get("permit"), dict):
+        return
+    source = request.get("permit_source")
+    if not isinstance(source, dict):
+        return
+    permit = request["permit"]
+    digest = source.get("routing_plan_digest")
+    matching = [
+        plan for plan in board.setdefault("routing_plans", {}).values()
+        if isinstance(plan, dict)
+        and plan.get("mission_id") == permit.get("mission_id")
+        and plan.get("environment_digest") == permit.get("environment_digest")
+    ]
+    if digest is None:
+        if matching:
+            raise ExecutionControlError(
+                "routing_plan_required",
+                "execution permit source must pin the configured routing plan",
+            )
+        if request.get("executor") != "native":
+            raise ExecutionControlError(
+                "routing_executor_mismatch",
+                "routing-plan absence preserves only the direct native execution path",
+            )
+        return
+    plan = board["routing_plans"].get(digest)
+    if plan is None or plan not in matching or plan.get("digest") != digest:
+        raise ExecutionControlError("routing_plan_unpinned", "execution permit source routing plan is not pinned")
+    if plan.get("action") != "dispatch" or plan.get("worker", {}).get("selected") != request.get("executor"):
+        raise ExecutionControlError("routing_executor_mismatch", "execution permit source differs from configured routing")
+
+
+def cmd_execution_dispatch(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    contract, _ = _execution_contract()
+    request = load_json_arg(args.json, "native execution dispatch")
+    try:
+        with board_transaction(ws) as board:
+            _validate_execution_routing_source(board, request)
+            state = ensure_execution_state(board)
+            decision = execution_dispatch(state, contract, request)
+    except ExecutionControlError as exc:
+        _execution_failure(exc)
+    ok(contract_digest=contract["digest"], decision=decision)
+
+
+def cmd_execution_capability(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    contract, _ = _execution_contract()
+    snapshot = load_json_arg(args.json, "capability snapshot")
+    try:
+        with board_transaction(ws) as board:
+            state = ensure_execution_state(board)
+            snapshot, changed = record_capability_snapshot(state, contract, snapshot)
+    except ExecutionControlError as exc:
+        _execution_failure(exc)
+    ok(contract_digest=contract["digest"], snapshot=snapshot, changed=changed)
+
+
+def cmd_execution_result(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    contract, _ = _execution_contract()
+    request = load_json_arg(args.json, "native execution result")
+    try:
+        with board_transaction(ws) as board:
+            state = ensure_execution_state(board)
+            decision = execution_record_result(state, contract, request)
+    except ExecutionControlError as exc:
+        _execution_failure(exc)
+    ok(contract_digest=contract["digest"], decision=decision)
+
+
+def cmd_execution_evidence(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    contract, _ = _execution_contract()
+    evidence = load_json_arg(args.json, "verification evidence")
+    try:
+        with board_transaction(ws) as board:
+            state = ensure_execution_state(board)
+            decision = execution_record_evidence(state, contract, evidence)
+    except ExecutionControlError as exc:
+        _execution_failure(exc)
+    ok(contract_digest=contract["digest"], decision=decision)
+
+
+def cmd_execution_invalidate(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    contract, _ = _execution_contract()
+    evidence_id = validate_safe_id(args.evidence_id, "evidence_id")
+    change = load_json_arg(args.change, "evidence change")
+    try:
+        with board_transaction(ws) as board:
+            state = ensure_execution_state(board)
+            decision = execution_invalidate_evidence(state, contract, evidence_id, change)
+    except ExecutionControlError as exc:
+        _execution_failure(exc)
+    ok(contract_digest=contract["digest"], decision=decision)
+
+
+def _accepted_review_lease_for_closeout(board: dict, receipt: dict) -> dict | None:
+    if receipt.get("kind") != "review-verdict":
+        return None
+    for value in board.setdefault("review_lease_edges", {}).values():
+        if not isinstance(value, dict):
+            continue
+        reservation = _validate_review_edge_reservation(value)
+        lease = reservation.get("accepted_lease")
+        if (
+            reservation.get("state") == "accepted"
+            and reservation.get("mission_id") == receipt.get("mission_id")
+            and isinstance(lease, dict)
+            and lease.get("lease_id") == receipt.get("ref_id")
+        ):
+            return lease
+    return None
+
+
+def cmd_execution_closeout_ref(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    receipt = load_json_arg(args.json, "typed closeout prerequisite")
+    try:
+        with board_transaction(ws) as board:
+            state = ensure_execution_state(board)
+            decision = execution_record_closeout_ref(
+                state,
+                receipt,
+                accepted_review_lease=_accepted_review_lease_for_closeout(board, receipt),
+            )
+    except ExecutionControlError as exc:
+        _execution_failure(exc)
+    ok(decision=decision)
+
+
+def cmd_execution_closeout(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    contract, _ = _execution_contract()
+    receipt = load_json_arg(args.receipt, "closeout receipt")
+    try:
+        with board_transaction(ws) as board:
+            state = ensure_execution_state(board)
+            decision = execution_record_closeout(state, contract, receipt)
+    except ExecutionControlError as exc:
+        _execution_failure(exc)
+    ok(contract_digest=contract["digest"], decision=decision)
+
+
+def cmd_execution_summary(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    contract, _ = _execution_contract()
+    mission_id = validate_safe_id(args.mission_id, "mission_id")
+    try:
+        board = load_board(ws)
+        state = ensure_execution_state(board)
+        summary = execution_efficiency_summary(state, mission_id)
+        validate_execution_instance(contract, "efficiency-summary", summary)
+    except ExecutionControlError as exc:
+        _execution_failure(exc)
+    ok(contract_digest=contract["digest"], summary=summary, read_only=True)
+
+
+# --------------------------------------------------------------------------- #
 # board / evidence (read-only)
 # --------------------------------------------------------------------------- #
 def cmd_board(args: argparse.Namespace) -> None:
@@ -3790,9 +4089,19 @@ def build_parser() -> argparse.ArgumentParser:
     rnext = rvsub.add_parser("plan-next", help="plan the next allowed physical QA action")
     rnext.add_argument("cycle_id")
     rnext.add_argument("--head", required=True)
+    rnext.add_argument("--mission-id")
+    rnext.add_argument("--permit-id")
+    rnext.add_argument("--command-profile-id")
     rnext.add_argument("--command-digest", required=True)
     rnext.add_argument("--environment-digest", required=True)
     rnext.add_argument("--tool-version", required=True)
+    rnext.add_argument("--surface-digest")
+    rnext.add_argument("--purpose", choices=(
+        "verification", "development", "delta", "integration-full", "finding-delta",
+        "release-artifact", "device-check", "production-preflight", "capability-probe",
+    ))
+    rnext.add_argument("--fresh-requirement-id")
+    rnext.add_argument("--required-independence", choices=("self", "independent", "not-applicable"))
     rnext.add_argument("--changed-path", action="append")
     rnext.add_argument("--allowed-command", action="append")
     rnext.add_argument("--full-qa-reason", choices=sorted(FULL_QA_REASONS))
@@ -3932,6 +4241,39 @@ def build_parser() -> argparse.ArgumentParser:
     wp.add_argument("--provider-status", required=True, choices=("available", "unavailable", "unknown"))
     wp.add_argument("--owner-approved", action="store_true")
     wp.set_defaults(func=cmd_workflow_promote)
+
+    sp = sub.add_parser("execution", help="provider-neutral native execution control")
+    exsub = sp.add_subparsers(dest="execution_command", required=True)
+    exc = exsub.add_parser("contract", help="validate the exact canonical contract and all golden cases")
+    exc.set_defaults(func=cmd_execution_contract)
+    exg = exsub.add_parser("golden", help="evaluate canonical executable golden cases")
+    exg.add_argument("--case", default="all")
+    exg.set_defaults(func=cmd_execution_golden)
+    exd = exsub.add_parser("dispatch", help="validate command policy and atomically claim a physical run")
+    exd.add_argument("--json", required=True, help="dispatch request JSON (inline, @file, or -)")
+    exd.set_defaults(func=cmd_execution_dispatch)
+    excap = exsub.add_parser("capability", help="pin one mission/capability/environment probe result")
+    excap.add_argument("--json", required=True, help="capability-snapshot/v1 JSON")
+    excap.set_defaults(func=cmd_execution_capability)
+    exr = exsub.add_parser("result", help="ingest a permit-bound command and mutation receipt")
+    exr.add_argument("--json", required=True, help="result request JSON")
+    exr.set_defaults(func=cmd_execution_result)
+    exe = exsub.add_parser("evidence", help="ingest receipt-bound verification evidence")
+    exe.add_argument("--json", required=True, help="verification-evidence/v1 JSON")
+    exe.set_defaults(func=cmd_execution_evidence)
+    exi = exsub.add_parser("invalidate", help="immutably invalidate evidence after an applicability change")
+    exi.add_argument("evidence_id")
+    exi.add_argument("--change", required=True, help="criteria/path/surface change JSON")
+    exi.set_defaults(func=cmd_execution_invalidate)
+    exref = exsub.add_parser("closeout-ref", help="pin one typed immutable closeout prerequisite")
+    exref.add_argument("--json", required=True, help="studio-closeout-ref/v1 JSON")
+    exref.set_defaults(func=cmd_execution_closeout_ref)
+    exclose = exsub.add_parser("closeout", help="reconcile integration-head closeout receipts")
+    exclose.add_argument("--receipt", required=True, help="closeout-receipt/v1 JSON")
+    exclose.set_defaults(func=cmd_execution_closeout)
+    exs = exsub.add_parser("summary", help="read-only mission efficiency summary")
+    exs.add_argument("--mission-id", required=True)
+    exs.set_defaults(func=cmd_execution_summary)
 
     sp = sub.add_parser("cast", help="producer crew casting policy")
     casub = sp.add_subparsers(dest="castcmd", required=True)

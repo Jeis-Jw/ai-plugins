@@ -38,7 +38,7 @@ class TaskWorkerBridgeTests(unittest.TestCase):
         root, payload = bridge.resolve_task_worker_root()
         self.assertEqual(root.name, "task-worker")
         self.assertEqual(payload["plugin"], "task-worker")
-        self.assertEqual(payload["version"], "0.4.0")
+        self.assertEqual(payload["version"], "0.5.0")
         self.assertEqual(payload["contracts"], bridge.REQUIRED_CONTRACTS)
         self.assertEqual(payload["contracts"]["review_permit"], "task-worker.review-permit/v1")
         self.assertTrue(bridge.REQUIRED_COMMANDS.issubset(set(payload["commands"])))
@@ -183,6 +183,76 @@ class TaskWorkerBridgeTests(unittest.TestCase):
             PLUGIN / "skills" / "orchestrate" / "scripts" / "ready_leaves.py"
         ).read_text(encoding="utf-8")
         self.assertIn("task_worker_bridge.plan_graph", ready)
+
+    def test_execution_decision_is_forwarded_without_local_policy(self):
+        decision = {"action": "reuse-evidence", "evidence_refs": ["EV-1"]}
+        with mock.patch.object(
+            bridge, "call_worker", return_value={"decision": decision},
+        ) as call:
+            actual = bridge.evaluate_execution({"permit": {"permit_id": "P-1"}})
+
+        self.assertEqual(actual, decision)
+        call.assert_called_once_with(
+            ["execution-evaluate", "--request", "-"],
+            input_value={"permit": {"permit_id": "P-1"}},
+        )
+
+    def test_execution_bridge_forwards_resolved_command_and_mutation_gate(self):
+        with mock.patch.object(
+            bridge, "call_worker", return_value={"decision": {"action": "claimed"}},
+        ) as call:
+            decision = bridge.claim_execution(
+                "permit.json", state_root="state", claimed_by="worker",
+                profiles_path="profiles.json", impact_rules_path="rules.json",
+                changed_paths=["plugins/task-worker/scripts/execution_control.py"],
+                cwd="plugins/task-worker", environment={"PYTHONPATH": "plugins/task-worker"},
+                authorization_path="authorization.json",
+                preflight_receipt_path="preflight.json",
+            )
+
+        self.assertEqual(decision["action"], "claimed")
+        args = call.call_args.args[0]
+        self.assertEqual(args[0], "execution-claim")
+        self.assertEqual(args[args.index("--cwd") + 1], "plugins/task-worker")
+        self.assertEqual(
+            json.loads(args[args.index("--environment") + 1]),
+            {"PYTHONPATH": "plugins/task-worker"},
+        )
+        self.assertEqual(args[args.index("--authorization") + 1], "authorization.json")
+        self.assertEqual(args[args.index("--preflight-receipt") + 1], "preflight.json")
+
+        with mock.patch.object(
+            bridge, "call_worker", return_value={"completion": {"action": "completed"}},
+        ) as complete_call:
+            completion = bridge.complete_execution(
+                "permit.json", claim_id="claim-1", receipt_path="receipt.json",
+                state_root="state", mutation_receipt_path="mutation.json",
+            )
+
+        self.assertEqual(completion["action"], "completed")
+        complete_args = complete_call.call_args.args[0]
+        self.assertEqual(
+            complete_args[complete_args.index("--mutation-receipt") + 1], "mutation.json",
+        )
+
+    def test_projection_keeps_only_immutable_receipt_and_evidence_refs(self):
+        worker_projection = {
+            "schema": "task-worker.execution-projection/v1",
+            "receipt_ref": {"receipt_id": "R-1", "digest": "sha256:receipt"},
+            "evidence_ref": {"evidence_id": "EV-1", "digest": "sha256:evidence"},
+            "head": "abc123",
+            "result": "pass",
+        }
+        with mock.patch.object(
+            bridge, "call_worker", return_value={"projection": worker_projection},
+        ):
+            projected = bridge.project_execution_receipts("receipt.json", evidence_path="evidence.json")
+
+        self.assertEqual(projected["schema"], "task-github.execution-evidence-ref/v1")
+        self.assertEqual(projected["receipt_ref"], worker_projection["receipt_ref"])
+        self.assertEqual(projected["evidence_ref"], worker_projection["evidence_ref"])
+        self.assertNotIn("command", projected)
+        self.assertNotIn("argv", projected)
 
     def test_projection_reuses_same_artifact_validation_in_process(self):
         artifact = {

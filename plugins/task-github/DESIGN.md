@@ -11,13 +11,17 @@
 >
 > 충돌 시 신뢰 순서: **실행 명세(SKILL/rules/agents) > DESIGN > README**. 결합 규약(policy)은 mechanism(이 문서)과 **다른 계층**이므로 경쟁하지 않고 보완한다.
 
-> **현재 상태(0.23.0)**: provider-neutral DefinitionArtifact, local lifecycle, ready/integration planner와 review lease permit은 `task-worker` 0.4.0이 소유한다. task-github는 versioned JSON CLI bridge로 이를 소비하고 GitHub projection·Issue snapshot adapter·PR/CI/review transport·merge/closeout을 소유한다. 기존 `task-github:*`, Issue-first, `scripts/definition_artifact.py` 호출은 호환 facade로 유지한다. plugin delegation은 subprocess contract 경계이며 추가 agent/session hop이 아니다.
+> **현재 상태(0.24.0)**: provider-neutral DefinitionArtifact, local lifecycle, ready/integration planner, review lease permit과 execution control은 `task-worker` 0.5.0이 소유한다. task-github는 versioned JSON CLI bridge로 이를 소비하고 GitHub projection·Issue snapshot adapter·PR/CI/review transport·merge/closeout을 소유한다. 기존 `task-github:*`, Issue-first, `scripts/definition_artifact.py` 호출은 호환 facade로 유지한다. plugin delegation은 subprocess contract 경계이며 추가 agent/session hop이 아니다.
 
 ---
 
 ## 0. 30초 요약
 
 `task-github`는 `task-worker` 실행 엔진에 GitHub Issue/PR/Label provider를 연결하는 adapter/facade다. GitHub workflow에서는 Issue tree와 dependency가 remote 실행 view이며, task-github가 projection·점유·PR·CI·review·merge·closeout을 집행한다. 같은 마켓플레이스의 **`wiki-markdown` 결정 그래프와 `task` 노드로 연결**되어 작업 흐름이 지식 그래프를 키우도록 한다.
+
+### 0.24.0 execution evidence projection
+
+task-github는 task-worker 0.5.0의 canonical execution-control handshake를 preflight하고 permit decision·atomic claim·completion을 그대로 전달한다. command profile, impact/QA mode, duplicate/run-cap, token policy와 evidence applicability는 재구현하지 않는다. task-worker가 반환한 immutable command receipt와 verification evidence의 id+digest만 Issue ledger와 delivery evidence에 멱등 투영한다. GitHub provider의 PR/CI/review/merge/closeout 의미는 기존 adapter 책임으로 유지한다.
 
 ### 0.23.0 externally-owned review
 
@@ -151,14 +155,14 @@ root issue body에는 optional **Execution Contract** fenced block을 둔다. `s
 ```json
 {
   "name": "task-github",
-  "version": "0.23.0",
+  "version": "0.24.0",
   "description": "task-worker 기반 GitHub Issue tree·PR·merge adapter와 호환 facade"
 }
 ```
 
 루트 `.claude-plugin/marketplace.json`의 `plugins` 배열에 추가:
 ```json
-{ "name": "task-github", "source": "./plugins/task-github", "version": "0.23.0",
+{ "name": "task-github", "source": "./plugins/task-github", "version": "0.24.0",
   "description": "task-worker 기반 GitHub provider adapter와 wiki-markdown task 노드 연계" }
 ```
 

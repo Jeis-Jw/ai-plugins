@@ -136,6 +136,12 @@ QualityPlan을 고정한다. 각 criterion 필수 필드는 `{id, kind, weight, 
 criterion-bound evidence 누락이나 floor 미달은 weighted utility로 상쇄할 수 없다.
 telemetry의 `tokens:null` 또는 필드 누락은 incomplete이며 0으로 대체하지 않는다.
 
+실제 명령 실행, capability probe, 외부 mutation, closeout이 있는 run은 소집 전에
+`references/execution-control.md`를 읽는다. `review plan-next`의 `allowed_commands` 문자열은
+설명용 계획일 뿐 실행 권한이 아니다. canonical command profile과 execution permit을 만들고
+`execution dispatch`의 atomic claim을 받은 명령만 executor에 넘긴다. result와 evidence도 같은
+permit/profile/claim binding으로 회수한다.
+
 장기 입력은 raw transcript가 아니라 digest가 결합된 ContextItem → ContextPack으로 만든다.
 로컬 projection은 `.studio/context/{items,bundles,deltas,outbox}`이고, wiki-markdown은
 필수가 아니다. 기존 `.studio/`를 init/force나 자동 이동으로 덮어쓰지 않는다.

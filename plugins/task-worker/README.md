@@ -87,6 +87,7 @@ python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py
 
 ## 변경 이력
 
+- `0.5.0`: Studio와 공유하는 canonical verification contract를 기준으로 command profile·impact 범위·delta/full QA 허가를 계산하고, atomic physical execution claim, immutable receipt/evidence, run cap, token telemetry와 external spend gate를 추가했다. ready-set 병렬 실행·worktree 격리·독립 검증·통합 gate는 그대로 유지한다.
 - `0.4.0`: exact `workflow-review-lease/v1` binding과 digest/conflict 검증, reviewer dispatch 직전 `review-permit`을 추가했다. Studio-owned review는 externally-owned handoff로 반환하고 task-worker-owned/standalone review, verify evidence, integration gate는 그대로 유지한다.
 - `0.3.0`: `.task-worker.yml`, `dispatch: manual|worker`, provider binding/context/work-graph resume, executable integration gate, evidence fingerprint duplicate guard, provider event receipt를 추가했다. task-github 기존 설정의 generic 실행 정책을 이쪽으로 이동했다.
 - `0.2.0`: task-github가 versioned JSON CLI contract로 planner/local lifecycle을 소비하도록 분리했다.

@@ -1,6 +1,6 @@
 {
   "name": "task-worker",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Provider-neutral work graphs with parallel ready sets, integration gates, pinned evidence, and single-owner review permits.",
   "author": {
     "name": "Jinwuk-Lee",
