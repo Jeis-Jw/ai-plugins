@@ -34,6 +34,8 @@ started → running → verified → done → closed
 
 Studio와 task-worker는 repo root `tests/fixtures/studio-verification-contract-v1.json`의 `studio-verification-contract-set/v1`을 공유한다. task-worker는 command profile과 impact rule로 허용 QA mode/명령을 결정하고, profile과 다른 argv·사유 없는 full QA·동일 physical identity의 중복 claim을 실행 전에 거부한다.
 
+`command_digest`의 canonical preimage는 두 consumer 모두 실제 실행 직전 해석된 `{executable,args,cwd,environment}`다. profile/cycle/unit/target 같은 attribution은 command digest나 physical identity에 넣지 않는다.
+
 physical identity는 `head + command_digest + environment_digest + tool_version + purpose + optional fresh_requirement_id`만 사용한다. definition/node/cycle/unit/target/profile id는 attribution이며 identity에 섞지 않는다. 성공 결과는 immutable command receipt와 verification evidence의 digest/source binding이 유효할 때만 재사용한다. 이 제어층은 logical node 분해, 전체 ready set, worktree 격리, 독립 review와 root integration gate를 줄이지 않는다.
 
 ## 0.4.0 review lease
