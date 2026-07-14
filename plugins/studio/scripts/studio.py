@@ -29,6 +29,7 @@ import contextlib
 import datetime
 import fcntl
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -38,21 +39,30 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from execution_control import (
-    CONTRACT_DIGEST as EXECUTION_CONTRACT_DIGEST,
-    ControlError as ExecutionControlError,
-    dispatch as execution_dispatch,
-    efficiency_summary as execution_efficiency_summary,
-    ensure_execution_state,
-    evaluate_golden_case,
-    invalidate_evidence as execution_invalidate_evidence,
-    load_contract as load_execution_contract,
-    record_capability_snapshot,
-    record_closeout as execution_record_closeout,
-    record_evidence as execution_record_evidence,
-    record_result as execution_record_result,
-    validate_instance as validate_execution_instance,
-)
+try:
+    import execution_control as _execution_control
+except ModuleNotFoundError:  # importlib callers may not add this script directory to sys.path
+    _execution_spec = importlib.util.spec_from_file_location(
+        "studio_execution_control", Path(__file__).with_name("execution_control.py")
+    )
+    if _execution_spec is None or _execution_spec.loader is None:  # pragma: no cover
+        raise
+    _execution_control = importlib.util.module_from_spec(_execution_spec)
+    _execution_spec.loader.exec_module(_execution_control)
+
+EXECUTION_CONTRACT_DIGEST = _execution_control.CONTRACT_DIGEST
+ExecutionControlError = _execution_control.ControlError
+execution_dispatch = _execution_control.dispatch
+execution_efficiency_summary = _execution_control.efficiency_summary
+ensure_execution_state = _execution_control.ensure_execution_state
+evaluate_golden_case = _execution_control.evaluate_golden_case
+execution_invalidate_evidence = _execution_control.invalidate_evidence
+load_execution_contract = _execution_control.load_contract
+record_capability_snapshot = _execution_control.record_capability_snapshot
+execution_record_closeout = _execution_control.record_closeout
+execution_record_evidence = _execution_control.record_evidence
+execution_record_result = _execution_control.record_result
+validate_execution_instance = _execution_control.validate_instance
 
 
 JSON_FENCE_RE = re.compile(r"```json[ \t]*\n(.*?)\n```", re.DOTALL)
