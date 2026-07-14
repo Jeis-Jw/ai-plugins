@@ -935,14 +935,14 @@ def main() -> None:
         ], tmp, expect=6)
         assert r["error_code"] == "review_edge_rebind", r
 
-        # 9d) review planner reuses an identical physical key, otherwise emits delta/full only.
+        # 9d) legacy review pins are advisory; only canonical execution evidence may suppress a run.
         r = run([
             "review", "plan-next", "RC-issue-58", "--head", "abc124", "--command-digest", sha("d"),
             "--environment-digest", sha("c"), "--tool-version", "pytest-9",
             "--allowed-command", "pytest tests/test_parser.py",
         ], tmp)
-        assert r["plan"]["action"] == "reuse-evidence" and r["plan"]["physical_runs"] == 0, r
-        assert r["plan"]["duplicate_prevented"] >= 1, r
+        assert r["plan"]["action"] == "delta-qa" and r["plan"]["physical_runs"] == 1, r
+        assert not r["plan"]["dispatchable"], r
         r = run([
             "review", "plan-next", "RC-issue-58", "--head", "abc125", "--command-digest", sha("e"),
             "--environment-digest", sha("c"), "--tool-version", "pytest-9", "--integration-gate",
