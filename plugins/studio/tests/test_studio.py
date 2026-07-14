@@ -32,6 +32,46 @@ def sha(char: str) -> str:
     return "sha256:" + char * 64
 
 
+def digest(value: dict) -> str:
+    import hashlib
+    payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def review_lease(
+    lease_id: str, edge_id: str, *, owner: str = "studio",
+    provider: str = "native", requirement: str = "self",
+) -> dict:
+    value = {
+        "schema": "workflow-review-lease/v1",
+        "lease_id": lease_id,
+        "owner": owner,
+        "provider": provider,
+        "episode_id": "episode-1",
+        "edge_id": edge_id,
+        "requirement": requirement,
+        "criteria_digest": sha("a"),
+        "evidence_refs": [],
+    }
+    return {**value, "digest": digest(value)}
+
+
+def capability(provider: str, mission: str, environment: str, status: str = "available") -> dict:
+    contracts = {
+        "task-worker": ["work-packet/v1", "workflow-review-lease/v1", "task-worker.review-permit/v1"],
+        "task-github": ["work-packet/v1", "workflow-review-lease/v1", "task-worker.review-permit/v1"],
+        "session-review": ["workflow-review-lease/v1"],
+    }[provider]
+    return {
+        "schema": "studio-capability-snapshot/v1",
+        "provider": provider,
+        "mission_id": mission,
+        "environment_digest": environment,
+        "status": status,
+        "contracts": contracts,
+    }
+
+
 def review_event(cycle_id: str, event_id: str, event_type: str, **fields) -> dict:
     return {
         "schema": "studio-review-event/v1",
@@ -726,6 +766,219 @@ def main() -> None:
         #    absent config → present False, everything inherits the session
         r = run(["config", "get", "--path", str(tmp / "none.yml")], tmp)
         assert r["present"] is False and r["config"] == {}, r
+
+        # 9a) config is structurally fail-closed while model ids remain provider-owned strings
+        (tmp / "unknown-structure.yml").write_text(
+            "defaults:\n  effort: medium\nsurprise:\n  value: true\n", encoding="utf-8",
+        )
+        r = run(["config", "validate", "--path", str(tmp / "unknown-structure.yml")], tmp, expect=6)
+        assert any("top-level" in p["msg"] for p in r["problems"]), r
+        (tmp / "bad-tool.yml").write_text(
+            "tools:\n  worker:\n    provider: task-worker\n    activation: sometimes\n    fallback: native\n",
+            encoding="utf-8",
+        )
+        run(["config", "get", "--path", str(tmp / "bad-tool.yml")], tmp, expect=6)
+        (tmp / "provider-model.yml").write_text(
+            "providers:\n  codex:\n    defaults:\n      model: gpt-5.9-codex\n      effort: xhigh\n",
+            encoding="utf-8",
+        )
+        r = run(["config", "validate", "--path", str(tmp / "provider-model.yml")], tmp)
+        assert not [p for p in r["problems"] if p["severity"] == "error"], r
+
+        # field-by-field precedence: override > provider/common ritual > provider/common
+        # agent > provider/common role > provider/common defaults > session inherit.
+        precedence_cases = [
+            ("provider-ritual", "providers:\n  codex:\n    rituals:\n      pairing:\n        build:\n          model: winner\n"),
+            ("common-ritual", "rituals:\n  pairing:\n    build:\n      model: winner\n"),
+            ("provider-agent", "providers:\n  codex:\n    agents:\n      dev-1:\n        model: winner\n"),
+            ("common-agent", "agents:\n  dev-1:\n    model: winner\n"),
+            ("provider-role", "providers:\n  codex:\n    roles:\n      dev:\n        model: winner\n"),
+            ("common-role", "roles:\n  dev:\n    model: winner\n"),
+            ("provider-defaults", "providers:\n  codex:\n    defaults:\n      model: winner\n"),
+            ("common-defaults", "defaults:\n  model: winner\n"),
+        ]
+        for index, (expected_source, text) in enumerate(precedence_cases):
+            path = tmp / f"precedence-{index}.yml"
+            path.write_text(text, encoding="utf-8")
+            r = run([
+                "config", "resolve", "--path", str(path), "--agent-runtime", "codex",
+                "--role", "dev", "--agent", "dev-1", "--ritual", "pairing", "--step", "build",
+            ], tmp)
+            assert r["profile"]["model"] == "winner" and r["profile"]["sources"]["model"] == expected_source, r
+        empty_cfg = tmp / "empty.yml"
+        empty_cfg.write_text("# all inherit\n", encoding="utf-8")
+        r = run(["config", "resolve", "--path", str(empty_cfg), "--agent-runtime", "codex"], tmp)
+        assert r["profile"]["model"] is None and r["profile"]["sources"]["model"] == "session-inherit", r
+        r = run([
+            "config", "resolve", "--path", str(tmp / "precedence-0.yml"), "--agent-runtime", "codex",
+            "--role", "dev", "--agent", "dev-1", "--ritual", "pairing", "--step", "build",
+            "--model", "override-model",
+        ], tmp)
+        assert r["profile"]["sources"]["model"] == "run-override", r
+        null_cfg = tmp / "null-inherit.yml"
+        null_cfg.write_text(
+            "defaults:\n  model: common\nproviders:\n  codex:\n    defaults:\n      model:\n",
+            encoding="utf-8",
+        )
+        r = run(["config", "resolve", "--path", str(null_cfg), "--agent-runtime", "codex"], tmp)
+        assert r["profile"]["model"] == "common" and r["profile"]["sources"]["model"] == "common-defaults", r
+
+        # 9b) routing is native by absence and performs no speculative capability probe.
+        environment = sha("9")
+        r = run([
+            "routing", "plan", "--mission-id", "mission-native", "--environment-digest", environment,
+            "--config", str(tmp / "missing-studio.yml"), "--work-need",
+            "--agent-runtime", "claude", "--host-runtime", "codex",
+        ], tmp)
+        native_route = r["routing_plan"]
+        assert native_route["worker"]["selected"] == "native" and native_route["probe_targets"] == [], r
+        assert native_route["runtime_profile"] == "claude", r
+        assert not native_route["runtime_capability"]["verified"] and not native_route["runtime_capability"]["dispatch_allowed"], r
+
+        worker_cfg = tmp / "worker-routing.yml"
+        worker_cfg.write_text(
+            "tools:\n  worker:\n    provider: task-worker\n    activation: auto\n    fallback: native\n",
+            encoding="utf-8",
+        )
+        r = run([
+            "routing", "plan", "--mission-id", "mission-auto-idle", "--environment-digest", environment,
+            "--config", str(worker_cfg),
+        ], tmp)
+        assert r["routing_plan"]["worker"]["selected"] == "native" and r["routing_plan"]["probe_targets"] == [], r
+        r = run([
+            "routing", "plan", "--mission-id", "mission-auto", "--environment-digest", environment,
+            "--config", str(worker_cfg), "--work-need",
+        ], tmp)
+        assert r["routing_plan"]["action"] == "capability-required", r
+        assert r["routing_plan"]["probe_targets"] == ["task-worker"], r
+        legacy_permit_cap = capability("task-worker", "mission-legacy-permit", environment)
+        legacy_permit_cap["contracts"] = [
+            "review-permit/v1" if item == "task-worker.review-permit/v1" else item
+            for item in legacy_permit_cap["contracts"]
+        ]
+        r = run([
+            "routing", "plan", "--mission-id", "mission-legacy-permit", "--environment-digest", environment,
+            "--config", str(worker_cfg), "--work-need", "--capabilities",
+            json.dumps({"task-worker": legacy_permit_cap}),
+        ], tmp, expect=6)
+        assert "task-worker.review-permit/v1" in r["message"], r
+        worker_cap = capability("task-worker", "mission-auto", environment)
+        r = run([
+            "routing", "plan", "--mission-id", "mission-auto", "--environment-digest", environment,
+            "--config", str(worker_cfg), "--work-need", "--capabilities",
+            json.dumps({"task-worker": worker_cap}),
+        ], tmp)
+        task_worker_route = r["routing_plan"]
+        assert task_worker_route["action"] == "dispatch" and task_worker_route["worker"]["selected"] == "task-worker", r
+
+        # Configured failure falls back once; the same mission/env failure is cache-reused with zero probes.
+        unavailable_cap = capability("task-worker", "mission-fallback", environment, "unavailable")
+        r = run([
+            "routing", "plan", "--mission-id", "mission-fallback", "--environment-digest", environment,
+            "--config", str(worker_cfg), "--work-need", "--capabilities",
+            json.dumps({"task-worker": unavailable_cap}),
+        ], tmp)
+        assert r["routing_plan"]["worker"]["selected"] == "native" and r["routing_plan"]["worker"]["fallback_used"], r
+        r = run([
+            "routing", "plan", "--mission-id", "mission-fallback", "--environment-digest", environment,
+            "--config", str(worker_cfg), "--work-need",
+        ], tmp)
+        assert r["routing_plan"]["probe_targets"] == [] and r["routing_plan"]["worker"]["selected"] == "native", r
+        explicit_cap = capability("task-github", "mission-explicit", environment, "unavailable")
+        r = run([
+            "routing", "plan", "--mission-id", "mission-explicit", "--environment-digest", environment,
+            "--config", str(worker_cfg), "--worker", "task-github", "--work-need",
+            "--capabilities", json.dumps({"task-github": explicit_cap}),
+        ], tmp)
+        assert r["routing_plan"]["action"] == "stop" and r["routing_plan"]["worker"]["selected"] is None, r
+
+        # 9c) canonical review ownership is exclusive and capability-gated.
+        reviewer_cfg = tmp / "reviewer-routing.yml"
+        reviewer_cfg.write_text(
+            "tools:\n  reviewer:\n    provider: session-review\n    activation: auto\n    fallback: stop\n",
+            encoding="utf-8",
+        )
+        studio_review_lease = review_lease(
+            "review-studio", "edge-studio", provider="session-review", requirement="independent",
+        )
+        session_cap = capability("session-review", "mission-review", environment)
+        r = run([
+            "routing", "plan", "--mission-id", "mission-review", "--environment-digest", environment,
+            "--config", str(reviewer_cfg), "--review-need", "--review-lease", json.dumps(studio_review_lease),
+            "--capabilities", json.dumps({"session-review": session_cap}),
+        ], tmp)
+        assert r["routing_plan"]["reviewer"]["selected"] == "session-review", r
+        assert r["routing_plan"]["reviewer"]["dispatch"] and r["routing_plan"]["reviewer"]["owner"] == "studio", r
+
+        worker_owned = review_lease(
+            "review-worker", "edge-worker", owner="task-worker", provider="native", requirement="independent",
+        )
+        owned_cap = capability("task-worker", "mission-worker-owned", environment)
+        r = run([
+            "routing", "plan", "--mission-id", "mission-worker-owned", "--environment-digest", environment,
+            "--config", str(worker_cfg), "--work-need", "--review-need",
+            "--review-lease", json.dumps(worker_owned), "--capabilities", json.dumps({"task-worker": owned_cap}),
+        ], tmp)
+        worker_owned_route = r["routing_plan"]
+        assert worker_owned_route["worker"]["selected"] == "task-worker", r
+        assert worker_owned_route["reviewer"]["owner"] == "task-worker" and not worker_owned_route["reviewer"]["dispatch"], r
+        run([
+            "routing", "plan", "--mission-id", "mission-owner-conflict", "--environment-digest", environment,
+            "--config", str(worker_cfg), "--worker", "task-worker", "--reviewer", "native",
+            "--work-need", "--review-need", "--review-lease", json.dumps(worker_owned),
+        ], tmp, expect=6)
+        rebound = review_lease("review-rebound", "edge-worker", owner="task-worker", provider="native")
+        r = run([
+            "routing", "plan", "--mission-id", "mission-rebind", "--environment-digest", environment,
+            "--config", str(worker_cfg), "--work-need", "--review-need", "--review-lease", json.dumps(rebound),
+        ], tmp, expect=6)
+        assert r["error_code"] == "review_edge_rebind", r
+
+        # 9d) review planner reuses an identical physical key, otherwise emits delta/full only.
+        r = run([
+            "review", "plan-next", "RC-issue-58", "--head", "abc124", "--command-digest", sha("d"),
+            "--environment-digest", sha("c"), "--tool-version", "pytest-9",
+            "--allowed-command", "pytest tests/test_parser.py",
+        ], tmp)
+        assert r["plan"]["action"] == "reuse-evidence" and r["plan"]["physical_runs"] == 0, r
+        assert r["plan"]["duplicate_prevented"] >= 1, r
+        r = run([
+            "review", "plan-next", "RC-issue-58", "--head", "abc125", "--command-digest", sha("e"),
+            "--environment-digest", sha("c"), "--tool-version", "pytest-9", "--integration-gate",
+            "--allowed-command", "pytest",
+        ], tmp)
+        assert r["plan"]["action"] == "full-qa" and r["plan"]["full_qa_reason"] == "integration-gate", r
+        r = run([
+            "review", "plan-next", "RC-issue-58", "--head", "abc126", "--command-digest", sha("f"),
+            "--environment-digest", sha("c"), "--tool-version", "pytest-9",
+            "--changed-path", "src/parser.py", "--allowed-command", "pytest tests/test_parser.py",
+        ], tmp)
+        assert r["plan"]["action"] == "delta-qa" and r["plan"]["qa_mode"] == "delta", r
+        r = run([
+            "review", "plan-next", "RC-risk", "--head", "abc300", "--command-digest", sha("f"),
+            "--environment-digest", sha("c"), "--tool-version", "pytest-9",
+            "--telemetry-policy", "fail-closed",
+        ], tmp)
+        assert r["plan"]["action"] == "pause" and r["plan"]["telemetry_gate"] == "paused", r
+
+        # 9e) task-worker is a first-class packet executor; canonical RoutingPlan is pinned.
+        worker_packet = {
+            **packet, "track_id": "track-worker-route", "budget_reservation_id": "res-worker-route",
+            "executor": "task-worker", "constraints": {"review_lease": worker_owned},
+        }
+        run(["workflow", "validate-packet", "--json", json.dumps(worker_packet)], tmp)
+        run(["budget", "reserve", "res-worker-route", "--lease-id", "lease-worker-route", "--tokens", "20"], tmp)
+        r = run([
+            "workflow", "dispatch", "--packet", json.dumps(worker_packet), "--plan", json.dumps(quality_plan),
+            "--routing-plan", json.dumps(worker_owned_route), "--lease-id", "lease-worker-route",
+        ], tmp)
+        assert r["selected_provider"] == "task-worker" and r["worker_handoff"]["review_ownership"] == "worker-owned", r
+        mismatched_route = {**worker_owned_route, "plan_id": "routing-tampered"}
+        r = run([
+            "workflow", "dispatch", "--packet", json.dumps(worker_packet), "--plan", json.dumps(quality_plan),
+            "--routing-plan", json.dumps(mismatched_route), "--lease-id", "lease-worker-route",
+        ], tmp, expect=6)
+        assert r["error_code"] == "invalid_routing_plan", r
 
         # 10) cast suggest — producer can turn a work kind into concrete crew
         r = run(["cast", "suggest", "idea"], tmp)
