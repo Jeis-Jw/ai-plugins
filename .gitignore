@@ -6,14 +6,12 @@ __pycache__/
 .ruff_cache/
 
 .worktrees/
-
+.claude/
+.agent/
 *.local.*
 
 # 워크스페이스 로컬 config (setup/scaffold이 생성, 커밋 안 함 — 환경별)
-.task-github.yml
-.task-worker.yml
-.task-github/orchestrate/
-.task-github/local/
-.task-worker/local/
-.studio.yml
 /.studio/
+.studio.yml
+.task-*/
+.task-*.yml
