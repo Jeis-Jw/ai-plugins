@@ -30,6 +30,16 @@ started → running → verified → done → closed
 
 각 전이는 idempotent하다. `verify` event에는 구조화된 evidence를 붙인다. `ready`는 같은 artifact digest에 pin된 closed blocker만 완료로 인정하며, active run이 중복되면 fail-closed한다. provider snapshot에서는 unknown blocker를 미해결로 유지하고 dependency cycle이면 부분 ready set도 반환하지 않는다.
 
+## 0.6.0 workspace onboarding
+
+`task-worker:init`은 consumer workspace에 provider-neutral policy와 local state를 초기화한다. `local`, `manual`, `quality`, `minimal` preset은 실행·delivery·telemetry 축만 결정하며, Studio/GitHub/Wiki/reviewer provider를 발견하거나 설정하지 않는다.
+
+`local`, `manual`, `quality`은 command profile과 impact rule의 위치를 고정하고 빈 TODO skeleton을 만든다. 이 skeleton은 JSON으로는 정상이나 canonical loader에는 실행 불가능하다. 프로젝트별 command를 추측한 약한 QA가 조용히 허용되는 대신, policy가 채워질 때까지 fail-closed 한다. `minimal`은 command policy를 명시적으로 사용하지 않는다.
+
+init은 전체 대상의 충돌을 먼저 확인한다. 같은 내용은 skip하고 다른 기존 config/policy는 `--force` 없이는 어떤 파일도 변경하지 않는다. `.task-worker/local/`만 gitignore하며 policy는 추적 가능한 프로젝트 계약으로 남긴다. `task-worker:doctor`는 config validator, state-root, canonical policy loader를 읽기 전용으로 검사하고 TODO와 오류를 구분한다.
+
+이 onboarding 표면은 DefinitionArtifact, ready-set planner, worker lane, worktree lease, verify evidence, independent review edge, root integration gate를 변경하지 않는다.
+
 ## 0.5.0 execution control
 
 Studio와 task-worker는 repo root `tests/fixtures/studio-verification-contract-v1.json`의 `studio-verification-contract-set/v1`을 공유한다. task-worker는 command profile과 impact rule로 허용 QA mode/명령을 결정하고, profile과 다른 argv·사유 없는 full QA·동일 physical identity의 중복 claim을 실행 전에 거부한다.
