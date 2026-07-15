@@ -339,6 +339,34 @@ def _file_action(path: Path, expected: str, *, force: bool) -> str:
     return "update" if force else "conflict"
 
 
+def _path_type_conflict(path: Path, *, expected: str, root: Path) -> dict[str, str] | None:
+    if path.exists():
+        valid = path.is_file() if expected == "file" else path.is_dir()
+        if valid:
+            return None
+        return {
+            "path": _display_path(path, root),
+            "expected": expected,
+            "actual": "directory" if path.is_dir() else "non-directory",
+            "reason": "wrong_path_type",
+        }
+
+    parent = path.parent
+    while parent != parent.parent:
+        if parent.exists():
+            if not parent.is_dir():
+                return {
+                    "path": _display_path(path, root),
+                    "blocking_path": _display_path(parent, root),
+                    "expected": expected,
+                    "actual": "blocked_by_non_directory_parent",
+                    "reason": "wrong_path_type",
+                }
+            break
+        parent = parent.parent
+    return None
+
+
 def _init_payload(root: Path, *, preset: str, force: bool, dry_run: bool) -> tuple[dict[str, Any], int]:
     root = root.expanduser().resolve()
     config_text = render_preset_config(preset)
@@ -360,11 +388,31 @@ def _init_payload(root: Path, *, preset: str, force: bool, dry_run: bool) -> tup
             (root / IMPACT_RULES_PATH, render_impact_rules_todo()),
         ))
 
+    type_conflicts = [
+        conflict
+        for conflict in (
+            *(
+                _path_type_conflict(path, expected="file", root=root)
+                for path, _ in expected_files
+            ),
+            _path_type_conflict(state_path, expected="directory", root=root),
+            _path_type_conflict(gitignore_path, expected="file", root=root),
+        )
+        if conflict is not None
+    ]
+    blocked_paths = {conflict["path"] for conflict in type_conflicts}
     results = [
-        {"path": _display_path(path, root), "action": _file_action(path, content, force=force)}
+        {
+            "path": _display_path(path, root),
+            "action": (
+                "conflict"
+                if _display_path(path, root) in blocked_paths
+                else _file_action(path, content, force=force)
+            ),
+        }
         for path, content in expected_files
     ]
-    if state_path.exists() and not state_path.is_dir():
+    if _display_path(state_path, root) in blocked_paths:
         state_action = "conflict"
     else:
         state_action = "skip" if state_path.is_dir() else "create"
@@ -372,7 +420,7 @@ def _init_payload(root: Path, *, preset: str, force: bool, dry_run: bool) -> tup
 
     current_ignore = gitignore_path.read_text(encoding="utf-8") if gitignore_path.is_file() else ""
     desired_ignore = _gitignore_with_local_state(current_ignore)
-    if gitignore_path.exists() and not gitignore_path.is_file():
+    if _display_path(gitignore_path, root) in blocked_paths:
         ignore_action = "conflict"
     elif desired_ignore == current_ignore:
         ignore_action = "skip"
@@ -409,6 +457,7 @@ def _init_payload(root: Path, *, preset: str, force: bool, dry_run: bool) -> tup
             "dry_run": dry_run,
             "error_code": "path_conflict",
             "conflicts": conflicts,
+            "conflict_details": type_conflicts,
         }, 2)
 
     changed = any(item["action"] in {"create", "update"} for item in results)
