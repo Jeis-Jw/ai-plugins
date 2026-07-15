@@ -11,7 +11,7 @@
 >
 > 충돌 시 신뢰 순서: **실행 명세(SKILL/rules/agents) > DESIGN > README**. 결합 규약(policy)은 mechanism(이 문서)과 **다른 계층**이므로 경쟁하지 않고 보완한다.
 
-> **현재 상태(0.24.0)**: provider-neutral DefinitionArtifact, local lifecycle, ready/integration planner, review lease permit과 execution control은 `task-worker` 0.5.0이 소유한다. task-github는 versioned JSON CLI bridge로 이를 소비하고 GitHub projection·Issue snapshot adapter·PR/CI/review transport·merge/closeout을 소유한다. 기존 `task-github:*`, Issue-first, `scripts/definition_artifact.py` 호출은 호환 facade로 유지한다. plugin delegation은 subprocess contract 경계이며 추가 agent/session hop이 아니다.
+> **현재 상태(0.25.0)**: provider-neutral DefinitionArtifact, local lifecycle, ready/integration planner, review lease permit과 execution control은 `task-worker` 0.5.0이 소유한다. task-github는 versioned JSON CLI bridge로 이를 소비하고 GitHub projection·Issue snapshot adapter·PR/CI/review transport·merge/closeout을 소유한다. 외부 mutation 없는 `task-github:init`이 provider config와 projection state를 준비하며, 기존 `task-github:*`, Issue-first, `scripts/definition_artifact.py` 호출은 호환 facade로 유지한다. plugin delegation은 subprocess contract 경계이며 추가 agent/session hop이 아니다.
 
 ---
 
@@ -116,13 +116,15 @@ plugins/task-github/
 ├── scripts/
 │   ├── context_bundle.py     #   open/start/done/merge/status가 공유하는 issue/root/wiki TASK read-model + 링크 정합 검사
 │   ├── task_worker_bridge.py   #   task-worker discovery/capability preflight/JSON CLI delegation
+│   ├── init_workspace.py     #   provider config/projection state의 remote-free init
 │   ├── definition_artifact.py  #   legacy CLI compatibility forwarder (core 없음)
 │   ├── github_projection.py    #   GitHub projection checkpoint/coverage binding
 │   ├── status_next.py        #   status next_action read-model
 │   ├── doctor.py             #   diagnose-only checks
 │   └── reconcile.py          #   explicit bridge repair actions
-├── skills/                  # 호출 단위 동작 (14종)
-│   ├── setup/SKILL.md       #   git+GitHub 초기화 (+위키 vault 부재 시 init 제안)
+├── skills/                  # 호출 단위 동작 (16종)
+│   ├── init/SKILL.md        #   GitHub mutation 없는 provider config 초기화
+│   ├── setup/SKILL.md       #   local init + git/GitHub 초기화 (+위키 vault 부재 시 init 제안)
 │   ├── open/SKILL.md        #   Issue 읽기 전용 로드 (+연결된 task 노드/결정 표시)
 │   ├── define/SKILL.md      #   업무 정의: 루트 이슈(+트리) + ★task 노드 생성·연결
 │   ├── start/SKILL.md       #   리프 Issue 점유 + 기어 판단 (+task 노드 맥락 주입)
@@ -155,14 +157,14 @@ root issue body에는 optional **Execution Contract** fenced block을 둔다. `s
 ```json
 {
   "name": "task-github",
-  "version": "0.24.0",
+  "version": "0.25.0",
   "description": "task-worker 기반 GitHub Issue tree·PR·merge adapter와 호환 facade"
 }
 ```
 
 루트 `.claude-plugin/marketplace.json`의 `plugins` 배열에 추가:
 ```json
-{ "name": "task-github", "source": "./plugins/task-github", "version": "0.24.0",
+{ "name": "task-github", "source": "./plugins/task-github", "version": "0.25.0",
   "description": "task-worker 기반 GitHub provider adapter와 wiki-markdown task 노드 연계" }
 ```
 
@@ -450,12 +452,12 @@ flag는 block이 아니라 confirm 전 보완 신호다. 단, flag가 있는데 
 
 ---
 
-## 7. 스킬 카탈로그 (14종)
+## 7. 스킬 카탈로그 (16종)
 
 각 스킬은 **순수함수에 가깝게** 설계된다: 인자가 없으면 기본 동작, **인자가 동작을 결정**. 호출자의 상태(기어·플로우)는 호출자가 인자로 번역해 전달.
 
 ```
-[초기화]  setup
+[초기화]  init → setup(새 GitHub repo가 필요할 때)
 [조회]    open
 [구조화]  define   ← 여기서 업무 정의 = 루트 이슈 + task 노드
 [점유]    start
@@ -468,6 +470,12 @@ flag는 block이 아니라 confirm 전 보완 신호다. 단, flag가 있는데 
 ```
 
 아래는 v2 대비 **위키 터치포인트**를 굵게 표기. (위키 무관 핵심 동작은 v2와 동일하므로 요약.)
+
+### 7.0 `init` — local provider 초기화
+
+- `.task-github.yml`, `.task-github/local/projections/`, `.gitignore` local-state 항목을 준비한다.
+- `--force`, `--dry-run`, `--json`을 지원하며 기존 다른 config는 force 없이는 변경하지 않는다.
+- GitHub API와 task-worker execution init을 호출하지 않는다.
 
 ### 7.1 `setup` — git/GitHub 초기화
 - **입력**: `[owner]`. **동작**: `git init`→첫 커밋→`gh repo create … --private --source=. --push`. 멱등(이미 구성 시 중단).

@@ -722,6 +722,117 @@ def resolve_vault() -> Path:
     return Path.cwd() / "wiki"
 
 
+def _nearest_existing_parent(path: Path) -> Path:
+    candidate = path
+    while not candidate.exists() and candidate != candidate.parent:
+        candidate = candidate.parent
+    return candidate
+
+
+def backend_readiness() -> dict[str, Any]:
+    override = os.environ.get("SESSION_REVIEW_WIKI_CLI")
+    wiki_cli = resolve_wiki_cli()
+    override_disabled = override is not None and override.strip().lower() in {
+        "", "none", "off", "0"
+    }
+    override_invalid = (
+        override is not None
+        and not override_disabled
+        and not Path(override).expanduser().exists()
+    )
+    if wiki_cli is not None:
+        mode = "wiki-markdown"
+        source = "override" if override is not None else "discovery"
+    else:
+        mode = "built-in"
+        source = "explicit" if override_disabled else "fallback"
+    return {
+        "ready": True,
+        "mode": mode,
+        "source": source,
+        "wiki_cli": str(wiki_cli) if wiki_cli is not None else None,
+        "override_invalid": override_invalid,
+        "warning": "configured wiki CLI path does not exist; using built-in backend"
+        if override_invalid
+        else None,
+    }
+
+
+def vault_readiness(vault: Path) -> dict[str, Any]:
+    vault = vault.expanduser().resolve()
+    exists = vault.exists()
+    is_directory = vault.is_dir() if exists else False
+    parent = _nearest_existing_parent(vault)
+    writable = os.access(vault if is_directory else parent, os.W_OK)
+    ready = (is_directory and writable) or (not exists and parent.is_dir() and writable)
+    return {
+        "ready": ready,
+        "path": str(vault),
+        "status": "ready" if is_directory and writable else "creatable" if ready else "blocked",
+        "exists": exists,
+        "snapshot_directory_exists": (vault / SNAPSHOT_DIRNAME).is_dir(),
+        "writable": writable,
+    }
+
+
+def git_readiness(workspace: Path) -> dict[str, Any]:
+    workspace = workspace.expanduser().resolve()
+    executable = shutil.which("git")
+    payload: dict[str, Any] = {
+        "ready": False,
+        "executable": executable,
+        "workspace": str(workspace),
+        "root": None,
+        "branch": None,
+        "head": None,
+        "dirty": None,
+    }
+    if executable is None or not workspace.is_dir():
+        return payload
+
+    def run(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [executable, "-C", str(workspace), *args],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    root = run("rev-parse", "--show-toplevel")
+    if root.returncode != 0:
+        payload["error"] = root.stderr.strip() or "not a git worktree"
+        return payload
+    branch = run("symbolic-ref", "--quiet", "--short", "HEAD")
+    head = run("rev-parse", "HEAD")
+    status = run("status", "--porcelain")
+    payload.update(
+        {
+            "ready": head.returncode == 0 and status.returncode == 0,
+            "root": root.stdout.strip(),
+            "branch": branch.stdout.strip() if branch.returncode == 0 else None,
+            "head": head.stdout.strip() if head.returncode == 0 else None,
+            "dirty": bool(status.stdout.strip()) if status.returncode == 0 else None,
+        }
+    )
+    return payload
+
+
+def doctor(workspace: Path, vault: Path) -> dict[str, Any]:
+    backend = backend_readiness()
+    vault_status = vault_readiness(vault)
+    git_status = git_readiness(workspace)
+    return {
+        "plugin": "session-review",
+        "action": "doctor",
+        "ok": backend["ready"] and vault_status["ready"] and git_status["ready"],
+        "mutation_allowed": False,
+        "persistent_config": False,
+        "backend": backend,
+        "vault": vault_status,
+        "git": git_status,
+    }
+
+
 def _today() -> str:
     raw = os.environ.get("WIKI_NOW")
     if raw:
@@ -1067,6 +1178,14 @@ def cmd_emit_receipt(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_doctor(args: argparse.Namespace) -> int:
+    workspace = Path(args.root).expanduser() if args.root else Path.cwd()
+    vault = Path(args.vault).expanduser() if args.vault else workspace / "wiki"
+    payload = doctor(workspace, vault)
+    print(json.dumps(payload, ensure_ascii=False))
+    return 0 if payload["ok"] else 1
+
+
 def parse_phase_args(values: list[str] | None) -> set[str] | None:
     if not values:
         return None
@@ -1082,6 +1201,14 @@ def parse_phase_args(values: list[str] | None) -> set[str] | None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="session-review status helper")
     sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p_doctor = sub.add_parser(
+        "doctor", help="diagnose backend, vault and git readiness without mutation"
+    )
+    p_doctor.add_argument("--root", help="workspace root; default current directory")
+    p_doctor.add_argument("--vault", help="wiki vault; default <root>/wiki")
+    p_doctor.add_argument("--json", action="store_true", help="accepted for parity; output is always JSON")
+    p_doctor.set_defaults(func=cmd_doctor)
 
     p_status = sub.add_parser("status", help="read a snapshot status block")
     p_status.add_argument("--file")

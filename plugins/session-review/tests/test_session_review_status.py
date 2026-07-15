@@ -1,7 +1,10 @@
 import json
+import io
 import os
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from unittest import mock
 
 from pathlib import Path
 import sys
@@ -53,6 +56,55 @@ phase: ignored
 
 
 class SessionReviewStatusTests(unittest.TestCase):
+    def test_doctor_reports_builtin_backend_without_persistent_config(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            os.environ, {"SESSION_REVIEW_WIKI_CLI": "off"}
+        ), mock.patch.object(
+            session_review,
+            "git_readiness",
+            return_value={"ready": True, "root": tmp},
+        ):
+            root = Path(tmp)
+            result = session_review.doctor(root, root / "wiki")
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["mutation_allowed"])
+        self.assertFalse(result["persistent_config"])
+        self.assertEqual(result["backend"]["mode"], "built-in")
+        self.assertEqual(result["vault"]["status"], "creatable")
+        self.assertFalse((root / "wiki").exists())
+
+    def test_doctor_warns_for_invalid_override_and_fails_without_git(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            os.environ,
+            {"SESSION_REVIEW_WIKI_CLI": str(Path(tmp) / "missing-wiki-cli.py")},
+        ), mock.patch.object(
+            session_review,
+            "git_readiness",
+            return_value={"ready": False, "root": None},
+        ):
+            root = Path(tmp)
+            result = session_review.doctor(root, root / "wiki")
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["backend"]["override_invalid"])
+        self.assertEqual(result["backend"]["mode"], "built-in")
+
+    def test_doctor_cli_is_json_and_read_only(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            session_review,
+            "git_readiness",
+            return_value={"ready": True, "root": tmp},
+        ):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                code = session_review.main(["doctor", "--root", tmp, "--json"])
+
+            root = Path(tmp)
+            self.assertEqual(code, 0)
+            self.assertIn('"action": "doctor"', output.getvalue())
+            self.assertFalse((root / "wiki").exists())
+
     def test_extracts_first_yaml_block_only_from_current_discussion_section(self):
         status = session_review.extract_status(SNAPSHOT_TEXT)
 

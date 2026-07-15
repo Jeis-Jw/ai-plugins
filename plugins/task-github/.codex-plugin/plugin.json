@@ -1,6 +1,6 @@
 {
   "name": "task-github",
-  "version": "0.24.0",
+  "version": "0.25.0",
   "description": "GitHub adapter for task-worker Issue Trees, PR transport, externally owned review handoffs, and gated closeout.",
   "author": {
     "name": "Jinwuk-Lee",
@@ -20,6 +20,7 @@
       "Workflow"
     ],
     "defaultPrompt": [
+      "Use $init to create or validate local task-github provider configuration without GitHub mutation.",
       "Use $define to project a task-worker definition into a linked GitHub Issue tree.",
       "Use $import to bind an existing Issue tree with manual or worker dispatch.",
       "Use $start to claim and load a legacy or projected issue.",

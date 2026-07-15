@@ -2,12 +2,15 @@
 
 `task-worker`를 실행 엔진으로 사용하는 GitHub provider adapter와 호환 facade다. 작업 트리를 GitHub Issue/dependency로 투영하고, label·assignee·PR·CI·review·merge·closeout을 소유한다. 기존 `task-github:*` 명령 표면과 Issue-first workflow는 유지하며, 같은 마켓플레이스의 **`wiki-markdown` 결정 그래프와 `task` 노드로 연계**한다.
 
-실행 명령은 시작 시 `task-worker` capability와 contract schema를 점검한다. task-worker가 없거나 호환되지 않으면 부분 실행하지 않고 명시적으로 중단한다. setup/open/doctor 같은 GitHub read·진단 기능에는 이 dependency를 강제하지 않는다.
+실행 명령은 시작 시 `task-worker` capability와 contract schema를 점검한다. task-worker가 없거나 호환되지 않으면 부분 실행하지 않고 명시적으로 중단한다. init/setup/open/doctor 같은 local config·GitHub read·진단 기능에는 이 dependency를 강제하지 않는다.
 
 ## 빠른 시작
 
 ```bash
-# 1. 환경 초기화 (git + GitHub repo + 라벨)
+# 0. 기존 프로젝트 local provider 설정 (GitHub mutation 없음)
+task-github:init
+
+# 1. 새 프로젝트 bootstrap (local init + git + GitHub repo + 라벨)
 task-github:setup
 
 # 2. 업무 정의 (immutable DefinitionArtifact + 선택적 GitHub 전체 기록)
@@ -160,7 +163,7 @@ ledger v3는 비용 분석과 evidence reuse를 위해 `github_reads`, `read_dec
 | `rules/dependencies.md` | GitHub Issue dependencies 기반 선후관계·차단 |
 | `rules/knowledge-capture.md` | 작업 종료 전 지식 기록 감사 |
 | `rules/wiki-bridge.md` | 위키 감지·호출·task 노드 연동 (mechanism) |
-| `skills/*` (15종) | setup·open·define·import·start·plan·run·verify·done·review·merge·status·orchestrate·doctor·reconcile |
+| `skills/*` (16종) | init·setup·open·define·import·start·plan·run·verify·done·review·merge·status·orchestrate·doctor·reconcile |
 | `agents/pr-verifier.md` | PR 독립 검증 서브에이전트 |
 | `agents/conflict-resolver.md` | merge conflict 해소 전용 서브에이전트 |
 
@@ -168,6 +171,7 @@ ledger v3는 비용 분석과 evidence reuse를 위해 `github_reads`, `read_dec
 
 ## 변경 이력
 
+- `0.25.0`: GitHub mutation 없는 `task-github:init`을 추가해 provider config/projection state/gitignore를 멱등 초기화한다. `setup`은 자기 init을 재사용하면서 기존 task-worker config scaffold bridge를 유지한다.
 - `0.24.0`: task-worker 0.5.0의 execution-control preflight·claim·completion을 exact bridge로 소비하고 immutable receipt/evidence reference만 GitHub ledger에 투영한다. GitHub adapter는 planner·중복 실행 판단·QA 범위를 재구현하지 않으며 Issue Tree·PR/CI/review·merge/closeout 책임은 유지한다.
 - `0.23.0`: task-worker 0.4.0의 exact review lease/permit preflight를 추가했다. Studio-owned review는 GitHub PR/CI/transport를 유지한 externally-owned ledger handoff로 전환하고, 동일 lease의 approved verdict와 evidence 전 closeout을 차단한다. standalone/task-worker-owned review 흐름은 유지한다.
 - `0.22.0`: `.task-worker.yml`/`.task-github.yml` 설정 경계를 분리하고 legacy translation warning을 추가했다. 기존 Issue Tree를 `manual|worker` dispatch의 DefinitionArtifact/work-graph/binding으로 가져오는 import 경로와 TASK/root Issue 기반 세션 재개를 추가했다.
