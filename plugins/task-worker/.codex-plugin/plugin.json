@@ -1,6 +1,6 @@
 {
   "name": "task-worker",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Provider-neutral work graphs with parallel ready sets, integration gates, pinned evidence, and single-owner review permits.",
   "author": {
     "name": "Jinwuk-Lee",
@@ -20,6 +20,8 @@
     ],
     "defaultPrompt": [
       "Use $define to create or revise an immutable provider-neutral work graph.",
+      "Use $init to create an explicit local, manual, quality, or minimal workspace policy without provider discovery.",
+      "Use $doctor to diagnose config, state, and fail-closed command policy readiness.",
       "Use dispatch: manual to expose the ready set without local runs, or dispatch: worker to execute it.",
       "Use $orchestrate to dispatch every ready leaf in parallel-safe worktrees while preserving integration gates.",
       "Resume by definition, wiki task, or provider alias and reuse only digest-valid verification evidence."

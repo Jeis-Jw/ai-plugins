@@ -16,7 +16,7 @@ class PluginContractTests(unittest.TestCase):
         self.assertEqual(claude["name"], "task-worker")
         self.assertEqual(claude["version"], codex["version"])
         self.assertEqual(codex["skills"], "./skills/")
-        for name in ("define", "plan", "start", "run", "verify", "done", "status", "orchestrate"):
+        for name in ("init", "doctor", "define", "plan", "start", "run", "verify", "done", "status", "orchestrate"):
             self.assertTrue((PLUGIN / "skills" / name / "SKILL.md").exists(), name)
 
     def test_runtime_has_no_github_or_studio_execution_dependency(self):
@@ -41,7 +41,7 @@ class PluginContractTests(unittest.TestCase):
         )
         payload = json.loads(result.stdout)
         self.assertEqual(payload["plugin"], "task-worker")
-        self.assertEqual(payload["version"], "0.5.0")
+        self.assertEqual(payload["version"], "0.6.0")
         self.assertEqual(payload["contracts"]["work_graph"], "task-worker.work-graph/v1")
         self.assertEqual(payload["contracts"]["binding"], "task-worker.provider-binding/v1")
         self.assertEqual(payload["contracts"]["review_lease"], "workflow-review-lease/v1")

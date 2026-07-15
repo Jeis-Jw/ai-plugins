@@ -1,4 +1,5 @@
-# Provider-neutral execution policy. Copy to workspace root as `.task-worker.yml`.
+# Provider-neutral local preset. Prefer `task-worker:init --preset local`.
+# Fill the referenced TODO command/impact policy before policy execution.
 mode: solo
 state-root: .task-worker/local
 dispatch: worker
