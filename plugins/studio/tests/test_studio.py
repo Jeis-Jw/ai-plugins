@@ -107,11 +107,16 @@ def main() -> None:
         r = run(["mode", "status"], tmp, expect=3)
         assert r["error_code"] == "no_workspace" and ".studio/" in r["message"], r
 
-        # 1) init scaffolds workspace + copies crew personas
+        # 1) init scaffolds workspace + config and copies crew personas
         r = run(["init"], tmp)
-        assert r["ok"] and r["created"], r
+        assert r["ok"] and r["created"] and r["changed"], r
+        assert r["plugin"] == "studio" and r["action"] == "init", r
+        assert r["dry_run"] is False and r["validation"]["status"] == "pass", r
         ws = tmp / ".studio"
+        for sub in ("missions", "minutes", "raw", "crew", "context/items", "context/bundles", "context/deltas", "context/outbox"):
+            assert str(Path(".studio") / sub) in r["paths"]["created"], (sub, r)
         assert not (tmp / "studio").exists()
+        assert (tmp / ".studio.yml").is_file()
         assert (ws / "board.md").is_file()
         assert (ws / "backlog.md").is_file()
         assert (ws / "missions" / "TEMPLATE.md").is_file()
@@ -134,9 +139,107 @@ def main() -> None:
             "visual-designer.md",
         ], crew
 
-        # 2) init is not idempotent without --force (guards accidental clobber)
-        run(["init"], tmp, expect=2)
-        run(["init", "--force"], tmp, expect=0)
+        # 2) same-content init is idempotent; conflicts preserve existing files
+        r = run(["init"], tmp)
+        assert r["ok"] and not r["changed"] and not r["created"], r
+        assert not r["paths"]["conflicts"] and r["paths"]["skipped"], r
+        assert str(Path(".studio/context/outbox")) in r["paths"]["skipped"], r
+
+        # INIT_SUBDIRS are part of the same plan: a missing directory is a
+        # reported repair, while a wrong path type fails before any repair.
+        repaired_dir = ws / "context" / "outbox"
+        repaired_dir.rmdir()
+        r = run(["init", "--dry-run", "--json"], tmp)
+        assert r["changed"] and str(Path(".studio/context/outbox")) in r["paths"]["repaired"], r
+        assert not repaired_dir.exists(), r
+        r = run(["init", "--json"], tmp)
+        assert repaired_dir.is_dir() and str(Path(".studio/context/outbox")) in r["paths"]["repaired"], r
+
+        blocked_dir = ws / "context" / "deltas"
+        blocked_dir.rmdir()
+        blocked_dir.write_text("not a directory\n", encoding="utf-8")
+        repaired_dir.rmdir()
+        r = run(["init", "--json"], tmp, expect=2)
+        assert r["error_code"] == "conflict" and not r["changed"], r
+        assert str(Path(".studio/context/deltas")) in r["paths"]["conflicts"], r
+        assert str(Path(".studio/context/outbox")) in r["paths"]["repaired"], r
+        assert not repaired_dir.exists(), "directory conflict must prevent partial repair"
+        blocked_dir.unlink()
+        blocked_dir.mkdir()
+        repaired_dir.mkdir()
+
+        # A non-directory ancestor blocks every required descendant. Both
+        # dry-run and actual init must report it before repairing siblings.
+        context_dir = ws / "context"
+        for sub in ("items", "bundles", "deltas", "outbox"):
+            (context_dir / sub).rmdir()
+        context_dir.rmdir()
+        context_dir.write_text("blocks all context subdirectories\n", encoding="utf-8")
+        sibling_repair = ws / "minutes"
+        sibling_repair.rmdir()
+        for dry_run in (True, False):
+            command = ["init", "--json"]
+            if dry_run:
+                command.insert(1, "--dry-run")
+            r = run(command, tmp, expect=2)
+            assert r["error_code"] == "conflict" and not r["changed"], r
+            assert r["dry_run"] is dry_run, r
+            assert str(Path(".studio/context")) in r["paths"]["conflicts"], r
+            assert str(Path(".studio/minutes")) in r["paths"]["repaired"], r
+            assert not sibling_repair.exists(), "ancestor conflict must prevent partial repair"
+        context_dir.unlink()
+        for sub in ("items", "bundles", "deltas", "outbox"):
+            (context_dir / sub).mkdir(parents=True, exist_ok=True)
+        sibling_repair.mkdir()
+
+        config_path = tmp / ".studio.yml"
+        config_path.write_text("defaults:\n  effort: custom\n", encoding="utf-8")
+        before = config_path.read_text(encoding="utf-8")
+        r = run(["init"], tmp, expect=2)
+        assert r["error_code"] == "conflict" and not r["changed"], r
+        assert ".studio.yml" in r["paths"]["conflicts"], r
+        assert config_path.read_text(encoding="utf-8") == before
+
+        r = run(["init", "--force"], tmp)
+        assert r["changed"] and ".studio.yml" in r["paths"]["updated"], r
+
+        # 2a) dry-run plans all writes, validates, and leaves no files behind
+        dry_root = tmp / "dry"
+        dry_root.mkdir()
+        r = run([
+            "--workspace", str(dry_root / ".studio"), "init",
+            "--config", str(dry_root / ".studio.yml"), "--dry-run", "--json",
+            "--worker", "task-worker", "--reviewer", "session-review",
+        ], tmp)
+        assert r["dry_run"] and r["changed"] and r["validation"]["status"] == "pass", r
+        assert not (dry_root / ".studio").exists() and not (dry_root / ".studio.yml").exists()
+
+        # 2b) explicit providers are materialized; omitted providers stay native
+        routed_root = tmp / "routed"
+        routed_root.mkdir()
+        r = run([
+            "--workspace", str(routed_root / ".studio"), "init",
+            "--config", str(routed_root / ".studio.yml"),
+            "--worker", "task-github", "--reviewer", "session-review",
+        ], tmp)
+        assert r["validation"]["status"] == "pass", r
+        routed = run([
+            "config", "get", "--path", str(routed_root / ".studio.yml"),
+        ], tmp)["config"]
+        assert routed["tools"]["worker"]["provider"] == "task-github", routed
+        assert routed["tools"]["reviewer"]["provider"] == "session-review", routed
+
+        # 2c) doctor is read-only and does not probe unconfigured plugins
+        config_before = config_path.read_text(encoding="utf-8")
+        board_before = (ws / "board.md").read_text(encoding="utf-8")
+        r = run(["doctor", "--json"], tmp)
+        assert r["plugin"] == "studio" and r["action"] == "doctor", r
+        assert r["validation"]["configured_tools"] == {
+            "worker": "native", "reviewer": "native",
+        }, r
+        assert r["validation"]["probed_providers"] == [], r
+        assert config_path.read_text(encoding="utf-8") == config_before
+        assert (ws / "board.md").read_text(encoding="utf-8") == board_before
 
         # 3) mission validate — the shipped TEMPLATE is a valid contract
         r = run(["mission", "validate", ".studio/missions/TEMPLATE.md"], tmp)
@@ -738,7 +841,7 @@ def main() -> None:
         }, r
 
         # 9) config (.studio.yml) — scaffold, validate, parse, guards
-        cfg = tmp / ".studio.yml"
+        cfg = tmp / "scaffold.yml"
         r = run(["config", "scaffold", "--path", str(cfg)], tmp)
         assert r["ok"] and r["created"], r
         run(["config", "scaffold", "--path", str(cfg)], tmp, expect=2)     # no clobber
@@ -1010,7 +1113,17 @@ def main() -> None:
         r = run(["--workspace", str(custom_ws), "mode", "status"], tmp)
         assert r["ok"] and r["mode"]["active"] is False, r
 
-        # 11) producer contract — main thread may coordinate, not edit/integrate
+        # 11) public init/doctor and producer contracts
+        init_skill = plugin_text("skills/init/SKILL.md")
+        doctor_skill = plugin_text("skills/doctor/SKILL.md")
+        assert "python3 \"$STUDIO\" init --json" in init_skill, init_skill
+        assert "기존 파일이 다르면 아무것도 쓰지 않고" in init_skill, init_skill
+        assert "python3 \"$STUDIO\" doctor --json" in doctor_skill, doctor_skill
+        assert "discovery/probe하지 않으며" in doctor_skill, doctor_skill
+        for manifest_path in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json"):
+            assert json.loads(plugin_text(manifest_path))["version"] == "0.7.0", manifest_path
+
+        # producer main thread may coordinate, not edit/integrate
         producer = plugin_text("skills/producer/SKILL.md")
         for phrase in (
             "studio 규약은 Codex/Claude의 일반",

@@ -1,6 +1,6 @@
 {
   "name": "session-review",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "description": "Review-episode protocol that resumes valid context and reserves clean audit mode for independence-required edges.",
   "author": {
     "name": "Jinwuk-Lee",
@@ -15,6 +15,7 @@
     "category": "Productivity",
     "capabilities": ["Read", "Write", "Validation", "Workflow"],
     "defaultPrompt": [
+      "Use $doctor to diagnose backend, vault, and git readiness without creating persistent configuration.",
       "Use $request-review to start or resume a review loop; do not create a clean episode merely to repeat the same context.",
       "Use $review to inspect the requested review branch.",
       "Choose audit mode when independent context is required and fast self-mode for lower-risk feedback loops.",

@@ -19,7 +19,8 @@ All skill operations go through `scripts/session_review.py` only — skills neve
 call `wiki_cli` directly. Subcommands: `snapshot-save` / `snapshot-load` /
 `snapshot-discard` (handshake I/O), `set-status` (rewrite the status block in
 place), `validate-status` / `validate-turn` / `validate-complete` (gates),
-`render` (status block). Mutate commands take `--slug` (path resolved
+`render` (status block), `doctor` (read-only backend/vault/git readiness).
+Mutate commands take `--slug` (path resolved
 internally); read/validate commands (`status` / `validate-turn` /
 `validate-status` / `validate-complete`) also accept `--file` or
 `--status-json`, so fast mode runs the same machine gates without a snapshot.
@@ -51,6 +52,20 @@ workspace with only `session-review` installed still works.
 - `SESSION_REVIEW_CLI` — explicit path to `session_review.py` (for skill
   invocation where the harness can't supply the plugin root).
 - `WIKI_VAULT` — vault root (default `./wiki`).
+
+## Read-only doctor
+
+`session-review:doctor` does not create a config file. It reports the resolved
+`wiki-markdown|built-in` snapshot backend, override validity, vault readiness,
+and Git worktree/branch/HEAD/dirty state as JSON:
+
+```bash
+python3 plugins/session-review/scripts/session_review.py doctor --json
+```
+
+The built-in backend is a supported ready state. A missing Git worktree or an
+unusable vault fails readiness because the review loop cannot safely branch or
+persist its handshake.
 
 ## Self-mode profiles
 

@@ -111,8 +111,10 @@ python3 "$STUDIO" mode end
 owner의 상위 아이디어를 mission 계약으로 변환한다.
 
 ```bash
-# 작업장이 없으면 스캐폴드 (crew 페르소나가 .studio/crew/로 복사된다)
-python3 "$STUDIO" init          # 이미 있으면 --force 없이 실패 → 그대로 사용
+# 작업장이 없으면 workspace + config를 한 번에 초기화한다.
+# 같은 내용은 skip하고, 다른 기존 파일은 --force 없이 보존+conflict 처리한다.
+python3 "$STUDIO" init --json
+python3 "$STUDIO" doctor --json # read-only; 미설정 외부 plugin은 probe하지 않는다
 
 # 미션 계약 초안: templates/mission.md를 .studio/missions/<slug>.md로 복사해 채운다
 python3 "$STUDIO" mission validate .studio/missions/<slug>.md
@@ -144,7 +146,8 @@ permit/profile/claim binding으로 회수한다.
 
 장기 입력은 raw transcript가 아니라 digest가 결합된 ContextItem → ContextPack으로 만든다.
 로컬 projection은 `.studio/context/{items,bundles,deltas,outbox}`이고, wiki-markdown은
-필수가 아니다. 기존 `.studio/`를 init/force나 자동 이동으로 덮어쓰지 않는다.
+필수가 아니다. 기존 `.studio/`는 기본 init이나 자동 이동으로 덮어쓰지 않는다. explicit
+`init --force`는 Studio-owned scaffold 전체를 재초기화하므로 owner가 요청한 때만 사용한다.
 
 ## 2) 백로그 분해 (KPI 링크 강제)
 

@@ -33,7 +33,6 @@ import importlib.util
 import json
 import os
 import re
-import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -476,8 +475,11 @@ def parse_yaml_subset(text: str) -> dict:
     return root
 
 
-def render_default_config() -> str:
-    return (
+def render_default_config(
+    worker: str | None = None,
+    reviewer: str | None = None,
+) -> str:
+    body = (
         "# .studio.yml — Studio-owned agent policy and optional tool routing.\n"
         "# Native Studio is the default. External tools are considered only when an\n"
         "# uncommented tools.worker/reviewer block explicitly configures one.\n"
@@ -556,6 +558,23 @@ def render_default_config() -> str:
         "#     activation: auto\n"
         "#     fallback: native\n"
     )
+    selected = {
+        "worker": worker if worker not in (None, "native") else None,
+        "reviewer": reviewer if reviewer not in (None, "native") else None,
+    }
+    if not any(selected.values()):
+        return body
+    body += "\n# Explicitly selected adapters. init never discovers unlisted plugins.\ntools:\n"
+    for kind in ("worker", "reviewer"):
+        provider = selected[kind]
+        if provider:
+            body += (
+                f"  {kind}:\n"
+                f"    provider: {provider}\n"
+                "    activation: auto\n"
+                "    fallback: native\n"
+            )
+    return body
 
 
 def cmd_config(args: argparse.Namespace) -> None:
@@ -751,67 +770,296 @@ def resolve_agent_profile(
 # --------------------------------------------------------------------------- #
 # init
 # --------------------------------------------------------------------------- #
+INIT_SUBDIRS = (
+    "missions",
+    "minutes",
+    "raw",
+    "crew",
+    "context/items",
+    "context/bundles",
+    "context/deltas",
+    "context/outbox",
+)
+
+
+def _initial_board() -> dict:
+    return {
+        "schema": 2,
+        "studio_mode": {"active": False, "started_at": None, "ended_at": None},
+        "budget": {
+            "total_tokens": None,
+            "per_run_default": None,
+            "spent_tokens": 0,
+            "reservations": {},
+        },
+        "tracks": {},
+        "runs": [],
+    }
+
+
+def _init_files(ws: Path, config_path: Path, worker: str, reviewer: str) -> dict[Path, str]:
+    files: dict[Path, str] = {
+        ws / "backlog.md": (
+            "# backlog\n\n"
+            "> Every item MUST cite a mission KPI as `(kpi: <id>)` — enforced by "
+            "`studio.py backlog check`. No KPI link, no work.\n\n"
+            "- [ ] example item (kpi: k1)\n"
+        ),
+        ws / "raw" / ".gitignore": "*\n!.gitignore\n",
+        ws / "board.md": render_board(_initial_board()),
+        config_path: render_default_config(worker, reviewer),
+    }
+    src_crew = plugin_root() / "crew"
+    if src_crew.is_dir():
+        for source in sorted(src_crew.glob("*.md")):
+            files[ws / "crew" / source.name] = source.read_text(encoding="utf-8")
+    template = plugin_root() / "templates" / "mission.md"
+    if template.is_file():
+        files[ws / "missions" / "TEMPLATE.md"] = template.read_text(encoding="utf-8")
+    return files
+
+
+def _file_plan(files: dict[Path, str], force: bool) -> dict[str, list[str]]:
+    result = {
+        "created": [], "updated": [], "repaired": [], "skipped": [],
+        "conflicts": [],
+    }
+    for path, desired in files.items():
+        label = str(path)
+        if not path.exists():
+            result["created"].append(label)
+            continue
+        if not path.is_file():
+            result["conflicts"].append(label)
+            continue
+        try:
+            current = path.read_text(encoding="utf-8")
+        except OSError:
+            result["conflicts"].append(label)
+            continue
+        if current == desired:
+            result["skipped"].append(label)
+        elif force:
+            result["updated"].append(label)
+        else:
+            result["conflicts"].append(label)
+    return result
+
+
+def _directory_plan(ws: Path, files: dict[Path, str]) -> dict[str, list[str]]:
+    """Plan every scaffold directory before the first filesystem mutation.
+
+    A missing subdirectory in an existing workspace is a repair, while the
+    same directory on first init is a create.  File-parent blockers are also
+    surfaced here so a later atomic file write cannot fail after earlier
+    scaffold paths have already been created.
+    """
+    result = {
+        "created": [], "updated": [], "repaired": [], "skipped": [],
+        "conflicts": [],
+    }
+    workspace_exists = ws.is_dir()
+    required = [ws, *(ws / sub for sub in INIT_SUBDIRS)]
+
+    # Explicit config paths may live outside the Studio workspace. Only add a
+    # missing/non-directory parent; an existing directory needs no scaffold
+    # action and would add noise to the common result.
+    for path in files:
+        parent = path.parent
+        if parent != Path(".") and parent not in required and not parent.is_dir():
+            required.append(parent)
+
+    seen: set[Path] = set()
+    for path in required:
+        if path in seen:
+            continue
+        seen.add(path)
+        label = str(path)
+        blocker = _non_directory_blocker(path)
+        if blocker is not None:
+            blocker_label = str(blocker)
+            if blocker_label not in result["conflicts"]:
+                result["conflicts"].append(blocker_label)
+        elif path.is_dir():
+            result["skipped"].append(label)
+        elif workspace_exists and path != ws and _is_within(path, ws):
+            result["repaired"].append(label)
+        else:
+            result["created"].append(label)
+    return result
+
+
+def _non_directory_blocker(path: Path) -> Path | None:
+    """Return the nearest non-directory target/ancestor that blocks creation."""
+    candidate = path
+    while True:
+        if candidate.exists():
+            return None if candidate.is_dir() else candidate
+        if candidate == candidate.parent:
+            return None
+        candidate = candidate.parent
+
+
+def _is_within(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+def _merge_path_plans(*plans: dict[str, list[str]]) -> dict[str, list[str]]:
+    merged = {
+        "created": [], "updated": [], "repaired": [], "skipped": [],
+        "conflicts": [],
+    }
+    for plan in plans:
+        for action in merged:
+            merged[action].extend(plan[action])
+    return merged
+
+
+def _validate_init_config(body: str) -> list[dict]:
+    try:
+        config = parse_yaml_subset(body)
+    except ValueError as exc:
+        return [{"severity": "error", "where": "config", "msg": str(exc)}]
+    return _validate_config(config)
+
+
 def cmd_init(args: argparse.Namespace) -> None:
     ws = workspace(args)
-    if (ws / "board.md").is_file() and not args.force:
-        fail(2, "exists", f"workspace already at {ws} (use --force to re-scaffold)")
-
-    for sub in (
-        "missions",
-        "minutes",
-        "raw",
-        "crew",
-        "context/items",
-        "context/bundles",
-        "context/deltas",
-        "context/outbox",
-    ):
-        (ws / sub).mkdir(parents=True, exist_ok=True)
-
-    # copy shipped persona templates into the live crew roster
-    src_crew = plugin_root() / "crew"
-    copied = []
-    if src_crew.is_dir():
-        for f in sorted(src_crew.glob("*.md")):
-            dst = ws / "crew" / f.name
-            if not dst.exists() or args.force:
-                shutil.copyfile(f, dst)
-                copied.append(f.name)
-
-    # mission template
-    tpl = plugin_root() / "templates" / "mission.md"
-    if tpl.is_file():
-        shutil.copyfile(tpl, ws / "missions" / "TEMPLATE.md")
-
-    # backlog
-    (ws / "backlog.md").write_text(
-        "# backlog\n\n"
-        "> Every item MUST cite a mission KPI as `(kpi: <id>)` — enforced by "
-        "`studio.py backlog check`. No KPI link, no work.\n\n"
-        "- [ ] example item (kpi: k1)\n",
-        encoding="utf-8",
+    config_path = Path(args.config or CONFIG_PATH_DEFAULT)
+    worker = args.worker or "native"
+    reviewer = args.reviewer or "native"
+    files = _init_files(ws, config_path, worker, reviewer)
+    paths = _merge_path_plans(
+        _directory_plan(ws, files),
+        _file_plan(files, args.force),
     )
+    config_problems = _validate_init_config(files[config_path])
+    validation = {
+        "status": "pass" if not config_problems else "fail",
+        "config": {"path": str(config_path), "problems": config_problems},
+        "workspace": {"path": str(ws), "required_subdirs": list(INIT_SUBDIRS)},
+    }
+    common = {
+        "plugin": "studio",
+        "action": "init",
+        "changed": bool(paths["created"] or paths["updated"] or paths["repaired"]),
+        "paths": paths,
+        "validation": validation,
+        "dry_run": bool(args.dry_run),
+        # Legacy result fields retained for callers of the original workspace-only init.
+        "workspace": str(ws),
+        "crew_copied": sorted(
+            Path(path).name
+            for path in paths["created"] + paths["updated"] + paths["repaired"]
+            if Path(path).parent == ws / "crew"
+        ),
+        "created": bool(paths["created"]),
+    }
+    if config_problems:
+        fail(6, "invalid_generated_config", "generated config is invalid", **common)
+    if paths["conflicts"]:
+        fail(
+            2,
+            "conflict",
+            "existing files differ; use --force to replace Studio-owned scaffold files",
+            **{**common, "changed": False},
+        )
+    if args.dry_run:
+        ok(**common)
 
-    # raw transcripts are TTL-pruned scratch, never committed
-    (ws / "raw" / ".gitignore").write_text("*\n!.gitignore\n", encoding="utf-8")
+    for path in paths["created"] + paths["repaired"]:
+        planned = Path(path)
+        if planned == ws or planned in {ws / sub for sub in INIT_SUBDIRS}:
+            planned.mkdir(parents=True, exist_ok=True)
+    for path, body in files.items():
+        if str(path) in paths["created"] or str(path) in paths["updated"]:
+            atomic_write_text(path, body)
 
-    # board ledger (budget filled from the active mission later)
-    write_board(
-        ws,
-        {
-            "schema": 2,
-            "studio_mode": {"active": False, "started_at": None, "ended_at": None},
-            "budget": {
-                "total_tokens": None,
-                "per_run_default": None,
-                "spent_tokens": 0,
-                "reservations": {},
-            },
-            "tracks": {},
-            "runs": [],
-        },
-    )
-    ok(workspace=str(ws), crew_copied=copied, created=True)
+    try:
+        actual_config = parse_yaml_subset(config_path.read_text(encoding="utf-8"))
+        post_problems = _validate_config(actual_config)
+    except (OSError, ValueError) as exc:
+        post_problems = [{"severity": "error", "where": "config", "msg": str(exc)}]
+    if post_problems:
+        fail(
+            6,
+            "post_init_validation_failed",
+            "Studio init wrote files but post-write validation failed",
+            **{**common, "validation": {**validation, "status": "fail", "config": {
+                "path": str(config_path), "problems": post_problems,
+            }}},
+        )
+    ok(**common)
+
+
+def cmd_doctor(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    config_path = Path(args.config or CONFIG_PATH_DEFAULT)
+    problems: list[dict] = []
+    warnings: list[dict] = []
+
+    if not ws.is_dir():
+        problems.append({"where": "workspace", "msg": f"missing directory: {ws}"})
+    else:
+        for relative in ("board.md", "backlog.md", "missions", "crew"):
+            path = ws / relative
+            if not path.exists():
+                problems.append({"where": "workspace", "msg": f"missing: {path}"})
+        board_path = ws / "board.md"
+        if board_path.is_file():
+            try:
+                board = extract_json_block(board_path.read_text(encoding="utf-8"))
+                if not isinstance(board, dict) or board.get("schema", 1) not in (1, 2):
+                    raise ValueError("board must be an object with supported schema 1 or 2")
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                problems.append({"where": "workspace.board", "msg": str(exc)})
+
+    config: dict = {}
+    config_problems: list[dict] = []
+    if config_path.is_file():
+        try:
+            config = parse_yaml_subset(config_path.read_text(encoding="utf-8"))
+            config_problems = _validate_config(config)
+        except (OSError, ValueError) as exc:
+            config_problems = [{"severity": "error", "where": "config", "msg": str(exc)}]
+        problems.extend(
+            {"where": item.get("where", "config"), "msg": item.get("msg", "invalid")}
+            for item in config_problems if item.get("severity") == "error"
+        )
+    else:
+        warnings.append({
+            "where": "config",
+            "msg": f"{config_path} is absent; native tools and session model/effort inheritance remain valid",
+        })
+
+    tools = config.get("tools") if isinstance(config, dict) else {}
+    tools = tools if isinstance(tools, dict) else {}
+    selected = {
+        "worker": ((tools.get("worker") or {}).get("provider") or "native"),
+        "reviewer": ((tools.get("reviewer") or {}).get("provider") or "native"),
+    }
+    validation = {
+        "status": "fail" if problems else "pass",
+        "problems": problems,
+        "warnings": warnings,
+        "configured_tools": selected,
+        "probed_providers": [],
+    }
+    result = {
+        "plugin": "studio",
+        "action": "doctor",
+        "changed": False,
+        "paths": {"workspace": str(ws), "config": str(config_path)},
+        "validation": validation,
+        "dry_run": False,
+    }
+    if problems:
+        fail(6, "doctor_failed", "Studio doctor found invalid local state", **result)
+    ok(**result)
 
 
 # --------------------------------------------------------------------------- #
@@ -4028,9 +4276,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--workspace", help="workspace dir (default: .studio/)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    sp = sub.add_parser("init", help="scaffold a studio workspace")
+    sp = sub.add_parser("init", help="idempotently scaffold workspace + .studio.yml")
     sp.add_argument("--force", action="store_true")
+    sp.add_argument("--dry-run", action="store_true", help="plan and validate without writing")
+    sp.add_argument("--json", action="store_true", help="compatibility flag; output is always JSON")
+    sp.add_argument("--config", help=f"config path (default {CONFIG_PATH_DEFAULT})")
+    sp.add_argument("--worker", choices=WORKER_PROVIDERS, help="explicit worker provider; omitted = native")
+    sp.add_argument("--reviewer", choices=REVIEWER_PROVIDERS, help="explicit reviewer provider; omitted = native")
     sp.set_defaults(func=cmd_init)
+
+    sp = sub.add_parser("doctor", help="read-only Studio workspace/config diagnosis")
+    sp.add_argument("--config", help=f"config path (default {CONFIG_PATH_DEFAULT})")
+    sp.add_argument("--json", action="store_true", help="compatibility flag; output is always JSON")
+    sp.set_defaults(func=cmd_doctor)
 
     sp = sub.add_parser("mission", help="mission-contract ops")
     msub = sp.add_subparsers(dest="mcmd", required=True)

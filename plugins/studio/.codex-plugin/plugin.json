@@ -1,7 +1,7 @@
 {
   "name": "studio",
-  "version": "0.6.0",
-  "description": "Native-first agent team with explicit tool routing, Claude/Codex profiles, single-owner reviews, and evidence reuse.",
+  "version": "0.7.0",
+  "description": "Native-first agent team with unified init/doctor, explicit tool routing, Claude/Codex profiles, and single-owner reviews.",
   "author": {
     "name": "Jinwuk-Lee",
     "url": "https://github.com/Jeis-Jw"

@@ -36,9 +36,12 @@ def studio_review_lease():
 class TaskWorkerBridgeTests(unittest.TestCase):
     def test_preflight_resolves_sibling_worker_and_exact_contracts(self):
         root, payload = bridge.resolve_task_worker_root()
+        manifest = json.loads(
+            (root / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8")
+        )
         self.assertEqual(root.name, "task-worker")
         self.assertEqual(payload["plugin"], "task-worker")
-        self.assertEqual(payload["version"], "0.5.0")
+        self.assertEqual(payload["version"], manifest["version"])
         self.assertEqual(payload["contracts"], bridge.REQUIRED_CONTRACTS)
         self.assertEqual(payload["contracts"]["review_permit"], "task-worker.review-permit/v1")
         self.assertTrue(bridge.REQUIRED_COMMANDS.issubset(set(payload["commands"])))

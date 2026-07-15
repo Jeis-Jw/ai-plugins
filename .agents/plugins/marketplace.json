@@ -15,7 +15,7 @@
     {
       "name": "task-github",
       "source": { "source": "local", "path": "./plugins/task-github" },
-      "version": "0.24.0",
+      "version": "0.25.0",
       "description": "GitHub adapter for task-worker Issue Trees, PR transport, externally owned review handoffs, and gated closeout.",
       "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
       "category": "Productivity"
@@ -23,7 +23,7 @@
     {
       "name": "session-review",
       "source": { "source": "local", "path": "./plugins/session-review" },
-      "version": "0.5.2",
+      "version": "0.6.0",
       "description": "Review-episode protocol that resumes valid context and reserves clean audit mode for independence-required edges.",
       "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
       "category": "Productivity"
@@ -31,7 +31,7 @@
     {
       "name": "studio",
       "source": { "source": "local", "path": "./plugins/studio" },
-      "version": "0.6.0",
+      "version": "0.7.0",
       "description": "Native-first agent team with explicit tool routing, Claude/Codex profiles, single-owner reviews, and evidence reuse.",
       "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
       "category": "Productivity"
@@ -42,7 +42,7 @@
         "source": "local",
         "path": "./plugins/task-worker"
       },
-      "version": "0.5.0",
+      "version": "0.6.0",
       "description": "Provider-neutral work graphs with parallel ready sets, integration gates, pinned evidence, and single-owner review permits.",
       "policy": {
         "installation": "AVAILABLE",

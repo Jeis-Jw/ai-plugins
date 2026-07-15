@@ -137,13 +137,16 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
     return findings
 
 
-def render_default_config(*, base_branch: str = "main") -> str:
+def render_default_config(
+    *, base_branch: str = "main",
+    state_root: str = ".task-github/local/projections",
+) -> str:
     return (
         f"base_branch: {base_branch}\n"
         "projection:\n"
         "  record: github\n"
         "  strict-deps: true\n"
-        "  state-root: .task-github/local/projections\n"
+        f"  state-root: {state_root}\n"
         "closeout:\n"
         "  branch-prefix: task/issue-\n"
         "  delete-merged-branches: true\n"
