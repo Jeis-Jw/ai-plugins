@@ -368,6 +368,12 @@ owner gate 문구는 다음처럼 쓴다:
 `worktreePath`, `branch`, `changedFiles`, `verification`, `blockedChecks`를 넘기거나,
 향후 `studio.py track promote --track <slug>` 같은 결정적 CLI가 생기면 그 CLI만 호출한다.
 
+통합 성공 뒤 cleanup owner는 execution owner와 같다. native track은 integrator가 merged,
+clean, non-primary임을 확인한 worktree를 제거하고 local branch는 `git branch -d`로만
+삭제한 뒤 prune 결과를 보고한다. task-worker/task-github track은 해당 provider의 cleanup
+receipt를 소비하고 Studio가 같은 정리를 반복하지 않는다. dirty/unmerged/primary 대상이나
+cleanup 실패는 `cleanup_pending`으로 남기며 미션 closeout을 완료로 보고하지 않는다.
+
 ## 6) 중계·게이트·보고
 
 - owner에게는 **합성본 + delta + 열린 게이트**만 전한다. raw transcript 금지.

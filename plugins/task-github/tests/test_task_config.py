@@ -18,6 +18,7 @@ class TaskGithubConfigTests(unittest.TestCase):
         self.assertEqual(task_config.validate_config(config), [])
         self.assertEqual(config["projection"]["record"], "github")
         self.assertEqual(config["closeout"]["branch-prefix"], "task/issue-")
+        self.assertTrue(config["closeout"]["delete-merged-remote-branches"])
         for moved in ("mode", "verify-tool", "orchestrate", "define"):
             self.assertNotIn(moved, config)
 
@@ -36,7 +37,7 @@ class TaskGithubConfigTests(unittest.TestCase):
 
     def test_validate_provider_specific_values(self):
         config = task_config.parse_config(
-            "base_branch: main\nprojection:\n  record: jira\ncloseout:\n  delete-merged-branches: maybe\n"
+            "base_branch: main\nprojection:\n  record: jira\ncloseout:\n  delete-merged-remote-branches: maybe\n"
         )
 
         errors = {

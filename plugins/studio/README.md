@@ -266,6 +266,9 @@ python3 plugins/studio/scripts/studio.py cast suggest implementation
 
 ## 상태
 
+v0.7.1 — native track은 integrator가 merged-clean worktree/local branch를 정리하고,
+외부 worker track은 provider cleanup receipt를 재사용해 중복 cleanup을 막는다.
+
 v0.7.0 — workspace와 config를 합친 idempotent `studio:init`, explicit worker/reviewer 설정,
 dry-run/force/validation JSON 계약과 native-first read-only `studio:doctor`를 추가했다. init은
 미설정 외부 plugin을 탐색하지 않으며 기존 `config scaffold`는 호환 표면으로 유지한다.

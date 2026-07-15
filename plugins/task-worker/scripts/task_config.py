@@ -31,11 +31,17 @@ TOP_KEYS = {
     "define",
     "evidence",
     "recovery",
+    "cleanup",
 }
 ORCH_KEYS = {"verify-command", "review-mode", "review-command", "gear-options", "max-workers"}
 DEFINE_KEYS = {"review-tool", "review-command", "review-required"}
 EVIDENCE_KEYS = {"reuse", "duplicate-guard", "token-coverage-required", "max-physical-runs"}
 RECOVERY_KEYS = {"lease-ttl-seconds"}
+CLEANUP_KEYS = {
+    "remove-merged-worktrees",
+    "delete-merged-local-branches",
+    "prune-stale-worktrees",
+}
 GEARS = {"micro", "normal", "major"}
 GEAR_OPTION_KEYS = {"plan", "verify", "pr-review"}
 REVIEW_MODES = {"gear", "all", "skip"}
@@ -43,7 +49,7 @@ MODES = {"solo", "team"}
 DISPATCH_MODES = {"worker", "manual"}
 DELIVERY_MODES = {"local-ff", "external"}
 PROVIDER_ONLY_KEYS = {"base_branch", "projection", "closeout", "repository", "labels"}
-MAPPING_KEYS = {"orchestrate", "define", "evidence", "recovery", "gear-options", *GEARS}
+MAPPING_KEYS = {"orchestrate", "define", "evidence", "recovery", "cleanup", "gear-options", *GEARS}
 PRESETS = {"local", "manual", "quality", "minimal"}
 LOCAL_STATE_IGNORE = ".task-worker/local/"
 COMMAND_PROFILES_PATH = ".task-worker/commands.json"
@@ -127,6 +133,7 @@ def parse_config(text: str) -> dict[str, Any]:
     config.setdefault("define", {})
     config.setdefault("evidence", {})
     config.setdefault("recovery", {})
+    config.setdefault("cleanup", {})
     return config
 
 
@@ -224,6 +231,11 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
     recovery = _validate_mapping_keys(findings, config.get("recovery", {}), name="recovery", allowed=RECOVERY_KEYS)
     if recovery is not None and not _positive_int(recovery.get("lease-ttl-seconds")):
         findings.append(_finding("bad_recovery_lease_ttl", "recovery.lease-ttl-seconds must be a positive integer"))
+    cleanup = _validate_mapping_keys(findings, config.get("cleanup", {}), name="cleanup", allowed=CLEANUP_KEYS)
+    if cleanup is not None:
+        for key in CLEANUP_KEYS:
+            if cleanup.get(key) not in (None, True, False):
+                findings.append(_finding(f"bad_cleanup_{key}", f"cleanup.{key} must be boolean"))
     return findings
 
 
@@ -274,6 +286,10 @@ def render_preset_config(preset: str) -> str:
         "  max-physical-runs: 3\n"
         "recovery:\n"
         "  lease-ttl-seconds: 3600\n"
+        "cleanup:\n"
+        "  remove-merged-worktrees: true\n"
+        "  delete-merged-local-branches: true\n"
+        "  prune-stale-worktrees: true\n"
     )
 
 

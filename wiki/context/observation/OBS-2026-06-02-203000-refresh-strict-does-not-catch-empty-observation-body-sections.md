@@ -3,7 +3,7 @@ title: refresh strict does not catch empty observation body sections
 created_at: 2026-06-02
 summary: Review found observation records with all fixed body sections empty while wiki refresh --strict still returned no issues. This leaves Stage-2 recall with headers but no evidence.
 tags: [wiki, observation, schema, quality]
-verified_at: 2026-07-15
+verified_at: 2026-07-16
 affects_paths: [plugins/wiki-markdown/skills/wiki/scripts/wiki_cli.py, plugins/wiki-markdown/tests/test_wiki_cli.py, wiki/context/observation/**]
 relations:
   decisions: [DEC-2026-05-29-105322-observation-record-type]

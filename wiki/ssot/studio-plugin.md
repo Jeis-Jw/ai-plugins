@@ -3,13 +3,13 @@ title: Studio 플러그인
 created_at: 2026-07-14
 summary: native-first 에이전트 팀과 명시적 외부 도구 라우팅, runtime별 agent 정책, 단일 review owner 및 evidence 재사용 설계 정본
 tags: [studio, orchestration, routing, review, qa, evidence]
-verified_at: 2026-07-15
+verified_at: 2026-07-16
 affects_paths: [plugins/studio/**, plugins/task-worker/**, plugins/task-github/**]
 ---
 
 ## 현재 상태
 
-Studio 0.7.0은 owner의 미션을 research, planning, strategy, design, architecture, implementation, creation, QA, independent review, critique, curation, summarization 역할로 분해하고 ready-set을 병렬 실행하는 상위 orchestration layer다. native harness만으로 전체 흐름을 완주하며 외부 plugin은 기능 필수가 아니다. canonical execution permit·atomic claim·immutable evidence로 동일 물리 실행만 차단한다.
+Studio 0.7.1은 owner의 미션을 research, planning, strategy, design, architecture, implementation, creation, QA, independent review, critique, curation, summarization 역할로 분해하고 ready-set을 병렬 실행하는 상위 orchestration layer다. native harness만으로 전체 흐름을 완주하며 외부 plugin은 기능 필수가 아니다. canonical execution permit·atomic claim·immutable evidence로 동일 물리 실행만 차단한다.
 
 ## 초기화와 진단
 
@@ -32,6 +32,7 @@ validation만 반환한다. `--worker`와 `--reviewer`는 명시한 provider만 
 | native-first | run parameter와 `.studio.yml`에 없는 외부 도구는 discovery/probe하지 않는다. |
 | 선택 우선순위 | run parameter > `.studio.yml` > native. explicit unavailable은 STOP, configured unavailable은 설정 fallback을 따른다. |
 | worker 단일 소유 | track마다 `native|task-worker|task-github` 하나만 lease한다. task-github 선택 시 task-worker를 별도 lease하지 않는다. |
+| cleanup 단일 소유 | native는 integrator가 정리하고 외부 worker는 cleanup receipt를 반환한다. merged-clean 대상만 정리하며 다른 owner가 반복하지 않는다. |
 | review 단일 소유 | review edge마다 `workflow-review-lease/v1` owner가 하나다. Studio와 worker가 같은 리뷰를 이중 dispatch하지 않는다. |
 | 병렬성 보존 | 모든 ready action을 계산하고 독립 write-set은 별도 worktree에서 병렬 실행한다. |
 | 검증 보존 | independent judgment와 통합 HEAD full gate를 제거하지 않는다. |

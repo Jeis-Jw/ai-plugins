@@ -38,3 +38,7 @@ evidence:
   max-physical-runs: 3
 recovery:
   lease-ttl-seconds: 3600
+cleanup:
+  remove-merged-worktrees: true
+  delete-merged-local-branches: true
+  prune-stale-worktrees: true

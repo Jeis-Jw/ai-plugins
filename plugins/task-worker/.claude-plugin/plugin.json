@@ -1,5 +1,5 @@
 {
   "name": "task-worker",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Provider-neutral WorkGraph, 병렬 ready-set, 통합 gate, evidence 재사용과 단일 review owner permit 플러그인"
 }

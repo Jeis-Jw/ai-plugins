@@ -1,6 +1,7 @@
 import sys
 import unittest
 import json
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -75,6 +76,29 @@ class IssueCloseTests(unittest.TestCase):
         self.assertTrue(closeout.issue_close_failure_is_ok("GraphQL: already closed"))
         self.assertTrue(closeout.issue_close_failure_is_ok("issue is not open"))
         self.assertFalse(closeout.issue_close_failure_is_ok("permission denied"))
+
+
+class CloseoutConfigTests(unittest.TestCase):
+    def test_remote_branch_cleanup_defaults_on_and_honors_explicit_off(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".task-github.yml"
+            self.assertTrue(closeout._delete_remote_branch_enabled(path))
+            path.write_text(
+                "base_branch: main\nprojection:\n  record: github\ncloseout:\n"
+                "  delete-merged-remote-branches: false\n",
+                encoding="utf-8",
+            )
+            self.assertFalse(closeout._delete_remote_branch_enabled(path))
+
+    def test_legacy_remote_branch_cleanup_key_remains_compatible(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".task-github.yml"
+            path.write_text(
+                "base_branch: main\nprojection:\n  record: github\ncloseout:\n"
+                "  delete-merged-branches: false\n",
+                encoding="utf-8",
+            )
+            self.assertFalse(closeout._delete_remote_branch_enabled(path))
 
 
 def preflight_evidence(**overrides):

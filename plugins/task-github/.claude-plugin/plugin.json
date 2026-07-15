@@ -1,5 +1,5 @@
 {
   "name": "task-github",
-  "version": "0.25.0",
+  "version": "0.26.0",
   "description": "task-worker 의존 GitHub adapter — Issue Tree·PR transport와 externally-owned review closeout gate"
 }
