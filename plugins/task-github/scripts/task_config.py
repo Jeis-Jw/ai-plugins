@@ -19,7 +19,11 @@ from typing import Any
 
 PROVIDER_KEYS = {"base_branch", "projection", "closeout"}
 PROJECTION_KEYS = {"record", "strict-deps", "state-root"}
-CLOSEOUT_KEYS = {"branch-prefix", "delete-merged-branches"}
+CLOSEOUT_KEYS = {
+    "branch-prefix",
+    "delete-merged-remote-branches",
+    "delete-merged-branches",
+}
 LEGACY_EXECUTION_KEYS = {
     "mode", "planning-tool", "verify-tool", "review-tool", "orchestrate", "define"
 }
@@ -132,8 +136,15 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
         prefix = closeout.get("branch-prefix", "task/issue-")
         if not isinstance(prefix, str) or not prefix.strip():
             findings.append(_finding("bad_closeout_branch_prefix", "closeout.branch-prefix must be a non-empty string"))
-        if closeout.get("delete-merged-branches") not in (None, True, False):
-            findings.append(_finding("bad_closeout_delete_branches", "closeout.delete-merged-branches must be boolean"))
+        for key in ("delete-merged-remote-branches", "delete-merged-branches"):
+            if closeout.get(key) not in (None, True, False):
+                findings.append(_finding("bad_closeout_delete_branches", f"closeout.{key} must be boolean"))
+        if "delete-merged-branches" in closeout:
+            findings.append(_finding(
+                "legacy_closeout_delete_branches",
+                "closeout.delete-merged-branches is deprecated; use delete-merged-remote-branches",
+                "warning",
+            ))
     return findings
 
 
@@ -149,7 +160,7 @@ def render_default_config(
         f"  state-root: {state_root}\n"
         "closeout:\n"
         "  branch-prefix: task/issue-\n"
-        "  delete-merged-branches: true\n"
+        "  delete-merged-remote-branches: true\n"
     )
 
 

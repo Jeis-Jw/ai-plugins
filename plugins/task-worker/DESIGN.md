@@ -30,6 +30,13 @@ started → running → verified → done → closed
 
 각 전이는 idempotent하다. `verify` event에는 구조화된 evidence를 붙인다. `ready`는 같은 artifact digest에 pin된 closed blocker만 완료로 인정하며, active run이 중복되면 fail-closed한다. provider snapshot에서는 unknown blocker를 미해결로 유지하고 dependency cycle이면 부분 ready set도 반환하지 않는다.
 
+## 0.7.0 deterministic cleanup
+
+`cleanup` policy는 merge/FF가 확인된 clean task worktree, local branch와 stale metadata 정리를
+task-worker가 소유하게 한다. `cleanup.py`는 primary/dirty/unmerged 대상을 fail-closed하고
+`task-worker.cleanup-receipt/v1`을 반환한다. provider는 이 receipt를 재사용하고 로컬 정리를
+중복 실행하지 않는다.
+
 ## 0.6.0 workspace onboarding
 
 `task-worker:init`은 consumer workspace에 provider-neutral policy와 local state를 초기화한다. `local`, `manual`, `quality`, `minimal` preset은 실행·delivery·telemetry 축만 결정하며, Studio/GitHub/Wiki/reviewer provider를 발견하거나 설정하지 않는다.

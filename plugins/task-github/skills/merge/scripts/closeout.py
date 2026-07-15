@@ -17,6 +17,7 @@ the plan; it never merges, relabels, or deletes.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import re
 import subprocess
@@ -192,6 +193,29 @@ def _run_warning(cmd: List[str]) -> str | None:
     if result.returncode != 0:
         return f"{' '.join(cmd)}: {result.stderr.strip() or result.stdout.strip()}"
     return None
+
+
+def _delete_remote_branch_enabled(config_path: str | Path) -> bool:
+    path = Path(config_path)
+    if not path.is_file():
+        return True
+    module_path = Path(__file__).resolve().parents[3] / "scripts" / "task_config.py"
+    spec = importlib.util.spec_from_file_location("task_github_closeout_config", module_path)
+    if spec is None or spec.loader is None:
+        raise CloseoutError("config_unavailable", f"cannot load task-github config reader: {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    try:
+        config = module.load_config(path)
+    except (OSError, ValueError) as exc:
+        raise CloseoutError("config_unavailable", str(exc)) from exc
+    errors = [item for item in module.validate_config(config) if item["severity"] == "error"]
+    if errors:
+        raise CloseoutError("config_invalid", json.dumps(errors, ensure_ascii=False))
+    closeout = config.get("closeout", {})
+    if "delete-merged-remote-branches" in closeout:
+        return bool(closeout["delete-merged-remote-branches"])
+    return bool(closeout.get("delete-merged-branches", True))
 
 
 def gh(args: List[str], *, code: str = "gh_failed") -> str:
@@ -406,8 +430,10 @@ def run_pr_closeout(
     dry_run: bool,
     orchestrate_ledger: str | None = None,
     preflight_ttl_seconds: int = 180,
+    config_path: str | Path = ".task-github.yml",
 ) -> dict:
     owner, repo = _repo()
+    delete_remote_branch = _delete_remote_branch_enabled(config_path)
     sync_warnings = []
     preflight_reuse = None
     if orchestrate_ledger:
@@ -476,6 +502,7 @@ def run_pr_closeout(
             "downstream": downstream,
             "root": root, "root_closed": root_closed, "root_closed_now": root_closed,
             "task_to_complete": task,
+            "delete_remote_branch": delete_remote_branch,
             "preflight_reuse": preflight_reuse,
         }
         if sync_warnings:
@@ -543,7 +570,10 @@ def run_pr_closeout(
         ["git", "pull", "--ff-only"] if base == current
         else ["git", "fetch", "origin", f"{base}:{base}"]
     )
-    for cmd in (base_sync, ["git", "push", "origin", "--delete", head]):
+    commands = [base_sync]
+    if delete_remote_branch:
+        commands.append(["git", "push", "origin", "--delete", head])
+    for cmd in commands:
         warning = _run_warning(cmd)
         if warning:
             sync_warnings.append(warning)
@@ -562,6 +592,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--pr", type=int, required=True)
     parser.add_argument("--orchestrate-ledger")
     parser.add_argument("--preflight-ttl-seconds", type=int, default=180)
+    parser.add_argument("--config", default=".task-github.yml")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--json", action="store_true", dest="as_json")
     args = parser.parse_args(argv)
@@ -571,6 +602,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             dry_run=args.dry_run,
             orchestrate_ledger=args.orchestrate_ledger,
             preflight_ttl_seconds=args.preflight_ttl_seconds,
+            config_path=args.config,
         )
     except CloseoutError as exc:
         payload = {"ok": False, "error_code": exc.code, "message": exc.message}

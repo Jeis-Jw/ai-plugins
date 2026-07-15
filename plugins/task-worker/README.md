@@ -40,6 +40,10 @@ python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/task_config.py" doctor
 
 `local`, `manual`, `quality` preset은 `.task-worker/commands.json`과 `.task-worker/impact-rules.json`을 TODO skeleton으로 만든다. 제품 test/build command를 추측하지 않으며, skeleton을 프로젝트 계약으로 채우기 전에는 execution control이 fail-closed 한다. `minimal`은 command policy를 명시적으로 비활성화하고 config와 local state만 만든다.
 
+모든 preset은 merge/FF가 증명된 clean 작업만 대상으로 worktree 제거, local branch `-d`,
+worktree prune을 기본 활성화한다. `scripts/cleanup.py`가 이를 단일 JSON receipt로 실행하며
+primary, dirty, unmerged 작업은 설정과 무관하게 보존한다.
+
 | preset | 용도 | dispatch / delivery | 추가 안전성 |
 |---|---|---|---|
 | `local` | 로컬 worker 실행 | `worker` / `local-ff` | evidence reuse + duplicate guard |
@@ -113,6 +117,7 @@ python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py
 
 ## 변경 이력
 
+- `0.7.0`: merged-clean worktree/local branch cleanup을 설정 정본과 결정적 receipt 실행기로 연결했다. primary, dirty, unmerged 작업은 항상 보존한다.
 - `0.6.0`: `task-worker:init`/`doctor`와 `local|manual|quality|minimal` preset을 추가했다. 프로젝트별 command/impact policy는 TODO/fail-closed skeleton으로만 만들고 provider 자동 탐색이나 외부 mutation은 하지 않는다. 기존 분해·ready-set 병렬성·worktree·독립 검증·통합 gate는 변경하지 않았다.
 - `0.5.0`: Studio와 공유하는 canonical verification contract를 기준으로 command profile·impact 범위·delta/full QA 허가를 계산하고, atomic physical execution claim, immutable receipt/evidence, run cap, token telemetry와 external spend gate를 추가했다. ready-set 병렬 실행·worktree 격리·독립 검증·통합 gate는 그대로 유지한다.
 - `0.4.0`: exact `workflow-review-lease/v1` binding과 digest/conflict 검증, reviewer dispatch 직전 `review-permit`을 추가했다. Studio-owned review는 externally-owned handoff로 반환하고 task-worker-owned/standalone review, verify evidence, integration gate는 그대로 유지한다.

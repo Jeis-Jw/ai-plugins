@@ -3,7 +3,7 @@ title: task-worker 플러그인
 created_at: 2026-07-14
 summary: provider-neutral 작업 정의·분해·병렬 실행·검증·evidence 재사용을 소유하고 외부 provider가 상태와 delivery를 투영하는 범용 작업 엔진 설계 정본
 tags: [task-worker, workflow, orchestration, execution, evidence]
-verified_at: 2026-07-15
+verified_at: 2026-07-16
 affects_paths: [plugins/task-worker/**, plugins/task-github/**]
 ---
 
@@ -11,9 +11,9 @@ affects_paths: [plugins/task-worker/**, plugins/task-github/**]
 
 ### 설계 및 구현 상태
 
-이 문서는 `task-worker` 플러그인의 **아키텍처와 구현 상태 정본**이다. 2026-07-14에 0.1.0으로 독립 플러그인을 만들었고, 0.2.0에서 task-github 위임 전환, 0.3.0에서 설정·binding·resume·evidence 실행 계약, 0.4.0에서 단일 review owner permit, 0.5.0에서 canonical execution control, 0.6.0에서 안전한 workspace init·doctor까지 완료했다.
+이 문서는 `task-worker` 플러그인의 **아키텍처와 구현 상태 정본**이다. 2026-07-14에 0.1.0으로 독립 플러그인을 만들었고, 0.2.0에서 task-github 위임 전환, 0.3.0에서 설정·binding·resume·evidence 실행 계약, 0.4.0에서 단일 review owner permit, 0.5.0에서 canonical execution control, 0.6.0에서 안전한 workspace init·doctor, 0.7.0에서 merged-clean local cleanup receipt까지 완료했다.
 
-0.6.0이 독립적으로 소유하는 범위는 다음과 같다.
+0.7.0이 독립적으로 소유하는 범위는 다음과 같다.
 
 - `task-worker.definition/v1` immutable DefinitionArtifact와 stable node id
 - dependency·parent cycle fail-closed 검증
@@ -39,7 +39,7 @@ affects_paths: [plugins/task-worker/**, plugins/task-github/**]
 
 새 canonical artifact는 provider-specific `record`를 허용하지 않으며 external delivery는 generic `external`로 표현한다. task-worker runtime에는 GitHub 또는 Studio 실행 dependency가 없다.
 
-task-github 0.25.0은 `task_worker_bridge.py`를 통해 이 JSON CLI contract, review permit과 execution-control handshake를 소비한다. task-github의 구 `definition_artifact.py`는 CLI forwarder만 남았고 DefinitionArtifact 생성, local lifecycle, generic ready planner의 중복 구현은 제거됐다. 기존 GitHub Issue Tree도 import하면 WorkGraphSnapshot·context·provider binding으로 고정해 `manual|worker` 두 dispatch에서 재사용한다.
+task-github 0.26.0은 `task_worker_bridge.py`를 통해 이 JSON CLI contract, review permit, execution-control handshake와 cleanup receipt를 소비한다. task-github의 구 `definition_artifact.py`는 CLI forwarder만 남았고 DefinitionArtifact 생성, local lifecycle, generic ready planner의 중복 구현은 제거됐다. 기존 GitHub Issue Tree도 import하면 WorkGraphSnapshot·context·provider binding으로 고정해 `manual|worker` 두 dispatch에서 재사용한다.
 
 canonical execution-control contract는 `studio-verification-contract-set/v1`, digest `sha256:7df570d1faaba445865c74fd6dffff73178f0102cd3a5728183abf6791ce2b65`로 고정한다. `STUDIO_VERIFICATION_CONTRACT`가 없으면 `tests/fixtures/studio-verification-contract-v1.json`을 읽고, schema·root canonical digest가 하나라도 다르면 실행 전에 중단한다.
 

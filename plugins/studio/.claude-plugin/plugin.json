@@ -1,5 +1,5 @@
 {
   "name": "studio",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Native-first 에이전트 팀 — 통합 init/doctor, 명시적 도구 라우팅, Claude/Codex agent 정책, 단일 review owner"
 }

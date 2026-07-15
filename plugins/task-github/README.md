@@ -171,6 +171,7 @@ ledger v3는 비용 분석과 evidence reuse를 위해 `github_reads`, `read_dec
 
 ## 변경 이력
 
+- `0.26.0`: `closeout.delete-merged-remote-branches`를 실제 merge closeout에 연결했다. 로컬 worktree/branch cleanup 정본은 task-worker에 두고 기존 `delete-merged-branches`는 호환 alias로만 유지한다.
 - `0.25.0`: GitHub mutation 없는 `task-github:init`을 추가해 provider config/projection state/gitignore를 멱등 초기화한다. `setup`은 자기 init을 재사용하면서 기존 task-worker config scaffold bridge를 유지한다.
 - `0.24.0`: task-worker 0.5.0의 execution-control preflight·claim·completion을 exact bridge로 소비하고 immutable receipt/evidence reference만 GitHub ledger에 투영한다. GitHub adapter는 planner·중복 실행 판단·QA 범위를 재구현하지 않으며 Issue Tree·PR/CI/review·merge/closeout 책임은 유지한다.
 - `0.23.0`: task-worker 0.4.0의 exact review lease/permit preflight를 추가했다. Studio-owned review는 GitHub PR/CI/transport를 유지한 externally-owned ledger handoff로 전환하고, 동일 lease의 approved verdict와 evidence 전 closeout을 차단한다. standalone/task-worker-owned review 흐름은 유지한다.

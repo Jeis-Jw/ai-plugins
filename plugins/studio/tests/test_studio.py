@@ -1121,7 +1121,7 @@ def main() -> None:
         assert "python3 \"$STUDIO\" doctor --json" in doctor_skill, doctor_skill
         assert "discovery/probe하지 않으며" in doctor_skill, doctor_skill
         for manifest_path in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json"):
-            assert json.loads(plugin_text(manifest_path))["version"] == "0.7.0", manifest_path
+            assert json.loads(plugin_text(manifest_path))["version"] == "0.7.1", manifest_path
 
         # producer main thread may coordinate, not edit/integrate
         producer = plugin_text("skills/producer/SKILL.md")

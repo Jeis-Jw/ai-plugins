@@ -37,6 +37,9 @@ class TaskWorkerConfigTests(unittest.TestCase):
         self.assertEqual(config["delivery"], "local-ff")
         self.assertEqual(config["orchestrate"]["max-workers"], 3)
         self.assertTrue(config["evidence"]["duplicate-guard"])
+        self.assertTrue(config["cleanup"]["remove-merged-worktrees"])
+        self.assertTrue(config["cleanup"]["delete-merged-local-branches"])
+        self.assertTrue(config["cleanup"]["prune-stale-worktrees"])
         self.assertNotIn("base_branch", config)
 
     def test_manual_dispatch_is_first_class(self):
@@ -72,6 +75,18 @@ class TaskWorkerConfigTests(unittest.TestCase):
             errors,
             {"bad_evidence_max_physical_runs", "bad_recovery_lease_ttl"},
         )
+
+    def test_cleanup_policy_requires_booleans(self):
+        config = task_config.parse_config(task_config.render_default_config())
+        config["cleanup"]["remove-merged-worktrees"] = "sometimes"
+
+        errors = {
+            finding["code"]
+            for finding in task_config.validate_config(config)
+            if finding["severity"] == "error"
+        }
+
+        self.assertEqual(errors, {"bad_cleanup_remove-merged-worktrees"})
 
     def test_scaffold_does_not_overwrite_existing_config(self):
         with tempfile.TemporaryDirectory() as tmp:

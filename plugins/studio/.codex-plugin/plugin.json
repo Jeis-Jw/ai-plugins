@@ -1,6 +1,6 @@
 {
   "name": "studio",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Native-first agent team with unified init/doctor, explicit tool routing, Claude/Codex profiles, and single-owner reviews.",
   "author": {
     "name": "Jinwuk-Lee",
