@@ -10,6 +10,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import pytest
+
 
 HERE = Path(__file__).resolve().parent
 PLUGIN_ROOT = HERE.parent
@@ -42,6 +44,17 @@ LATER = "2026-07-15T00:00:10Z"
 ENV_DIGEST = canonical_digest({"environment": "test"})
 CRITERIA_DIGEST = canonical_digest({"criteria": ["bounded"]})
 SURFACE_DIGEST = canonical_digest({"surface": "src/**"})
+
+
+@pytest.fixture(scope="module")
+def contract_path() -> Path:
+    return load_contract(PLUGIN_ROOT)[1]
+
+
+@pytest.fixture(scope="module")
+def contract(contract_path: Path) -> dict:
+    loaded, _ = load_contract(PLUGIN_ROOT)
+    return loaded
 
 
 def seal(value: dict) -> dict:
@@ -274,10 +287,10 @@ def expect_control_error(code: str, fn, *args, **kwargs) -> ControlError:
     raise AssertionError(f"expected ControlError {code}")
 
 
-def test_contract_and_all_golden_cases(contract: dict, path: Path) -> None:
+def test_contract_and_all_golden_cases(contract: dict, contract_path: Path) -> None:
     override = os.environ.get("STUDIO_VERIFICATION_CONTRACT")
     expected_path = Path(override) if override else REPO_ROOT / "tests" / "fixtures" / "studio-verification-contract-v1.json"
-    assert path == expected_path
+    assert contract_path == expected_path
     assert contract["digest"] == CONTRACT_DIGEST == sealed_digest(contract)
     assert contract["conformance"]["required_consumers"] == ["STUDIO", "WORKER"]
     assert len(contract["golden_cases"]) == 10
