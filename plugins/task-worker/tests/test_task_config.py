@@ -150,6 +150,27 @@ class TaskWorkerConfigTests(unittest.TestCase):
             self.assertTrue(forced["changed"])
             self.assertEqual(task_config.load_config(config)["dispatch"], "worker")
 
+    def test_init_parent_type_conflict_is_atomic_and_matches_dry_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            blocker = root / ".task-worker"
+            blocker.write_text("owned by user\n", encoding="utf-8")
+
+            dry_code, dry = invoke(
+                "init", "--root", tmp, "--preset", "local", "--dry-run", "--json"
+            )
+            code, actual = invoke("init", "--root", tmp, "--preset", "local", "--json")
+
+            self.assertEqual(dry_code, 2)
+            self.assertEqual(code, 2)
+            self.assertEqual(dry["error_code"], "path_conflict")
+            self.assertEqual(actual["error_code"], "path_conflict")
+            self.assertEqual(dry["conflicts"], actual["conflicts"])
+            self.assertTrue(all(item["blocking_path"] == ".task-worker" for item in actual["conflict_details"]))
+            self.assertEqual(blocker.read_text(encoding="utf-8"), "owned by user\n")
+            self.assertFalse((root / ".task-worker.yml").exists())
+            self.assertFalse((root / ".gitignore").exists())
+
     def test_dry_run_does_not_touch_filesystem(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "consumer"
