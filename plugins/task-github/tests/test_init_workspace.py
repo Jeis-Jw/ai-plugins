@@ -24,7 +24,10 @@ class TaskGithubInitTests(unittest.TestCase):
             self.assertTrue(created["validation"]["ok"])
             self.assertEqual(
                 set(created),
-                {"plugin", "action", "changed", "would_change", "paths", "validation", "dry_run"},
+                {
+                    "plugin", "action", "changed", "would_change", "paths",
+                    "conflicts", "validation", "dry_run",
+                },
             )
             self.assertIn("base_branch: develop", (root / ".task-github.yml").read_text())
             self.assertTrue((root / ".task-github/local/projections").is_dir())
@@ -47,6 +50,19 @@ class TaskGithubInitTests(unittest.TestCase):
             self.assertFalse((root / ".task-github").exists())
             self.assertFalse((root / ".gitignore").exists())
 
+    def test_custom_state_root_is_rendered_into_provider_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            custom = Path(".provider-state/projections")
+
+            result, code = init_workspace.initialize(root=root, state_root=custom)
+
+            self.assertEqual(code, 0)
+            self.assertEqual(result["paths"]["state_root"], custom.as_posix())
+            config = (root / ".task-github.yml").read_text(encoding="utf-8")
+            self.assertIn("state-root: .provider-state/projections", config)
+            self.assertTrue((root / custom).is_dir())
+
     def test_conflict_is_fail_closed_before_any_other_write(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -60,6 +76,42 @@ class TaskGithubInitTests(unittest.TestCase):
             self.assertFalse(result["changed"])
             self.assertEqual(config.read_text(), "base_branch: custom\n")
             self.assertFalse((root / ".task-github").exists())
+            self.assertFalse((root / ".gitignore").exists())
+
+    def test_collects_all_path_type_conflicts_without_partial_writes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = root / ".task-github.yml"
+            config.mkdir()
+            state = root / ".task-github" / "local" / "projections"
+            state.parent.mkdir(parents=True)
+            state.write_text("not a directory\n", encoding="utf-8")
+            gitignore = root / ".gitignore"
+            gitignore.mkdir()
+
+            result, code = init_workspace.initialize(root=root, force=True)
+
+            self.assertEqual(code, 2)
+            self.assertEqual(result["action"], "conflict")
+            self.assertFalse(result["changed"])
+            self.assertEqual(
+                {item["path"] for item in result["conflicts"]},
+                {".task-github.yml", ".task-github/local/projections", ".gitignore"},
+            )
+            self.assertTrue(config.is_dir())
+            self.assertEqual(state.read_text(encoding="utf-8"), "not a directory\n")
+            self.assertTrue(gitignore.is_dir())
+
+    def test_parent_path_type_conflict_prevents_sibling_config_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".task-github").write_text("blocks state root\n", encoding="utf-8")
+
+            result, code = init_workspace.initialize(root=root)
+
+            self.assertEqual(code, 2)
+            self.assertEqual(result["conflicts"][0]["blocking_path"], ".task-github")
+            self.assertFalse((root / ".task-github.yml").exists())
             self.assertFalse((root / ".gitignore").exists())
 
     def test_force_replaces_conflicting_config_and_preserves_gitignore(self):

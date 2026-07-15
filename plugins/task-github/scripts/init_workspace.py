@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +53,56 @@ def _gitignore_text(existing: str) -> str:
     return prefix + GITIGNORE_ENTRY + "\n"
 
 
+def _atomic_write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
+def _type_conflict(path: Path, *, expected: str, root: Path) -> dict[str, str] | None:
+    if path.exists():
+        valid = path.is_file() if expected == "file" else path.is_dir()
+        if valid:
+            return None
+        return {
+            "path": _relative(path, root),
+            "expected": expected,
+            "actual": (
+                "directory" if path.is_dir()
+                else "non-directory" if expected == "directory"
+                else "non-file"
+            ),
+            "reason": "wrong_path_type",
+        }
+
+    # A missing target may still be impossible to create because one of its
+    # parents is a file. Report that blocker before any sibling path is written.
+    parent = path.parent
+    while parent != parent.parent:
+        if parent.exists():
+            if not parent.is_dir():
+                return {
+                    "path": _relative(path, root),
+                    "blocking_path": _relative(parent, root),
+                    "expected": expected,
+                    "actual": "blocked_by_non_directory_parent",
+                    "reason": "wrong_path_type",
+                }
+            break
+        parent = parent.parent
+    return None
+
+
 def initialize(
     *,
     root: Path,
@@ -65,7 +117,11 @@ def initialize(
     config = config_path if config_path.is_absolute() else root / config_path
     state = state_root if state_root.is_absolute() else root / state_root
     gitignore = gitignore_path if gitignore_path.is_absolute() else root / gitignore_path
-    expected = task_config.render_default_config(base_branch=base_branch)
+    configured_state_root = state_root.as_posix()
+    expected = task_config.render_default_config(
+        base_branch=base_branch,
+        state_root=configured_state_root,
+    )
     intended_validation = _validation(expected)
     paths = {
         "config": _relative(config, root),
@@ -83,19 +139,48 @@ def initialize(
             "dry_run": dry_run,
         }, 1
 
-    existing_config = config.read_text(encoding="utf-8") if config.exists() else None
+    conflicts = [
+        conflict
+        for conflict in (
+            _type_conflict(config, expected="file", root=root),
+            _type_conflict(state, expected="directory", root=root),
+            _type_conflict(gitignore, expected="file", root=root),
+        )
+        if conflict is not None
+    ]
+    if conflicts:
+        return {
+            "plugin": "task-github",
+            "action": "conflict",
+            "changed": False,
+            "would_change": False,
+            "paths": paths,
+            "conflicts": conflicts,
+            "validation": intended_validation,
+            "dry_run": dry_run,
+            "error": "path type conflicts must be resolved before init",
+        }, 2
+
+    existing_config = config.read_text(encoding="utf-8") if config.is_file() else None
     if existing_config is not None and existing_config != expected and not force:
         return {
             "plugin": "task-github",
             "action": "conflict",
             "changed": False,
+            "would_change": False,
             "paths": paths,
+            "conflicts": [{
+                "path": paths["config"],
+                "expected": "generated_content",
+                "actual": "different_content",
+                "reason": "content_conflict",
+            }],
             "validation": _validation(existing_config),
             "dry_run": dry_run,
             "error": f"{paths['config']} already exists with different content; use --force to replace it",
         }, 2
 
-    existing_ignore = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
+    existing_ignore = gitignore.read_text(encoding="utf-8") if gitignore.is_file() else ""
     expected_ignore = _gitignore_text(existing_ignore)
     config_change = existing_config != expected
     state_change = not state.is_dir()
@@ -115,13 +200,11 @@ def initialize(
 
     if would_change and not dry_run:
         if config_change:
-            config.parent.mkdir(parents=True, exist_ok=True)
-            config.write_text(expected, encoding="utf-8")
+            _atomic_write_text(config, expected)
         if state_change:
             state.mkdir(parents=True, exist_ok=True)
         if gitignore_change:
-            gitignore.parent.mkdir(parents=True, exist_ok=True)
-            gitignore.write_text(expected_ignore, encoding="utf-8")
+            _atomic_write_text(gitignore, expected_ignore)
 
     if not dry_run and config.exists():
         validation = _validation(config.read_text(encoding="utf-8"))
@@ -136,6 +219,7 @@ def initialize(
         "changed": bool(would_change and not dry_run),
         "would_change": would_change,
         "paths": paths,
+        "conflicts": [],
         "validation": validation,
         "dry_run": dry_run,
     }

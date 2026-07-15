@@ -39,7 +39,7 @@ affects_paths: [plugins/task-worker/**, plugins/task-github/**]
 
 새 canonical artifact는 provider-specific `record`를 허용하지 않으며 external delivery는 generic `external`로 표현한다. task-worker runtime에는 GitHub 또는 Studio 실행 dependency가 없다.
 
-task-github 0.24.0은 `task_worker_bridge.py`를 통해 이 JSON CLI contract, review permit과 execution-control handshake를 소비한다. task-github의 구 `definition_artifact.py`는 CLI forwarder만 남았고 DefinitionArtifact 생성, local lifecycle, generic ready planner의 중복 구현은 제거됐다. 기존 GitHub Issue Tree도 import하면 WorkGraphSnapshot·context·provider binding으로 고정해 `manual|worker` 두 dispatch에서 재사용한다.
+task-github 0.25.0은 `task_worker_bridge.py`를 통해 이 JSON CLI contract, review permit과 execution-control handshake를 소비한다. task-github의 구 `definition_artifact.py`는 CLI forwarder만 남았고 DefinitionArtifact 생성, local lifecycle, generic ready planner의 중복 구현은 제거됐다. 기존 GitHub Issue Tree도 import하면 WorkGraphSnapshot·context·provider binding으로 고정해 `manual|worker` 두 dispatch에서 재사용한다.
 
 canonical execution-control contract는 `studio-verification-contract-set/v1`, digest `sha256:7df570d1faaba445865c74fd6dffff73178f0102cd3a5728183abf6791ce2b65`로 고정한다. `STUDIO_VERIFICATION_CONTRACT`가 없으면 `tests/fixtures/studio-verification-contract-v1.json`을 읽고, schema·root canonical digest가 하나라도 다르면 실행 전에 중단한다.
 

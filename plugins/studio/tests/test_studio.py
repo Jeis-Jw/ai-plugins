@@ -113,6 +113,8 @@ def main() -> None:
         assert r["plugin"] == "studio" and r["action"] == "init", r
         assert r["dry_run"] is False and r["validation"]["status"] == "pass", r
         ws = tmp / ".studio"
+        for sub in ("missions", "minutes", "raw", "crew", "context/items", "context/bundles", "context/deltas", "context/outbox"):
+            assert str(Path(".studio") / sub) in r["paths"]["created"], (sub, r)
         assert not (tmp / "studio").exists()
         assert (tmp / ".studio.yml").is_file()
         assert (ws / "board.md").is_file()
@@ -141,6 +143,30 @@ def main() -> None:
         r = run(["init"], tmp)
         assert r["ok"] and not r["changed"] and not r["created"], r
         assert not r["paths"]["conflicts"] and r["paths"]["skipped"], r
+        assert str(Path(".studio/context/outbox")) in r["paths"]["skipped"], r
+
+        # INIT_SUBDIRS are part of the same plan: a missing directory is a
+        # reported repair, while a wrong path type fails before any repair.
+        repaired_dir = ws / "context" / "outbox"
+        repaired_dir.rmdir()
+        r = run(["init", "--dry-run", "--json"], tmp)
+        assert r["changed"] and str(Path(".studio/context/outbox")) in r["paths"]["repaired"], r
+        assert not repaired_dir.exists(), r
+        r = run(["init", "--json"], tmp)
+        assert repaired_dir.is_dir() and str(Path(".studio/context/outbox")) in r["paths"]["repaired"], r
+
+        blocked_dir = ws / "context" / "deltas"
+        blocked_dir.rmdir()
+        blocked_dir.write_text("not a directory\n", encoding="utf-8")
+        repaired_dir.rmdir()
+        r = run(["init", "--json"], tmp, expect=2)
+        assert r["error_code"] == "conflict" and not r["changed"], r
+        assert str(Path(".studio/context/deltas")) in r["paths"]["conflicts"], r
+        assert str(Path(".studio/context/outbox")) in r["paths"]["repaired"], r
+        assert not repaired_dir.exists(), "directory conflict must prevent partial repair"
+        blocked_dir.unlink()
+        blocked_dir.mkdir()
+        repaired_dir.mkdir()
 
         config_path = tmp / ".studio.yml"
         config_path.write_text("defaults:\n  effort: custom\n", encoding="utf-8")

@@ -820,7 +820,10 @@ def _init_files(ws: Path, config_path: Path, worker: str, reviewer: str) -> dict
 
 
 def _file_plan(files: dict[Path, str], force: bool) -> dict[str, list[str]]:
-    result = {"created": [], "updated": [], "skipped": [], "conflicts": []}
+    result = {
+        "created": [], "updated": [], "repaired": [], "skipped": [],
+        "conflicts": [],
+    }
     for path, desired in files.items():
         label = str(path)
         if not path.exists():
@@ -843,6 +846,65 @@ def _file_plan(files: dict[Path, str], force: bool) -> dict[str, list[str]]:
     return result
 
 
+def _directory_plan(ws: Path, files: dict[Path, str]) -> dict[str, list[str]]:
+    """Plan every scaffold directory before the first filesystem mutation.
+
+    A missing subdirectory in an existing workspace is a repair, while the
+    same directory on first init is a create.  File-parent blockers are also
+    surfaced here so a later atomic file write cannot fail after earlier
+    scaffold paths have already been created.
+    """
+    result = {
+        "created": [], "updated": [], "repaired": [], "skipped": [],
+        "conflicts": [],
+    }
+    workspace_exists = ws.is_dir()
+    required = [ws, *(ws / sub for sub in INIT_SUBDIRS)]
+
+    # Explicit config paths may live outside the Studio workspace. Only add a
+    # missing/non-directory parent; an existing directory needs no scaffold
+    # action and would add noise to the common result.
+    for path in files:
+        parent = path.parent
+        if parent != Path(".") and parent not in required and not parent.is_dir():
+            required.append(parent)
+
+    seen: set[Path] = set()
+    for path in required:
+        if path in seen:
+            continue
+        seen.add(path)
+        label = str(path)
+        if path.is_dir():
+            result["skipped"].append(label)
+        elif path.exists():
+            result["conflicts"].append(label)
+        elif workspace_exists and path != ws and _is_within(path, ws):
+            result["repaired"].append(label)
+        else:
+            result["created"].append(label)
+    return result
+
+
+def _is_within(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+def _merge_path_plans(*plans: dict[str, list[str]]) -> dict[str, list[str]]:
+    merged = {
+        "created": [], "updated": [], "repaired": [], "skipped": [],
+        "conflicts": [],
+    }
+    for plan in plans:
+        for action in merged:
+            merged[action].extend(plan[action])
+    return merged
+
+
 def _validate_init_config(body: str) -> list[dict]:
     try:
         config = parse_yaml_subset(body)
@@ -857,7 +919,10 @@ def cmd_init(args: argparse.Namespace) -> None:
     worker = args.worker or "native"
     reviewer = args.reviewer or "native"
     files = _init_files(ws, config_path, worker, reviewer)
-    paths = _file_plan(files, args.force)
+    paths = _merge_path_plans(
+        _directory_plan(ws, files),
+        _file_plan(files, args.force),
+    )
     config_problems = _validate_init_config(files[config_path])
     validation = {
         "status": "pass" if not config_problems else "fail",
@@ -867,7 +932,7 @@ def cmd_init(args: argparse.Namespace) -> None:
     common = {
         "plugin": "studio",
         "action": "init",
-        "changed": bool(paths["created"] or paths["updated"]),
+        "changed": bool(paths["created"] or paths["updated"] or paths["repaired"]),
         "paths": paths,
         "validation": validation,
         "dry_run": bool(args.dry_run),
@@ -875,7 +940,7 @@ def cmd_init(args: argparse.Namespace) -> None:
         "workspace": str(ws),
         "crew_copied": sorted(
             Path(path).name
-            for path in paths["created"] + paths["updated"]
+            for path in paths["created"] + paths["updated"] + paths["repaired"]
             if Path(path).parent == ws / "crew"
         ),
         "created": bool(paths["created"]),
@@ -892,8 +957,10 @@ def cmd_init(args: argparse.Namespace) -> None:
     if args.dry_run:
         ok(**common)
 
-    for sub in INIT_SUBDIRS:
-        (ws / sub).mkdir(parents=True, exist_ok=True)
+    for path in paths["created"] + paths["repaired"]:
+        planned = Path(path)
+        if planned == ws or planned in {ws / sub for sub in INIT_SUBDIRS}:
+            planned.mkdir(parents=True, exist_ok=True)
     for path, body in files.items():
         if str(path) in paths["created"] or str(path) in paths["updated"]:
             atomic_write_text(path, body)
