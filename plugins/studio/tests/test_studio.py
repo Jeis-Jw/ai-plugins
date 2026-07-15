@@ -168,6 +168,30 @@ def main() -> None:
         blocked_dir.mkdir()
         repaired_dir.mkdir()
 
+        # A non-directory ancestor blocks every required descendant. Both
+        # dry-run and actual init must report it before repairing siblings.
+        context_dir = ws / "context"
+        for sub in ("items", "bundles", "deltas", "outbox"):
+            (context_dir / sub).rmdir()
+        context_dir.rmdir()
+        context_dir.write_text("blocks all context subdirectories\n", encoding="utf-8")
+        sibling_repair = ws / "minutes"
+        sibling_repair.rmdir()
+        for dry_run in (True, False):
+            command = ["init", "--json"]
+            if dry_run:
+                command.insert(1, "--dry-run")
+            r = run(command, tmp, expect=2)
+            assert r["error_code"] == "conflict" and not r["changed"], r
+            assert r["dry_run"] is dry_run, r
+            assert str(Path(".studio/context")) in r["paths"]["conflicts"], r
+            assert str(Path(".studio/minutes")) in r["paths"]["repaired"], r
+            assert not sibling_repair.exists(), "ancestor conflict must prevent partial repair"
+        context_dir.unlink()
+        for sub in ("items", "bundles", "deltas", "outbox"):
+            (context_dir / sub).mkdir(parents=True, exist_ok=True)
+        sibling_repair.mkdir()
+
         config_path = tmp / ".studio.yml"
         config_path.write_text("defaults:\n  effort: custom\n", encoding="utf-8")
         before = config_path.read_text(encoding="utf-8")

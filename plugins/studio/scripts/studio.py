@@ -875,15 +875,29 @@ def _directory_plan(ws: Path, files: dict[Path, str]) -> dict[str, list[str]]:
             continue
         seen.add(path)
         label = str(path)
-        if path.is_dir():
+        blocker = _non_directory_blocker(path)
+        if blocker is not None:
+            blocker_label = str(blocker)
+            if blocker_label not in result["conflicts"]:
+                result["conflicts"].append(blocker_label)
+        elif path.is_dir():
             result["skipped"].append(label)
-        elif path.exists():
-            result["conflicts"].append(label)
         elif workspace_exists and path != ws and _is_within(path, ws):
             result["repaired"].append(label)
         else:
             result["created"].append(label)
     return result
+
+
+def _non_directory_blocker(path: Path) -> Path | None:
+    """Return the nearest non-directory target/ancestor that blocks creation."""
+    candidate = path
+    while True:
+        if candidate.exists():
+            return None if candidate.is_dir() else candidate
+        if candidate == candidate.parent:
+            return None
+        candidate = candidate.parent
 
 
 def _is_within(path: Path, parent: Path) -> bool:

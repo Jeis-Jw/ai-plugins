@@ -21,7 +21,7 @@
 
 ### 0.24.0 execution evidence projection
 
-task-github는 task-worker 0.6.0의 canonical execution-control handshake를 preflight하고 permit decision·atomic claim·completion을 그대로 전달한다. command profile, impact/QA mode, duplicate/run-cap, token policy와 evidence applicability는 재구현하지 않는다. task-worker가 반환한 immutable command receipt와 verification evidence의 id+digest만 Issue ledger와 delivery evidence에 멱등 투영한다. GitHub provider의 PR/CI/review/merge/closeout 의미는 기존 adapter 책임으로 유지한다.
+task-github는 task-worker 0.5.0의 canonical execution-control handshake를 preflight하고 permit decision·atomic claim·completion을 그대로 전달한다. command profile, impact/QA mode, duplicate/run-cap, token policy와 evidence applicability는 재구현하지 않는다. task-worker가 반환한 immutable command receipt와 verification evidence의 id+digest만 Issue ledger와 delivery evidence에 멱등 투영한다. GitHub provider의 PR/CI/review/merge/closeout 의미는 기존 adapter 책임으로 유지한다.
 
 ### 0.23.0 externally-owned review
 
