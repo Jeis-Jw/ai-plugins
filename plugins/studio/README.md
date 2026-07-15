@@ -20,7 +20,8 @@ dev↔qa 공방)이 **실제 품질을 만드는가**이며, 그 판정을 criti
 |---|---|---|
 | producer 스킬 | `skills/producer/` | 메인스레드 규약: 소집·중계·게이트, 직접 제작·판단 대리 금지 |
 | studio CLI | `scripts/studio.py` | 결정적 상태: schema 2 board, QualityPlan, Context Kernel, fenced lease·budget, WorkPacket/ResultEnvelope, native execution permit/receipt/closeout |
-| agent 정책 | `.studio.yml` (repo 루트, `config scaffold`로 생성) | crew 서브에이전트의 model/effort 층별 설정 |
+| 초기화/진단 스킬 | `skills/init/`, `skills/doctor/` | workspace+config 단일 초기화와 native-first read-only 진단 |
+| agent 정책 | `.studio.yml` (repo 루트, `init`으로 작업장과 함께 생성) | crew 서브에이전트의 model/effort 층별 설정 |
 | 브로커 | `broker/brainstorm.workflow.js`, `broker/pairing.workflow.js` | ritual 실행체(Workflow) — transcript 릴레이, 순수 오케스트레이션(fs 없음) |
 | crew | `crew/*.md` | 페르소나 데이터(name·role·prior·requested_tools·activation) — init이 `.studio/crew/`로 복사 |
 | casting policy | `rules/casting.md` | producer가 mission을 분류해 crew/tool/gate를 고르는 최소 규칙 |
@@ -52,6 +53,25 @@ mv studio .studio
 
 다른 경로가 필요하면 모든 상태 명령에 `--workspace <path>`를 명시한다. 플러그인 제품
 코드 경로인 `plugins/studio/`와 track 브랜치 접두사 `studio/track-*`는 이 작업장과 별개다.
+
+## 초기화와 진단
+
+`init`은 `.studio/`와 `.studio.yml`을 한 번에 만든다. 같은 내용으로 다시 실행하면
+skip하고, 기존 파일이 다르면 `--force` 없이 아무것도 변경하지 않는다. `--dry-run`은
+쓰기 없이 생성 계획과 config validation을 반환한다.
+
+```bash
+python3 plugins/studio/scripts/studio.py init --json
+python3 plugins/studio/scripts/studio.py init --worker task-worker --json
+python3 plugins/studio/scripts/studio.py init --worker task-github --reviewer session-review --json
+python3 plugins/studio/scripts/studio.py init --dry-run --json
+python3 plugins/studio/scripts/studio.py doctor --json
+```
+
+worker/reviewer를 생략하면 native다. 명시한 provider만 `.studio.yml`에 기록하며, init과
+doctor 모두 외부 plugin을 discovery/probe하거나 GitHub·배포 서비스를 변경하지 않는다.
+`task-github`는 task-worker adapter 책임을 포함하므로 worker 둘을 함께 lease하지 않는다.
+`--force`는 live board를 포함한 Studio-owned scaffold를 갱신하므로 명시적 재초기화 때만 쓴다.
 
 ## 개념 (계약 층 — 은유 금지)
 
@@ -190,7 +210,8 @@ blank/null은 다음 층으로 넘어가고, 아무 층도 안 정하면 produce
 예: critic=high(연극 판정 날카롭게), summarizer=low(중립 압축은 싸게), diverge=low.
 
 ```bash
-python3 plugins/studio/scripts/studio.py config scaffold   # .studio.yml 생성
+python3 plugins/studio/scripts/studio.py init              # .studio/ + .studio.yml 생성
+python3 plugins/studio/scripts/studio.py config scaffold   # config-only 호환 명령
 python3 plugins/studio/scripts/studio.py config validate    # 구조 검증
 python3 plugins/studio/scripts/studio.py config resolve --agent-runtime codex --runtime-capability @runtime-capability.json
 ```
@@ -244,6 +265,10 @@ python3 plugins/studio/scripts/studio.py cast suggest implementation
 외부 공개(발행·배포·계정) / 예산 상향.
 
 ## 상태
+
+v0.7.0 — workspace와 config를 합친 idempotent `studio:init`, explicit worker/reviewer 설정,
+dry-run/force/validation JSON 계약과 native-first read-only `studio:doctor`를 추가했다. init은
+미설정 외부 plugin을 탐색하지 않으며 기존 `config scaffold`는 호환 표면으로 유지한다.
 
 v0.6.0 — canonical command profile·impact permit, atomic physical execution claim, immutable receipt/evidence, run cap·telemetry·external spend gate를 추가했다. 분해·ready-set 병렬성·독립 검증·통합 HEAD full gate는 유지하고 동일 물리 실행과 stale context 재수집만 차단한다.
 

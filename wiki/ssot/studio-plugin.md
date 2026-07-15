@@ -9,7 +9,21 @@ affects_paths: [plugins/studio/**, plugins/task-worker/**, plugins/task-github/*
 
 ## 현재 상태
 
-Studio 0.6.0은 owner의 미션을 research, planning, strategy, design, architecture, implementation, creation, QA, independent review, critique, curation, summarization 역할로 분해하고 ready-set을 병렬 실행하는 상위 orchestration layer다. native harness만으로 전체 흐름을 완주하며 외부 plugin은 기능 필수가 아니다. canonical execution permit·atomic claim·immutable evidence로 동일 물리 실행만 차단한다.
+Studio 0.7.0은 owner의 미션을 research, planning, strategy, design, architecture, implementation, creation, QA, independent review, critique, curation, summarization 역할로 분해하고 ready-set을 병렬 실행하는 상위 orchestration layer다. native harness만으로 전체 흐름을 완주하며 외부 plugin은 기능 필수가 아니다. canonical execution permit·atomic claim·immutable evidence로 동일 물리 실행만 차단한다.
+
+## 초기화와 진단
+
+`studio:init`은 `.studio/` 작업장과 `.studio.yml` 정책을 한 번에 생성한다. 동일 내용은
+skip하고 다른 기존 파일은 `--force` 없이 변경하지 않으며, `--dry-run`은 plan과 config
+validation만 반환한다. `--worker`와 `--reviewer`는 명시한 provider만 materialize하고
+미지정 값은 native로 둔다. init은 provider plugin을 초기화·탐색·probe하거나 외부
+서비스를 변경하지 않는다.
+
+`studio:doctor`는 workspace/board와 config schema, 설정된 provider 이름만 읽기 전용으로
+진단한다. 설정에 없는 provider는 probe하지 않으며, 선택된 외부 provider의 실제 capability
+확인은 producer의 mission-scoped preflight에서 수행한다. `.studio.yml` 부재는 native와
+세션 model/effort 상속이 유효하므로 warning이다. 기존 `config scaffold`는 config-only 호환
+명령으로 유지한다.
 
 ## 핵심 불변식
 
