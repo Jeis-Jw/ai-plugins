@@ -1,3 +1,7 @@
+## 저장소 커밋 정책
+
+- 프로토콜이 요구하는 고정 prefix는 보존하고, 나머지는 변경 의도와 결과가 드러나는 의미 있는 한 줄 요약으로 작성한다. 기본 언어는 한국어로 하되 코드 식별자와 표준 기술 용어는 원문을 유지한다.
+
 <!-- BEGIN agent-operating-policy (managed by wiki-markdown) -->
 ## Agent Operating Policy
 
