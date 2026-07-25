@@ -23,6 +23,7 @@ dev↔qa 공방)이 **실제 품질을 만드는가**이며, 그 판정을 criti
 | 초기화/진단 스킬 | `skills/init/`, `skills/doctor/` | workspace+config 단일 초기화와 native-first read-only 진단 |
 | agent 정책 | `.studio.yml` (repo 루트, `init`으로 작업장과 함께 생성) | crew 서브에이전트의 model/effort 층별 설정 |
 | 브로커 | `broker/brainstorm.workflow.js`, `broker/pairing.workflow.js` | ritual 실행체(Workflow) — transcript 릴레이, 순수 오케스트레이션(fs 없음) |
+| Codex Runner | `scripts/codex_workflow_runner.mjs` | callable Workflow가 없는 Codex에서 기존 broker를 AsyncFunction으로 주입 실행하는 production adapter |
 | crew | `crew/*.md` | 페르소나 데이터(name·role·prior·requested_tools·activation) — init이 `.studio/crew/`로 복사 |
 | casting policy | `rules/casting.md` | producer가 mission을 분류해 crew/tool/gate를 고르는 최소 규칙 |
 | critic rubric | `critic/rubric.md` | 검증 전용 계약 + anchor 규칙 |
@@ -216,6 +217,42 @@ python3 plugins/studio/scripts/studio.py config validate    # 구조 검증
 python3 plugins/studio/scripts/studio.py config resolve --agent-runtime codex --runtime-capability @runtime-capability.json
 ```
 
+## Codex Workflow Runner
+
+Codex host에 callable Workflow가 없으면 verified runtime capability가 있는 경우에만
+production Runner가 기존 `brainstorm.workflow.js` 또는 `pairing.workflow.js`를 그대로
+로드하고 `agent/parallel/phase/log/budget` 경계를 주입한다. broker source는 runtime별로
+fork하지 않는다.
+
+```bash
+node plugins/studio/scripts/codex_workflow_runner.mjs \
+  --broker brainstorm \
+  --args-file /absolute/path/to/sealed-args.json \
+  --timeout-ms 120000
+```
+
+- CLI 해석: absolute `STUDIO_CODEX_CLI` override → `PATH`의 `codex` → macOS bundled CLI.
+- 실행: `shell:false`, prompt stdin, `--ephemeral`, `approval_policy="never"`,
+  `--output-schema`, `--output-last-message`; bypass·`--add-dir`는 사용하지 않는다.
+- schema: optional property는 required nullable로 정규화한다. `oneOf`는 root type이
+  배타적일 때만 `anyOf`로 낮추고, overlap/판정 불가는 dispatch 전에
+  `schema_unsupported`로 거부한다.
+- 경계: schema/output은 1 MiB 제한과 임시 디렉터리 cleanup을 적용한다. brainstorm은
+  전부 read-only다. pairing은 검증된 secondary worktree의 dev만 workspace-write이며
+  target과 Runner cwd의 git common-dir가 같아야 한다. qa/critic은 read-only다.
+- 종료: timeout은 process group에 TERM 후 KILL을 적용하고 recursion을 거부한다.
+  dispatch 뒤 generic subagent로 자동 fallback하지 않는다.
+- 출력: 성공은
+  `{schema:"studio-codex-workflow-runner/v1",dispatch_allowed:true,broker,phases,logs,output}`,
+  실패는 같은 schema에 `dispatch_allowed:false,error,message,details`와 nonzero exit다.
+  broker 자체가 `error`를 반환해도 `dispatch_allowed:false`다.
+
+Runner는 canonical `studio-runtime-capability/v1`의 exact shape와 digest를 검증하고,
+광고된 model/effort가 있으면 각 agent의 resolved 값을 spawn 전에 대조한다. capability가
+unknown/unavailable이면 dispatch하지 않는다. CLI output에는 신뢰할 수 있는 token usage가
+없으므로 broker receipt는 `tokens:null`, `token_coverage:"unavailable"`을 유지한다.
+UI 표시와 token telemetry 구현은 이 Runner의 범위가 아니다.
+
 ## casting helper
 
 Producer는 `cast suggest`로 기본 crew 조합을 기계적으로 조회한다. 이 helper는 판단을
@@ -280,8 +317,9 @@ v0.5.0 — native 기본·명시적 외부 도구 라우팅, Claude/Codex agent 
 v0.4.0 — stable review cycle·delta/full QA gate·evidence reuse·compact handoff·Issue event projection.
 기존 schema-v1 workflow receipt·QualityPlan·Context Kernel·optional external executor도 유지한다. 설계 정본은 이 repo
 위키(INT/DEC studio) + `drafts/agent-team-concept.md`.
-검증 테스트: `python3 plugins/studio/tests/test_studio.py`와
-`node --test plugins/studio/tests/test_broker_semantics.js`.
+검증 테스트: `python3 plugins/studio/tests/test_studio.py`,
+`node --test plugins/studio/tests/test_broker_semantics.js`,
+`node --test plugins/studio/tests/test_codex_runner.js`.
 
 후순위(정의만, MVP 비활성): 마케팅/판매 운영 역할, 동적 채용(casting), standup/retro/demo
 리추얼과 추가 external workflow adapter.

@@ -260,10 +260,35 @@ pairing은 development/delta QA일 뿐이므로 스스로 `readyForIntegration:t
 
 ### Workflow unavailable fallback
 
-브로커 Workflow가 callable tool로 없으면 `multi_agent_v1` 같은 일반 서브에이전트 도구로
-대체할 수 있다. 이때도 producer의 역할은 **spawn / wait / record / report**뿐이다.
-수정은 dev worker, 검증은 qa worker, 통합은 integrator worker나 결정적 CLI가 맡는다.
-fallback은 studio 규약을 약화하지 않는다.
+Claude runtime에서 브로커 Workflow가 callable이면 위 `scriptPath + args` 경로를 그대로
+사용한다. callable Workflow가 없을 때의 fallback은 runtime별로 다르다.
+
+- **Codex runtime**: matching `studio-runtime-capability/v1`이 `verified:true`,
+  `dispatch_allowed:true`일 때만 production Runner를 exact invocation으로 실행한다.
+  producer는 broker args를 sealed absolute JSON 파일로 준비하고, execution permit/profile의
+  executable·argv·cwd·env와 정확히 일치시킨다.
+
+  ```bash
+  node "$STUDIO_ROOT/scripts/codex_workflow_runner.mjs" \
+    --broker brainstorm \
+    --args-file /absolute/path/to/sealed-brainstorm-args.json \
+    --timeout-ms 120000
+  node "$STUDIO_ROOT/scripts/codex_workflow_runner.mjs" \
+    --broker pairing \
+    --args-file /absolute/path/to/sealed-pairing-args.json \
+    --timeout-ms 120000
+  ```
+
+  `STUDIO_CODEX_CLI`는 선택적 absolute override이고, 없으면 Runner가 `PATH`의 `codex`,
+  macOS bundled CLI 순서로 해석한다. 성공은
+  `studio-codex-workflow-runner/v1`의 `dispatch_allowed:true` envelope여야 한다.
+  capability가 unavailable/unknown이거나 envelope가 fail-closed이면 **STOP**한다.
+  Codex dispatch가 시작된 뒤 일반 서브에이전트나 다른 runner로 자동 fallback하지 않는다.
+- **그 외 native runtime**: Workflow가 callable tool로 없으면 `multi_agent_v1` 같은 일반
+  서브에이전트 도구로 대체할 수 있다. 이때도 producer의 역할은 **spawn / wait / record / report**뿐이다. 수정은 dev worker, 검증은 qa worker,
+  통합은 integrator worker나 결정적 CLI가 맡는다.
+
+어느 경로든 fallback은 Studio의 역할 분리·독립 검증·owner gate를 약화하지 않는다.
 
 ## 3a) optional external executor — task-worker/task-github reference adapter
 
