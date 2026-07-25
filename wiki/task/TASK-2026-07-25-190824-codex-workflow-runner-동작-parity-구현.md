@@ -3,6 +3,8 @@ title: Codex Workflow Runner 동작 parity 구현
 created_at: 2026-07-25
 summary: Claude의 기존 Studio broker 의미를 Codex에서도 코드로 강제하는 자동 Runner를 구현하고 검증한다.
 tags: [studio, codex, workflow, runner]
+relations:
+  tasks: [Jeis-Jw/ai-plugins#78]
 ---
 
 ## 개요
