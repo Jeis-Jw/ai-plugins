@@ -15,3 +15,7 @@ __pycache__/
 .studio.yml
 .task-*/
 .task-*.yml
+
+# 로컬 PCMS scope 설정
+/.pcms-context.json
+/.pcms-scope
