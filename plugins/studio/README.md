@@ -303,6 +303,9 @@ python3 plugins/studio/scripts/studio.py cast suggest implementation
 
 ## 상태
 
+v0.8.0 — callable Workflow가 없는 Codex에서도 verified runtime capability와 fail-closed
+경계를 유지하며 기존 brainstorm/pairing broker를 실행하는 production Runner를 추가했다.
+
 v0.7.1 — native track은 integrator가 merged-clean worktree/local branch를 정리하고,
 외부 worker track은 provider cleanup receipt를 재사용해 중복 cleanup을 막는다.
 
