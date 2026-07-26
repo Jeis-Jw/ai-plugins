@@ -46,3 +46,10 @@ production scale 도입은 rules/casting.md, broker/solo.workflow.js, producer/S
 ## 재평가 조건
 
 static 분류가 반복적으로 잘못되어 quality floor 미달이나 불필요한 multi-role 호출을 만들면 admission signal과 triage run을 재설계한다. criterion source와 기계적 measure가 없는 item은 solo 1회 비용 주장의 대상에서 제외하고 정의 crew 1회 + 실행 crew 1회로 계측한다. token telemetry가 복구되어 QualityPlan·계약 층이 실제 비용을 지배한다고 확인되면 compact profile 범위를 확대한다. production scale과 gear를 운영자가 반복적으로 혼동하면 최종 계약명과 CLI 필드를 더 강하게 분리한다.
+
+## 구현 결과
+
+v1 계약명은 `solo|standard|major`로 고정했다. static cast, 1-call solo broker,
+outcome-linked standard brainstorm 수렴과 exact call/elapsed 계측을 구현했다. controlled
+benchmark는 calls 41.18%, elapsed 40.74% 절감, quality drop 0%로 Owner gate
+30%/5%를 통과했다. token coverage는 unavailable이므로 token 절감은 주장하지 않는다.

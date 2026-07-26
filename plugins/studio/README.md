@@ -22,7 +22,7 @@ dev↔qa 공방)이 **실제 품질을 만드는가**이며, 그 판정을 criti
 | studio CLI | `scripts/studio.py` | 결정적 상태: schema 2 board, QualityPlan, Context Kernel, fenced lease·budget, WorkPacket/ResultEnvelope, native execution permit/receipt/closeout |
 | 초기화/진단 스킬 | `skills/init/`, `skills/doctor/` | workspace+config 단일 초기화와 native-first read-only 진단 |
 | agent 정책 | `.studio.yml` (repo 루트, `init`으로 작업장과 함께 생성) | crew 서브에이전트의 model/effort 층별 설정 |
-| 브로커 | `broker/brainstorm.workflow.js`, `broker/pairing.workflow.js` | ritual 실행체(Workflow) — transcript 릴레이, 순수 오케스트레이션(fs 없음) |
+| 브로커 | `broker/solo.workflow.js`, `broker/brainstorm.workflow.js`, `broker/pairing.workflow.js` | 정적 production scale별 ritual 실행체(Workflow) |
 | Codex Runner | `scripts/codex_workflow_runner.mjs` | callable Workflow가 없는 Codex에서 기존 broker를 AsyncFunction으로 주입 실행하는 production adapter |
 | crew | `crew/*.md` | 페르소나 데이터(name·role·prior·requested_tools·activation) — init이 `.studio/crew/`로 복사 |
 | casting policy | `rules/casting.md` | producer가 mission을 분류해 crew/tool/gate를 고르는 최소 규칙 |
@@ -262,7 +262,14 @@ Producer는 `cast suggest`로 기본 crew 조합을 기계적으로 조회한다
 python3 plugins/studio/scripts/studio.py cast list
 python3 plugins/studio/scripts/studio.py cast suggest idea
 python3 plugins/studio/scripts/studio.py cast suggest implementation
+python3 plugins/studio/scripts/studio.py cast suggest implementation --item-scale solo \
+  --criterion-source-ref AC-1 --mechanical-measure "pytest tests/test_one.py"
 ```
+
+기본 `standard`는 최소 cast와 brainstorm 2 rounds/dryStop 1을 사용한다. `major`는 기존
+full ritual(4/2)을 보존한다. `solo`는 upstream criterion source와 mechanical measure가
+모두 있을 때 crew 1명·1회만 호출하며 interaction theatre 집계에서 제외한다.
+production scale과 independent review edge는 별도 축이다.
 
 `critic`은 일반 persona가 아니라 ritual의 검증 역할이다. `participants`에는 broker에
 넘길 실제 persona만 들어가고, `critic: true`이면 critic rubric을 함께 붙인다.
@@ -302,6 +309,11 @@ python3 plugins/studio/scripts/studio.py cast suggest implementation
 외부 공개(발행·배포·계정) / 예산 상향.
 
 ## 상태
+
+version-ready(next) — item별 `solo|standard|major` 정적 production scale, 1-call solo,
+outcome-linked brainstorm 수렴, exact model-call/elapsed 계측을 추가했다. controlled
+benchmark는 calls 17→10(41.18%), elapsed 243→144ms(40.74%), quality drop 0%였다.
+token coverage는 unavailable이므로 token 절감은 주장하지 않는다.
 
 v0.8.0 — callable Workflow가 없는 Codex에서도 verified runtime capability와 fail-closed
 경계를 유지하며 기존 brainstorm/pairing broker를 실행하는 production Runner를 추가했다.

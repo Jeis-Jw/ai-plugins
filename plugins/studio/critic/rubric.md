@@ -32,6 +32,15 @@ anchor가 없거나, 위 어디에도 실제로 닿지 않으면 그 delta는 de
 - **dry 2회 연속 = 폐회.** (라운드 카운트는 브로커가 관리)
 - **alive = true**: 누적 delta_log가 실제로 상태를 움직였음을 보일 때만.
   비었거나 anchor 없는 로그만 남았으면 연극 → alive=false.
+- `outcome_linked=true`는 criterion·결정·구체 risk·artifact outcome·repro test가 실제로
+  바뀐 delta에만 준다. 유효하더라도 표현 수정처럼 결과를 움직이지 않은 delta만 남은
+  standard round는 수렴 종료 신호다.
+
+## solo 제외
+
+`solo`는 상호작용 ritual이 아니므로 interaction critic과 theatre 판정을 적용하지 않는다.
+대신 upstream criterion source, 기계적 measure, 실행 command/result, changedFiles,
+criterion별 evidence와 blocked check를 fail-closed 검증한다.
 
 ## pairing 전용
 

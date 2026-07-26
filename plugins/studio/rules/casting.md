@@ -3,6 +3,20 @@
 Producer는 모든 crew를 부르지 않는다. mission을 분류하고, 가장 작은 조합을 소집한다.
 `producer` 이름은 메인스레드 전용이다. crew role로 재사용하지 않는다.
 
+## Production scale
+
+판정 단위는 track이 아니라 dispatch 가능한 backlog item이다.
+
+| scale | admission | production |
+|---|---|---|
+| `solo` | upstream criterion source와 기계적 pass/fail measure가 모두 존재하고 새 domain 해석이 없음 | 담당 crew 1명·1회, interaction critic/theatre 미적용 |
+| `standard` | 일반적인 bounded work | 최소 cast, brainstorm 2 rounds·dryStop 1 또는 pairing 2 rounds |
+| `major` | high uncertainty, irreversible/high-blast-radius, 중요한 상충 판단 | 기존 full cast/ritual, brainstorm 4 rounds·dryStop 2 |
+
+production scale과 verification independence는 직교한다. `solo`여도 필요한 independent
+review edge와 통합 HEAD full QA는 유지한다. mixed-scale item은 item별 criteria digest,
+review cycle, readiness를 유지하고 같은 파일 write는 직렬화한다.
+
 ## Crew catalog
 
 | 영역 | crew | 책임 |
@@ -23,7 +37,8 @@ Producer는 모든 crew를 부르지 않는다. mission을 분류하고, 가장 
 
 ## Default casts
 
-`studio.py cast suggest <kind>`가 같은 기본값을 JSON으로 돌려준다.
+`studio.py cast suggest <kind> --item-scale standard`가 정적 기본값을 JSON으로 돌려준다.
+기존 표의 cast는 `--item-scale major` full fallback이다.
 
 | kind | 상황 | ritual | cast |
 |---|---|---|---|
