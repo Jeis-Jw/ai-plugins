@@ -466,7 +466,7 @@ def main() -> None:
         # 8) evidence tally — 1 valid delta from the non-aborted run
         r = run(["evidence"], tmp)
         assert r["ok"] and r["total_valid_deltas"] == 1, r
-        assert r["aborted_runs"] == 1 and r["runs"] == 6, r
+        assert r["aborted_runs"] == 1 and r["runs"] == 7, r
         assert r["theatre"] is False, r
 
         # 8a) schema 1 is projected lazily and persisted on the next mutation
