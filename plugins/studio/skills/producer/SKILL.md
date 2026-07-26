@@ -206,6 +206,43 @@ python3 "$STUDIO" config get   # JSON → common defaults/roles/agents/rituals +
 
 ### 회의형 (brainstorm) — 사고 작업, 무제한 병렬
 
+Codex native host가 verified persistent crew capability를 제공하면
+`broker/persistent_brainstorm_broker.mjs`가 **유일한 phase/order/barrier/maxRounds/dryStop
+정본**이다. Producer/main은 다음 계약만 수행한다.
+
+1. sealed create request를 `scripts/persistent_brainstorm_driver.mjs`에 넘긴다.
+2. envelope의 `pending.actions`를 ordinal 순서 그대로 native `spawn` 또는 same-handle
+   `followup`으로 relay한다. prompt, schema, phase, round, label을 합성하거나 재정렬하지 않는다.
+3. 동일 barrier의 모든 결과를 action 순서 그대로 `studio-crew-barrier-result/v1`으로
+   묶어 apply request에 넣는다. broker가 다음 barrier를 반환하기 전 임의 다음 턴을 만들지 않는다.
+4. actor의 최초 assigned turn만 spawn한다. 이후에는 action의 original `host_handle`로만
+   follow-up하며 rename, replacement spawn, participant/critic/summarizer alias를 금지한다.
+
+Canonical label은 정확히
+`[studio:{crew}] {워크플로우이름} - {워크플로우에서의 역할}`이며 action ledger,
+envelope, initial/current-task summary에 모두 기록한다. 내부 `task_name`은 별도의 path-safe
+immutable identity다. host card title projection은 verified capability가 `false`여도
+persistent work를 실행할 수 있고, 이때 UI title 지원을 주장하지 않는다. phase/round는
+mutable ledger와 current-task summary로만 갱신한다.
+
+이 경로는 `admission:"canary"`를 명시한 brainstorm에만 허용되며 production default가
+아니다. required capability는 `spawn`, `followup`, `wait_barrier`, `interrupt_cancel`,
+`structured_result`다. 하나라도 미검증이면 native persistent path를 시작하지 않는다.
+native action을 한 번이라도 dispatch한 뒤에는 CLI Runner를 포함한 중간 fallback이 금지된다.
+실패는 cancel/abort receipt로 닫고 late result와 replacement spawn을 거부한다.
+
+```bash
+node "$STUDIO_ROOT/scripts/persistent_brainstorm_driver.mjs" \
+  --request-file /absolute/path/to/sealed-persistent-request.json
+```
+
+요청은 `{op:"create",input:{admission:"canary",...}}` 또는
+`{op:"apply",state:<previous state>,receipt:<ordered barrier result>}`다. state와 envelope의
+`tokens:null`, `token_coverage:"unavailable"`은 측정 불가의 진실이며 0/exact로 바꾸지 않는다.
+
+verified persistent capability가 없으면 아래 Workflow/isolated CLI 경로를 사용한다. 이 경로는
+호환용 **non-persistent fallback profile**이며 persistent handle을 주장하지 않는다.
+
 ```
 1. 페르소나 로드: .studio/crew/planner-a.md, planner-b.md (frontmatter + 본문)
 2. rubric 로드: $CLAUDE_PLUGIN_ROOT/critic/rubric.md
@@ -284,8 +321,11 @@ Claude runtime에서 브로커 Workflow가 callable이면 위 `scriptPath + args
   `studio-codex-workflow-runner/v1`의 `dispatch_allowed:true` envelope여야 한다.
   capability가 unavailable/unknown이거나 envelope가 fail-closed이면 **STOP**한다.
   Codex dispatch가 시작된 뒤 일반 서브에이전트나 다른 runner로 자동 fallback하지 않는다.
+  이 Runner는 매 agent 호출을 isolated `codex exec --ephemeral`로 실행하므로
+  `persistent_crew:false`인 명시적 non-persistent profile이다.
 - **그 외 native runtime**: Workflow가 callable tool로 없으면 `multi_agent_v1` 같은 일반
-  서브에이전트 도구로 대체할 수 있다. 이때도 producer의 역할은 **spawn / wait / record / report**뿐이다. 수정은 dev worker, 검증은 qa worker,
+  서브에이전트 도구로 대체할 수 있다. brainstorm persistent capability가 검증된 경우에는
+  위 canonical broker action만 relay한다. 이때도 producer의 역할은 **spawn / wait / record / report**뿐이다. 수정은 dev worker, 검증은 qa worker,
   통합은 integrator worker나 결정적 CLI가 맡는다.
 
 어느 경로든 fallback은 Studio의 역할 분리·독립 검증·owner gate를 약화하지 않는다.

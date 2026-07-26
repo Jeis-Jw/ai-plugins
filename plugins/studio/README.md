@@ -224,6 +224,22 @@ production Runner가 기존 `brainstorm.workflow.js` 또는 `pairing.workflow.js
 로드하고 `agent/parallel/phase/log/budget` 경계를 주입한다. broker source는 runtime별로
 fork하지 않는다.
 
+Native host의 persistent crew path는 별도
+`broker/persistent_brainstorm_broker.mjs`를 canonical reducer로 사용한다. 이 reducer만
+phase/order/barrier/maxRounds/dryStop과 stable actor handle을 전이하며 Producer/main은
+`scripts/persistent_brainstorm_driver.mjs`가 반환한 action을 그대로 spawn/follow-up/wait
+relay한다. exact canonical label은 ledger/envelope/initial-current summary에 남고
+path-safe immutable `task_name`과 분리된다. UI card-title projection은 독립 capability라
+미지원(`false`)이어도 work canary를 막지 않으며 지원을 주장하지 않는다.
+이 path는 `admission:"canary"`를 명시해야 하며 production default admission이 아니다.
+
+participant, critic, summarizer는 서로 다른 logical/host handle이고 최초 assigned turn에만
+spawn된다. native dispatch 뒤에는 isolated Runner로 중간 fallback하지 않는다. schema,
+timeout, cancel 또는 host failure는 abort receipt로 닫으며 replacement spawn과 late result를
+거부한다. token 측정이 없으면 `tokens:null`, `token_coverage:"unavailable"`을 유지한다.
+pairing은 역할별 hard write confinement가 추가로 입증되기 전까지 아래 isolated Runner
+경계를 유지한다.
+
 ```bash
 node plugins/studio/scripts/codex_workflow_runner.mjs \
   --broker brainstorm \
@@ -251,7 +267,8 @@ Runner는 canonical `studio-runtime-capability/v1`의 exact shape와 digest를 �
 광고된 model/effort가 있으면 각 agent의 resolved 값을 spawn 전에 대조한다. capability가
 unknown/unavailable이면 dispatch하지 않는다. CLI output에는 신뢰할 수 있는 token usage가
 없으므로 broker receipt는 `tokens:null`, `token_coverage:"unavailable"`을 유지한다.
-UI 표시와 token telemetry 구현은 이 Runner의 범위가 아니다.
+UI card-title projection과 token telemetry 구현은 이 Runner의 범위가 아니다. 따라서
+Runner는 persistent crew 또는 UI title 지원을 주장하지 않는다.
 
 ## casting helper
 
@@ -325,7 +342,8 @@ v0.4.0 — stable review cycle·delta/full QA gate·evidence reuse·compact hand
 위키(INT/DEC studio) + `drafts/agent-team-concept.md`.
 검증 테스트: `python3 plugins/studio/tests/test_studio.py`,
 `node --test plugins/studio/tests/test_broker_semantics.js`,
-`node --test plugins/studio/tests/test_codex_runner.js`.
+`node --test plugins/studio/tests/test_codex_runner.js`,
+`node --test plugins/studio/tests/test_persistent_brainstorm_broker.js`.
 
 후순위(정의만, MVP 비활성): 마케팅/판매 운영 역할, 동적 채용(casting), standup/retro/demo
 리추얼과 추가 external workflow adapter.
