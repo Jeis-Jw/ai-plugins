@@ -57,8 +57,9 @@ function withoutStateDigests(value) {
 
 export function persistentStateDigest(state) {
   // Nested state_digest fences would make the root digest self-referential, so
-  // they are excluded here and authenticated separately by
-  // validatePersistentState against the canonical dispatch/result pairing.
+  // they are excluded here. Current fences are authenticated against the top
+  // digest; historical fences use revision_fences[].digest, whose deliberately
+  // different key is included in this root hash.
   return digest(withoutStateDigests(state))
 }
 
@@ -524,6 +525,32 @@ export function validatePersistentState(state) {
   if (!Array.isArray(state.ledger)) stateTampered('ledger must be an array')
   requirePositiveStateInteger(state.next_ordinal, 'next_ordinal')
   requirePositiveStateInteger(state.next_barrier, 'next_barrier')
+  if (
+    !Array.isArray(state.revision_fences)
+    || state.revision_fences.length !== state.state_revision - 1
+  ) {
+    stateTampered('revision_fences must cover every completed revision exactly once')
+  }
+  const revisionFenceByRevision = new Map()
+  const revisionFenceDigests = new Set()
+  for (let index = 0; index < state.revision_fences.length; index += 1) {
+    const fence = state.revision_fences[index]
+    const expectedRevision = index + 1
+    if (
+      !fence
+      || !canonicalEqual(Object.keys(fence).sort(), ['digest', 'revision'])
+      || fence.revision !== expectedRevision
+      || !/^sha256:[0-9a-f]{64}$/.test(fence.digest)
+      || revisionFenceDigests.has(fence.digest)
+    ) {
+      stateTampered('revision_fences contain a duplicate, gap, forward revision, or invalid digest')
+    }
+    revisionFenceByRevision.set(fence.revision, fence.digest)
+    revisionFenceDigests.add(fence.digest)
+  }
+  if (revisionFenceDigests.has(state.state_digest)) {
+    stateTampered('current state digest must not duplicate a historical revision fence')
+  }
 
   const actorMap = new Map(actors.map(actor => [actor.actor_id, actor]))
   const dispatches = state.ledger.filter(entry => entry?.event === 'dispatch')
@@ -577,6 +604,12 @@ export function validatePersistentState(state) {
       if (!canonicalEqual(result[field], dispatch[field])) {
         stateTampered(`historical result ${field} fence mismatch`)
       }
+    }
+    if (
+      dispatch.state_revision >= state.state_revision
+      || revisionFenceByRevision.get(dispatch.state_revision) !== dispatch.state_digest
+    ) {
+      stateTampered('historical dispatch/result digest is not bound to its immutable revision fence')
     }
     resultByAction.set(result.action_id, result)
   }
@@ -1046,6 +1079,7 @@ export function createPersistentBrainstorm(input) {
     delta_log: [],
     dry_log: [],
     ledger: [],
+    revision_fences: [],
     next_ordinal: 1,
     next_barrier: 1,
     pending: null,
@@ -1069,6 +1103,10 @@ export function applyPersistentBarrier(state, receipt) {
   }
   validateReceiptFence(state, receipt)
   const next = clone(state)
+  next.revision_fences.push({
+    revision: state.state_revision,
+    digest: state.state_digest,
+  })
   mutatingApply(next, clone(receipt))
   next.state_revision += 1
   return sealState(next)

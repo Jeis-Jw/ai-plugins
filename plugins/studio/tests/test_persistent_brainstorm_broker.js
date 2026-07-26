@@ -89,6 +89,28 @@ function rebindCurrentDigest(state) {
   return state
 }
 
+function assertRevisionFenceChain(state) {
+  assert.deepEqual(
+    state.revision_fences.map(fence => fence.revision),
+    Array.from({ length: state.state_revision - 1 }, (_, index) => index + 1),
+  )
+  const fences = new Map(state.revision_fences.map(fence => [fence.revision, fence.digest]))
+  const results = new Map(
+    state.ledger.filter(entry => entry.event === 'result').map(entry => [entry.action_id, entry]),
+  )
+  for (const dispatch of state.ledger.filter(entry => entry.event === 'dispatch')) {
+    const result = results.get(dispatch.action_id)
+    if (result) {
+      assert.equal(dispatch.state_digest, fences.get(dispatch.state_revision))
+      assert.equal(result.state_digest, fences.get(dispatch.state_revision))
+    } else {
+      assert.equal(dispatch.state_revision, state.state_revision)
+      assert.equal(dispatch.state_digest, state.state_digest)
+    }
+  }
+  validatePersistentState(state)
+}
+
 test('task_name matches the real host contract, preserves suffix, and resists slug collisions', () => {
   const common = {
     runId: 'RUN-long',
@@ -141,6 +163,57 @@ test('canonical actions bind immutable turn, generation, state, transition, labe
   assert.equal(followup.transition.actor_from, 'idle')
   assert.equal(followup.state_revision, state.state_revision)
   assert.equal(state.fallback_allowed, false)
+})
+
+test('revision fences cover create, debate, repair, cancel, and completed transitions', () => {
+  const created = createPersistentBrainstorm(input({ run_id: 'RUN-revision-create' }))
+  assert.deepEqual(created.revision_fences, [])
+  assertRevisionFenceChain(created)
+
+  const debating = apply(created, [
+    { utterance: 'independent-a', deltas: [] },
+    { utterance: 'independent-b', deltas: [] },
+  ])
+  assert.equal(debating.phase, 'Debate')
+  assert.deepEqual(debating.revision_fences, [{
+    revision: created.state_revision,
+    digest: created.state_digest,
+  }])
+  assertRevisionFenceChain(debating)
+
+  let repairing = createPersistentBrainstorm(input({ run_id: 'RUN-revision-repair' }))
+  repairing = apply(repairing, [
+    {},
+    { utterance: 'valid-b', deltas: [] },
+  ])
+  assert.equal(repairing.pending.actions[0].repair_attempt, 1)
+  assertRevisionFenceChain(repairing)
+  repairing = apply(repairing, [{}])
+  assert.equal(repairing.status, 'cancelling')
+  assertRevisionFenceChain(repairing)
+  repairing = apply(repairing, repairing.pending.actions.map(() => ({ cancelled: true })), {
+    statuses: repairing.pending.actions.map(() => 'cancelled'),
+  })
+  assert.equal(repairing.status, 'aborted')
+  assertRevisionFenceChain(repairing)
+
+  let completed = createPersistentBrainstorm(input({ run_id: 'RUN-revision-complete' }))
+  completed = apply(completed, [
+    { utterance: 'a', deltas: [] },
+    { utterance: 'b', deltas: [] },
+  ])
+  completed = apply(completed, [{ utterance: 'a dry', deltas: [] }])
+  completed = apply(completed, [{ utterance: 'b dry', deltas: [] }])
+  completed = apply(completed, [{ verified: [] }])
+  completed = apply(completed, [{
+    synthesis: 'done',
+    minority: 'none',
+    proposals: [],
+  }])
+  completed = apply(completed, [{ alive: true, reason: 'verified' }])
+  assert.equal(completed.status, 'completed')
+  assert.equal(completed.pending, null)
+  assertRevisionFenceChain(completed)
 })
 
 test('exact output validation repairs once on the original handle and then cancels', () => {
@@ -404,6 +477,24 @@ test('excluded nested state digests are authenticated by pending and historical 
       { utterance: 'b', deltas: [] },
     ])
     validatePersistentState(historical)
+    const pairedHistoricalTamper = structuredClone(historical)
+    const pairedResult = pairedHistoricalTamper.ledger.find(entry => entry.event === 'result')
+    const pairedDispatch = pairedHistoricalTamper.ledger.find(
+      entry => entry.event === 'dispatch' && entry.action_id === pairedResult.action_id,
+    )
+    const pairedDigestBefore = persistentStateDigest(pairedHistoricalTamper)
+    pairedDispatch.state_digest = `sha256:${'3'.repeat(64)}`
+    pairedResult.state_digest = pairedDispatch.state_digest
+    assert.equal(
+      persistentStateDigest(pairedHistoricalTamper),
+      pairedDigestBefore,
+      'correlated historical fence mutation also leaves the root hash unchanged',
+    )
+    assert.throws(
+      () => validatePersistentState(pairedHistoricalTamper),
+      error => error instanceof PersistentBrokerError && error.code === 'state_tampered',
+    )
+
     const historicalResult = historical.ledger.find(entry => entry.event === 'result')
     const historicalDigestBefore = persistentStateDigest(historical)
     historicalResult.state_digest = `sha256:${'2'.repeat(64)}`
@@ -463,6 +554,39 @@ test('pending barrier/action/turn/generation and ledger duplicates fail closed a
     error => error instanceof PersistentBrokerError && error.code === 'state_tampered',
     'duplicate historical result',
   )
+})
+
+test('revision fence duplicate, missing, gap, forward, and digest mutation fail closed', () => {
+  let base = createPersistentBrainstorm(input({ run_id: 'RUN-revision-fence-structure' }))
+  base = apply(base, [
+    { utterance: 'a', deltas: [] },
+    { utterance: 'b', deltas: [] },
+  ])
+  base = apply(base, [{ utterance: 'a', deltas: [] }])
+  assert.equal(base.state_revision, 3)
+  assertRevisionFenceChain(base)
+
+  const cases = [
+    ['missing revision', state => { state.revision_fences.pop() }],
+    ['duplicate revision', state => {
+      state.revision_fences[1].revision = state.revision_fences[0].revision
+    }],
+    ['revision gap', state => { state.revision_fences[1].revision = 3 }],
+    ['forward revision', state => { state.revision_fences[0].revision = state.state_revision + 1 }],
+    ['duplicate digest', state => {
+      state.revision_fences[1].digest = state.revision_fences[0].digest
+    }],
+  ]
+  for (const [label, mutate] of cases) {
+    const tampered = structuredClone(base)
+    mutate(tampered)
+    rebindCurrentDigest(tampered)
+    assert.throws(
+      () => validatePersistentState(tampered),
+      error => error instanceof PersistentBrokerError && error.code === 'state_tampered',
+      label,
+    )
+  }
 })
 
 test('store hashes traversal-like run IDs and rejects symlink roots/state plus concurrent stale apply', async () => {
