@@ -230,10 +230,10 @@ for (let round = 1; round <= MAX_ROUNDS; round++) {
     // defence-in-depth: accept only when THIS delta's own verdict is valid AND
     // its anchor is genuinely in the allowed set (TURN_SCHEMA enum-guards it,
     // but re-assert so a hollow submission can never slip through).
-    if (v && v.valid && ANCHORS.includes(s.anchor)) {
+    if (v && v.valid && v.outcome_linked === true && ANCHORS.includes(s.anchor)) {
       deltaLog.push({ round, changed_what: s.changed_what, anchor: s.anchor, evidence: s.evidence, rejected_alternative: s.rejected_alternative })
       validThisRound++
-      if (v.outcome_linked === true) outcomeLinkedThisRound++
+      outcomeLinkedThisRound++
     } else {
       dryLog.push({ round, changed_what: s.changed_what, anchor: s.anchor, dry: true })
     }

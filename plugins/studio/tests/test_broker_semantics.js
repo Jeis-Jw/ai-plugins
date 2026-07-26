@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
+const canonical = value => JSON.stringify(value, Object.keys(value).sort())
 
 async function loadBroker(name) {
   const path = join(HERE, '..', 'broker', name)
@@ -111,6 +113,9 @@ const solo = await execute(
     branch: 'task/track',
     persona: { name: 'dev', body: 'make the bounded edit' },
     criteria: [{ id: 'AC-1', source_ref: 'spec.md#AC-1', measure: 'node test_one.js', mechanical: true }],
+    criteriaDigest: `sha256:${createHash('sha256').update(
+      JSON.stringify([{ id: 'AC-1', mechanical: true, measure: 'node test_one.js', source_ref: 'spec.md#AC-1' }]),
+    ).digest('hex')}`,
   },
   label => {
     assert.equal(label, 'solo:dev')
@@ -128,6 +133,11 @@ assert.equal(solo.output.receipt.quality.interaction_applicable, false)
 assert.equal(solo.output.readyForIntegration, false)
 assert.equal(solo.output.developmentReady, true)
 assert.deepEqual(solo.output.delta_log, [])
+assert.equal(solo.output.criterion_bindings[0].source_ref, 'spec.md#AC-1')
+assert.match(solo.output.criteria_digest, /^sha256:/)
+assert.equal(converged.output.delta_log.filter(delta => !delta.dry).length, 0)
+assert.equal(converged.output.delta_log.filter(delta => delta.dry).length, 2)
+assert.equal(converged.output.receipt.counters.valid_deltas, 0)
 
 let qaRound = 0
 const pairing = await execute(

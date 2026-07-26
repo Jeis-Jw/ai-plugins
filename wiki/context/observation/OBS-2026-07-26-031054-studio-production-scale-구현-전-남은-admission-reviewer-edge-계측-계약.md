@@ -35,11 +35,12 @@ solo.workflow.js만 추가하면 interaction 호출 수는 줄어도 계약 고�
 
 ## 구현 후 상태
 
-다섯 공백을 static v1 계약으로 닫았다. solo admission은 source ref+mechanical measure를
-강제하고, cast output은 production profile과 review owner를 분리한다. mixed-scale track은
-item별 criteria digest/review cycle/readiness와 same-file 직렬화를 명시한다. model call과
-elapsed는 exact coverage이며 token은 unavailable을 보존한다. controlled benchmark는
-calls 17→10, elapsed 243→144ms, quality drop 0%였다.
+다섯 공백을 static v1 계약으로 구현했다. solo admission은 source ref+mechanical measure와
+criteria digest를 end-to-end bind하고, production profile과 review owner를 분리한다.
+mixed-scale track은 board-backed plan/dispatch/complete 전이에서 item binding과 same-file
+선행 완료를 강제한다. deterministic control은 calls 17→10을 확인했지만 synthetic
+elapsed/quality는 완료 evidence에서 제외했다. live/cost-matched wall-time A/B와 독립
+quality review는 pending이며 token unavailable도 그대로 보존한다.
 
 ## 후속 분류 조건
 

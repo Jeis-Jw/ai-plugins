@@ -188,6 +188,7 @@ CAST_ALIASES = {
     "release": "launch",
 }
 PRODUCTION_SCALES = ("solo", "standard", "major")
+PRODUCTION_CONTRACT_SCHEMA = "studio-production-track/v1"
 SOLO_CREW = {
     "idea": "planner-a",
     "product-direction": "strategist",
@@ -1403,6 +1404,26 @@ def _solo_readiness_problems(out: dict) -> list[str]:
         problems.append("solo readyForIntegration must remain false until the independent integration gate")
     if out.get("production_profile") != "solo-mechanical":
         problems.append("solo production_profile must be solo-mechanical")
+    bindings = out.get("criterion_bindings")
+    digest = out.get("criteria_digest")
+    if not isinstance(bindings, list) or not bindings:
+        problems.append("solo criterion_bindings must be a non-empty list")
+    else:
+        expected = "sha256:" + hashlib.sha256(
+            json.dumps(bindings, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        if digest != expected:
+            problems.append("solo criteria_digest must bind the exact criterion source_ref/measure payload")
+    development_ready = out.get("developmentReady")
+    if not isinstance(development_ready, bool):
+        problems.append("solo developmentReady must be boolean")
+        return problems
+    if development_ready is False:
+        if not isinstance(out.get("blockedChecks"), list):
+            problems.append("blocked solo blockedChecks must be a list")
+        if not isinstance(out.get("criterionResults"), list):
+            problems.append("blocked solo criterionResults must be a list")
+        return problems
     if not isinstance(out.get("changedFiles"), list) or not out.get("changedFiles"):
         problems.append("solo changedFiles must contain at least one repo-relative path")
     verification = out.get("verification")
@@ -4357,16 +4378,149 @@ def cmd_cast_suggest(args: argparse.Namespace) -> None:
             "duplicate_dispatch_forbidden": True,
         },
         mixed_scale_track={
-            "criteria_digest_per_item": True,
-            "review_cycle_per_item": True,
-            "ready_for_integration_per_item": True,
-            "same_file_writes": "serialize",
+            "contract": PRODUCTION_CONTRACT_SCHEMA,
+            "state": "board.production_tracks",
+            "dispatch_command": "studio.py production dispatch",
             "integration_gate": "one full QA on integration HEAD",
         },
         personas=personas,
         missing=[],
         tool_hints=spec.get("tool_hints") or [],
     )
+
+
+def _production_track(value: Any) -> dict:
+    if not isinstance(value, dict) or set(value) != {"schema", "track_id", "items"}:
+        fail(6, "invalid_production_track", "production track must contain exactly schema, track_id, items")
+    if value.get("schema") != PRODUCTION_CONTRACT_SCHEMA:
+        fail(6, "invalid_production_track", f"schema must be {PRODUCTION_CONTRACT_SCHEMA}")
+    track_id = validate_safe_id(value.get("track_id"), "track_id")
+    items = value.get("items")
+    if not isinstance(items, list) or not items:
+        fail(6, "invalid_production_track", "items must be a non-empty list")
+    normalized = []
+    seen_ids = set()
+    seen_cycles = set()
+    last_writer: dict[str, str] = {}
+    edges = []
+    for index, item in enumerate(items):
+        required = {
+            "item_id", "kind", "scale", "criteria_digest", "review_cycle_id",
+            "write_paths", "review_binding",
+        }
+        if not isinstance(item, dict) or set(item) != required:
+            fail(6, "invalid_production_track", f"items[{index}] fields differ from contract")
+        item_id = validate_safe_id(item.get("item_id"), f"items[{index}].item_id")
+        cycle_id = validate_safe_id(item.get("review_cycle_id"), f"items[{index}].review_cycle_id")
+        if item_id in seen_ids or cycle_id in seen_cycles:
+            fail(6, "invalid_production_track", "item_id and review_cycle_id must be unique per track")
+        seen_ids.add(item_id)
+        seen_cycles.add(cycle_id)
+        if item.get("kind") not in CASTS or item.get("scale") not in PRODUCTION_SCALES:
+            fail(6, "invalid_production_track", f"items[{index}] kind/scale is invalid")
+        criteria_digest = item.get("criteria_digest")
+        if not isinstance(criteria_digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", criteria_digest):
+            fail(6, "invalid_production_track", f"items[{index}].criteria_digest must be sha256")
+        write_paths = item.get("write_paths")
+        if not isinstance(write_paths, list) or not write_paths or any(
+            not isinstance(path, str) or not path.strip() or path.startswith("/") or ".." in Path(path).parts
+            for path in write_paths
+        ):
+            fail(6, "invalid_production_track", f"items[{index}].write_paths must be safe repo-relative paths")
+        review = item.get("review_binding")
+        if not isinstance(review, dict) or set(review) != {"owner", "provider", "criteria_digest"}:
+            fail(6, "invalid_production_track", f"items[{index}].review_binding is invalid")
+        if review.get("owner") not in ("studio", "task-worker") or review.get("provider") not in REVIEWER_PROVIDERS:
+            fail(6, "invalid_production_track", f"items[{index}].review owner/provider is invalid")
+        if review.get("criteria_digest") != criteria_digest:
+            fail(6, "production_binding_mismatch", f"items[{index}] review criteria differs")
+        blockers = []
+        for path in sorted(set(write_paths)):
+            if path in last_writer:
+                blockers.append(last_writer[path])
+                edges.append({"before": last_writer[path], "after": item_id, "path": path})
+            last_writer[path] = item_id
+        normalized.append({
+            **item,
+            "write_paths": sorted(set(write_paths)),
+            "serialization_blocked_by": sorted(set(blockers)),
+            "state": "planned",
+            "readyForIntegration": False,
+        })
+    return {
+        "schema": PRODUCTION_CONTRACT_SCHEMA,
+        "track_id": track_id,
+        "items": normalized,
+        "serialization_edges": edges,
+        "integration_head_full_required": True,
+    }
+
+
+def cmd_production_plan(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    track = _production_track(load_json_arg(args.json, "production track"))
+    with board_transaction(ws) as board:
+        tracks = board.setdefault("production_tracks", {})
+        current = tracks.get(track["track_id"])
+        if current is not None:
+            if current != track:
+                fail(6, "production_track_conflict", "production track is immutable after planning")
+            ok(track=current, changed=False)
+        tracks[track["track_id"]] = track
+    ok(track=track, changed=True)
+
+
+def _production_binding(item: dict, args: argparse.Namespace) -> None:
+    if item["criteria_digest"] != args.criteria_digest or item["review_cycle_id"] != args.review_cycle_id:
+        fail(6, "production_binding_mismatch", "criteria digest/review cycle differs from planned item")
+
+
+def cmd_production_dispatch(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    with board_transaction(ws) as board:
+        track = (board.get("production_tracks") or {}).get(args.track_id)
+        if not isinstance(track, dict):
+            fail(4, "production_track_not_found", f"unknown production track: {args.track_id}")
+        by_id = {item["item_id"]: item for item in track["items"]}
+        item = by_id.get(args.item_id)
+        if item is None:
+            fail(4, "production_item_not_found", f"unknown production item: {args.item_id}")
+        _production_binding(item, args)
+        if item["state"] == "running":
+            ok(item=item, changed=False)
+        if item["state"] != "planned":
+            fail(6, "production_state_conflict", f"cannot dispatch item in state {item['state']}")
+        pending = [
+            predecessor for predecessor in item["serialization_blocked_by"]
+            if by_id[predecessor]["state"] != "completed"
+        ]
+        if pending:
+            fail(6, "production_write_conflict", "same-file predecessor is not completed", blocked_by=pending)
+        item["state"] = "running"
+    ok(item=item, changed=True)
+
+
+def cmd_production_complete(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    with board_transaction(ws) as board:
+        track = (board.get("production_tracks") or {}).get(args.track_id)
+        if not isinstance(track, dict):
+            fail(4, "production_track_not_found", f"unknown production track: {args.track_id}")
+        item = next((entry for entry in track["items"] if entry["item_id"] == args.item_id), None)
+        if item is None:
+            fail(4, "production_item_not_found", f"unknown production item: {args.item_id}")
+        _production_binding(item, args)
+        if item["state"] != "running":
+            fail(6, "production_state_conflict", f"cannot complete item in state {item['state']}")
+        passed = args.verification == "passed" and args.review == "passed"
+        item["state"] = "completed" if passed else "failed"
+        item["readyForIntegration"] = passed
+        item["verification_status"] = args.verification
+        item["review_status"] = args.review
+    ok(item=item, changed=True, track_ready=all(entry["readyForIntegration"] for entry in track["items"]))
 
 
 # --------------------------------------------------------------------------- #
@@ -4646,6 +4800,22 @@ def build_parser() -> argparse.ArgumentParser:
     cs.add_argument("--review-owner", choices=("studio", "task-worker"), default="studio")
     cs.add_argument("--review-provider", choices=REVIEWER_PROVIDERS, default="native")
     cs.set_defaults(func=cmd_cast_suggest)
+
+    sp = sub.add_parser("production", help="enforce item-scale bindings and same-file serialization")
+    psub = sp.add_subparsers(dest="production_command", required=True)
+    pp = psub.add_parser("plan", help="persist one immutable mixed-scale track contract")
+    pp.add_argument("--json", required=True)
+    pp.set_defaults(func=cmd_production_plan)
+    for command, handler in (("dispatch", cmd_production_dispatch), ("complete", cmd_production_complete)):
+        pc = psub.add_parser(command)
+        pc.add_argument("track_id")
+        pc.add_argument("item_id")
+        pc.add_argument("--criteria-digest", required=True)
+        pc.add_argument("--review-cycle-id", required=True)
+        if command == "complete":
+            pc.add_argument("--verification", choices=("passed", "failed", "blocked"), required=True)
+            pc.add_argument("--review", choices=("passed", "failed", "pending"), required=True)
+        pc.set_defaults(func=handler)
 
     return p
 

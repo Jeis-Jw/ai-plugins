@@ -92,6 +92,14 @@ if (label.startsWith('diverge:') || label.startsWith('debate:')) {
     verification: [{ command: 'fake-check', result: 'pass' }],
     blockedChecks: [],
   }
+} else if (label.startsWith('solo:')) {
+  output = {
+    synthesis: 'fake solo implementation',
+    changedFiles: ['probe.txt'],
+    verification: [{ command: 'fake-check', result: 'pass' }],
+    blockedChecks: [],
+    criterionResults: [{ id: 'AC-1', pass: true, evidence: 'fake-check passed' }],
+  }
 } else if (label.startsWith('qa:')) {
   output = {
     broke: false,

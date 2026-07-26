@@ -347,6 +347,46 @@ test('pairing grants workspace-write only to dev in a validated secondary worktr
   }
 })
 
+test('solo uses one workspace-write Codex call and preserves criterion binding', async () => {
+  const scratch = await temp()
+  try {
+    const { primary, secondary } = await secondaryWorktree(scratch)
+    const record = join(scratch, 'record.jsonl')
+    const criteria = [{
+      id: 'AC-1', source_ref: 'spec.md#AC-1',
+      measure: 'fake-check', mechanical: true,
+    }]
+    const criteriaDigest = `sha256:${createHash('sha256').update(
+      JSON.stringify([{ id: 'AC-1', mechanical: true, measure: 'fake-check', source_ref: 'spec.md#AC-1' }]),
+    ).digest('hex')}`
+    const result = await executeWorkflow({
+      brokerName: 'solo',
+      args: {
+        objective: 'bounded edit', worktreePath: secondary, branch: 'task/probe',
+        persona: { name: 'dev', body: 'build' }, criteria, criteriaDigest,
+        agentRuntime: 'codex', runtimeCapability: runtimeCapability(),
+      },
+      cwd: primary,
+      env: {
+        ...process.env, STUDIO_CODEX_CLI: FAKE,
+        FAKE_CODEX_MODE: 'broker', FAKE_CODEX_RECORD: record,
+      },
+      timeoutMs: 2_000,
+    })
+    assert.equal(result.dispatch_allowed, true)
+    assert.equal(result.output.ritual, 'solo')
+    assert.equal(result.output.receipt.counters.model_calls, 1)
+    assert.equal(result.output.criteria_digest, criteriaDigest)
+    const calls = (await readFile(record, 'utf8')).trim().split('\n').map(JSON.parse)
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].label, 'solo:dev')
+    assert.equal(calls[0].args[calls[0].args.indexOf('--sandbox') + 1], 'workspace-write')
+    assert.equal(calls[0].cwd, await realpath(secondary))
+  } finally {
+    await rm(scratch, { recursive: true, force: true })
+  }
+})
+
 test('pairing rejects a secondary worktree from an unrelated repository', async () => {
   const scratch = await temp()
   try {

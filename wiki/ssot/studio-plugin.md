@@ -106,10 +106,11 @@ Studio와 worker 어느 쪽도 schema 축약본이나 재직렬화 복제본을 
 - evidence 재사용은 physical identity뿐 아니라 criteria/path/surface/impact/purpose/independence까지 일치해야 한다. invalidation은 새 canonical digest로 한 번 기록한 뒤 되돌리지 않는다. final 독립 판단, integration HEAD full gate, release/device/production preflight는 fresh permit을 요구한다.
 - capability 실패는 `(mission_id, capability_id, environment_digest)`에 한 번 기록해 병렬 track이 같은 probe를 반복하지 않는다. 외부 mutation은 passed preflight를 요구하고, 비용이 있으면 owner-approved authorization quota를 mutation 전에 원자 claim한다. consumption과 mutation receipt는 서로의 최종 ref/digest를 교차 검증한다.
 - token telemetry는 permit의 `fail-closed|report-only`를 따른다. null/unavailable을 0으로 계산하지 않는다. closeout은 integration HEAD에 적용 가능한 verification/review/delivery/mutation/cleanup/user-change ref와 zero open finding을 reconciliation한 뒤에만 완료한다.
-- broker receipt의 model call과 elapsed coverage는 exact로 기록한다. controlled benchmark는
-  full 17 calls/243ms 대비 standard 10 calls/144ms로 각각 41.18%/40.74% 절감했고,
-  criterion pass와 outcome-linked delta score 하락은 0%였다. token coverage는 unavailable이라
-  token 절감 완료 claim은 금지한다.
+- broker receipt의 model call과 elapsed는 실제 run마다 coverage를 기록한다. deterministic
+  control은 full 17 calls 대비 standard 10 calls로 41.18% 감소했지만 synthetic timing과
+  scripted verdict는 wall-time/quality Owner gate evidence가 아니다. reviewed diverse fixture는
+  quality replay coverage만 제공한다. live/cost-matched A/B와 독립 검토 전에는 30%/5%
+  완료를 주장하지 않으며 token coverage unavailable도 token 절감 claim을 금지한다.
 - `execution summary`는 board를 변경하지 않고 logical check, physical run, full/delta QA, reuse/duplicate 방지, capability cache, token coverage, owner intervention, external spend를 `efficiency-summary/v1`로 투영한다.
 
 이 control plane은 명령을 직접 실행하거나 provider API를 호출하지 않는다. Studio native harness와

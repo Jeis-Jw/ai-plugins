@@ -1,0 +1,31 @@
+{
+  "schema": "studio-production-profile-replay-corpus/v1",
+  "provenance": "reviewed-representative-fixture",
+  "source_refs": [
+    "wiki/context/decision/DEC-2026-07-26-031028-studio-production-scale과-producer-manager-only-운영-모델.md",
+    "wiki/context/observation/OBS-2026-07-26-031054-studio-production-scale-구현-전-남은-admission-reviewer-edge-계측-계약.md"
+  ],
+  "cases": [
+    {
+      "id": "bounded-contract-choice",
+      "outcome_kind": "rejected-alternative",
+      "expected": {"decision": "reject-implicit-config", "criterion_pass": true},
+      "baseline_observed": {"decision": "reject-implicit-config", "criterion_pass": true},
+      "variant_observed": {"decision": "reject-implicit-config", "criterion_pass": true}
+    },
+    {
+      "id": "dry-wording-only",
+      "outcome_kind": "no-outcome-change",
+      "expected": {"alive": false, "valid_delta_count": 0},
+      "baseline_observed": {"alive": false, "valid_delta_count": 0},
+      "variant_observed": {"alive": false, "valid_delta_count": 0}
+    },
+    {
+      "id": "risk-minority-preserved",
+      "outcome_kind": "risk",
+      "expected": {"risk": "criteria-source-missing", "minority_preserved": true},
+      "baseline_observed": {"risk": "criteria-source-missing", "minority_preserved": true},
+      "variant_observed": {"risk": "criteria-source-missing", "minority_preserved": true}
+    }
+  ]
+}

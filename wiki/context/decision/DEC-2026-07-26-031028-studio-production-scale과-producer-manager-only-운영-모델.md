@@ -50,6 +50,8 @@ static 분류가 반복적으로 잘못되어 quality floor 미달이나 불필�
 ## 구현 결과
 
 v1 계약명은 `solo|standard|major`로 고정했다. static cast, 1-call solo broker,
-outcome-linked standard brainstorm 수렴과 exact call/elapsed 계측을 구현했다. controlled
-benchmark는 calls 41.18%, elapsed 40.74% 절감, quality drop 0%로 Owner gate
-30%/5%를 통과했다. token coverage는 unavailable이므로 token 절감은 주장하지 않는다.
+outcome-linked standard brainstorm 수렴과 call/elapsed coverage 계측을 구현했다.
+deterministic control의 calls 41.18% 감소는 구조 검증일 뿐 synthetic timing/scripted
+quality로 Owner gate를 통과시키지 않는다. live/cost-matched wall-time A/B와 독립 quality
+review가 남아 있어 30%/5% 완료는 pending이다. token coverage도 unavailable이므로 token
+절감은 주장하지 않는다.

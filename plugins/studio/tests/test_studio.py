@@ -404,6 +404,39 @@ def main() -> None:
         }))
         assert any("changedFiles" in p for p in r["problems"]), r
 
+        bindings = [{
+            "id": "AC-1", "source_ref": "spec.md#AC-1",
+            "measure": "node test_one.js", "mechanical": True,
+        }]
+        blocked_solo = {
+            "run_id": "RUN-solo-blocked", "ritual": "solo",
+            "production_profile": "solo-mechanical",
+            "participants": ["dev"], "delta_log": [],
+            "verdict": {"alive": False, "reason": "tool unavailable"},
+            "criteria_digest": digest(bindings), "criterion_bindings": bindings,
+            "criterionResults": [], "changedFiles": [], "verification": [],
+            "blockedChecks": ["tool unavailable"], "developmentReady": False,
+            "readyForIntegration": False,
+            "cost": {"tokens": None, "token_coverage": "unavailable", "elapsed_ms": 1000, "rounds": 1},
+            "receipt": {
+                "schema": "workflow-receipt/v1", "emitter": "studio", "workflow": "studio-solo",
+                "run_id": "RUN-solo-blocked", "started_at": "2026-07-10T00:00:00.000Z",
+                "finished_at": "2026-07-10T00:00:01.000Z", "elapsed_ms": 1000,
+                "tokens": None, "token_coverage": "unavailable",
+                "counters": {"model_calls": 1, "rounds": 1},
+                "quality": {"interaction_applicable": False, "production_ready": False},
+            },
+        }
+        r = run(["run", "record", "--json", "-"], tmp, stdin=json.dumps(blocked_solo))
+        assert r["ok"] and r["valid_deltas"] == 0, r
+        assert Path(tmp / r["minutes"]).is_file(), r
+        stored = next(item for item in board_state(ws)["runs"] if item["run_id"] == "RUN-solo-blocked")
+        assert stored["cost_elapsed_ms"] == 1000 and stored["cost_tokens"] is None, stored
+        tampered_solo = {**blocked_solo, "run_id": "RUN-solo-tampered", "criteria_digest": sha("0")}
+        tampered_solo["receipt"] = {**blocked_solo["receipt"], "run_id": "RUN-solo-tampered"}
+        r = run(["run", "record", "--json", "-"], tmp, expect=6, stdin=json.dumps(tampered_solo))
+        assert any("criteria_digest" in problem for problem in r["problems"]), r
+
         # 7) aborted run — deltas quarantined, not counted as evidence
         aborted_out = {"run_id": "RUN-test-brainstorm-2", "ritual": "brainstorm", "aborted": True,
                        "cost": {"tokens": 10},
@@ -1119,6 +1152,55 @@ def main() -> None:
         r = run(["cast", "suggest", "idea"], tmp)
         assert r["item_scale"] == "standard" and r["limits"] == {"max_rounds": 2, "dry_stop": 1}, r
         assert r["participants"] == ["planner-a", "planner-b"], r
+
+        production_track = {
+            "schema": "studio-production-track/v1", "track_id": "mixed-track",
+            "items": [
+                {
+                    "item_id": "item-a", "kind": "implementation", "scale": "solo",
+                    "criteria_digest": sha("1"), "review_cycle_id": "RC-item-a",
+                    "write_paths": ["plugins/studio/shared.js"],
+                    "review_binding": {
+                        "owner": "task-worker", "provider": "native", "criteria_digest": sha("1"),
+                    },
+                },
+                {
+                    "item_id": "item-b", "kind": "technical-design", "scale": "major",
+                    "criteria_digest": sha("2"), "review_cycle_id": "RC-item-b",
+                    "write_paths": ["plugins/studio/shared.js", "plugins/studio/design.md"],
+                    "review_binding": {
+                        "owner": "studio", "provider": "native", "criteria_digest": sha("2"),
+                    },
+                },
+            ],
+        }
+        r = run(["production", "plan", "--json", json.dumps(production_track)], tmp)
+        assert r["track"]["serialization_edges"] == [{
+            "before": "item-a", "after": "item-b", "path": "plugins/studio/shared.js",
+        }], r
+        run([
+            "production", "dispatch", "mixed-track", "item-b",
+            "--criteria-digest", sha("2"), "--review-cycle-id", "RC-item-b",
+        ], tmp, expect=6)
+        run([
+            "production", "dispatch", "mixed-track", "item-a",
+            "--criteria-digest", sha("0"), "--review-cycle-id", "RC-item-a",
+        ], tmp, expect=6)
+        run([
+            "production", "dispatch", "mixed-track", "item-a",
+            "--criteria-digest", sha("1"), "--review-cycle-id", "RC-item-a",
+        ], tmp)
+        r = run([
+            "production", "complete", "mixed-track", "item-a",
+            "--criteria-digest", sha("1"), "--review-cycle-id", "RC-item-a",
+            "--verification", "passed", "--review", "passed",
+        ], tmp)
+        assert r["item"]["readyForIntegration"], r
+        r = run([
+            "production", "dispatch", "mixed-track", "item-b",
+            "--criteria-digest", sha("2"), "--review-cycle-id", "RC-item-b",
+        ], tmp)
+        assert r["item"]["state"] == "running", r
 
         r = run(["cast", "suggest", "unknown-kind"], tmp, expect=6)
         assert r["error_code"] == "unknown_cast", r

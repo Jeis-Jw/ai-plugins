@@ -311,9 +311,11 @@ production scale과 independent review edge는 별도 축이다.
 ## 상태
 
 version-ready(next) — item별 `solo|standard|major` 정적 production scale, 1-call solo,
-outcome-linked brainstorm 수렴, exact model-call/elapsed 계측을 추가했다. controlled
-benchmark는 calls 17→10(41.18%), elapsed 243→144ms(40.74%), quality drop 0%였다.
-token coverage는 unavailable이므로 token 절감은 주장하지 않는다.
+outcome-linked brainstorm 수렴, exact model-call 계측을 추가했다. deterministic control은
+calls 17→10(41.18%)을 확인하지만 synthetic elapsed/quality로 Owner gate를 통과시키지
+않는다. reviewed representative fixture는 quality replay만 보조하며 live/cost-matched
+wall-time A/B와 독립 검토가 끝날 때까지 30%/5% 완료는 pending이다. token coverage도
+unavailable이므로 token 절감은 주장하지 않는다.
 
 v0.8.0 — callable Workflow가 없는 Codex에서도 verified runtime capability와 fail-closed
 경계를 유지하며 기존 brainstorm/pairing broker를 실행하는 production Runner를 추가했다.

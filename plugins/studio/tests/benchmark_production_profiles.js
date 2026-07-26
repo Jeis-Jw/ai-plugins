@@ -7,7 +7,8 @@ const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
 const source = (await readFile(join(HERE, '..', 'broker', 'brainstorm.workflow.js'), 'utf8'))
   .replace('export const meta', 'const meta')
 const broker = new AsyncFunction('args', 'budget', 'phase', 'parallel', 'agent', 'log', source)
-const delayMs = 15
+const corpusIndex = process.argv.indexOf('--representative-corpus')
+const corpusPath = corpusIndex >= 0 ? process.argv[corpusIndex + 1] : null
 
 async function run(profile, personas) {
   let calls = 0
@@ -23,7 +24,6 @@ async function run(profile, personas) {
     jobs => Promise.all(jobs.map(job => job())),
     async (_prompt, options) => {
       calls += 1
-      await new Promise(resolve => setTimeout(resolve, delayMs))
       if (options.label.startsWith('diverge:')) return { utterance: 'independent preparation', deltas: [] }
       if (options.label === 'debate:r1:a') return {
         utterance: 'reject implicit configuration',
@@ -61,8 +61,31 @@ const variant = await run('standard', [
 ])
 const reduction = (before, after) => Number((((before - after) / before) * 100).toFixed(2))
 const callReduction = reduction(baseline.calls, variant.calls)
-const elapsedReduction = reduction(baseline.elapsed_ms, variant.elapsed_ms)
-const qualityDrop = baseline.quality.outcome_linked_delta_score - variant.quality.outcome_linked_delta_score
+let representative = null
+if (corpusPath) {
+  const corpus = JSON.parse(await readFile(corpusPath, 'utf8'))
+  const cases = Array.isArray(corpus.cases) ? corpus.cases : []
+  const outcomes = new Set(cases.map(item => item.outcome_kind))
+  const valid = corpus.schema === 'studio-production-profile-replay-corpus/v1'
+    && corpus.provenance === 'reviewed-representative-fixture'
+    && cases.length >= 3 && outcomes.size >= 3
+  const scored = cases.map(item => ({
+    id: item.id,
+    baseline_pass: JSON.stringify(item.baseline_observed) === JSON.stringify(item.expected),
+    variant_pass: JSON.stringify(item.variant_observed) === JSON.stringify(item.expected),
+  }))
+  const baselineScore = scored.filter(item => item.baseline_pass).length / Math.max(scored.length, 1) * 100
+  const variantScore = scored.filter(item => item.variant_pass).length / Math.max(scored.length, 1) * 100
+  representative = {
+    coverage: valid ? 'representative-fixture' : 'invalid',
+    source_refs: corpus.source_refs || [],
+    cases: scored,
+    baseline_quality_score: baselineScore,
+    variant_quality_score: variantScore,
+    quality_drop_percent: Number((baselineScore - variantScore).toFixed(2)),
+    live_wall_time_coverage: 'unavailable',
+  }
+}
 const result = {
   schema: 'studio-production-profile-benchmark/v1',
   workload: 'bounded-parser-contract',
@@ -72,27 +95,34 @@ const result = {
   variant,
   calculations: {
     call_reduction_percent: callReduction,
-    elapsed_reduction_percent: elapsedReduction,
-    criterion_pass_drop_percent: baseline.quality.criterion_pass === variant.quality.criterion_pass ? 0 : 100,
-    outcome_linked_delta_drop_percent: qualityDrop,
+    deterministic_elapsed_reduction_percent: null,
+    deterministic_quality_drop_percent: null,
   },
+  representative,
   telemetry: {
     model_call_coverage: 'exact',
-    elapsed_coverage: 'exact',
+    elapsed_coverage: 'synthetic-control-only',
     token_coverage: 'unavailable',
     token_savings_claim_eligible: false,
   },
   gates: {
-    calls_at_least_30_percent: callReduction >= 30,
-    elapsed_at_least_30_percent: elapsedReduction >= 30,
-    quality_drop_at_most_5_percent: qualityDrop <= 5,
+    deterministic_calls_at_least_30_percent: callReduction >= 30,
+    representative_quality_at_most_5_percent: Boolean(
+      representative && representative.coverage === 'representative-fixture'
+      && representative.quality_drop_percent <= 5
+    ),
+    live_wall_time_at_least_30_percent: false,
+    owner_gate_complete: false,
     token_savings_claimed: false,
   },
+  pending: [
+    'live/cost-matched baseline and variant wall-time evidence',
+    'independent review of representative quality evidence',
+  ],
 }
-if (!Object.values(result.gates).every(value => value === true || value === false)
-  || !result.gates.calls_at_least_30_percent
-  || !result.gates.elapsed_at_least_30_percent
-  || !result.gates.quality_drop_at_most_5_percent
+if (!result.gates.deterministic_calls_at_least_30_percent
+  || result.gates.owner_gate_complete
+  || result.gates.live_wall_time_at_least_30_percent
   || result.gates.token_savings_claimed) {
   process.stderr.write(`${JSON.stringify(result, null, 2)}\n`)
   process.exit(1)

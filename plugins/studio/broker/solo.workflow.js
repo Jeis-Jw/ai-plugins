@@ -7,6 +7,7 @@ export const meta = {
 const A = typeof args === 'string' ? JSON.parse(args) : (args || {})
 const PERSONA = A.persona || null
 const CRITERIA = Array.isArray(A.criteria) ? A.criteria : []
+const CRITERIA_DIGEST = A.criteriaDigest || null
 const WT = A.worktreePath || null
 const BRANCH = A.branch || null
 const REQUESTED_RUNTIME = A.agentRuntime || null
@@ -22,10 +23,11 @@ const invalidCriterion = CRITERIA.some(c => !c || typeof c.id !== 'string'
   || typeof c.source_ref !== 'string' || !c.source_ref.trim()
   || typeof c.measure !== 'string' || !c.measure.trim()
   || c.mechanical !== true)
-if (!PERSONA || typeof PERSONA.name !== 'string' || !WT || !CRITERIA.length || invalidCriterion) {
+if (!PERSONA || typeof PERSONA.name !== 'string' || !WT || !CRITERIA.length || invalidCriterion
+  || typeof CRITERIA_DIGEST !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(CRITERIA_DIGEST)) {
   return {
     ritual: 'solo',
-    error: 'solo requires one persona, a producer-prepared worktreePath, and upstream criteria with source_ref, mechanical measure, and mechanical:true',
+    error: 'solo requires one persona, a worktreePath, canonical criteriaDigest, and upstream criteria with source_ref, mechanical measure, and mechanical:true',
     participants: PERSONA ? [PERSONA.name] : [],
   }
 }
@@ -128,6 +130,10 @@ const receipt = {
 }
 return {
   run_id: runId, ritual: 'solo', production_profile: 'solo-mechanical',
+  criteria_digest: CRITERIA_DIGEST,
+  criterion_bindings: CRITERIA.map(c => ({
+    id: c.id, source_ref: c.source_ref, measure: c.measure, mechanical: c.mechanical,
+  })),
   participants: [PERSONA.name], synthesis: (result && result.synthesis) || '(producer failed)',
   minority: 'not-applicable', delta_log: [],
   verdict: { alive: productionReady, reason: productionReady ? 'mechanical criteria and verification passed' : 'mechanical production evidence incomplete' },
