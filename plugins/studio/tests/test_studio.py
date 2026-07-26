@@ -414,7 +414,8 @@ def main() -> None:
             "participants": ["dev"], "delta_log": [],
             "verdict": {"alive": False, "reason": "tool unavailable"},
             "criteria_digest": digest(bindings), "criterion_bindings": bindings,
-            "criterionResults": [], "changedFiles": [], "verification": [],
+            "criterionResults": [{"id": "AC-1", "pass": False, "evidence": "tool unavailable"}],
+            "changedFiles": [], "verification": [],
             "blockedChecks": ["tool unavailable"], "developmentReady": False,
             "readyForIntegration": False,
             "cost": {"tokens": None, "token_coverage": "unavailable", "elapsed_ms": 1000, "rounds": 1},
@@ -436,6 +437,47 @@ def main() -> None:
         tampered_solo["receipt"] = {**blocked_solo["receipt"], "run_id": "RUN-solo-tampered"}
         r = run(["run", "record", "--json", "-"], tmp, expect=6, stdin=json.dumps(tampered_solo))
         assert any("criteria_digest" in problem for problem in r["problems"]), r
+        for suffix, invalid_bindings, invalid_results in [
+            ("missing", bindings, []),
+            ("unknown", bindings, [{"id": "AC-2", "pass": False, "evidence": "unknown"}]),
+            ("duplicate", bindings + bindings, blocked_solo["criterionResults"]),
+            (
+                "extra-field",
+                [{**bindings[0], "note": "not in contract"}],
+                blocked_solo["criterionResults"],
+            ),
+        ]:
+            invalid_solo = {
+                **blocked_solo,
+                "run_id": f"RUN-solo-{suffix}",
+                "criterion_bindings": invalid_bindings,
+                "criteria_digest": digest(invalid_bindings),
+                "criterionResults": invalid_results,
+                "receipt": {
+                    **blocked_solo["receipt"],
+                    "run_id": f"RUN-solo-{suffix}",
+                },
+            }
+            r = run(["run", "record", "--json", "-"], tmp, expect=6, stdin=json.dumps(invalid_solo))
+            assert any("criterion" in problem for problem in r["problems"]), r
+        successful_solo = {
+            **blocked_solo,
+            "run_id": "RUN-solo-success",
+            "verdict": {"alive": True, "reason": "complete"},
+            "criterionResults": [{"id": "AC-1", "pass": True, "evidence": "pytest passed"}],
+            "changedFiles": ["plugins/studio/scripts/studio.py"],
+            "verification": [{"command": "pytest tests/test_one.py", "result": "pass"}],
+            "blockedChecks": [],
+            "developmentReady": True,
+            "readyForIntegration": False,
+            "receipt": {
+                **blocked_solo["receipt"],
+                "run_id": "RUN-solo-success",
+                "quality": {"interaction_applicable": False, "production_ready": True},
+            },
+        }
+        r = run(["run", "record", "--json", "-"], tmp, stdin=json.dumps(successful_solo))
+        assert r["ok"] and r["valid_deltas"] == 0, r
 
         # 7) aborted run — deltas quarantined, not counted as evidence
         aborted_out = {"run_id": "RUN-test-brainstorm-2", "ritual": "brainstorm", "aborted": True,
@@ -466,7 +508,7 @@ def main() -> None:
         # 8) evidence tally — 1 valid delta from the non-aborted run
         r = run(["evidence"], tmp)
         assert r["ok"] and r["total_valid_deltas"] == 1, r
-        assert r["aborted_runs"] == 1 and r["runs"] == 7, r
+        assert r["aborted_runs"] == 1 and r["runs"] == 8, r
         assert r["theatre"] is False, r
 
         # 8a) schema 1 is projected lazily and persisted on the next mutation
@@ -1160,17 +1202,21 @@ def main() -> None:
                 {
                     "item_id": "item-a", "kind": "implementation", "scale": "solo",
                     "criteria_digest": sha("1"), "review_cycle_id": "RC-item-a",
+                    "head": "abc1111",
                     "write_paths": ["plugins/studio/shared.js"],
                     "review_binding": {
                         "owner": "task-worker", "provider": "native", "criteria_digest": sha("1"),
+                        "edge_id": "edge-item-a", "lease_id": "lease-item-a",
                     },
                 },
                 {
                     "item_id": "item-b", "kind": "technical-design", "scale": "major",
                     "criteria_digest": sha("2"), "review_cycle_id": "RC-item-b",
+                    "head": "abc2222",
                     "write_paths": ["plugins/studio/shared.js", "plugins/studio/design.md"],
                     "review_binding": {
                         "owner": "studio", "provider": "native", "criteria_digest": sha("2"),
+                        "edge_id": "edge-item-b", "lease_id": "lease-item-b",
                     },
                 },
             ],
@@ -1191,10 +1237,50 @@ def main() -> None:
             "production", "dispatch", "mixed-track", "item-a",
             "--criteria-digest", sha("1"), "--review-cycle-id", "RC-item-a",
         ], tmp)
+        run([
+            "production", "complete", "mixed-track", "item-a",
+            "--criteria-digest", sha("1"), "--review-cycle-id", "RC-item-a",
+            "--verification-receipt-id", "VR-item-a", "--review-receipt-id", "RR-item-a",
+        ], tmp, expect=6)
+        run([
+            "production", "dispatch", "mixed-track", "item-b",
+            "--criteria-digest", sha("2"), "--review-cycle-id", "RC-item-b",
+        ], tmp, expect=6)
+        verification = {
+            "schema": "studio-production-verification-receipt/v1",
+            "receipt_id": "VR-item-a", "item_id": "item-a",
+            "criteria_digest": sha("1"), "head": "abc0000",
+            "evidence_ref": "evidence://item-a/verification", "result": "pass",
+        }
+        verification["digest"] = digest(verification)
+        run([
+            "production", "evidence", "mixed-track", "item-a", "--json", json.dumps(verification),
+        ], tmp, expect=6)
+        verification["head"] = "abc1111"
+        verification["digest"] = digest({key: value for key, value in verification.items() if key != "digest"})
+        run([
+            "production", "evidence", "mixed-track", "item-a", "--json", json.dumps(verification),
+        ], tmp)
+        review = {
+            "schema": "studio-production-review-receipt/v1",
+            "receipt_id": "RR-item-a", "item_id": "item-a",
+            "owner": "task-worker", "provider": "native", "criteria_digest": sha("1"),
+            "review_cycle_id": "RC-item-a", "edge_id": "wrong-edge", "lease_id": "lease-item-a",
+            "evidence_ref": "evidence://item-a/review", "verdict": "approved",
+        }
+        review["digest"] = digest(review)
+        run([
+            "production", "review", "mixed-track", "item-a", "--json", json.dumps(review),
+        ], tmp, expect=6)
+        review["edge_id"] = "edge-item-a"
+        review["digest"] = digest({key: value for key, value in review.items() if key != "digest"})
+        run([
+            "production", "review", "mixed-track", "item-a", "--json", json.dumps(review),
+        ], tmp)
         r = run([
             "production", "complete", "mixed-track", "item-a",
             "--criteria-digest", sha("1"), "--review-cycle-id", "RC-item-a",
-            "--verification", "passed", "--review", "passed",
+            "--verification-receipt-id", "VR-item-a", "--review-receipt-id", "RR-item-a",
         ], tmp)
         assert r["item"]["readyForIntegration"], r
         r = run([

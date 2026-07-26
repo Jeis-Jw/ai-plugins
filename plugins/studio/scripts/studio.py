@@ -1406,14 +1406,51 @@ def _solo_readiness_problems(out: dict) -> list[str]:
         problems.append("solo production_profile must be solo-mechanical")
     bindings = out.get("criterion_bindings")
     digest = out.get("criteria_digest")
+    binding_ids = []
     if not isinstance(bindings, list) or not bindings:
         problems.append("solo criterion_bindings must be a non-empty list")
     else:
+        for index, binding in enumerate(bindings):
+            if not isinstance(binding, dict) or set(binding) != {"id", "source_ref", "measure", "mechanical"}:
+                problems.append(f"solo criterion_bindings[{index}] fields differ from contract")
+                continue
+            criterion_id = binding.get("id")
+            if not isinstance(criterion_id, str) or not SAFE_ID_RE.fullmatch(criterion_id):
+                problems.append(f"solo criterion_bindings[{index}].id must be path-safe")
+            else:
+                binding_ids.append(criterion_id)
+            if not isinstance(binding.get("source_ref"), str) or not binding.get("source_ref", "").strip():
+                problems.append(f"solo criterion_bindings[{index}].source_ref is required")
+            if not isinstance(binding.get("measure"), str) or not binding.get("measure", "").strip():
+                problems.append(f"solo criterion_bindings[{index}].measure is required")
+            if binding.get("mechanical") is not True:
+                problems.append(f"solo criterion_bindings[{index}].mechanical must be true")
+        if len(binding_ids) != len(set(binding_ids)):
+            problems.append("solo criterion_bindings ids must be unique")
         expected = "sha256:" + hashlib.sha256(
             json.dumps(bindings, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
         if digest != expected:
             problems.append("solo criteria_digest must bind the exact criterion source_ref/measure payload")
+    results = out.get("criterionResults")
+    result_ids = []
+    if not isinstance(results, list):
+        problems.append("solo criterionResults must be a list")
+    else:
+        for index, result in enumerate(results):
+            if not isinstance(result, dict) or set(result) != {"id", "pass", "evidence"}:
+                problems.append(f"solo criterionResults[{index}] fields differ from contract")
+                continue
+            if not isinstance(result.get("id"), str):
+                problems.append(f"solo criterionResults[{index}].id must be a string")
+            else:
+                result_ids.append(result["id"])
+            if not isinstance(result.get("pass"), bool):
+                problems.append(f"solo criterionResults[{index}].pass must be boolean")
+            if not isinstance(result.get("evidence"), str) or not result.get("evidence", "").strip():
+                problems.append(f"solo criterionResults[{index}].evidence is required")
+        if len(result_ids) != len(set(result_ids)) or set(result_ids) != set(binding_ids):
+            problems.append("solo criterionResults ids must exactly match unique criterion binding ids")
     development_ready = out.get("developmentReady")
     if not isinstance(development_ready, bool):
         problems.append("solo developmentReady must be boolean")
@@ -1421,8 +1458,6 @@ def _solo_readiness_problems(out: dict) -> list[str]:
     if development_ready is False:
         if not isinstance(out.get("blockedChecks"), list):
             problems.append("blocked solo blockedChecks must be a list")
-        if not isinstance(out.get("criterionResults"), list):
-            problems.append("blocked solo criterionResults must be a list")
         return problems
     if not isinstance(out.get("changedFiles"), list) or not out.get("changedFiles"):
         problems.append("solo changedFiles must contain at least one repo-relative path")
@@ -1436,7 +1471,6 @@ def _solo_readiness_problems(out: dict) -> list[str]:
         problems.append("solo verification must contain at least one pass result")
     if out.get("blockedChecks") != []:
         problems.append("solo blockedChecks must be empty for a successful recorded run")
-    results = out.get("criterionResults")
     if not isinstance(results, list) or not results or any(
         not isinstance(item, dict)
         or item.get("pass") is not True
@@ -4406,7 +4440,7 @@ def _production_track(value: Any) -> dict:
     for index, item in enumerate(items):
         required = {
             "item_id", "kind", "scale", "criteria_digest", "review_cycle_id",
-            "write_paths", "review_binding",
+            "head", "write_paths", "review_binding",
         }
         if not isinstance(item, dict) or set(item) != required:
             fail(6, "invalid_production_track", f"items[{index}] fields differ from contract")
@@ -4421,6 +4455,8 @@ def _production_track(value: Any) -> dict:
         criteria_digest = item.get("criteria_digest")
         if not isinstance(criteria_digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", criteria_digest):
             fail(6, "invalid_production_track", f"items[{index}].criteria_digest must be sha256")
+        if not isinstance(item.get("head"), str) or not re.fullmatch(r"[0-9a-f]{7,64}", item["head"]):
+            fail(6, "invalid_production_track", f"items[{index}].head must be a git object id")
         write_paths = item.get("write_paths")
         if not isinstance(write_paths, list) or not write_paths or any(
             not isinstance(path, str) or not path.strip() or path.startswith("/") or ".." in Path(path).parts
@@ -4428,12 +4464,16 @@ def _production_track(value: Any) -> dict:
         ):
             fail(6, "invalid_production_track", f"items[{index}].write_paths must be safe repo-relative paths")
         review = item.get("review_binding")
-        if not isinstance(review, dict) or set(review) != {"owner", "provider", "criteria_digest"}:
+        if not isinstance(review, dict) or set(review) != {
+            "owner", "provider", "criteria_digest", "edge_id", "lease_id",
+        }:
             fail(6, "invalid_production_track", f"items[{index}].review_binding is invalid")
         if review.get("owner") not in ("studio", "task-worker") or review.get("provider") not in REVIEWER_PROVIDERS:
             fail(6, "invalid_production_track", f"items[{index}].review owner/provider is invalid")
         if review.get("criteria_digest") != criteria_digest:
             fail(6, "production_binding_mismatch", f"items[{index}] review criteria differs")
+        validate_safe_id(review.get("edge_id"), f"items[{index}].review_binding.edge_id")
+        validate_safe_id(review.get("lease_id"), f"items[{index}].review_binding.lease_id")
         blockers = []
         for path in sorted(set(write_paths)):
             if path in last_writer:
@@ -4515,12 +4555,92 @@ def cmd_production_complete(args: argparse.Namespace) -> None:
         _production_binding(item, args)
         if item["state"] != "running":
             fail(6, "production_state_conflict", f"cannot complete item in state {item['state']}")
-        passed = args.verification == "passed" and args.review == "passed"
-        item["state"] = "completed" if passed else "failed"
-        item["readyForIntegration"] = passed
-        item["verification_status"] = args.verification
-        item["review_status"] = args.review
+        verification = item.get("verification_receipt")
+        review = item.get("review_receipt")
+        if not isinstance(verification, dict) or verification.get("receipt_id") != args.verification_receipt_id:
+            fail(6, "production_verification_required", "matching durable verification receipt is required")
+        if not isinstance(review, dict) or review.get("receipt_id") != args.review_receipt_id:
+            fail(6, "production_review_required", "matching durable review receipt is required")
+        passed = verification["result"] == "pass" and review["verdict"] == "approved"
+        if not passed:
+            fail(6, "production_evidence_failed", "durable verification/review evidence did not pass")
+        item["state"] = "completed"
+        item["readyForIntegration"] = True
+        item["verification_status"] = verification["result"]
+        item["review_status"] = review["verdict"]
     ok(item=item, changed=True, track_ready=all(entry["readyForIntegration"] for entry in track["items"]))
+
+
+def _production_receipt(value: Any, schema: str, required: set[str]) -> dict:
+    if not isinstance(value, dict) or set(value) != required:
+        fail(6, "invalid_production_receipt", f"{schema} fields differ from contract")
+    if value.get("schema") != schema or value.get("digest") != canonical_digest(
+        {key: item for key, item in value.items() if key != "digest"}
+    ):
+        fail(6, "invalid_production_receipt", f"{schema} schema/digest mismatch")
+    return value
+
+
+def cmd_production_evidence(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    receipt = _production_receipt(
+        load_json_arg(args.json, "verification receipt"),
+        "studio-production-verification-receipt/v1",
+        {"schema", "receipt_id", "item_id", "criteria_digest", "head", "evidence_ref", "result", "digest"},
+    )
+    with board_transaction(ws) as board:
+        track = (board.get("production_tracks") or {}).get(args.track_id)
+        item = next((entry for entry in (track or {}).get("items", []) if entry["item_id"] == args.item_id), None)
+        if item is None or receipt["item_id"] != args.item_id:
+            fail(4, "production_item_not_found", f"unknown/mismatched production item: {args.item_id}")
+        if (
+            receipt["criteria_digest"] != item["criteria_digest"]
+            or receipt["head"] != item["head"]
+            or receipt["result"] not in ("pass", "fail")
+        ):
+            fail(6, "production_binding_mismatch", "verification receipt criteria/head/result is invalid")
+        for key in ("receipt_id", "head", "evidence_ref"):
+            if not isinstance(receipt.get(key), str) or not receipt[key].strip():
+                fail(6, "invalid_production_receipt", f"verification receipt {key} is required")
+        current = item.get("verification_receipt")
+        if current is not None and current != receipt:
+            fail(6, "production_receipt_conflict", "verification receipt is immutable")
+        item["verification_receipt"] = receipt
+    ok(receipt=receipt, changed=current is None)
+
+
+def cmd_production_review(args: argparse.Namespace) -> None:
+    ws = workspace(args)
+    require_workspace(ws)
+    receipt = _production_receipt(
+        load_json_arg(args.json, "review receipt"),
+        "studio-production-review-receipt/v1",
+        {
+            "schema", "receipt_id", "item_id", "owner", "provider", "criteria_digest",
+            "review_cycle_id", "edge_id", "lease_id", "evidence_ref", "verdict", "digest",
+        },
+    )
+    with board_transaction(ws) as board:
+        track = (board.get("production_tracks") or {}).get(args.track_id)
+        item = next((entry for entry in (track or {}).get("items", []) if entry["item_id"] == args.item_id), None)
+        if item is None or receipt["item_id"] != args.item_id:
+            fail(4, "production_item_not_found", f"unknown/mismatched production item: {args.item_id}")
+        binding = item["review_binding"]
+        expected = {
+            "owner": binding["owner"], "provider": binding["provider"],
+            "criteria_digest": binding["criteria_digest"], "review_cycle_id": item["review_cycle_id"],
+            "edge_id": binding["edge_id"], "lease_id": binding["lease_id"],
+        }
+        if any(receipt.get(key) != value for key, value in expected.items()):
+            fail(6, "production_binding_mismatch", "review receipt differs from stored owner/provider/criteria/edge/lease")
+        if receipt.get("verdict") not in ("approved", "changes-requested") or not receipt.get("evidence_ref"):
+            fail(6, "invalid_production_receipt", "review verdict/evidence_ref is invalid")
+        current = item.get("review_receipt")
+        if current is not None and current != receipt:
+            fail(6, "production_receipt_conflict", "review receipt is immutable")
+        item["review_receipt"] = receipt
+    ok(receipt=receipt, changed=current is None)
 
 
 # --------------------------------------------------------------------------- #
@@ -4813,9 +4933,15 @@ def build_parser() -> argparse.ArgumentParser:
         pc.add_argument("--criteria-digest", required=True)
         pc.add_argument("--review-cycle-id", required=True)
         if command == "complete":
-            pc.add_argument("--verification", choices=("passed", "failed", "blocked"), required=True)
-            pc.add_argument("--review", choices=("passed", "failed", "pending"), required=True)
+            pc.add_argument("--verification-receipt-id", required=True)
+            pc.add_argument("--review-receipt-id", required=True)
         pc.set_defaults(func=handler)
+    for command, handler in (("evidence", cmd_production_evidence), ("review", cmd_production_review)):
+        pr = psub.add_parser(command)
+        pr.add_argument("track_id")
+        pr.add_argument("item_id")
+        pr.add_argument("--json", required=True)
+        pr.set_defaults(func=handler)
 
     return p
 
