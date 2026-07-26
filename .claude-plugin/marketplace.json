@@ -27,7 +27,7 @@
       "name": "studio",
       "source": "./plugins/studio",
       "description": "Native-first 에이전트 팀 — 명시적 도구 라우팅, Claude/Codex agent 정책, 단일 review owner와 evidence 재사용",
-      "version": "0.8.0"
+      "version": "0.8.1"
     },
     {
       "name": "task-worker",

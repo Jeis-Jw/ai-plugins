@@ -303,6 +303,9 @@ python3 plugins/studio/scripts/studio.py cast suggest implementation
 
 ## 상태
 
+v0.8.1 — 설치 artifact 내부 canonical execution contract를 기본으로 사용하고,
+직렬화 경계의 physical claim 상태와 timezone-aware timestamp 검증을 정합화했다.
+
 v0.8.0 — callable Workflow가 없는 Codex에서도 verified runtime capability와 fail-closed
 경계를 유지하며 기존 brainstorm/pairing broker를 실행하는 production Runner를 추가했다.
 
