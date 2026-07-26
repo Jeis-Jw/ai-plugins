@@ -27,6 +27,7 @@ function create(overrides = {}) {
     run_id: 'RUN-persistent-canary',
     workflow_name: '비용 절감 브레인스토밍',
     agenda: '품질 하락을 제한하면서 반복 비용을 줄인다',
+    admission: 'canary',
     maxRounds: 2,
     dryStop: 1,
     capability: capability(),
@@ -133,6 +134,10 @@ test('canonical broker spawns each actor once and follows up on the same immutab
 
 test('capability and result ordering fail closed without claiming UI card-title support', () => {
   assert.throws(
+    () => create({ admission: 'default' }),
+    error => error instanceof PersistentBrokerError && error.code === 'canary_admission_required',
+  )
+  assert.throws(
     () => create({ capability: capability({ followup: false }) }),
     error => error instanceof PersistentBrokerError && error.code === 'native_capability_required',
   )
@@ -213,6 +218,7 @@ test('driver projects broker state without becoming a second orchestration autho
       run_id: 'RUN-driver-canary',
       workflow_name: 'driver canary',
       agenda: 'relay only',
+      admission: 'canary',
       maxRounds: 1,
       dryStop: 1,
       capability: capability(),

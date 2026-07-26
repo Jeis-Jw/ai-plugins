@@ -10,6 +10,13 @@ export const REQUIRED_CAPABILITIES = Object.freeze([
   'interrupt_cancel',
   'structured_result',
 ])
+const DELTA_ANCHORS = Object.freeze([
+  'artifact',
+  'acceptance-criteria',
+  'risk',
+  'rejected-alternative',
+  'repro-test',
+])
 
 export class PersistentBrokerError extends Error {
   constructor(code, message) {
@@ -112,22 +119,52 @@ function turnSchema(kind) {
   if (kind === 'participant') {
     return {
       type: 'object',
+      additionalProperties: false,
       required: ['utterance', 'deltas'],
       properties: {
         utterance: { type: 'string' },
-        deltas: { type: 'array' },
+        deltas: {
+          type: 'array',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['changed_what', 'anchor', 'evidence'],
+            properties: {
+              changed_what: { type: 'string' },
+              anchor: { type: 'string', enum: DELTA_ANCHORS },
+              evidence: { type: 'string' },
+              rejected_alternative: { type: 'string' },
+            },
+          },
+        },
       },
     }
   }
   if (kind === 'critic') {
     return {
       type: 'object',
+      additionalProperties: false,
       required: ['verified'],
-      properties: { verified: { type: 'array' } },
+      properties: {
+        verified: {
+          type: 'array',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['id', 'valid', 'reason'],
+            properties: {
+              id: { type: 'integer' },
+              valid: { type: 'boolean' },
+              reason: { type: 'string' },
+            },
+          },
+        },
+      },
     }
   }
   return {
     type: 'object',
+    additionalProperties: false,
     required: ['synthesis', 'minority', 'proposals'],
     properties: {
       synthesis: { type: 'string' },
@@ -286,11 +323,16 @@ function applyActorResult(state, action, result) {
     .find(value => value.actor_id === action.actor_id)
   if (!actorValue) throw new PersistentBrokerError('invalid_actor', 'action actor is not registered')
   if (action.kind === 'spawn') {
-    if (actorValue.spawn_count !== 0 || !result.host_handle) {
-      throw new PersistentBrokerError('spawn_identity_invalid', 'spawn requires one new host handle exactly once')
+    if (actorValue.spawn_count !== 0) {
+      throw new PersistentBrokerError('spawn_identity_invalid', 'an actor may be spawned only once')
     }
-    actorValue.spawn_count = 1
-    actorValue.host_handle = String(result.host_handle)
+    if (result.status === 'succeeded' && !result.host_handle) {
+      throw new PersistentBrokerError('spawn_identity_invalid', 'successful spawn requires a host handle')
+    }
+    if (result.host_handle) {
+      actorValue.spawn_count = 1
+      actorValue.host_handle = String(result.host_handle)
+    }
   } else if (actorValue.spawn_count !== 1 || result.host_handle !== actorValue.host_handle) {
     throw new PersistentBrokerError('followup_identity_invalid', 'follow-up must target the original host handle')
   }
@@ -362,6 +404,11 @@ function processParticipantOutput(state, participant, output, stage) {
 }
 
 function finish(state, verdict) {
+  const resultEntries = state.ledger.filter(item => item.event === 'result')
+  const measured = resultEntries.map(item => item.tokens)
+  const exactTokens = measured.length > 0 && measured.every(value => Number.isInteger(value) && value >= 0)
+    ? measured.reduce((sum, value) => sum + value, 0)
+    : null
   state.status = 'completed'
   state.phase = 'Complete'
   state.pending = null
@@ -389,8 +436,8 @@ function finish(state, verdict) {
       fallback_allowed: false,
     },
     cost: {
-      tokens: null,
-      token_coverage: 'unavailable',
+      tokens: exactTokens,
+      token_coverage: exactTokens === null ? 'unavailable' : 'exact',
       rounds: state.rounds_run,
     },
   }
@@ -398,6 +445,12 @@ function finish(state, verdict) {
 }
 
 export function createPersistentBrainstorm(input) {
+  if (input.admission !== 'canary') {
+    throw new PersistentBrokerError(
+      'canary_admission_required',
+      'persistent brainstorm is canary-only and is not a production default',
+    )
+  }
   const capability = validateCapability(input.capability)
   const workflowName = String(input.workflow_name || '').trim()
   const runId = String(input.run_id || '').trim()
@@ -417,6 +470,7 @@ export function createPersistentBrainstorm(input) {
     workflow_name: workflowName,
     agenda: String(input.agenda || '(no agenda provided)'),
     capability,
+    admission: 'canary',
     config: {
       max_rounds: positiveInteger(input.maxRounds, 4, 'maxRounds'),
       dry_stop: positiveInteger(input.dryStop, 2, 'dryStop'),
@@ -542,6 +596,7 @@ export function persistentBrainstormEnvelope(state) {
     native_started: state.native_started,
     fallback_allowed: state.fallback_allowed,
     capability: state.capability,
+    admission: state.admission,
     pending: state.pending,
     actors: [...state.participants, state.critic, state.summarizer].map(value => ({
       actor_id: value.actor_id,
