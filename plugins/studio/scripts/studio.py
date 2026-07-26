@@ -4392,7 +4392,11 @@ def cmd_cast_suggest(args: argparse.Namespace) -> None:
     ok(
         kind=kind,
         item_scale=scale,
-        production_profile=("solo-mechanical" if scale == "solo" else scale),
+        production_profile=(
+            "solo-mechanical" if scale == "solo"
+            else "full" if scale == "major"
+            else "standard"
+        ),
         ritual=ritual,
         limits=limits,
         crew=crew,

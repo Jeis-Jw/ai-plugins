@@ -1193,8 +1193,12 @@ def main() -> None:
         assert r["error_code"] == "solo_admission_denied", r
 
         r = run(["cast", "suggest", "idea"], tmp)
-        assert r["item_scale"] == "standard" and r["limits"] == {"max_rounds": 2, "dry_stop": 1}, r
+        assert r["item_scale"] == "standard" and r["production_profile"] == "standard", r
+        assert r["limits"] == {"max_rounds": 2, "dry_stop": 1}, r
         assert r["participants"] == ["planner-a", "planner-b"], r
+        r = run(["cast", "suggest", "idea", "--item-scale", "major"], tmp)
+        assert r["item_scale"] == "major" and r["production_profile"] == "full", r
+        assert r["limits"] == {"max_rounds": 4, "dry_stop": 2}, r
 
         production_track = {
             "schema": "studio-production-track/v1", "track_id": "mixed-track",

@@ -83,6 +83,30 @@ assert.equal(brainstorm.output.cost.elapsed_ms, brainstorm.output.receipt.elapse
 assert.equal(brainstorm.output.receipt.counters.model_calls, 10)
 assert.equal(brainstorm.output.production_profile, 'standard')
 
+const fullProfile = await execute(
+  'brainstorm.workflow.js',
+  {
+    agenda: 'accept the major production profile',
+    personas: [{ name: 'a' }, { name: 'b' }],
+    productionProfile: 'full',
+    maxRounds: 1,
+    dryStop: 1,
+  },
+  label => {
+    if (label.startsWith('diverge:')) return { utterance: 'seed', deltas: [] }
+    if (label === 'debate:r1:a') {
+      return { utterance: 'bounded', deltas: [{ changed_what: 'bounded', anchor: 'artifact', evidence: 'scope.md' }] }
+    }
+    if (label === 'debate:r1:b') return { utterance: 'no delta', deltas: [] }
+    if (label === 'critic:r1') return { verified: [{ id: 0, valid: true, outcome_linked: true, reason: 'bounded' }] }
+    if (label === 'summarizer') return { synthesis: 'bounded', minority: 'none', proposals: [] }
+    if (label === 'critic:final') return { alive: true, reason: 'bounded' }
+    throw new Error(`unexpected full-profile label: ${label}`)
+  },
+)
+assert.equal(fullProfile.output.production_profile, 'full')
+assert.equal(fullProfile.output.receipt.counters.rounds, 1)
+
 const converged = await execute(
   'brainstorm.workflow.js',
   {
