@@ -45,6 +45,13 @@ CLOSEOUT_REF_RULES = {
     "cleanup": ("cleaned", "pass"),
     "preserved-user-change": ("preserved", "pass"),
 }
+CLAIM_REQUIRED_FIELDS = frozenset((
+    "claim_id", "permit_id", "profile_id", "physical_key", "occurrence_index",
+    "state", "executor", "claimed_by", "claimed_at", "completed_at",
+    "receipt_id", "spend_consumption_ref", "preflight_receipt_ref",
+    "permit_source", "mutation_receipt_ref", "evidence_refs",
+))
+CLAIM_STATES = frozenset(("claimed", "waiting-gate", "succeeded", "failed", "cancelled"))
 
 
 class ControlError(ValueError):
@@ -72,15 +79,39 @@ def _parse_time(value: str | None) -> datetime.datetime | None:
     if value is None:
         return None
     try:
-        return datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
     except (TypeError, ValueError) as exc:
         raise ControlError("invalid_timestamp", f"invalid RFC3339 timestamp: {value!r}") from exc
+    if parsed.tzinfo is None:
+        raise ControlError("invalid_timestamp", f"RFC3339 timestamp must include a timezone: {value!r}")
+    return parsed.astimezone(datetime.timezone.utc)
+
+
+def _canonical_time(value: str) -> str:
+    parsed = _parse_time(value)
+    if parsed is None:  # pragma: no cover - callers require a string
+        raise ControlError("invalid_timestamp", "timestamp is required")
+    return _format_time(parsed)
+
+
+def _format_time(value: datetime.datetime) -> str:
+    return value.astimezone(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _time_order(start: str, finish: str, label: str) -> None:
+    started = _parse_time(start)
+    finished = _parse_time(finish)
+    if started is None or finished is None or finished < started:
+        raise ControlError("invalid_timestamp", f"{label} finish must not precede start")
 
 
 def contract_path(plugin_root: Path) -> Path:
     override = os.environ.get("STUDIO_VERIFICATION_CONTRACT")
-    repo_root = plugin_root.parent.parent
-    return Path(override) if override else repo_root / "tests" / "fixtures" / "studio-verification-contract-v1.json"
+    return (
+        Path(override)
+        if override
+        else plugin_root / "contracts" / "studio-verification-contract-v1.json"
+    )
 
 
 def load_contract(plugin_root: Path) -> tuple[dict, Path]:
@@ -436,6 +467,7 @@ def spend_claim_decision(
         }
     if not authorization["owner_approved"] or authorization.get("approved_by") is None or authorization.get("approved_at") is None:
         raise ControlError("external_spend_not_authorized", "external spend authorization is not owner-approved")
+    _parse_time(authorization["approved_at"])
     if mission_id is not None and authorization["mission_id"] != mission_id:
         raise ControlError("external_spend_not_authorized", "authorization mission_id mismatch")
     pairs = (
@@ -552,7 +584,100 @@ def ensure_execution_state(board: dict) -> dict:
     mission_counters = state.setdefault("mission_counters", {})
     if not isinstance(mission_counters, dict):
         raise ControlError("execution_ledger_invalid", "execution_control.mission_counters must be an object")
+    _normalize_physical_claims(state)
     return state
+
+
+def _normalize_physical_claims(state: dict) -> None:
+    """Keep claim state canonical in ``claims`` and physical groups as refs only.
+
+    Studio 0.8.0 stored the same run object under both ``claims`` and
+    ``physical_claims[*].runs``.  JSON persistence split those aliases into
+    independent objects, so result transitions could leave a stale active
+    physical run behind.  Normalize legacy boards on load and reject detached
+    or cross-key references rather than reintroducing duplicated state.
+    """
+    claims = state["claims"]
+    referenced: set[str] = set()
+    for key, physical in state["physical_claims"].items():
+        if not isinstance(physical, dict):
+            raise ControlError("execution_ledger_invalid", f"physical claim group must be an object: {key}")
+        if physical.get("physical_key") != key:
+            raise ControlError("execution_ledger_invalid", f"physical claim key mismatch: {key}")
+
+        refs = physical.get("run_refs")
+        if refs is None:
+            refs = []
+        if not isinstance(refs, list) or any(not isinstance(item, str) for item in refs):
+            raise ControlError("execution_ledger_invalid", f"physical claim run_refs must be a string list: {key}")
+
+        legacy_runs = physical.pop("runs", [])
+        if not isinstance(legacy_runs, list):
+            raise ControlError("execution_ledger_invalid", f"physical claim runs must be a list: {key}")
+        for run in legacy_runs:
+            if not isinstance(run, dict) or not isinstance(run.get("claim_id"), str):
+                raise ControlError("execution_ledger_invalid", f"physical claim run is invalid: {key}")
+            claim_id = run["claim_id"]
+            claims.setdefault(claim_id, run)
+            if claim_id not in refs:
+                refs.append(claim_id)
+
+        if len(refs) != len(set(refs)):
+            raise ControlError("execution_ledger_invalid", f"physical claim run_refs contain duplicates: {key}")
+        for claim_id in refs:
+            claim = claims.get(claim_id)
+            _validate_claim(claim_id, claim)
+            if claim["physical_key"] != key:
+                raise ControlError("execution_ledger_invalid", f"physical claim ref is detached: {claim_id}")
+            referenced.add(claim_id)
+        physical["run_refs"] = refs
+    for claim_id, claim in claims.items():
+        _validate_claim(claim_id, claim)
+        if claim_id not in referenced:
+            raise ControlError("execution_ledger_invalid", f"claim is detached from its physical group: {claim_id}")
+
+
+def _validate_claim(claim_id: str, claim: Any) -> None:
+    if not isinstance(claim, dict) or not CLAIM_REQUIRED_FIELDS.issubset(claim):
+        raise ControlError("execution_ledger_invalid", f"claim fields are incomplete: {claim_id}")
+    if claim.get("claim_id") != claim_id or claim.get("state") not in CLAIM_STATES:
+        raise ControlError("execution_ledger_invalid", f"claim identity or state is invalid: {claim_id}")
+    if (
+        not isinstance(claim.get("physical_key"), str)
+        or not isinstance(claim.get("occurrence_index"), int)
+        or isinstance(claim.get("occurrence_index"), bool)
+        or claim["occurrence_index"] < 1
+        or not isinstance(claim.get("permit_source"), dict)
+        or not isinstance(claim.get("evidence_refs"), list)
+        or any(not isinstance(item, str) for item in claim["evidence_refs"])
+        or any(
+            not isinstance(claim.get(field), str) or not claim[field].strip()
+            for field in ("claim_id", "permit_id", "profile_id", "physical_key", "executor", "claimed_by", "claimed_at")
+        )
+    ):
+        raise ControlError("execution_ledger_invalid", f"claim structure is invalid: {claim_id}")
+    try:
+        claimed_at = _parse_time(claim["claimed_at"])
+    except ControlError as exc:
+        raise ControlError("execution_ledger_invalid", f"claim timestamp is invalid: {claim_id}") from exc
+    completed_at = claim.get("completed_at")
+    if claim["state"] in ("succeeded", "failed", "cancelled"):
+        if completed_at is None or not isinstance(claim.get("receipt_id"), str) or not claim["receipt_id"].strip():
+            raise ControlError("execution_ledger_invalid", f"terminal claim completion is invalid: {claim_id}")
+        try:
+            completed = _parse_time(completed_at)
+        except ControlError as exc:
+            raise ControlError("execution_ledger_invalid", f"claim timestamp is invalid: {claim_id}") from exc
+        if claimed_at is None or completed is None or completed < claimed_at:
+            raise ControlError("execution_ledger_invalid", f"claim completion precedes claim: {claim_id}")
+    elif completed_at is not None:
+        raise ControlError("execution_ledger_invalid", f"active claim has completed_at: {claim_id}")
+    elif claim["state"] == "claimed" and claim.get("receipt_id") is not None:
+        raise ControlError("execution_ledger_invalid", f"claimed run cannot have a receipt: {claim_id}")
+    elif claim["state"] == "waiting-gate" and (
+        not isinstance(claim.get("receipt_id"), str) or not claim["receipt_id"].strip()
+    ):
+        raise ControlError("execution_ledger_invalid", f"waiting-gate claim requires a receipt: {claim_id}")
 
 
 def _bump(state: dict, field: str, mission_id: str, amount: int = 1) -> None:
@@ -581,6 +706,8 @@ def _require_string_list(value: Any, field: str) -> list[str]:
 
 def record_capability_snapshot(state: dict, contract: dict, snapshot: dict) -> tuple[dict, bool]:
     validate_instance(contract, "capability-snapshot", snapshot)
+    _parse_time(snapshot["observed_at"])
+    _parse_time(snapshot.get("expires_at"))
     key = capability_key(snapshot["mission_id"], snapshot["capability_id"], snapshot["environment_digest"])
     changed = _pin(state["capability_snapshots"], key, snapshot, code="capability_snapshot_conflict")
     if changed:
@@ -758,6 +885,7 @@ def _validate_preflight(
     if receipt is None:
         raise ControlError("preflight_required", "external mutation requires a pinned preflight receipt")
     validate_instance(contract, "preflight-receipt", receipt)
+    _parse_time(receipt["checked_at"])
     if (
         receipt["result"] != "pass"
         or receipt["environment_digest"] != permit["environment_digest"]
@@ -785,7 +913,7 @@ def dispatch(
     }
     if not isinstance(request, dict) or not required.issubset(request) or set(request) - allowed:
         raise ControlError("invalid_dispatch_request", "dispatch request fields differ from the native control contract")
-    timestamp = now or utc_now()
+    timestamp = _canonical_time(now) if now is not None else utc_now()
     permit, profile, command = request["permit"], request["profile"], request["command"]
     validate_instance(contract, "execution-permit", permit)
     validate_instance(contract, "command-profile", profile)
@@ -847,7 +975,7 @@ def dispatch(
         _pin(state["evidence"], item["evidence_id"], item, code="evidence_immutable")
         candidates.append(item)
     key = physical_key(permit)
-    physical = state["physical_claims"].setdefault(key, {"physical_key": key, "runs": []})
+    physical = state["physical_claims"].setdefault(key, {"physical_key": key, "run_refs": []})
     for evidence_id in physical.get("evidence_refs", []):
         item = state["evidence"].get(evidence_id)
         if item is not None and item not in candidates:
@@ -865,7 +993,8 @@ def dispatch(
             "action": "reuse-evidence", "error": None, "evidence_refs": sorted(reusable),
             "physical_run_started": False, "physical_key": key,
         }
-    active = next((run for run in physical["runs"] if run["state"] in ("claimed", "waiting-gate")), None)
+    runs = [state["claims"][claim_id] for claim_id in physical["run_refs"]]
+    active = next((run for run in runs if run["state"] in ("claimed", "waiting-gate")), None)
     if active is not None:
         _bump(state, "duplicate_prevented_count", permit["mission_id"])
         return {
@@ -873,7 +1002,7 @@ def dispatch(
             "error": {"code": "duplicate_active", "claim_id": active["claim_id"]},
             "physical_run_started": False,
         }
-    if len(physical["runs"]) >= permit["max_physical_runs"]:
+    if len(runs) >= permit["max_physical_runs"]:
         _bump(state, "owner_intervention_count", permit["mission_id"])
         return {
             "action": "pause",
@@ -882,7 +1011,7 @@ def dispatch(
         }
     preflight = _validate_preflight(state, contract, permit, request.get("preflight_receipt"))
     spend = _claim_spend(state, contract, permit, request.get("authorization"), now=timestamp)
-    occurrence = len(physical["runs"]) + 1
+    occurrence = len(runs) + 1
     claim_seed = canonical_digest({"permit_digest": permit["digest"], "physical_key": key, "occurrence_index": occurrence})
     claim_id = "claim-" + claim_seed.split(":", 1)[1][:20]
     run = {
@@ -903,8 +1032,8 @@ def dispatch(
         "mutation_receipt_ref": None,
         "evidence_refs": [],
     }
-    physical["runs"].append(run)
     state["claims"][claim_id] = run
+    physical["run_refs"].append(claim_id)
     if plan_entry is not None:
         plan_entry["consumed_by"] = claim_id
         plan_entry["consumed_at"] = timestamp
@@ -956,6 +1085,7 @@ def _complete_mutation(
         raise ControlError("external_mutation_receipt_required", "every external mutation requires exactly one mutation receipt")
     mutation = mutation_receipts[0]
     validate_instance(contract, "external-mutation-receipt", mutation)
+    _time_order(mutation["started_at"], mutation["finished_at"], "external mutation receipt")
     if receipt["external_mutation_receipt_refs"] != [mutation["mutation_id"]]:
         raise ControlError("external_mutation_receipt_mismatch", "command receipt mutation refs differ from supplied receipts")
     common = {
@@ -1020,6 +1150,7 @@ def record_result(
     if not isinstance(mutation_receipts, list):
         raise ControlError("invalid_result_request", "mutation_receipts must be a list")
     validate_instance(contract, "command-receipt", receipt)
+    _time_order(receipt["started_at"], receipt["finished_at"], "command receipt")
     claim = state["claims"].get(receipt["claim_id"])
     if claim is None:
         raise ControlError("claim_not_found", "command receipt claim is not in the native ledger")
@@ -1058,6 +1189,9 @@ def record_result(
 
 def record_evidence(state: dict, contract: dict, evidence: dict) -> dict:
     validate_instance(contract, "verification-evidence", evidence)
+    _parse_time(evidence["created_at"])
+    if evidence["invalidation"] is not None:
+        _parse_time(evidence["invalidation"].get("invalidated_at"))
     source_id = evidence["source_receipt_id"]
     if source_id is None:
         raise ControlError("source_receipt_required", "native evidence ingestion requires source_receipt_id")
@@ -1102,7 +1236,7 @@ def invalidate_evidence(
         "reason": decision["reason"],
         "changed_paths": change.get("changed_paths") or [],
         "surface_digest": change.get("surface_digest") or evidence["surface_digest"],
-        "invalidated_at": now or utc_now(),
+        "invalidated_at": _canonical_time(now) if now is not None else utc_now(),
     }
     updated = {**evidence, "invalidation": invalidation}
     updated["digest"] = sealed_digest(updated)
@@ -1159,6 +1293,7 @@ def record_closeout(
     receipt: dict,
 ) -> dict:
     validate_instance(contract, "closeout-receipt", receipt)
+    _parse_time(receipt.get("closed_at"))
     decision = closeout_decision(receipt)
     if decision["action"] != "close":
         _bump(state, "owner_intervention_count", receipt["mission_id"])
@@ -1259,8 +1394,9 @@ def efficiency_summary(state: dict, mission_id: str) -> dict:
     stamps = [item["claimed_at"] for item in claims]
     stamps += [item["finished_at"] for item in receipts]
     stamps += [item["observed_at"] for item in snapshots]
-    start = min(stamps) if stamps else ZERO_TIME
-    finish = max(stamps) if stamps else ZERO_TIME
+    parsed_stamps = [_parse_time(item) for item in stamps]
+    start = _format_time(min(parsed_stamps)) if parsed_stamps else ZERO_TIME
+    finish = _format_time(max(parsed_stamps)) if parsed_stamps else ZERO_TIME
     counters = state["mission_counters"].get(mission_id, {})
     summary = {
         "schema": "efficiency-summary/v1",

@@ -88,9 +88,13 @@ full QA를 각 track에서 반복하지 않지만, shared contract/dependency su
 
 실행 정본은 `studio-verification-contract-set/v1`이며 exact digest는
 `sha256:7df570d1faaba445865c74fd6dffff73178f0102cd3a5728183abf6791ce2b65`다.
-기본 artifact는 repo 최상위 `tests/fixtures/studio-verification-contract-v1.json`이고,
+Studio runtime 기본 artifact는 package 내부
+`plugins/studio/contracts/studio-verification-contract-v1.json`이고,
+repo 최상위 `tests/fixtures/studio-verification-contract-v1.json`은 task-worker가 소비하는
+공유 golden source이자 Studio package artifact와의 distribution parity 기준이다.
 leaf 검증에서만 `STUDIO_VERIFICATION_CONTRACT`로 같은 digest의 artifact를 주입한다.
-Studio와 worker 어느 쪽도 schema 축약본이나 재직렬화 복제본을 정본으로 삼지 않는다.
+Studio와 worker 어느 쪽도 schema 축약본이나 parity가 검증되지 않은 재직렬화 복제본을
+정본으로 삼지 않는다.
 
 - `execution-permit/v1`과 `command-profile/v1`은 executable/args/cwd/env와 command digest를 고정한다. 실제 명령은 `execution dispatch`에서 profile을 벗어나면 claim 전에 거부되고, command receipt와 verification evidence도 같은 binding을 다시 검증한다.
 - 물리 key는 `head + command_digest + environment_digest + tool_version + purpose`의 canonical digest다. fresh gate에는 `fresh_requirement_id`를 추가한다. cycle/unit/target은 attribution이며 중복 실행 identity가 아니다.

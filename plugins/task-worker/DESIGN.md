@@ -49,7 +49,7 @@ init은 전체 대상의 충돌을 먼저 확인한다. 같은 내용은 skip하
 
 ## 0.5.0 execution control
 
-Studio와 task-worker는 repo root `tests/fixtures/studio-verification-contract-v1.json`의 `studio-verification-contract-set/v1`을 공유한다. task-worker는 command profile과 impact rule로 허용 QA mode/명령을 결정하고, profile과 다른 argv·사유 없는 full QA·동일 physical identity의 중복 claim을 실행 전에 거부한다.
+Studio와 task-worker는 `studio-verification-contract-set/v1`의 exact digest와 golden cases를 공유한다. repo root `tests/fixtures/studio-verification-contract-v1.json`은 task-worker runtime과 parity 검사의 golden source이고, Studio runtime은 배포 artifact 내부 `plugins/studio/contracts/studio-verification-contract-v1.json`의 검증된 동일본을 기본으로 읽는다. task-worker는 command profile과 impact rule로 허용 QA mode/명령을 결정하고, profile과 다른 argv·사유 없는 full QA·동일 physical identity의 중복 claim을 실행 전에 거부한다.
 
 `command_digest`의 canonical preimage는 두 consumer 모두 실제 실행 직전 해석된 `{executable,args,cwd,environment}`다. profile/cycle/unit/target 같은 attribution은 command digest나 physical identity에 넣지 않는다.
 

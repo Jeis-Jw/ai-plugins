@@ -7,7 +7,7 @@ control plane만 소유하고 명령·provider API를 직접 실행하지 않는
 
 - schema: `studio-verification-contract-set/v1`
 - digest: `sha256:7df570d1faaba445865c74fd6dffff73178f0102cd3a5728183abf6791ce2b65`
-- default: repo 최상위 `tests/fixtures/studio-verification-contract-v1.json`
+- default: Studio package 내부 `contracts/studio-verification-contract-v1.json`
 - leaf QA override: `STUDIO_VERIFICATION_CONTRACT=/absolute/path/to/exact-artifact.json`
 
 시작할 때 `execution contract`로 schema, canonical root digest, 10개 golden case를 검증한다.

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -22,12 +23,14 @@ sys.path.insert(0, str(PLUGIN_ROOT / "scripts"))
 from execution_control import (  # noqa: E402
     CONTRACT_DIGEST,
     ControlError,
+    capability_decision,
     canonical_digest,
     dispatch,
     efficiency_summary,
     ensure_execution_state,
     evaluate_golden_case,
     load_contract,
+    record_capability_snapshot,
     record_closeout,
     record_closeout_ref,
     record_evidence,
@@ -226,6 +229,8 @@ def receipt(
     coverage: str = "exact",
     spend_refs: list[str] | None = None,
     mutation_refs: list[str] | None = None,
+    started_at: str = NOW,
+    finished_at: str = LATER,
 ) -> dict:
     return seal({
         "schema": "command-receipt/v1",
@@ -240,8 +245,8 @@ def receipt(
         "environment_digest": pmt["environment_digest"],
         "tool_version": pmt["tool_version"],
         "fresh_requirement_id": pmt["fresh_requirement_id"],
-        "started_at": NOW,
-        "finished_at": LATER,
+        "started_at": started_at,
+        "finished_at": finished_at,
         "exit_code": 0 if result == "pass" else 1,
         "result": result,
         "output_digest": SURFACE_DIGEST,
@@ -289,14 +294,122 @@ def expect_control_error(code: str, fn, *args, **kwargs) -> ControlError:
 
 def test_contract_and_all_golden_cases(contract: dict, contract_path: Path) -> None:
     override = os.environ.get("STUDIO_VERIFICATION_CONTRACT")
-    expected_path = Path(override) if override else REPO_ROOT / "tests" / "fixtures" / "studio-verification-contract-v1.json"
+    expected_path = Path(override) if override else PLUGIN_ROOT / "contracts" / "studio-verification-contract-v1.json"
     assert contract_path == expected_path
     assert contract["digest"] == CONTRACT_DIGEST == sealed_digest(contract)
+    source_fixture = json.loads(
+        (REPO_ROOT / "tests" / "fixtures" / "studio-verification-contract-v1.json").read_text(encoding="utf-8")
+    )
+    assert contract == source_fixture
     assert contract["conformance"]["required_consumers"] == ["STUDIO", "WORKER"]
     assert len(contract["golden_cases"]) == 10
     for case in contract["golden_cases"]:
         assert case["input_digest"] == canonical_digest(case["input"]), case["id"]
         assert evaluate_golden_case(contract, case) == case["expected"], case["id"]
+
+
+def test_installed_plugin_copy_runs_contract_without_source_checkout_or_override() -> None:
+    with tempfile.TemporaryDirectory() as tmp_name:
+        tmp = Path(tmp_name)
+        installed_root = tmp / "cache" / "studio" / "0.8.0"
+        shutil.copytree(PLUGIN_ROOT, installed_root)
+        env = dict(os.environ)
+        env.pop("STUDIO_VERIFICATION_CONTRACT", None)
+        result = subprocess.run(
+            [sys.executable, str(installed_root / "scripts" / "studio.py"), "execution", "contract"],
+            cwd=tmp,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        payload = json.loads(result.stdout)
+        assert payload["ok"] is True
+        assert payload["digest"] == CONTRACT_DIGEST
+        assert Path(payload["path"]) == (
+            installed_root / "contracts" / "studio-verification-contract-v1.json"
+        ).resolve()
+        assert len(payload["golden_cases"]) == 10
+
+
+def test_timestamps_require_timezone_and_compare_offsets_in_utc(contract: dict) -> None:
+    snapshot = seal({
+        "schema": "capability-snapshot/v1",
+        "snapshot_id": "CAP-timezone",
+        "mission_id": "mission-native",
+        "capability_id": "browser:embedded",
+        "environment_digest": ENV_DIGEST,
+        "status": "available",
+        "owner": "integration-owner",
+        "probe_receipt_id": "receipt-probe",
+        "reason": "available",
+        "observed_at": NOW,
+        "expires_at": "2026-07-15T09:30:00+09:00",
+        "digest": "pending",
+    })
+    validate_instance(contract, "capability-snapshot", snapshot)
+    expired = capability_decision(
+        "mission-native",
+        ["browser:embedded"],
+        ENV_DIGEST,
+        snapshot,
+        now="2026-07-15T00:30:00Z",
+    )
+    assert expired["action"] == "probe-capability"
+
+    naive = seal({**snapshot, "expires_at": "2026-07-15T09:30:00", "digest": "pending"})
+    expect_control_error(
+        "invalid_timestamp",
+        capability_decision,
+        "mission-native",
+        ["browser:embedded"],
+        ENV_DIGEST,
+        naive,
+        now=NOW,
+    )
+
+    state = ensure_execution_state({})
+    expect_control_error(
+        "invalid_timestamp",
+        dispatch,
+        state,
+        contract,
+        dispatch_request(permit("permit-naive-now")),
+        now="2026-07-15T09:30:00",
+    )
+    offset_claim = dispatch(
+        state,
+        contract,
+        dispatch_request(permit("permit-offset-now")),
+        now="2026-07-15T09:30:00+09:00",
+    )
+    assert state["claims"][offset_claim["claim_id"]]["claimed_at"] == "2026-07-15T00:30:00Z"
+
+    earlier_snapshot = seal({
+        **snapshot,
+        "snapshot_id": "CAP-summary-offset",
+        "observed_at": "2026-07-15T09:00:00+09:00",
+        "expires_at": None,
+        "digest": "pending",
+    })
+    record_capability_snapshot(state, contract, earlier_snapshot)
+    summary = efficiency_summary(state, "mission-native")
+    assert summary["window_started_at"] == "2026-07-15T00:00:00Z"
+    assert summary["window_finished_at"] == "2026-07-15T00:30:00Z"
+
+    naive_snapshot = seal({
+        **earlier_snapshot,
+        "snapshot_id": "CAP-summary-naive",
+        "observed_at": "2026-07-15T09:00:00",
+        "digest": "pending",
+    })
+    expect_control_error(
+        "invalid_timestamp",
+        record_capability_snapshot,
+        state,
+        contract,
+        naive_snapshot,
+    )
 
 
 def test_command_claim_result_evidence_and_reuse(contract: dict) -> None:
@@ -403,6 +516,200 @@ def test_fresh_independent_and_run_cap_gates(contract: dict) -> None:
     record_result(capped, contract, {"receipt": failed, "mutation_receipts": []})
     stopped = dispatch(capped, contract, dispatch_request(permit("permit-cap-2", max_runs=1)), now=LATER)
     assert stopped["action"] == "pause" and stopped["error"]["code"] == "physical_run_cap_reached"
+
+
+def test_physical_claim_refs_survive_json_boundaries_and_migrate_legacy_state(contract: dict) -> None:
+    state = ensure_execution_state({})
+    first_pmt = permit("permit-retry-1", max_runs=2)
+    first = dispatch(state, contract, dispatch_request(first_pmt), now=NOW)
+    key = first["physical_key"]
+    assert state["physical_claims"][key]["run_refs"] == [first["claim_id"]]
+    assert "runs" not in state["physical_claims"][key]
+
+    reloaded = ensure_execution_state(json.loads(json.dumps({"execution_control": state})))
+    record_result(
+        reloaded,
+        contract,
+        {"receipt": receipt(first_pmt, first["claim_id"], "receipt-retry-1", result="error"), "mutation_receipts": []},
+    )
+    reloaded = ensure_execution_state(json.loads(json.dumps({"execution_control": reloaded})))
+    second_pmt = permit("permit-retry-2", max_runs=2)
+    second = dispatch(reloaded, contract, dispatch_request(second_pmt), now=LATER)
+    assert second["action"] == "claim"
+    assert reloaded["claims"][first["claim_id"]]["state"] == "failed"
+    record_result(
+        reloaded,
+        contract,
+        {"receipt": receipt(second_pmt, second["claim_id"], "receipt-retry-2", result="fail"), "mutation_receipts": []},
+    )
+    reloaded = ensure_execution_state(json.loads(json.dumps({"execution_control": reloaded})))
+    capped = dispatch(
+        reloaded,
+        contract,
+        dispatch_request(permit("permit-retry-3", max_runs=2)),
+        now=LATER,
+    )
+    assert capped["action"] == "pause"
+    assert capped["error"]["code"] == "physical_run_cap_reached"
+
+    cancelled_state = ensure_execution_state({})
+    cancelled_pmt = permit("permit-cancelled-1", max_runs=2)
+    cancelled = dispatch(cancelled_state, contract, dispatch_request(cancelled_pmt), now=NOW)
+    record_result(
+        cancelled_state,
+        contract,
+        {
+            "receipt": receipt(
+                cancelled_pmt, cancelled["claim_id"], "receipt-cancelled", result="cancelled"
+            ),
+            "mutation_receipts": [],
+        },
+    )
+    cancelled_state = ensure_execution_state(json.loads(json.dumps({"execution_control": cancelled_state})))
+    retry = dispatch(
+        cancelled_state,
+        contract,
+        dispatch_request(permit("permit-cancelled-2", max_runs=2)),
+        now=LATER,
+    )
+    assert retry["action"] == "claim"
+
+    waiting_state = ensure_execution_state({})
+    waiting_pmt = permit("permit-waiting-1", max_runs=2)
+    waiting = dispatch(waiting_state, contract, dispatch_request(waiting_pmt), now=NOW)
+    paused = record_result(
+        waiting_state,
+        contract,
+        {
+            "receipt": receipt(
+                waiting_pmt,
+                waiting["claim_id"],
+                "receipt-waiting",
+                tokens=None,
+                coverage="unavailable",
+            ),
+            "mutation_receipts": [],
+        },
+    )
+    assert paused["action"] == "pause"
+    waiting_state = ensure_execution_state(json.loads(json.dumps({"execution_control": waiting_state})))
+    duplicate = dispatch(
+        waiting_state,
+        contract,
+        dispatch_request(permit("permit-waiting-2", max_runs=2)),
+        now=LATER,
+    )
+    assert duplicate["error"]["code"] == "duplicate_active"
+
+    legacy = json.loads(json.dumps({"execution_control": reloaded}))
+    legacy_physical = legacy["execution_control"]["physical_claims"][key]
+    legacy_physical["runs"] = [
+        {**legacy["execution_control"]["claims"][first["claim_id"]], "state": "claimed"},
+        legacy["execution_control"]["claims"][second["claim_id"]],
+    ]
+    legacy_physical.pop("run_refs")
+    migrated = ensure_execution_state(legacy)
+    assert migrated["physical_claims"][key]["run_refs"][0] == first["claim_id"]
+    assert migrated["claims"][first["claim_id"]]["state"] == "failed"
+    assert "runs" not in migrated["physical_claims"][key]
+
+
+def test_physical_claim_normalization_rejects_malformed_claims_and_refs(contract: dict) -> None:
+    state = ensure_execution_state({})
+    claimed = dispatch(state, contract, dispatch_request(permit("permit-ledger-shape")), now=NOW)
+    key = claimed["physical_key"]
+    claim_id = claimed["claim_id"]
+
+    malformed_claim = json.loads(json.dumps({"execution_control": state}))
+    malformed_claim["execution_control"]["claims"][claim_id].pop("state")
+    expect_control_error("execution_ledger_invalid", ensure_execution_state, malformed_claim)
+
+    malformed_ref = json.loads(json.dumps({"execution_control": state}))
+    malformed_ref["execution_control"]["physical_claims"][key]["run_refs"] = ["claim-missing"]
+    expect_control_error("execution_ledger_invalid", ensure_execution_state, malformed_ref)
+
+    malformed_legacy = json.loads(json.dumps({"execution_control": state}))
+    legacy_physical = malformed_legacy["execution_control"]["physical_claims"][key]
+    legacy_run = malformed_legacy["execution_control"]["claims"].pop(claim_id)
+    legacy_run.pop("state")
+    legacy_physical["runs"] = [legacy_run]
+    legacy_physical.pop("run_refs")
+    expect_control_error("execution_ledger_invalid", ensure_execution_state, malformed_legacy)
+
+    detached_claim = json.loads(json.dumps({"execution_control": state}))
+    detached_claim["execution_control"]["physical_claims"][key]["run_refs"] = []
+    expect_control_error("execution_ledger_invalid", ensure_execution_state, detached_claim)
+
+
+def test_claim_completion_time_and_receipt_state_invariants(contract: dict) -> None:
+    state = ensure_execution_state({})
+    pmt = permit("permit-claim-time")
+    claimed = dispatch(state, contract, dispatch_request(pmt), now=NOW)
+    claim_id = claimed["claim_id"]
+
+    claimed_with_receipt = json.loads(json.dumps({"execution_control": state}))
+    claimed_with_receipt["execution_control"]["claims"][claim_id]["receipt_id"] = "receipt-impossible"
+    expect_control_error("execution_ledger_invalid", ensure_execution_state, claimed_with_receipt)
+
+    record_result(
+        state,
+        contract,
+        {"receipt": receipt(pmt, claim_id, "receipt-claim-time"), "mutation_receipts": []},
+    )
+    assert ensure_execution_state(json.loads(json.dumps({"execution_control": state})))
+
+    reversed_terminal = json.loads(json.dumps({"execution_control": state}))
+    reversed_terminal["execution_control"]["claims"][claim_id]["completed_at"] = "2026-07-14T23:59:59Z"
+    expect_control_error("execution_ledger_invalid", ensure_execution_state, reversed_terminal)
+
+    terminal_without_receipt = json.loads(json.dumps({"execution_control": state}))
+    terminal_without_receipt["execution_control"]["claims"][claim_id]["receipt_id"] = None
+    expect_control_error("execution_ledger_invalid", ensure_execution_state, terminal_without_receipt)
+
+    zero_state = ensure_execution_state({})
+    zero_pmt = permit("permit-zero-duration")
+    zero = dispatch(
+        zero_state,
+        contract,
+        dispatch_request(zero_pmt),
+        now="2026-07-15T09:00:00+09:00",
+    )
+    record_result(
+        zero_state,
+        contract,
+        {
+            "receipt": receipt(
+                zero_pmt,
+                zero["claim_id"],
+                "receipt-zero-duration",
+                started_at="2026-07-15T00:00:00Z",
+                finished_at="2026-07-15T09:00:00+09:00",
+            ),
+            "mutation_receipts": [],
+        },
+    )
+    assert ensure_execution_state(json.loads(json.dumps({"execution_control": zero_state})))
+
+    waiting_state = ensure_execution_state({})
+    waiting_pmt = permit("permit-waiting-receipt")
+    waiting = dispatch(waiting_state, contract, dispatch_request(waiting_pmt), now=NOW)
+    record_result(
+        waiting_state,
+        contract,
+        {
+            "receipt": receipt(
+                waiting_pmt,
+                waiting["claim_id"],
+                "receipt-waiting-required",
+                tokens=None,
+                coverage="unavailable",
+            ),
+            "mutation_receipts": [],
+        },
+    )
+    waiting_without_receipt = json.loads(json.dumps({"execution_control": waiting_state}))
+    waiting_without_receipt["execution_control"]["claims"][waiting["claim_id"]]["receipt_id"] = None
+    expect_control_error("execution_ledger_invalid", ensure_execution_state, waiting_without_receipt)
 
 
 def test_capability_cache_and_telemetry_policies(contract: dict) -> None:
@@ -783,6 +1090,93 @@ def test_cli_atomic_claim_and_read_only_summary(contract_path: Path) -> None:
             outputs.append(json.loads(stdout)["decision"])
         assert sorted(item["action"] for item in outputs) == ["claim", "reject"]
 
+        for terminal_result in ("error", "cancelled"):
+            retry_ws = tmp / f".studio-retry-{terminal_result}"
+            subprocess.run(
+                [sys.executable, str(SCRIPT), "--workspace", str(retry_ws), "init"],
+                cwd=tmp, env=env, check=True, capture_output=True, text=True,
+            )
+            first_pmt = permit(f"permit-cli-{terminal_result}-1", max_runs=2)
+            first_output = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--workspace",
+                    str(retry_ws),
+                    "execution",
+                    "dispatch",
+                    "--json",
+                    json.dumps(dispatch_request(first_pmt)),
+                ],
+                cwd=tmp,
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            first_decision = json.loads(first_output.stdout)["decision"]
+            first_board = json.loads(subprocess.run(
+                [sys.executable, str(SCRIPT), "--workspace", str(retry_ws), "board"],
+                cwd=tmp, env=env, check=True, capture_output=True, text=True,
+            ).stdout)["board"]["execution_control"]
+            claimed_at = first_board["claims"][first_decision["claim_id"]]["claimed_at"]
+            result_output = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--workspace",
+                    str(retry_ws),
+                    "execution",
+                    "result",
+                    "--json",
+                    json.dumps({
+                        "receipt": receipt(
+                            first_pmt,
+                            first_decision["claim_id"],
+                            f"receipt-cli-{terminal_result}",
+                            result=terminal_result,
+                            started_at=claimed_at,
+                            finished_at=claimed_at,
+                        ),
+                        "mutation_receipts": [],
+                    }),
+                ],
+                cwd=tmp,
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            expected_state = "cancelled" if terminal_result == "cancelled" else "failed"
+            assert json.loads(result_output.stdout)["decision"]["claim_state"] == expected_state
+
+            retry_output = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--workspace",
+                    str(retry_ws),
+                    "execution",
+                    "dispatch",
+                    "--json",
+                    json.dumps(dispatch_request(permit(f"permit-cli-{terminal_result}-2", max_runs=2))),
+                ],
+                cwd=tmp,
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            retry_decision = json.loads(retry_output.stdout)["decision"]
+            assert retry_decision["action"] == "claim"
+            retry_board = json.loads(subprocess.run(
+                [sys.executable, str(SCRIPT), "--workspace", str(retry_ws), "board"],
+                cwd=tmp, env=env, check=True, capture_output=True, text=True,
+            ).stdout)["board"]["execution_control"]
+            physical = retry_board["physical_claims"][retry_decision["physical_key"]]
+            assert physical["run_refs"] == [first_decision["claim_id"], retry_decision["claim_id"]]
+            assert "runs" not in physical
+
         board = ws / "board.md"
         before = board.read_bytes()
         summary = subprocess.run(
@@ -799,9 +1193,14 @@ def test_cli_atomic_claim_and_read_only_summary(contract_path: Path) -> None:
 def main() -> None:
     contract, path = load_contract(PLUGIN_ROOT)
     test_contract_and_all_golden_cases(contract, path)
+    test_installed_plugin_copy_runs_contract_without_source_checkout_or_override()
+    test_timestamps_require_timezone_and_compare_offsets_in_utc(contract)
     test_command_claim_result_evidence_and_reuse(contract)
     test_review_plan_is_consumed_and_cannot_be_bypassed(contract)
     test_fresh_independent_and_run_cap_gates(contract)
+    test_physical_claim_refs_survive_json_boundaries_and_migrate_legacy_state(contract)
+    test_physical_claim_normalization_rejects_malformed_claims_and_refs(contract)
+    test_claim_completion_time_and_receipt_state_invariants(contract)
     test_capability_cache_and_telemetry_policies(contract)
     test_spend_mutation_closeout_and_read_only_summary(contract)
     test_cli_atomic_claim_and_read_only_summary(path)
