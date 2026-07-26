@@ -1200,6 +1200,27 @@ def main() -> None:
         assert r["item_scale"] == "major" and r["production_profile"] == "full", r
         assert r["limits"] == {"max_rounds": 4, "dry_stop": 2}, r
 
+        standard_design = run(["cast", "suggest", "technical-design", "--item-scale", "standard"], tmp)
+        assert standard_design["crew"] == ["architect", "dev", "qa", "critic"], standard_design
+        assert standard_design["participants"] == ["architect", "dev", "qa"], standard_design
+        assert standard_design["production_profile"] == "standard", standard_design
+        assert standard_design["limits"] == {"max_rounds": 2, "dry_stop": 1}, standard_design
+        major_design = run(["cast", "suggest", "technical-design", "--item-scale", "major"], tmp)
+        assert major_design["crew"] == ["architect", "dev", "qa", "critic"], major_design
+        assert major_design["participants"] == ["architect", "dev", "qa"], major_design
+        assert major_design["production_profile"] == "full", major_design
+        assert major_design["limits"] == {"max_rounds": 4, "dry_stop": 2}, major_design
+        brainstorm_calls = lambda cast: (
+            len(cast["participants"])
+            + len(cast["participants"]) * cast["limits"]["max_rounds"]
+            + cast["limits"]["max_rounds"]
+            + 2
+        )
+        standard_calls = brainstorm_calls(standard_design)
+        full_calls = brainstorm_calls(major_design)
+        assert standard_calls == 13 and full_calls == 21, (standard_calls, full_calls)
+        assert (full_calls - standard_calls) / full_calls >= 0.30, (standard_calls, full_calls)
+
         production_track = {
             "schema": "studio-production-track/v1", "track_id": "mixed-track",
             "items": [

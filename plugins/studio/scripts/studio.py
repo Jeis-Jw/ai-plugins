@@ -201,7 +201,7 @@ SOLO_CREW = {
 STANDARD_CREW = {
     "idea": ["planner-a", "planner-b", "critic"],
     "product-direction": ["strategist", "planner-b", "product-designer", "critic"],
-    "technical-design": ["architect", "dev", "critic"],
+    "technical-design": ["architect", "dev", "qa", "critic"],
     "ui-build": ["product-designer", "visual-designer", "dev"],
     "content": ["strategist", "creator", "reviewer"],
     "implementation": ["dev", "qa"],
