@@ -56,6 +56,9 @@ function withoutStateDigests(value) {
 }
 
 export function persistentStateDigest(state) {
+  // Nested state_digest fences would make the root digest self-referential, so
+  // they are excluded here and authenticated separately by
+  // validatePersistentState against the canonical dispatch/result pairing.
   return digest(withoutStateDigests(state))
 }
 
@@ -364,6 +367,7 @@ function makeAction(
 }
 
 function sealState(state) {
+  if (state.pending) state.pending.generation = state.state_revision
   const bindRevision = action => {
     action.state_revision = state.state_revision
   }
@@ -435,7 +439,75 @@ function scheduleFinalCritic(state) {
   setPending(state, [makeAction(state, actor, kind, 'Verdict', null, prompt, verdictSchema())])
 }
 
-function validateState(state) {
+function stateTampered(message) {
+  throw new PersistentBrokerError('state_tampered', message)
+}
+
+function requirePositiveStateInteger(value, label) {
+  if (!Number.isInteger(value) || value < 1) stateTampered(`${label} must be a positive integer`)
+}
+
+function canonicalEqual(left, right) {
+  return canonicalJson(left) === canonicalJson(right)
+}
+
+function actionWithoutEvent(entry) {
+  const action = clone(entry)
+  delete action.event
+  return action
+}
+
+function barrierOrdinal(state, barrierId) {
+  const prefix = `${state.run_id}:b`
+  const value = String(barrierId || '')
+  const suffix = value.startsWith(prefix) ? value.slice(prefix.length) : ''
+  if (!/^\d{4,}$/.test(suffix)) stateTampered('barrier_id format is invalid')
+  const ordinal = Number(suffix)
+  if (!Number.isSafeInteger(ordinal) || ordinal < 1 || value !== `${prefix}${String(ordinal).padStart(4, '0')}`) {
+    stateTampered('barrier_id ordinal is invalid')
+  }
+  return ordinal
+}
+
+function validateDispatch(state, dispatch, actor) {
+  if (dispatch.schema !== ACTION_SCHEMA || dispatch.run_id !== state.run_id) {
+    stateTampered('dispatch schema/run fence mismatch')
+  }
+  requirePositiveStateInteger(dispatch.ordinal, 'dispatch ordinal')
+  requirePositiveStateInteger(dispatch.turn, 'dispatch turn')
+  requirePositiveStateInteger(dispatch.generation, 'dispatch generation')
+  requirePositiveStateInteger(dispatch.state_revision, 'dispatch state_revision')
+  if (
+    dispatch.action_id !== `${state.run_id}:a${String(dispatch.ordinal).padStart(4, '0')}`
+    || dispatch.turn !== dispatch.ordinal
+  ) {
+    stateTampered('dispatch action_id/turn fence mismatch')
+  }
+  if (
+    !actor
+    || dispatch.logical_handle !== actor.logical_handle
+    || dispatch.task_name !== actor.task_name
+    || dispatch.canonical_label !== actor.canonical_label
+  ) {
+    stateTampered('dispatch actor identity fence mismatch')
+  }
+  if (
+    dispatch.transition?.workflow_phase !== dispatch.phase
+    || dispatch.transition?.round !== dispatch.round
+    || !['unspawned', 'idle'].includes(dispatch.transition?.actor_from)
+    || dispatch.transition?.actor_to !== (dispatch.kind === 'interrupt' ? 'terminal_pending' : 'awaiting_result')
+  ) {
+    stateTampered('dispatch barrier/transition fence mismatch')
+  }
+  if (barrierOrdinal(state, dispatch.barrier_id) >= state.next_barrier) {
+    stateTampered('dispatch barrier must precede next_barrier')
+  }
+  if (dispatch.state_revision > state.state_revision || typeof dispatch.state_digest !== 'string') {
+    stateTampered('dispatch state fence is invalid')
+  }
+}
+
+export function validatePersistentState(state) {
   if (!state || state.schema !== PERSISTENT_BRAINSTORM_SCHEMA) {
     throw new PersistentBrokerError('state_invalid', 'canonical state schema is invalid')
   }
@@ -445,10 +517,116 @@ function validateState(state) {
   if (!Number.isInteger(state.state_revision) || state.state_revision < 1) {
     throw new PersistentBrokerError('state_invalid', 'state revision is invalid')
   }
-  if (new Set([...state.participants, state.critic, state.summarizer].map(actor => actor.task_name)).size
-      !== state.participants.length + 2) {
+  const actors = [...state.participants, state.critic, state.summarizer]
+  if (new Set(actors.map(actor => actor.task_name)).size !== actors.length) {
     throw new PersistentBrokerError('state_invalid', 'actor task_name values must be unique')
   }
+  if (!Array.isArray(state.ledger)) stateTampered('ledger must be an array')
+  requirePositiveStateInteger(state.next_ordinal, 'next_ordinal')
+  requirePositiveStateInteger(state.next_barrier, 'next_barrier')
+
+  const actorMap = new Map(actors.map(actor => [actor.actor_id, actor]))
+  const dispatches = state.ledger.filter(entry => entry?.event === 'dispatch')
+  const results = state.ledger.filter(entry => entry?.event === 'result')
+  if (dispatches.length + results.length !== state.ledger.length) {
+    stateTampered('ledger contains an unsupported event')
+  }
+
+  const dispatchByAction = new Map()
+  const ordinals = new Set()
+  const turns = new Set()
+  const barrierByRevision = new Map()
+  const revisionByBarrier = new Map()
+  for (const dispatch of dispatches) {
+    validateDispatch(state, dispatch, actorMap.get(dispatch.actor_id))
+    if (
+      dispatchByAction.has(dispatch.action_id)
+      || ordinals.has(dispatch.ordinal)
+      || turns.has(dispatch.turn)
+    ) {
+      stateTampered('dispatch action_id/ordinal/turn values must be unique')
+    }
+    dispatchByAction.set(dispatch.action_id, dispatch)
+    ordinals.add(dispatch.ordinal)
+    turns.add(dispatch.turn)
+    if (
+      (barrierByRevision.has(dispatch.state_revision)
+        && barrierByRevision.get(dispatch.state_revision) !== dispatch.barrier_id)
+      || (revisionByBarrier.has(dispatch.barrier_id)
+        && revisionByBarrier.get(dispatch.barrier_id) !== dispatch.state_revision)
+    ) {
+      stateTampered('barrier_id and state_revision must form one dispatch group')
+    }
+    barrierByRevision.set(dispatch.state_revision, dispatch.barrier_id)
+    revisionByBarrier.set(dispatch.barrier_id, dispatch.state_revision)
+  }
+  if (dispatches.some(dispatch => dispatch.ordinal >= state.next_ordinal)) {
+    stateTampered('next_ordinal must follow every dispatch ordinal')
+  }
+
+  const resultByAction = new Map()
+  for (const result of results) {
+    const dispatch = dispatchByAction.get(result?.action_id)
+    if (!dispatch || resultByAction.has(result.action_id)) {
+      stateTampered('result must pair with exactly one unique dispatch')
+    }
+    for (const field of [
+      'ordinal', 'turn', 'generation', 'state_revision', 'state_digest',
+      'transition', 'actor_id', 'logical_handle',
+    ]) {
+      if (!canonicalEqual(result[field], dispatch[field])) {
+        stateTampered(`historical result ${field} fence mismatch`)
+      }
+    }
+    resultByAction.set(result.action_id, result)
+  }
+
+  if (state.pending === null) {
+    if (dispatches.some(dispatch => !resultByAction.has(dispatch.action_id))) {
+      stateTampered('non-pending dispatch is missing its result')
+    }
+    return state
+  }
+  if (
+    !state.pending
+    || !Array.isArray(state.pending.action_ids)
+    || !Array.isArray(state.pending.actions)
+    || typeof state.pending.barrier_id !== 'string'
+    || state.pending.generation !== state.state_revision
+    || state.pending.action_ids.length === 0
+    || state.pending.action_ids.length !== state.pending.actions.length
+    || new Set(state.pending.action_ids).size !== state.pending.action_ids.length
+  ) {
+    stateTampered('pending barrier/generation/action cardinality fence mismatch')
+  }
+  const pendingActionIds = state.pending.actions.map(action => action?.action_id)
+  if (!canonicalEqual(pendingActionIds, state.pending.action_ids)) {
+    stateTampered('pending action_ids must match canonical action order')
+  }
+
+  for (const action of state.pending.actions) {
+    const dispatch = dispatchByAction.get(action.action_id)
+    const actor = actorMap.get(action.actor_id)
+    if (
+      !dispatch
+      || resultByAction.has(action.action_id)
+      || action.barrier_id !== state.pending.barrier_id
+      || action.state_revision !== state.state_revision
+      || action.state_digest !== state.state_digest
+      || action.generation !== actor?.generation + 1
+      || action.turn !== action.ordinal
+      || !canonicalEqual(action, actionWithoutEvent(dispatch))
+      || dispatch.state_revision !== state.state_revision
+      || dispatch.state_digest !== state.state_digest
+    ) {
+      stateTampered('pending action/dispatch state fence mismatch')
+    }
+  }
+  const pendingSet = new Set(state.pending.action_ids)
+  if (dispatches.some(dispatch => !resultByAction.has(dispatch.action_id) && !pendingSet.has(dispatch.action_id))) {
+    stateTampered('historical dispatch is neither completed nor pending')
+  }
+  return state
 }
 
 function validateReceiptFence(state, receipt) {
@@ -885,7 +1063,7 @@ export function createPersistentBrainstorm(input) {
 }
 
 export function applyPersistentBarrier(state, receipt) {
-  validateState(state)
+  validatePersistentState(state)
   if (!['running', 'cancelling'].includes(state.status)) {
     throw new PersistentBrokerError('late_result', `run is already ${state.status}`)
   }
@@ -897,7 +1075,7 @@ export function applyPersistentBarrier(state, receipt) {
 }
 
 export function persistentBrainstormEnvelope(state) {
-  validateState(state)
+  validatePersistentState(state)
   return {
     schema: 'studio-persistent-brainstorm-envelope/v2',
     run_id: state.run_id,

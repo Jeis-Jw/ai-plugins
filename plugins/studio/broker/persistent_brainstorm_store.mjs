@@ -1,14 +1,16 @@
 import { createHash, randomBytes } from 'node:crypto'
 import {
-  chmod, lstat, mkdir, open, readFile, rename, rm,
+  chmod, lstat, mkdir, open, readFile, realpath, rename, rm,
 } from 'node:fs/promises'
-import { isAbsolute, join, resolve } from 'node:path'
+import {
+  isAbsolute, join, parse, resolve, sep,
+} from 'node:path'
 import {
   PersistentBrokerError,
   applyPersistentBarrier,
   createPersistentBrainstorm,
   persistentBrainstormEnvelope,
-  persistentStateDigest,
+  validatePersistentState,
 } from './persistent_brainstorm_broker.mjs'
 
 const MAX_STATE_BYTES = 4 * 1024 * 1024
@@ -33,6 +35,25 @@ async function readRegularJson(path) {
   }
 }
 
+async function validateRootComponents(root, allowMissing) {
+  const parsed = parse(root)
+  const segments = root.slice(parsed.root.length).split(sep).filter(Boolean)
+  let current = parsed.root
+  for (const segment of segments) {
+    current = join(current, segment)
+    let info
+    try {
+      info = await lstat(current)
+    } catch (error) {
+      if (allowMissing && error.code === 'ENOENT') return
+      throw new PersistentBrokerError('state_root_invalid', 'runtime state root component is unavailable')
+    }
+    if (info.isSymbolicLink() || !info.isDirectory()) {
+      throw new PersistentBrokerError('state_root_invalid', 'runtime state root ancestors must be real directories')
+    }
+  }
+}
+
 export class PersistentBrainstormStore {
   constructor(root) {
     if (!isAbsolute(root)) {
@@ -42,10 +63,17 @@ export class PersistentBrainstormStore {
   }
 
   async initialize() {
+    await validateRootComponents(this.root, true)
     await mkdir(this.root, { recursive: true, mode: 0o700 })
-    const info = await lstat(this.root)
-    if (!info.isDirectory() || info.isSymbolicLink()) {
-      throw new PersistentBrokerError('state_root_invalid', 'runtime state root must be a real directory')
+    await validateRootComponents(this.root, false)
+    let canonicalRoot
+    try {
+      canonicalRoot = await realpath(this.root)
+    } catch {
+      throw new PersistentBrokerError('state_root_invalid', 'runtime state root cannot be canonicalized')
+    }
+    if (canonicalRoot !== this.root) {
+      throw new PersistentBrokerError('state_root_invalid', 'runtime state root must use its canonical real path')
     }
     await chmod(this.root, 0o700)
   }
@@ -81,9 +109,10 @@ export class PersistentBrainstormStore {
   async read(runId) {
     await this.initialize()
     const state = await readRegularJson(this.paths(runId).state)
-    if (state.run_id !== runId || state.state_digest !== persistentStateDigest(state)) {
+    if (state.run_id !== runId) {
       throw new PersistentBrokerError('state_tampered', 'runtime-owned state failed identity/digest validation')
     }
+    validatePersistentState(state)
     return state
   }
 

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import {
-  lstat, mkdtemp, readFile, readdir, rm, symlink, writeFile,
+  lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile,
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -12,6 +12,8 @@ import {
   collaborationTaskName,
   createPersistentBrainstorm,
   persistentBrainstormEnvelope,
+  persistentStateDigest,
+  validatePersistentState,
 } from '../broker/persistent_brainstorm_broker.mjs'
 import { PersistentBrainstormStore } from '../broker/persistent_brainstorm_store.mjs'
 import { executePersistentRequest } from '../scripts/persistent_brainstorm_driver.mjs'
@@ -70,6 +72,21 @@ function receipt(state, outputs, options = {}) {
 
 function apply(state, outputs, options = {}) {
   return applyPersistentBarrier(state, receipt(state, outputs, options))
+}
+
+async function canonicalScratch(prefix) {
+  return realpath(await mkdtemp(join(tmpdir(), prefix)))
+}
+
+function rebindCurrentDigest(state) {
+  state.state_digest = persistentStateDigest(state)
+  for (const action of state.pending?.actions || []) action.state_digest = state.state_digest
+  for (const entry of state.ledger) {
+    if (entry.event === 'dispatch' && state.pending?.action_ids.includes(entry.action_id)) {
+      entry.state_digest = state.state_digest
+    }
+  }
+  return state
 }
 
 test('task_name matches the real host contract, preserves suffix, and resists slug collisions', () => {
@@ -286,7 +303,7 @@ test('timeout enters cancellation without replacement spawn', () => {
 })
 
 test('runtime-owned store accepts no caller state, rejects duplicate/stale replay and detects tamper', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'studio-persistent-store-'))
+  const root = await canonicalScratch('studio-persistent-store-')
   try {
     const store = new PersistentBrainstormStore(root)
     const created = await executePersistentRequest({ op: 'create', input: input({ run_id: 'RUN-store' }) }, store)
@@ -344,8 +361,112 @@ test('runtime-owned store accepts no caller state, rejects duplicate/stale repla
   }
 })
 
+test('excluded nested state digests are authenticated by pending and historical fence invariants', async () => {
+  const root = await canonicalScratch('studio-persistent-nested-fence-')
+  try {
+    const store = new PersistentBrainstormStore(root)
+    await store.create(input({ run_id: 'RUN-nested-fence' }))
+    const path = join(root, (await readdir(root)).find(name => name.endsWith('.json')))
+    const original = JSON.parse(await readFile(path, 'utf8'))
+    validatePersistentState(original)
+
+    const pendingActionTamper = structuredClone(original)
+    const actionDigestBefore = persistentStateDigest(pendingActionTamper)
+    pendingActionTamper.pending.actions[0].state_digest = `sha256:${'0'.repeat(64)}`
+    assert.equal(
+      persistentStateDigest(pendingActionTamper),
+      actionDigestBefore,
+      'root hash deliberately excludes nested state_digest fields',
+    )
+    await writeFile(path, JSON.stringify(pendingActionTamper), 'utf8')
+    await assert.rejects(
+      store.read('RUN-nested-fence'),
+      error => error instanceof PersistentBrokerError && error.code === 'state_tampered',
+    )
+
+    const pendingDispatchTamper = structuredClone(original)
+    const matchingDispatch = pendingDispatchTamper.ledger.find(
+      entry => entry.event === 'dispatch'
+        && entry.action_id === pendingDispatchTamper.pending.action_ids[0],
+    )
+    const dispatchDigestBefore = persistentStateDigest(pendingDispatchTamper)
+    matchingDispatch.state_digest = `sha256:${'1'.repeat(64)}`
+    assert.equal(persistentStateDigest(pendingDispatchTamper), dispatchDigestBefore)
+    await writeFile(path, JSON.stringify(pendingDispatchTamper), 'utf8')
+    await assert.rejects(
+      store.read('RUN-nested-fence'),
+      error => error instanceof PersistentBrokerError && error.code === 'state_tampered',
+    )
+
+    let historical = createPersistentBrainstorm(input({ run_id: 'RUN-historical-fence' }))
+    historical = apply(historical, [
+      { utterance: 'a', deltas: [] },
+      { utterance: 'b', deltas: [] },
+    ])
+    validatePersistentState(historical)
+    const historicalResult = historical.ledger.find(entry => entry.event === 'result')
+    const historicalDigestBefore = persistentStateDigest(historical)
+    historicalResult.state_digest = `sha256:${'2'.repeat(64)}`
+    assert.equal(persistentStateDigest(historical), historicalDigestBefore)
+    assert.throws(
+      () => validatePersistentState(historical),
+      error => error instanceof PersistentBrokerError && error.code === 'state_tampered',
+    )
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('pending barrier/action/turn/generation and ledger duplicates fail closed after a valid root reseal', () => {
+  const base = createPersistentBrainstorm(input({ run_id: 'RUN-structural-fence' }))
+  const cases = [
+    ['pending generation mismatch', state => { state.pending.generation += 1 }],
+    ['pending barrier mismatch', state => { state.pending.barrier_id = `${state.run_id}:b9999` }],
+    ['pending action_ids reorder', state => { state.pending.action_ids.reverse() }],
+    ['pending action_id duplicate', state => {
+      state.pending.actions[1].action_id = state.pending.actions[0].action_id
+    }],
+    ['dispatch turn duplicate', state => {
+      const second = state.pending.actions[1]
+      second.turn = state.pending.actions[0].turn
+      state.ledger.find(entry => entry.event === 'dispatch' && entry.action_id === second.action_id).turn = second.turn
+    }],
+    ['pending action generation mismatch', state => {
+      const action = state.pending.actions[0]
+      action.generation += 1
+      state.ledger.find(entry => entry.event === 'dispatch' && entry.action_id === action.action_id)
+        .generation = action.generation
+    }],
+    ['duplicate dispatch', state => {
+      state.ledger.push(structuredClone(state.ledger.find(entry => entry.event === 'dispatch')))
+    }],
+  ]
+  for (const [label, mutate] of cases) {
+    const tampered = structuredClone(base)
+    mutate(tampered)
+    rebindCurrentDigest(tampered)
+    assert.throws(
+      () => validatePersistentState(tampered),
+      error => error instanceof PersistentBrokerError && error.code === 'state_tampered',
+      label,
+    )
+  }
+
+  let historical = apply(base, [
+    { utterance: 'a', deltas: [] },
+    { utterance: 'b', deltas: [] },
+  ])
+  historical.ledger.push(structuredClone(historical.ledger.find(entry => entry.event === 'result')))
+  rebindCurrentDigest(historical)
+  assert.throws(
+    () => validatePersistentState(historical),
+    error => error instanceof PersistentBrokerError && error.code === 'state_tampered',
+    'duplicate historical result',
+  )
+})
+
 test('store hashes traversal-like run IDs and rejects symlink roots/state plus concurrent stale apply', async () => {
-  const scratch = await mkdtemp(join(tmpdir(), 'studio-persistent-store-adversarial-'))
+  const scratch = await canonicalScratch('studio-persistent-store-adversarial-')
   try {
     const root = join(scratch, 'state')
     const store = new PersistentBrainstormStore(root)
@@ -392,13 +513,23 @@ test('store hashes traversal-like run IDs and rejects symlink roots/state plus c
       new PersistentBrainstormStore(linkedRoot).initialize(),
       error => error instanceof PersistentBrokerError && error.code === 'state_root_invalid',
     )
+
+    const realParent = join(scratch, 'real-parent')
+    const linkedParent = join(scratch, 'linked-parent')
+    await mkdir(realParent)
+    await symlink(realParent, linkedParent)
+    await assert.rejects(
+      new PersistentBrainstormStore(join(linkedParent, 'nested-state')).initialize(),
+      error => error instanceof PersistentBrokerError && error.code === 'state_root_invalid',
+    )
+    assert.equal(await lstat(join(realParent, 'nested-state')).catch(() => null), null)
   } finally {
     await rm(scratch, { recursive: true, force: true })
   }
 })
 
 test('lock initialization failure removes only the newly opened orphan lock', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'studio-persistent-lock-cleanup-'))
+  const root = await canonicalScratch('studio-persistent-lock-cleanup-')
   try {
     const normal = new PersistentBrainstormStore(root)
     await normal.create(input({ run_id: 'RUN-lock-cleanup' }))
