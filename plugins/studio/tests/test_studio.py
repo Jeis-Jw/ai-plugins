@@ -1266,13 +1266,18 @@ def main() -> None:
             "receipt_id": "RR-item-a", "item_id": "item-a",
             "owner": "task-worker", "provider": "native", "criteria_digest": sha("1"),
             "review_cycle_id": "RC-item-a", "edge_id": "wrong-edge", "lease_id": "lease-item-a",
-            "evidence_ref": "evidence://item-a/review", "verdict": "approved",
+            "head": "abc0000", "evidence_ref": "evidence://item-a/review", "verdict": "approved",
         }
         review["digest"] = digest(review)
         run([
             "production", "review", "mixed-track", "item-a", "--json", json.dumps(review),
         ], tmp, expect=6)
         review["edge_id"] = "edge-item-a"
+        review["digest"] = digest({key: value for key, value in review.items() if key != "digest"})
+        run([
+            "production", "review", "mixed-track", "item-a", "--json", json.dumps(review),
+        ], tmp, expect=6)
+        review["head"] = "abc1111"
         review["digest"] = digest({key: value for key, value in review.items() if key != "digest"})
         run([
             "production", "review", "mixed-track", "item-a", "--json", json.dumps(review),

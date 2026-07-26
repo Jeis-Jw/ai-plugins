@@ -4561,7 +4561,12 @@ def cmd_production_complete(args: argparse.Namespace) -> None:
             fail(6, "production_verification_required", "matching durable verification receipt is required")
         if not isinstance(review, dict) or review.get("receipt_id") != args.review_receipt_id:
             fail(6, "production_review_required", "matching durable review receipt is required")
-        passed = verification["result"] == "pass" and review["verdict"] == "approved"
+        passed = (
+            verification["result"] == "pass"
+            and verification["head"] == item["head"]
+            and review["verdict"] == "approved"
+            and review["head"] == item["head"]
+        )
         if not passed:
             fail(6, "production_evidence_failed", "durable verification/review evidence did not pass")
         item["state"] = "completed"
@@ -4618,7 +4623,7 @@ def cmd_production_review(args: argparse.Namespace) -> None:
         "studio-production-review-receipt/v1",
         {
             "schema", "receipt_id", "item_id", "owner", "provider", "criteria_digest",
-            "review_cycle_id", "edge_id", "lease_id", "evidence_ref", "verdict", "digest",
+            "review_cycle_id", "edge_id", "lease_id", "head", "evidence_ref", "verdict", "digest",
         },
     )
     with board_transaction(ws) as board:
@@ -4630,10 +4635,10 @@ def cmd_production_review(args: argparse.Namespace) -> None:
         expected = {
             "owner": binding["owner"], "provider": binding["provider"],
             "criteria_digest": binding["criteria_digest"], "review_cycle_id": item["review_cycle_id"],
-            "edge_id": binding["edge_id"], "lease_id": binding["lease_id"],
+            "edge_id": binding["edge_id"], "lease_id": binding["lease_id"], "head": item["head"],
         }
         if any(receipt.get(key) != value for key, value in expected.items()):
-            fail(6, "production_binding_mismatch", "review receipt differs from stored owner/provider/criteria/edge/lease")
+            fail(6, "production_binding_mismatch", "review receipt differs from stored owner/provider/criteria/edge/lease/head")
         if receipt.get("verdict") not in ("approved", "changes-requested") or not receipt.get("evidence_ref"):
             fail(6, "invalid_production_receipt", "review verdict/evidence_ref is invalid")
         current = item.get("review_receipt")
