@@ -14,7 +14,9 @@ verified `spawn`, `followup`, `wait_barrier`, `interrupt_cancel`,
 `structured_result` capability가 있는 native host에서는 brainstorm crew를 workflow 범위로
 유지한다. participant, critic, summarizer는 자신의 최초 assigned turn에 한 번만 spawn하고
 이후 모든 round는 original host handle에 follow-up한다.
-현재 admission은 명시적 `canary`로 제한하며 production default 채택을 의미하지 않는다.
+현재 구현 상태는 deterministic canary harness이며 actual collaboration host evidence가 없다.
+명시적 `canary` 값도 harness admission일 뿐 live dispatch나 production default 채택을
+의미하지 않는다. 실제 채택은 owner-approved fresh host receipt 이후 별도 gate다.
 
 `persistent_brainstorm_broker.mjs`의 reducer가 phase, action ordinal, barrier, `maxRounds`,
 `dryStop`, actor lifecycle의 유일한 정본이다. Producer/main은 broker action을 exact relay하고

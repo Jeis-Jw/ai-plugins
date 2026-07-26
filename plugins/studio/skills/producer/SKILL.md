@@ -206,15 +206,20 @@ python3 "$STUDIO" config get   # JSON → common defaults/roles/agents/rituals +
 
 ### 회의형 (brainstorm) — 사고 작업, 무제한 병렬
 
-Codex native host가 verified persistent crew capability를 제공하면
-`broker/persistent_brainstorm_broker.mjs`가 **유일한 phase/order/barrier/maxRounds/dryStop
-정본**이다. Producer/main은 다음 계약만 수행한다.
+아래 persistent path는 현재 **deterministic canary harness**이며 actual collaboration host
+admission은 아직 승인·검증되지 않았다. mock/harness 성공을 live capability evidence로
+사용하지 않는다. 향후 owner-approved live canary에서 verified persistent crew capability를
+확인할 때 `broker/persistent_brainstorm_broker.mjs`가
+**유일한 phase/order/barrier/maxRounds/dryStop 정본**이어야 한다.
+Producer/main의 후보 계약은 다음과 같다.
 
-1. sealed create request를 `scripts/persistent_brainstorm_driver.mjs`에 넘긴다.
+1. create request와 runtime-owned absolute `state-root`를
+   `scripts/persistent_brainstorm_driver.mjs`에 넘긴다. store가 run을 exclusive-create한다.
 2. envelope의 `pending.actions`를 ordinal 순서 그대로 native `spawn` 또는 same-handle
    `followup`으로 relay한다. prompt, schema, phase, round, label을 합성하거나 재정렬하지 않는다.
-3. 동일 barrier의 모든 결과를 action 순서 그대로 `studio-crew-barrier-result/v1`으로
-   묶어 apply request에 넣는다. broker가 다음 barrier를 반환하기 전 임의 다음 턴을 만들지 않는다.
+3. 동일 barrier의 모든 결과를 action 순서 그대로 `studio-crew-barrier-result/v2`로
+   묶어 `run_id + expected_state_revision + expected_state_digest + receipt`만 apply request에
+   넣는다. Producer는 canonical state object를 받거나 편집하지 않는다.
 4. actor의 최초 assigned turn만 spawn한다. 이후에는 action의 original `host_handle`로만
    follow-up하며 rename, replacement spawn, participant/critic/summarizer alias를 금지한다.
 
@@ -225,20 +230,28 @@ immutable identity다. host card title projection은 verified capability가 `fal
 persistent work를 실행할 수 있고, 이때 UI title 지원을 주장하지 않는다. phase/round는
 mutable ledger와 current-task summary로만 갱신한다.
 
-이 경로는 `admission:"canary"`를 명시한 brainstorm에만 허용되며 production default가
-아니다. required capability는 `spawn`, `followup`, `wait_barrier`, `interrupt_cancel`,
+이 경로는 `admission:"canary"`를 명시한 deterministic harness에만 허용되며 production
+default나 live dispatch 허가가 아니다. required capability는 `spawn`, `followup`,
+`wait_barrier`, `interrupt_cancel`,
 `structured_result`다. 하나라도 미검증이면 native persistent path를 시작하지 않는다.
 native action을 한 번이라도 dispatch한 뒤에는 CLI Runner를 포함한 중간 fallback이 금지된다.
-실패는 cancel/abort receipt로 닫고 late result와 replacement spawn을 거부한다.
+Harness는 malformed output을 original handle에서 한 번만 repair하고, 실패는 cancel로
+전이한다. cancel evidence가 불완전하면 `aborted`가 아니라 `recovery_required`로 남긴다.
+late/stale result와 replacement spawn을 거부한다.
 
 ```bash
 node "$STUDIO_ROOT/scripts/persistent_brainstorm_driver.mjs" \
-  --request-file /absolute/path/to/sealed-persistent-request.json
+  --state-root /absolute/path/to/runtime-owned-state \
+  --request-file /absolute/path/to/persistent-request.json
 ```
 
 요청은 `{op:"create",input:{admission:"canary",...}}` 또는
-`{op:"apply",state:<previous state>,receipt:<ordered barrier result>}`다. state와 envelope의
+`{op:"apply",run_id,expected_state_revision,expected_state_digest,receipt}`다. create가
+반환한 opaque state ref만 재전송하고 state file/object는 작업 입력으로 취급하지 않는다.
+envelope의
 `tokens:null`, `token_coverage:"unavailable"`은 측정 불가의 진실이며 0/exact로 바꾸지 않는다.
+실제 host spawn/follow-up/wait/cancel, stable handle, structured repair, late-result 거부와
+telemetry를 묶은 fresh receipt가 생기기 전에는 harness 밖에서 persistent 지원을 주장하지 않는다.
 
 verified persistent capability가 없으면 아래 Workflow/isolated CLI 경로를 사용한다. 이 경로는
 호환용 **non-persistent fallback profile**이며 persistent handle을 주장하지 않는다.

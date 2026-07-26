@@ -224,21 +224,23 @@ production Runner가 기존 `brainstorm.workflow.js` 또는 `pairing.workflow.js
 로드하고 `agent/parallel/phase/log/budget` 경계를 주입한다. broker source는 runtime별로
 fork하지 않는다.
 
-Native host의 persistent crew path는 별도
-`broker/persistent_brainstorm_broker.mjs`를 canonical reducer로 사용한다. 이 reducer만
-phase/order/barrier/maxRounds/dryStop과 stable actor handle을 전이하며 Producer/main은
-`scripts/persistent_brainstorm_driver.mjs`가 반환한 action을 그대로 spawn/follow-up/wait
-relay한다. exact canonical label은 ledger/envelope/initial-current summary에 남고
-path-safe immutable `task_name`과 분리된다. UI card-title projection은 독립 capability라
-미지원(`false`)이어도 work canary를 막지 않으며 지원을 주장하지 않는다.
-이 path는 `admission:"canary"`를 명시해야 하며 production default admission이 아니다.
+`persistent_brainstorm_broker.mjs`와 runtime-owned file store는 현재
+**deterministic canary harness**다. actual collaboration host를 실행한 evidence나 production
+admission은 아직 없다. Harness에서는 reducer만 phase/order/barrier/maxRounds/dryStop을
+전이하고 driver apply는 caller state를 받지 않으며
+`run_id + expected_state_revision/digest + receipt`만 runtime store에 전달한다. store는
+exclusive create, lock, digest fence, temp+rename update로 stale/replay/tamper를 fail-close한다.
 
-participant, critic, summarizer는 서로 다른 logical/host handle이고 최초 assigned turn에만
-spawn된다. native dispatch 뒤에는 isolated Runner로 중간 fallback하지 않는다. schema,
-timeout, cancel 또는 host failure는 abort receipt로 닫으며 replacement spawn과 late result를
-거부한다. token 측정이 없으면 `tokens:null`, `token_coverage:"unavailable"`을 유지한다.
-pairing은 역할별 hard write confinement가 추가로 입증되기 전까지 아래 isolated Runner
-경계를 유지한다.
+Action은 turn/generation/state digest/transition, exact canonical label, host-valid immutable
+`task_name`을 포함한다. structured output은 exact schema로 검증하고 malformed result는
+original handle에 한 번만 repair한다. partial failure는 clone-before-commit으로 cancel
+전이하며 cancel evidence가 불완전하면 `recovery_required`다. token은 nonnegative integer와
+exact coverage가 함께 있을 때만 measured이고 그 외 측정 불가는 null/unavailable이다.
+
+이 harness의 `admission:"canary"`는 live dispatch 허가가 아니다. owner-approved fresh host
+receipt가 spawn/follow-up/wait/cancel, stable handle, repair, late-result rejection, telemetry를
+증명하기 전에는 persistent crew 지원을 주장하지 않는다. 기존 isolated Runner가 production
+default이고 pairing은 hard write confinement가 입증되기 전까지 그 경계를 유지한다.
 
 ```bash
 node plugins/studio/scripts/codex_workflow_runner.mjs \
