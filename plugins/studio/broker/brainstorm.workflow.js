@@ -14,8 +14,9 @@ export const meta = {
 //     agenda: string,
 //     personas: [{ name, role, prior, body }],   // body = the persona's prompt text
 //     criticRubric: string,                       // critic/rubric.md contents
-//     maxRounds?: number (default 4),
-//     dryStop?: number  (default 2),
+//     productionProfile?: 'standard'|'full' (default standard),
+//     maxRounds?: number (profile default: standard=2, full=4),
+//     dryStop?: number  (profile default: standard=1, full=2),
 //     agentRuntime?: 'claude'|'codex',
 //     runtimeCapability?: { runtime, verified, dispatch_allowed },
 //     agentPolicy?: { defaults, roles, agents, rituals, providers },
@@ -26,8 +27,12 @@ const A = typeof args === 'string' ? JSON.parse(args) : (args || {})
 const AGENDA = A.agenda || '(no agenda provided)'
 const PERSONAS = (A.personas || []).filter(Boolean)
 const RUBRIC = A.criticRubric || 'Reject any delta whose changed_what has no concrete anchor.'
-const MAX_ROUNDS = A.maxRounds || 4
-const DRY_STOP = A.dryStop || 2
+const PROFILE = A.productionProfile || 'standard'
+const PROFILE_LIMITS = PROFILE === 'full'
+  ? { maxRounds: 4, dryStop: 2 }
+  : { maxRounds: 2, dryStop: 1 }
+const MAX_ROUNDS = A.maxRounds ?? PROFILE_LIMITS.maxRounds
+const DRY_STOP = A.dryStop ?? PROFILE_LIMITS.dryStop
 const REQUESTED_RUNTIME = A.agentRuntime || null
 const RUNTIME_CAPABILITY = A.runtimeCapability || null
 const AGENT_RUNTIME = REQUESTED_RUNTIME && RUNTIME_CAPABILITY
@@ -40,6 +45,10 @@ const ANCHORS = ['artifact', 'acceptance-criteria', 'risk', 'rejected-alternativ
 
 if (PERSONAS.length < 2) {
   return { ritual: 'brainstorm', error: 'brainstorm needs >=2 personas with distinct priors', participants: PERSONAS.map(p => p.name) }
+}
+if (!['standard', 'full'].includes(PROFILE) || !Number.isInteger(MAX_ROUNDS) || MAX_ROUNDS < 1
+  || !Number.isInteger(DRY_STOP) || DRY_STOP < 1) {
+  return { ritual: 'brainstorm', error: 'productionProfile/round limits are invalid', participants: PERSONAS.map(p => p.name) }
 }
 if (REQUESTED_RUNTIME && !['claude', 'codex'].includes(REQUESTED_RUNTIME)) {
   return { ritual: 'brainstorm', error: 'agentRuntime must be claude or codex', participants: PERSONAS.map(p => p.name) }
@@ -83,6 +92,11 @@ function policyFor(role, step, agentId) {
 }
 
 const spentStart = budget.spent()
+let modelCalls = 0
+async function modelCall(prompt, options) {
+  modelCalls += 1
+  return agent(prompt, options)
+}
 
 // Prompt layout is deliberately transcript-FIRST, persona-LAST so the long,
 // append-only transcript stays a stable cache prefix across turns and personas.
@@ -141,10 +155,11 @@ const CRITIC_SCHEMA = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['id', 'valid', 'reason'],   // id echoes the submitted delta it verifies
+        required: ['id', 'valid', 'outcome_linked', 'reason'],   // id echoes the submitted delta it verifies
         properties: {
           id: { type: 'integer', description: 'the id of the submitted delta this verdict is for' },
           valid: { type: 'boolean' },
+          outcome_linked: { type: 'boolean', description: 'true only when the delta changes a decision, criterion, concrete risk, artifact outcome, or reproducible test' },
           reason: { type: 'string' },
         },
       },
@@ -173,7 +188,7 @@ function criticPrompt(submitted) {
 phase('Diverge')
 const seeds = await parallel(
   PERSONAS.map((p, i) => () =>
-    agent(personaTurnPrompt('', p, 'Open the room: give your independent take on the agenda. You cannot see the others yet.'),
+    modelCall(personaTurnPrompt('', p, 'Open the room: give your independent take on the agenda. You cannot see the others yet.'),
       { schema: TURN_SCHEMA, label: `diverge:${p.name}`, phase: 'Diverge', ...policyFor(p.roleId || p.name, 'diverge', p.agentId || p.name) })
       .then(r => ({ name: p.name, ...r }))
   )
@@ -194,7 +209,7 @@ for (let round = 1; round <= MAX_ROUNDS; round++) {
   roundsRun = round
   const roundSubmitted = []
   for (const p of PERSONAS) {
-    const turn = await agent(
+    const turn = await modelCall(
       personaTurnPrompt(transcript, p,
         `Round ${round}. React to the transcript: rebut, refine, or propose something new — no agreement-summaries. Log any real delta with its anchor.`),
       { schema: TURN_SCHEMA, label: `debate:r${round}:${p.name}`, phase: 'Debate', ...policyFor(p.roleId || p.name, 'debate', p.agentId || p.name) })
@@ -205,10 +220,11 @@ for (let round = 1; round <= MAX_ROUNDS; round++) {
     for (const d of turn.deltas || []) roundSubmitted.push({ id: roundSubmitted.length, round, by: p.name, ...d })
   }
 
-  const critique = await agent(criticPrompt(roundSubmitted),
+  const critique = await modelCall(criticPrompt(roundSubmitted),
     { schema: CRITIC_SCHEMA, label: `critic:r${round}`, phase: 'Debate', ...policyFor('critic', 'critic', 'critic') })
   const byId = new Map(((critique && critique.verified) || []).map(v => [v.id, v]))
   let validThisRound = 0
+  let outcomeLinkedThisRound = 0
   for (const s of roundSubmitted) {
     const v = byId.get(s.id)
     // defence-in-depth: accept only when THIS delta's own verdict is valid AND
@@ -217,14 +233,16 @@ for (let round = 1; round <= MAX_ROUNDS; round++) {
     if (v && v.valid && ANCHORS.includes(s.anchor)) {
       deltaLog.push({ round, changed_what: s.changed_what, anchor: s.anchor, evidence: s.evidence, rejected_alternative: s.rejected_alternative })
       validThisRound++
+      if (v.outcome_linked === true) outcomeLinkedThisRound++
     } else {
       dryLog.push({ round, changed_what: s.changed_what, anchor: s.anchor, dry: true })
     }
   }
 
   const roundDry = validThisRound === 0
-  log(`round ${round}: ${roundSubmitted.length} submitted, ${validThisRound} valid${roundDry ? ' — DRY' : ''}`)
-  if (roundDry) {
+  const convergenceDry = outcomeLinkedThisRound === 0
+  log(`round ${round}: ${roundSubmitted.length} submitted, ${validThisRound} valid, ${outcomeLinkedThisRound} outcome-linked${convergenceDry ? ' — CONVERGED' : ''}`)
+  if (convergenceDry) {
     if (++dryCount >= DRY_STOP) { log(`dry x${dryCount} → closing`); break }
   } else {
     dryCount = 0
@@ -243,7 +261,7 @@ const SYNTH_SCHEMA = {
     proposals: { type: 'array', items: { type: 'string' }, description: 'backlog proposals raised, [] if none' },
   },
 }
-const synth = await agent([
+const synth = await modelCall([
   'You are the broker summarizer. You are neutral — not a persona, not the producer.',
   'Summarize the transcript into a consensus + preserved minority. Do NOT invent new positions.',
   'List any backlog proposals the crew raised (spontaneous initiatives).',
@@ -256,7 +274,7 @@ const VERDICT_SCHEMA = {
   type: 'object', additionalProperties: false, required: ['alive', 'reason'],
   properties: { alive: { type: 'boolean' }, reason: { type: 'string' } },
 }
-const verdict = await agent([
+const verdict = await modelCall([
   'You are the studio critic giving the final verdict. Verification only.',
   'alive=true only if the verified delta_log below shows the debate actually moved the state',
   '(new/changed acceptance-criteria, risks, rejected alternatives, artifacts, or repro-tests).',
@@ -284,16 +302,25 @@ const receipt = {
   tokens: tokenDelta,
   token_coverage: tokenDelta === null ? 'unavailable' : 'exact',
   counters: {
+    model_calls: modelCalls,
     rounds: roundsRun,
     participants: PERSONAS.length,
     valid_deltas: deltaLog.length,
     dry_deltas: dryLog.length,
   },
-  quality: { alive: Boolean(verdict.alive), theatre: deltaLog.length === 0 },
+  quality: {
+    alive: Boolean(verdict.alive),
+    theatre: deltaLog.length === 0,
+    interaction_applicable: true,
+    model_call_coverage: 'exact',
+    elapsed_coverage: 'exact',
+    token_savings_claim_eligible: tokenDelta !== null,
+  },
 }
 return {
   run_id: runId,
   ritual: 'brainstorm',
+  production_profile: PROFILE,
   participants: PERSONAS.map(p => p.name),
   synthesis: synth.synthesis,
   minority: synth.minority,

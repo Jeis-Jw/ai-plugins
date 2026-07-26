@@ -54,7 +54,7 @@ const brainstorm = await execute(
     }
     if (label === 'critic:r1') {
       // Deliberately reverse verdict order: the broker must join by id.
-      return { verified: [{ id: 1, valid: false, reason: 'agreement' }, { id: 0, valid: true, reason: 'anchored' }] }
+      return { verified: [{ id: 1, valid: false, outcome_linked: false, reason: 'agreement' }, { id: 0, valid: true, outcome_linked: true, reason: 'anchored' }] }
     }
     if (label.startsWith('debate:r2:')) return { utterance: 'nothing new', deltas: [] }
     if (label === 'critic:r2') return { verified: [] }
@@ -67,7 +67,7 @@ const brainstorm = await execute(
 assert.equal(brainstorm.output.delta_log.filter(delta => !delta.dry).length, 1)
 assert.equal(brainstorm.output.delta_log.find(delta => !delta.dry).changed_what, 'config removed from v1')
 assert.equal(brainstorm.output.delta_log.filter(delta => delta.dry).length, 1)
-assert.ok(brainstorm.logs.some(line => /DRY/.test(line)), brainstorm.logs)
+assert.ok(brainstorm.logs.some(line => /CONVERGED/.test(line)), brainstorm.logs)
 assert.deepEqual(Object.keys(brainstorm.output.receipt).sort(), [
   'counters', 'elapsed_ms', 'emitter', 'finished_at', 'quality', 'run_id',
   'schema', 'started_at', 'token_coverage', 'tokens', 'workflow',
@@ -78,6 +78,56 @@ assert.equal(brainstorm.output.receipt.tokens, 37)
 assert.equal(brainstorm.output.receipt.token_coverage, 'exact')
 assert.equal(brainstorm.output.cost.tokens, 37)
 assert.equal(brainstorm.output.cost.elapsed_ms, brainstorm.output.receipt.elapsed_ms)
+assert.equal(brainstorm.output.receipt.counters.model_calls, 10)
+assert.equal(brainstorm.output.production_profile, 'standard')
+
+const converged = await execute(
+  'brainstorm.workflow.js',
+  {
+    agenda: 'stop when no outcome moves',
+    personas: [{ name: 'a' }, { name: 'b' }],
+    productionProfile: 'standard',
+  },
+  label => {
+    if (label.startsWith('diverge:') || label.startsWith('debate:')) {
+      return { utterance: 'wording only', deltas: label.startsWith('debate:')
+        ? [{ changed_what: 'reworded note', anchor: 'artifact', evidence: 'note.md' }] : [] }
+    }
+    if (label === 'critic:r1') return { verified: [{ id: 0, valid: true, outcome_linked: false, reason: 'no outcome' }, { id: 1, valid: true, outcome_linked: false, reason: 'no outcome' }] }
+    if (label === 'summarizer') return { synthesis: 'unchanged', minority: 'none', proposals: [] }
+    if (label === 'critic:final') return { alive: false, reason: 'no outcome movement' }
+    throw new Error(`unexpected convergence label: ${label}`)
+  },
+)
+assert.equal(converged.output.cost.rounds, 1)
+assert.equal(converged.output.receipt.counters.model_calls, 7)
+assert.ok(converged.logs.some(line => /CONVERGED/.test(line)), converged.logs)
+
+const solo = await execute(
+  'solo.workflow.js',
+  {
+    objective: 'mechanical edit',
+    worktreePath: '/tmp/track',
+    branch: 'task/track',
+    persona: { name: 'dev', body: 'make the bounded edit' },
+    criteria: [{ id: 'AC-1', source_ref: 'spec.md#AC-1', measure: 'node test_one.js', mechanical: true }],
+  },
+  label => {
+    assert.equal(label, 'solo:dev')
+    return {
+      synthesis: 'edited', changedFiles: ['one.js'],
+      verification: [{ command: 'node test_one.js', result: 'pass' }],
+      blockedChecks: [],
+      criterionResults: [{ id: 'AC-1', pass: true, evidence: 'node test_one.js passed' }],
+    }
+  },
+  [10, 18],
+)
+assert.equal(solo.output.receipt.counters.model_calls, 1)
+assert.equal(solo.output.receipt.quality.interaction_applicable, false)
+assert.equal(solo.output.readyForIntegration, false)
+assert.equal(solo.output.developmentReady, true)
+assert.deepEqual(solo.output.delta_log, [])
 
 let qaRound = 0
 const pairing = await execute(

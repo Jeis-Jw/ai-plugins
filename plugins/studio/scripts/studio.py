@@ -187,6 +187,25 @@ CAST_ALIASES = {
     "build": "implementation",
     "release": "launch",
 }
+PRODUCTION_SCALES = ("solo", "standard", "major")
+SOLO_CREW = {
+    "idea": "planner-a",
+    "product-direction": "strategist",
+    "technical-design": "architect",
+    "ui-build": "dev",
+    "content": "creator",
+    "implementation": "dev",
+    "launch": "qa",
+}
+STANDARD_CREW = {
+    "idea": ["planner-a", "planner-b", "critic"],
+    "product-direction": ["strategist", "planner-b", "product-designer", "critic"],
+    "technical-design": ["architect", "dev", "critic"],
+    "ui-build": ["product-designer", "visual-designer", "dev"],
+    "content": ["strategist", "creator", "reviewer"],
+    "implementation": ["dev", "qa"],
+    "launch": ["qa", "reviewer"],
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -1378,6 +1397,39 @@ def _pairing_readiness_problems(out: dict) -> list[str]:
     return problems if ready else []
 
 
+def _solo_readiness_problems(out: dict) -> list[str]:
+    problems = []
+    if out.get("readyForIntegration") is not False:
+        problems.append("solo readyForIntegration must remain false until the independent integration gate")
+    if out.get("production_profile") != "solo-mechanical":
+        problems.append("solo production_profile must be solo-mechanical")
+    if not isinstance(out.get("changedFiles"), list) or not out.get("changedFiles"):
+        problems.append("solo changedFiles must contain at least one repo-relative path")
+    verification = out.get("verification")
+    if not isinstance(verification, list) or not any(
+        isinstance(item, dict)
+        and isinstance(item.get("command"), str)
+        and re.match(r"^pass(?:\b|:)", item.get("result", ""), re.IGNORECASE)
+        for item in verification
+    ):
+        problems.append("solo verification must contain at least one pass result")
+    if out.get("blockedChecks") != []:
+        problems.append("solo blockedChecks must be empty for a successful recorded run")
+    results = out.get("criterionResults")
+    if not isinstance(results, list) or not results or any(
+        not isinstance(item, dict)
+        or item.get("pass") is not True
+        or not isinstance(item.get("evidence"), str)
+        or not item.get("evidence", "").strip()
+        for item in results
+    ):
+        problems.append("solo criterionResults require criterion-bound passing evidence")
+    receipt_quality = ((out.get("receipt") or {}).get("quality") or {})
+    if receipt_quality.get("interaction_applicable") is not False:
+        problems.append("solo receipt must disable interaction/theatre accounting")
+    return problems
+
+
 def _receipt_time(value: Any, field: str) -> datetime.datetime:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field} must be an RFC3339 timestamp")
@@ -1491,6 +1543,8 @@ def cmd_run_record(args: argparse.Namespace) -> None:
     problems = _validate_delta_log(delta_log)
     if ritual == "pairing":
         problems += _pairing_readiness_problems(out)
+    elif ritual == "solo":
+        problems += _solo_readiness_problems(out)
     if problems:
         fail(6, "invalid_run_output", "; ".join(problems), problems=problems)
     aborted = bool(out.get("aborted"))
@@ -4202,16 +4256,23 @@ def cmd_evidence(args: argparse.Namespace) -> None:
     board = load_board(ws)
     total_valid = 0
     aborted_runs = 0
+    interaction_runs = 0
     for r in board.get("runs", []):
         if r.get("aborted"):
             aborted_runs += 1
             continue
+        receipt = r.get("receipt") or {}
+        quality = receipt.get("quality") or {}
+        if quality.get("interaction_applicable") is False or r.get("ritual") == "solo":
+            continue
+        interaction_runs += 1
         total_valid += int(r.get("valid_deltas") or 0)
     ok(
         total_valid_deltas=total_valid,
         runs=len(board.get("runs", [])),
         aborted_runs=aborted_runs,
-        theatre=(total_valid == 0 and len(board.get("runs", [])) > aborted_runs),
+        interaction_runs=interaction_runs,
+        theatre=(total_valid == 0 and interaction_runs > 0),
     )
 
 
@@ -4240,7 +4301,24 @@ def cmd_cast_suggest(args: argparse.Namespace) -> None:
         )
 
     crew_dir = _crew_dir_for_cast(workspace(args))
-    crew = list(spec["crew"])
+    scale = args.item_scale
+    if scale == "solo":
+        if not args.criterion_source_ref or not args.mechanical_measure:
+            fail(
+                6, "solo_admission_denied",
+                "solo requires --criterion-source-ref and --mechanical-measure; subjective or new-domain interpretation must use standard or major",
+            )
+        crew = [SOLO_CREW[kind]]
+        ritual = "solo"
+        limits = {"max_rounds": 1, "dry_stop": 0}
+    elif scale == "standard":
+        crew = list(STANDARD_CREW[kind])
+        ritual = spec["ritual"]
+        limits = {"max_rounds": 2, "dry_stop": 1} if ritual == "brainstorm" else {"max_rounds": 2, "dry_stop": 0}
+    else:
+        crew = list(spec["crew"])
+        ritual = spec["ritual"]
+        limits = {"max_rounds": 4, "dry_stop": 2} if ritual == "brainstorm" else {"max_rounds": 3, "dry_stop": 0}
     participants = [name for name in crew if name != "critic"]
     personas = []
     missing = []
@@ -4258,10 +4336,33 @@ def cmd_cast_suggest(args: argparse.Namespace) -> None:
 
     ok(
         kind=kind,
-        ritual=spec["ritual"],
+        item_scale=scale,
+        production_profile=("solo-mechanical" if scale == "solo" else scale),
+        ritual=ritual,
+        limits=limits,
         crew=crew,
         participants=[p["name"] for p in personas],
-        critic=("critic" in crew or spec["ritual"] in ("brainstorm", "pairing")),
+        critic=(scale != "solo" and ("critic" in crew or ritual in ("brainstorm", "pairing"))),
+        interaction_applicable=(scale != "solo" and ritual in ("brainstorm", "pairing")),
+        admission={
+            "criterion_source_ref": args.criterion_source_ref,
+            "mechanical_measure": args.mechanical_measure,
+            "subjective_or_new_domain_allowed": False if scale == "solo" else True,
+        },
+        verification={
+            "independent_from_production_profile": True,
+            "owner": args.review_owner,
+            "provider": args.review_provider,
+            "dispatch": args.review_owner == "studio",
+            "duplicate_dispatch_forbidden": True,
+        },
+        mixed_scale_track={
+            "criteria_digest_per_item": True,
+            "review_cycle_per_item": True,
+            "ready_for_integration_per_item": True,
+            "same_file_writes": "serialize",
+            "integration_gate": "one full QA on integration HEAD",
+        },
         personas=personas,
         missing=[],
         tool_hints=spec.get("tool_hints") or [],
@@ -4539,6 +4640,11 @@ def build_parser() -> argparse.ArgumentParser:
     cl.set_defaults(func=cmd_cast_list)
     cs = casub.add_parser("suggest", help="choose default crew for a work kind")
     cs.add_argument("kind", help="one of: idea, product-direction, technical-design, ui-build, content, implementation, launch")
+    cs.add_argument("--item-scale", choices=PRODUCTION_SCALES, default="standard")
+    cs.add_argument("--criterion-source-ref")
+    cs.add_argument("--mechanical-measure")
+    cs.add_argument("--review-owner", choices=("studio", "task-worker"), default="studio")
+    cs.add_argument("--review-provider", choices=REVIEWER_PROVIDERS, default="native")
     cs.set_defaults(func=cmd_cast_suggest)
 
     return p

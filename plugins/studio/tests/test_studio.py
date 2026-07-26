@@ -1085,7 +1085,7 @@ def main() -> None:
         assert r["error_code"] == "invalid_routing_plan", r
 
         # 10) cast suggest — producer can turn a work kind into concrete crew
-        r = run(["cast", "suggest", "idea"], tmp)
+        r = run(["cast", "suggest", "idea", "--item-scale", "major"], tmp)
         assert r["ok"] and r["kind"] == "idea", r
         assert r["ritual"] == "brainstorm", r
         assert r["crew"] == ["planner-a", "planner-b", "researcher", "critic"], r
@@ -1096,11 +1096,29 @@ def main() -> None:
         assert "근거 우선" in r["personas"][2]["prior"], r
         assert r["missing"] == [], r
 
-        r = run(["cast", "suggest", "implementation"], tmp)
+        r = run(["cast", "suggest", "implementation", "--item-scale", "major"], tmp)
         assert r["ritual"] == "pairing", r
         assert r["crew"] == ["dev", "qa"], r
         assert r["participants"] == ["dev", "qa"], r
         assert r["critic"] is True, r
+
+        r = run([
+            "cast", "suggest", "implementation", "--item-scale", "solo",
+            "--criterion-source-ref", "AC-1", "--mechanical-measure", "pytest tests/test_one.py",
+            "--review-owner", "task-worker",
+        ], tmp)
+        assert r["ritual"] == "solo" and r["participants"] == ["dev"], r
+        assert r["limits"] == {"max_rounds": 1, "dry_stop": 0}, r
+        assert r["critic"] is False and not r["interaction_applicable"], r
+        assert r["verification"]["owner"] == "task-worker" and not r["verification"]["dispatch"], r
+        assert r["mixed_scale_track"]["same_file_writes"] == "serialize", r
+
+        r = run(["cast", "suggest", "idea", "--item-scale", "solo"], tmp, expect=6)
+        assert r["error_code"] == "solo_admission_denied", r
+
+        r = run(["cast", "suggest", "idea"], tmp)
+        assert r["item_scale"] == "standard" and r["limits"] == {"max_rounds": 2, "dry_stop": 1}, r
+        assert r["participants"] == ["planner-a", "planner-b"], r
 
         r = run(["cast", "suggest", "unknown-kind"], tmp, expect=6)
         assert r["error_code"] == "unknown_cast", r
