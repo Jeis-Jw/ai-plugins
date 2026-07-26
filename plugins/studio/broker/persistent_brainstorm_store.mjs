@@ -87,14 +87,31 @@ export class PersistentBrainstormStore {
     return state
   }
 
+  lockPayload() {
+    const pid = globalThis.process?.pid
+    if (!Number.isInteger(pid) || pid < 1) {
+      throw new PersistentBrokerError('lock_owner_unavailable', 'runtime process id is unavailable')
+    }
+    return `${pid}:${randomBytes(8).toString('hex')}\n`
+  }
+
+  async initializeLock(handle) {
+    await handle.writeFile(this.lockPayload(), 'utf8')
+    await handle.sync()
+  }
+
   async acquire(runId) {
     const { lock } = this.paths(runId)
+    let handle
     try {
-      const handle = await open(lock, 'wx', 0o600)
-      await handle.writeFile(`${process.pid}:${randomBytes(8).toString('hex')}\n`, 'utf8')
-      await handle.sync()
+      handle = await open(lock, 'wx', 0o600)
+      await this.initializeLock(handle)
       return { handle, path: lock }
     } catch (error) {
+      if (handle) {
+        await handle.close().catch(() => {})
+        await rm(lock, { force: true }).catch(() => {})
+      }
       if (error.code === 'EEXIST') {
         throw new PersistentBrokerError('state_busy', 'another transition owns the run lock')
       }

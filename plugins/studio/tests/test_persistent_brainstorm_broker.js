@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import {
-  mkdtemp, readFile, readdir, rm, symlink, writeFile,
+  lstat, mkdtemp, readFile, readdir, rm, symlink, writeFile,
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -394,6 +394,34 @@ test('store hashes traversal-like run IDs and rejects symlink roots/state plus c
     )
   } finally {
     await rm(scratch, { recursive: true, force: true })
+  }
+})
+
+test('lock initialization failure removes only the newly opened orphan lock', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'studio-persistent-lock-cleanup-'))
+  try {
+    const normal = new PersistentBrainstormStore(root)
+    await normal.create(input({ run_id: 'RUN-lock-cleanup' }))
+    class FailingLockStore extends PersistentBrainstormStore {
+      async initializeLock(handle) {
+        await handle.writeFile('', 'utf8')
+        throw new PersistentBrokerError('injected_lock_write_failure', 'simulated write/sync failure')
+      }
+    }
+    const failing = new FailingLockStore(root)
+    const lockPath = failing.paths('RUN-lock-cleanup').lock
+    await assert.rejects(
+      failing.acquire('RUN-lock-cleanup'),
+      error => error instanceof PersistentBrokerError && error.code === 'injected_lock_write_failure',
+    )
+    assert.equal(await lstat(lockPath).catch(() => null), null)
+
+    const acquired = await normal.acquire('RUN-lock-cleanup')
+    assert.ok((await lstat(acquired.path)).isFile())
+    await acquired.handle.close()
+    await rm(acquired.path)
+  } finally {
+    await rm(root, { recursive: true, force: true })
   }
 })
 
