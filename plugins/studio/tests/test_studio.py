@@ -1144,7 +1144,8 @@ def main() -> None:
         assert r["limits"] == {"max_rounds": 1, "dry_stop": 0}, r
         assert r["critic"] is False and not r["interaction_applicable"], r
         assert r["verification"]["owner"] == "task-worker" and not r["verification"]["dispatch"], r
-        assert r["mixed_scale_track"]["same_file_writes"] == "serialize", r
+        assert r["mixed_scale_track"]["contract"] == "studio-production-track/v1", r
+        assert r["mixed_scale_track"]["state"] == "board.production_tracks", r
 
         r = run(["cast", "suggest", "idea", "--item-scale", "solo"], tmp, expect=6)
         assert r["error_code"] == "solo_admission_denied", r
