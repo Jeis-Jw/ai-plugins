@@ -585,6 +585,8 @@ export async function executeWorkflow({
     return {
       schema: 'studio-codex-workflow-runner/v1',
       dispatch_allowed: false,
+      execution_profile: 'isolated-cli-non-persistent',
+      persistent_crew: false,
       error: 'broker_error',
       message: String(output.error),
       details: {
@@ -598,6 +600,8 @@ export async function executeWorkflow({
   return {
     schema: 'studio-codex-workflow-runner/v1',
     dispatch_allowed: true,
+    execution_profile: 'isolated-cli-non-persistent',
+    persistent_crew: false,
     broker: brokerName,
     phases,
     logs,
@@ -644,6 +648,8 @@ async function main() {
     process.stdout.write(`${JSON.stringify({
       schema: 'studio-codex-workflow-runner/v1',
       dispatch_allowed: false,
+      execution_profile: 'isolated-cli-non-persistent',
+      persistent_crew: false,
       error: known ? error.code : 'internal_error',
       message: error.message,
       details: known ? error.details : {},
