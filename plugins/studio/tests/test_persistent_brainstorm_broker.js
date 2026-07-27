@@ -312,25 +312,55 @@ test('summarizer and final verdict malformed output use one bounded same-handle 
   assert.equal(state.pending.actions[0].host_handle, 'host-critic:critic')
 })
 
-test('physical host handles are unique across participant, critic, and summarizer roles', () => {
-  let state = createPersistentBrainstorm(input({ run_id: 'RUN-host-handle-alias' }))
-  state = apply(state, [
+test('physical host handles are unique across every participant, critic, and summarizer pair', () => {
+  let participantAlias = createPersistentBrainstorm(input({ run_id: 'RUN-participant-handle-alias' }))
+  participantAlias = apply(participantAlias, [
     { utterance: 'a', deltas: [] },
     { utterance: 'b', deltas: [] },
-  ], { handles: ['host-shared', 'host-b'] })
-  state = apply(state, [{ utterance: 'a dry', deltas: [] }])
-  state = apply(state, [{ utterance: 'b dry', deltas: [] }])
-  assert.equal(state.pending.actions[0].actor_id, 'critic:critic')
+  ], { handles: ['host-shared', 'host-shared'] })
+  assert.equal(participantAlias.status, 'cancelling')
+  assert.equal(participantAlias.participants[1].host_handle, null)
+  assert.equal(participantAlias.failure.code, 'host_handle_alias')
 
-  state = apply(state, [{ verified: [] }], { handles: ['host-shared'] })
-  assert.equal(state.status, 'cancelling')
-  assert.equal(state.critic.spawn_count, 0)
-  assert.equal(state.critic.host_handle, null)
-  assert.deepEqual(
-    state.pending.actions.map(action => action.host_handle).sort(),
-    ['host-b', 'host-shared'],
-  )
-  assert.equal(state.failure.code, 'host_handle_alias')
+  function atCritic(runId) {
+    let state = createPersistentBrainstorm(input({ run_id: runId }))
+    state = apply(state, [
+      { utterance: 'a', deltas: [] },
+      { utterance: 'b', deltas: [] },
+    ], { handles: ['host-a', 'host-b'] })
+    state = apply(state, [{ utterance: 'a dry', deltas: [] }])
+    state = apply(state, [{ utterance: 'b dry', deltas: [] }])
+    assert.equal(state.pending.actions[0].actor_id, 'critic:critic')
+    return state
+  }
+
+  let criticAlias = atCritic('RUN-critic-handle-alias')
+  criticAlias = apply(criticAlias, [{ verified: [] }], { handles: ['host-a'] })
+  assert.equal(criticAlias.status, 'cancelling')
+  assert.equal(criticAlias.critic.host_handle, null)
+  assert.equal(criticAlias.failure.code, 'host_handle_alias')
+
+  function atSummarizer(runId) {
+    let state = atCritic(runId)
+    state = apply(state, [{ verified: [] }], { handles: ['host-critic'] })
+    assert.equal(state.pending.actions[0].actor_id, 'summarizer:summarizer')
+    return state
+  }
+
+  for (const [runId, alias] of [
+    ['RUN-participant-summarizer-alias', 'host-b'],
+    ['RUN-critic-summarizer-alias', 'host-critic'],
+  ]) {
+    let state = atSummarizer(runId)
+    state = apply(state, [{
+      synthesis: 'done',
+      minority: 'none',
+      proposals: [],
+    }], { handles: [alias] })
+    assert.equal(state.status, 'cancelling')
+    assert.equal(state.summarizer.host_handle, null)
+    assert.equal(state.failure.code, 'host_handle_alias')
+  }
 })
 
 test('barrier transition is atomic and partial host outcomes enter truthful cancellation', () => {
@@ -597,6 +627,18 @@ test('pending barrier/action/turn/generation and ledger duplicates fail closed a
     () => validatePersistentState(historical),
     error => error instanceof PersistentBrokerError && error.code === 'state_tampered',
     'duplicate historical result',
+  )
+
+  let lineage = apply(base, [
+    { utterance: 'a', deltas: [] },
+    { utterance: 'b', deltas: [] },
+  ])
+  lineage.participants[0].host_handle = 'host-rebound-without-receipt'
+  rebindCurrentDigest(lineage)
+  assert.throws(
+    () => validatePersistentState(lineage),
+    error => error instanceof PersistentBrokerError && error.code === 'state_tampered',
+    'historical actor handle lineage mismatch',
   )
 })
 

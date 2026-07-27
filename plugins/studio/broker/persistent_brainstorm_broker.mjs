@@ -524,6 +524,13 @@ export function validatePersistentState(state) {
   if (new Set(actors.map(actor => actor.task_name)).size !== actors.length) {
     throw new PersistentBrokerError('state_invalid', 'actor task_name values must be unique')
   }
+  const boundActors = actors.filter(actor => actor.host_handle !== null)
+  if (
+    boundActors.some(actor => typeof actor.host_handle !== 'string' || actor.host_handle.length === 0)
+    || new Set(boundActors.map(actor => actor.host_handle)).size !== boundActors.length
+  ) {
+    stateTampered('physical host_handle values must be unique across bound actors')
+  }
   if (!Array.isArray(state.ledger)) stateTampered('ledger must be an array')
   requirePositiveStateInteger(state.next_ordinal, 'next_ordinal')
   requirePositiveStateInteger(state.next_barrier, 'next_barrier')
@@ -594,6 +601,7 @@ export function validatePersistentState(state) {
   }
 
   const resultByAction = new Map()
+  const hostOwner = new Map(boundActors.map(actor => [actor.host_handle, actor.actor_id]))
   for (const result of results) {
     const dispatch = dispatchByAction.get(result?.action_id)
     if (!dispatch || resultByAction.has(result.action_id)) {
@@ -612,6 +620,44 @@ export function validatePersistentState(state) {
       || revisionFenceByRevision.get(dispatch.state_revision) !== dispatch.state_digest
     ) {
       stateTampered('historical dispatch/result digest is not bound to its immutable revision fence')
+    }
+    const actor = actorMap.get(result.actor_id)
+    const allowedStatuses = new Set([
+      'succeeded', 'failed', 'cancelled', 'timeout', 'invalid_output',
+      'identity_rejected', 'telemetry_rejected', 'cancel_unresolved',
+    ])
+    if (!allowedStatuses.has(result.status)) {
+      stateTampered('historical result status is invalid')
+    }
+    if (result.status === 'identity_rejected') {
+      const validAliasRejection = result.rejection_code === 'host_handle_alias'
+        && dispatch.kind === 'spawn'
+        && typeof result.host_handle === 'string'
+        && actor?.host_handle === null
+        && hostOwner.has(result.host_handle)
+        && hostOwner.get(result.host_handle) !== result.actor_id
+      const validMissingSpawnHandle = result.rejection_code === 'spawn_identity_invalid'
+        && dispatch.kind === 'spawn'
+        && result.host_handle === null
+        && actor?.host_handle === null
+      const validFollowupRejection = result.rejection_code === 'followup_identity_invalid'
+        && dispatch.kind !== 'spawn'
+        && typeof actor?.host_handle === 'string'
+        && result.host_handle !== actor.host_handle
+      if (!validAliasRejection && !validMissingSpawnHandle && !validFollowupRejection) {
+        stateTampered('rejected identity must preserve the conflicting historical host lineage')
+      }
+    } else if (Object.hasOwn(result, 'rejection_code')) {
+      stateTampered('only rejected identity results may carry rejection_code')
+    } else if (
+      result.host_handle !== null
+      && (
+        typeof result.host_handle !== 'string'
+        || actor?.host_handle !== result.host_handle
+        || hostOwner.get(result.host_handle) !== result.actor_id
+      )
+    ) {
+      stateTampered('historical result host_handle differs from the actor binding')
     }
     resultByAction.set(result.action_id, result)
   }
@@ -747,8 +793,8 @@ function applyIdentity(state, action, result) {
   return actor
 }
 
-function appendResult(state, action, result, telemetry, status = result.status) {
-  state.ledger.push({
+function appendResult(state, action, result, telemetry, status = result.status, rejectionCode = null) {
+  const entry = {
     event: 'result',
     action_id: action.action_id,
     ordinal: action.ordinal,
@@ -763,7 +809,9 @@ function appendResult(state, action, result, telemetry, status = result.status) 
     status,
     tokens: telemetry.tokens,
     token_coverage: telemetry.token_coverage,
-  })
+  }
+  if (rejectionCode) entry.rejection_code = rejectionCode
+  state.ledger.push(entry)
 }
 
 function finishAbort(state) {
@@ -973,6 +1021,7 @@ function mutatingApply(state, receipt) {
   const telemetry = []
   const invalidOutput = []
   const failures = []
+  const telemetryFailures = []
   const identityFailures = []
   for (let index = 0; index < pending.actions.length; index += 1) {
     const action = pending.actions[index]
@@ -980,7 +1029,7 @@ function mutatingApply(state, receipt) {
     try {
       telemetry[index] = validateTelemetry(result)
     } catch (error) {
-      identityFailures.push({ index, error })
+      telemetryFailures.push({ index, error })
       telemetry[index] = { tokens: null, token_coverage: 'unavailable' }
     }
     try {
@@ -998,18 +1047,31 @@ function mutatingApply(state, receipt) {
       }
     }
   }
-  pending.actions.forEach((action, index) => appendResult(
-    state,
-    action,
-    receipt.results[index],
-    telemetry[index],
-    invalidOutput.some(item => item.index === index) ? 'invalid_output' : receipt.results[index].status,
-  ))
+  pending.actions.forEach((action, index) => {
+    const identityFailure = identityFailures.find(item => item.index === index)
+    appendResult(
+      state,
+      action,
+      receipt.results[index],
+      telemetry[index],
+      identityFailure ? 'identity_rejected'
+        : telemetryFailures.some(item => item.index === index) ? 'telemetry_rejected'
+          : invalidOutput.some(item => item.index === index) ? 'invalid_output'
+            : receipt.results[index].status,
+      identityFailure?.error.code || null,
+    )
+  })
 
-  if (identityFailures.length || failures.length) {
+  if (identityFailures.length || telemetryFailures.length || failures.length) {
     scheduleCancel(state, {
-      code: identityFailures[0]?.error.code || 'native_action_failed',
-      action_ids: [...new Set([...identityFailures.map(item => pending.action_ids[item.index]), ...failures.map(index => pending.action_ids[index])])],
+      code: identityFailures[0]?.error.code
+        || telemetryFailures[0]?.error.code
+        || 'native_action_failed',
+      action_ids: [...new Set([
+        ...identityFailures.map(item => pending.action_ids[item.index]),
+        ...telemetryFailures.map(item => pending.action_ids[item.index]),
+        ...failures.map(index => pending.action_ids[index]),
+      ])],
     })
     return
   }
