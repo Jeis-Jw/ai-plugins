@@ -452,10 +452,13 @@ export async function runCodexAgent(prompt, options, context) {
   const temp = await mkdtemp(join(tmpdir(), 'studio-codex-workflow-'))
   const schemaPath = join(temp, 'schema.json')
   const outputPath = join(temp, 'output.json')
-  const sandbox = context.ritual === 'pairing' && String(options.label).startsWith('dev:')
+  const sandbox = (
+    (context.ritual === 'pairing' && String(options.label).startsWith('dev:'))
+    || (context.ritual === 'solo' && String(options.label).startsWith('solo:'))
+  )
     ? 'workspace-write'
     : 'read-only'
-  const cwd = context.ritual === 'pairing' ? context.worktree.path : context.cwd
+  const cwd = ['pairing', 'solo'].includes(context.ritual) ? context.worktree.path : context.cwd
   let child
   let stderr = ''
   try {
@@ -532,8 +535,8 @@ export async function runCodexAgent(prompt, options, context) {
 }
 
 export async function loadBroker(name) {
-  if (!['brainstorm', 'pairing'].includes(name)) {
-    throw new RunnerError('broker_invalid', 'broker must be brainstorm or pairing')
+  if (!['brainstorm', 'pairing', 'solo'].includes(name)) {
+    throw new RunnerError('broker_invalid', 'broker must be brainstorm, pairing, or solo')
   }
   const path = join(PLUGIN, 'broker', `${name}.workflow.js`)
   const source = (await readFile(path, 'utf8')).replace('export const meta', 'const meta')
@@ -560,7 +563,7 @@ export async function executeWorkflow({
   const runtimeCapability = assertRuntimeCapability(args)
   const canonicalCwd = await realpath(cwd)
   let worktree = null
-  if (brokerName === 'pairing') {
+  if (['pairing', 'solo'].includes(brokerName)) {
     worktree = await validateSecondaryWorktree(args.worktreePath, args.branch || null, canonicalCwd)
   }
   const broker = await loadBroker(brokerName)

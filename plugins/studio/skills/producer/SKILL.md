@@ -203,6 +203,19 @@ python3 "$STUDIO" config get   # JSON → common defaults/roles/agents/rituals +
 - **per-run 예산**: mission `budget.per_run_default`를 이 run의 Workflow 예산
   목표(토큰 상한)로 건다. 단 토큰 상한은 보조 장치이고, run을 실제로 멈추는 하드
   스톱은 `maxRounds`와 `dryStop`이다(transcript O(R²) 성장 방지 — 이게 정본 레버).
+- backlog item마다 `solo|standard|major` production scale을 정적으로 선택한다. solo는
+  criterion source ref와 기계적 measure가 이미 있고 새 domain 해석이 없을 때만 허용한다.
+  scale과 reviewer owner/independence를 결합하지 않는다. 같은 track의 mixed-scale item은
+  criteria digest·review cycle·readiness를 item별로 유지하고 동일 파일 write를 직렬화한다.
+
+### 단독 제작형 (solo) — 기계적 criterion, production 호출 1회
+
+`studio.py cast suggest <kind> --item-scale solo --criterion-source-ref <ref>
+--mechanical-measure <command>`가 admission을 통과한 경우에만 `broker/solo.workflow.js`를
+소집한다. production crew는 1명이고 interaction critic/theatre는 적용하지 않는다.
+changedFiles, 실행 verification, blockedChecks, criterion별 pass evidence는 필수이며
+`readyForIntegration`은 항상 false다. 별도 reviewer와 통합 HEAD full gate가 완료되기
+전에는 통합 후보가 아니다.
 
 ### 회의형 (brainstorm) — 사고 작업, 무제한 병렬
 
@@ -269,7 +282,7 @@ verified persistent capability가 없으면 아래 Workflow/isolated CLI 경로�
        agentRuntime: "claude|codex",          // verified capability와 일치할 때만
        runtimeCapability: <RoutingPlan.runtime_capability>,
        overrides: {},                                 // 선택: 이 run만 강제 (예: {effort:"low"})
-       maxRounds: 4, dryStop: 2
+       productionProfile: "standard", // 기본 2 rounds·dryStop 1; major만 full(4/2)
      }
 ```
 
@@ -322,6 +335,10 @@ Claude runtime에서 브로커 Workflow가 callable이면 위 `scriptPath + args
   node "$STUDIO_ROOT/scripts/codex_workflow_runner.mjs" \
     --broker brainstorm \
     --args-file /absolute/path/to/sealed-brainstorm-args.json \
+    --timeout-ms 120000
+  node "$STUDIO_ROOT/scripts/codex_workflow_runner.mjs" \
+    --broker solo \
+    --args-file /absolute/path/to/sealed-solo-args.json \
     --timeout-ms 120000
   node "$STUDIO_ROOT/scripts/codex_workflow_runner.mjs" \
     --broker pairing \

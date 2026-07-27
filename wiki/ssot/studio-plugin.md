@@ -19,6 +19,13 @@ turn/generation/state digest/transition, canonical label, host-valid immutable `
 포함한다. exact schema result는 original handle에서 한 번만 repair하며 incomplete cancel은
 `recovery_required`다. 이는 live persistent 지원 완료 주장이 아니다.
 
+Production scale v1은 backlog item마다 `solo|standard|major`를 정적으로 선택한다. `solo`는
+upstream criterion source와 기계적 measure가 있는 item만 crew 1명·1회로 처리한다.
+`standard` brainstorm은 최소 cast·2 rounds·dryStop 1이며 outcome-linked 변화가 없으면
+수렴한다. `major`는 기존 full ritual 4 rounds·dryStop 2를 보존한다. scale은 reviewer
+independence와 직교하고 모든 profile이 QualityPlan hard floor와 통합 HEAD full gate를
+그대로 유지한다.
+
 ## 초기화와 진단
 
 `studio:init`은 `.studio/` 작업장과 `.studio.yml` 정책을 한 번에 생성한다. 동일 내용은
@@ -44,6 +51,7 @@ validation만 반환한다. `--worker`와 `--reviewer`는 명시한 provider만 
 | review 단일 소유 | review edge마다 `workflow-review-lease/v1` owner가 하나다. Studio와 worker가 같은 리뷰를 이중 dispatch하지 않는다. |
 | 병렬성 보존 | 모든 ready action을 계산하고 독립 write-set은 별도 worktree에서 병렬 실행한다. |
 | 검증 보존 | independent judgment와 통합 HEAD full gate를 제거하지 않는다. |
+| scale 분리 | production 규모는 item별로 결정하고 review owner/independence, task gear와 결합하지 않는다. |
 | 물리 실행 절감 | 같은 HEAD/command/environment/tool version의 valid evidence는 재사용하고 finding 수정은 delta QA한다. |
 | 실행 허가 | 실제 명령은 canonical permit/profile의 허용 범위를 dispatch·result·evidence 세 경계에서 모두 만족해야 한다. |
 | compact handoff | criteria, open finding, changed paths, valid evidence, next action만 전달한다. transcript와 settled context를 다시 수집하지 않는다. |
@@ -112,6 +120,11 @@ Studio와 worker 어느 쪽도 schema 축약본이나 parity가 검증되지 않
 - evidence 재사용은 physical identity뿐 아니라 criteria/path/surface/impact/purpose/independence까지 일치해야 한다. invalidation은 새 canonical digest로 한 번 기록한 뒤 되돌리지 않는다. final 독립 판단, integration HEAD full gate, release/device/production preflight는 fresh permit을 요구한다.
 - capability 실패는 `(mission_id, capability_id, environment_digest)`에 한 번 기록해 병렬 track이 같은 probe를 반복하지 않는다. 외부 mutation은 passed preflight를 요구하고, 비용이 있으면 owner-approved authorization quota를 mutation 전에 원자 claim한다. consumption과 mutation receipt는 서로의 최종 ref/digest를 교차 검증한다.
 - token telemetry는 permit의 `fail-closed|report-only`를 따른다. null/unavailable을 0으로 계산하지 않는다. closeout은 integration HEAD에 적용 가능한 verification/review/delivery/mutation/cleanup/user-change ref와 zero open finding을 reconciliation한 뒤에만 완료한다.
+- broker receipt의 model call과 elapsed는 실제 run마다 coverage를 기록한다. deterministic
+  control은 full 17 calls 대비 standard 10 calls로 41.18% 감소했지만 synthetic timing과
+  scripted verdict는 wall-time/quality Owner gate evidence가 아니다. reviewed diverse fixture는
+  quality replay coverage만 제공한다. live/cost-matched A/B와 독립 검토 전에는 30%/5%
+  완료를 주장하지 않으며 token coverage unavailable도 token 절감 claim을 금지한다.
 - `execution summary`는 board를 변경하지 않고 logical check, physical run, full/delta QA, reuse/duplicate 방지, capability cache, token coverage, owner intervention, external spend를 `efficiency-summary/v1`로 투영한다.
 
 이 control plane은 명령을 직접 실행하거나 provider API를 호출하지 않는다. Studio native harness와

@@ -33,6 +33,15 @@ solo.workflow.js만 추가하면 interaction 호출 수는 줄어도 계약 고�
 
 아직 구현 task를 만들지 않는다. 다음 설계 단계에서 ① admission에 criterion source ref와 mechanical measure를 포함하고 ② routing 결과가 production profile과 verification edge를 분리해 반환하도록 하며 ③ reviewer edge primitive와 Producer 판정권을 확정하고 ④ scripts/studio.py·rubric까지 변경 범위에 포함한다. telemetry 복구 전에는 static routing을 구현할 수 있지만 비용 개선 검증이나 dynamic tuning 완료를 주장하지 않는다.
 
+## 구현 후 상태
+
+다섯 공백을 static v1 계약으로 구현했다. solo admission은 source ref+mechanical measure와
+criteria digest를 end-to-end bind하고, production profile과 review owner를 분리한다.
+mixed-scale track은 board-backed plan/dispatch/complete 전이에서 item binding과 same-file
+선행 완료를 강제한다. deterministic control은 calls 17→10을 확인했지만 synthetic
+elapsed/quality는 완료 evidence에서 제외했다. live/cost-matched wall-time A/B와 독립
+quality review는 pending이며 token unavailable도 그대로 보존한다.
+
 ## 후속 분류 조건
 
 위 계약이 owner/DEC gate에서 확정되면 implementation task의 acceptance criteria로 승격하고 Studio SSOT를 갱신한다. 실제 run receipt가 production profile별 token·elapsed·quality coverage를 제공하면 비용 가설을 observation에서 검증된 운영 사실 또는 후속 최적화 decision으로 재분류한다. mixed-scale track이 필요 없다는 구현 증거가 나오면 해당 공백은 근거와 함께 닫는다.

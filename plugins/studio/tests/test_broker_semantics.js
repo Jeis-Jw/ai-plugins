@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
+const canonical = value => JSON.stringify(value, Object.keys(value).sort())
 
 async function loadBroker(name) {
   const path = join(HERE, '..', 'broker', name)
@@ -54,7 +56,7 @@ const brainstorm = await execute(
     }
     if (label === 'critic:r1') {
       // Deliberately reverse verdict order: the broker must join by id.
-      return { verified: [{ id: 1, valid: false, reason: 'agreement' }, { id: 0, valid: true, reason: 'anchored' }] }
+      return { verified: [{ id: 1, valid: false, outcome_linked: false, reason: 'agreement' }, { id: 0, valid: true, outcome_linked: true, reason: 'anchored' }] }
     }
     if (label.startsWith('debate:r2:')) return { utterance: 'nothing new', deltas: [] }
     if (label === 'critic:r2') return { verified: [] }
@@ -67,7 +69,7 @@ const brainstorm = await execute(
 assert.equal(brainstorm.output.delta_log.filter(delta => !delta.dry).length, 1)
 assert.equal(brainstorm.output.delta_log.find(delta => !delta.dry).changed_what, 'config removed from v1')
 assert.equal(brainstorm.output.delta_log.filter(delta => delta.dry).length, 1)
-assert.ok(brainstorm.logs.some(line => /DRY/.test(line)), brainstorm.logs)
+assert.ok(brainstorm.logs.some(line => /CONVERGED/.test(line)), brainstorm.logs)
 assert.deepEqual(Object.keys(brainstorm.output.receipt).sort(), [
   'counters', 'elapsed_ms', 'emitter', 'finished_at', 'quality', 'run_id',
   'schema', 'started_at', 'token_coverage', 'tokens', 'workflow',
@@ -78,6 +80,88 @@ assert.equal(brainstorm.output.receipt.tokens, 37)
 assert.equal(brainstorm.output.receipt.token_coverage, 'exact')
 assert.equal(brainstorm.output.cost.tokens, 37)
 assert.equal(brainstorm.output.cost.elapsed_ms, brainstorm.output.receipt.elapsed_ms)
+assert.equal(brainstorm.output.receipt.counters.model_calls, 10)
+assert.equal(brainstorm.output.production_profile, 'standard')
+
+const fullProfile = await execute(
+  'brainstorm.workflow.js',
+  {
+    agenda: 'accept the major production profile',
+    personas: [{ name: 'a' }, { name: 'b' }],
+    productionProfile: 'full',
+    maxRounds: 1,
+    dryStop: 1,
+  },
+  label => {
+    if (label.startsWith('diverge:')) return { utterance: 'seed', deltas: [] }
+    if (label === 'debate:r1:a') {
+      return { utterance: 'bounded', deltas: [{ changed_what: 'bounded', anchor: 'artifact', evidence: 'scope.md' }] }
+    }
+    if (label === 'debate:r1:b') return { utterance: 'no delta', deltas: [] }
+    if (label === 'critic:r1') return { verified: [{ id: 0, valid: true, outcome_linked: true, reason: 'bounded' }] }
+    if (label === 'summarizer') return { synthesis: 'bounded', minority: 'none', proposals: [] }
+    if (label === 'critic:final') return { alive: true, reason: 'bounded' }
+    throw new Error(`unexpected full-profile label: ${label}`)
+  },
+)
+assert.equal(fullProfile.output.production_profile, 'full')
+assert.equal(fullProfile.output.receipt.counters.rounds, 1)
+
+const converged = await execute(
+  'brainstorm.workflow.js',
+  {
+    agenda: 'stop when no outcome moves',
+    personas: [{ name: 'a' }, { name: 'b' }],
+    productionProfile: 'standard',
+  },
+  label => {
+    if (label.startsWith('diverge:') || label.startsWith('debate:')) {
+      return { utterance: 'wording only', deltas: label.startsWith('debate:')
+        ? [{ changed_what: 'reworded note', anchor: 'artifact', evidence: 'note.md' }] : [] }
+    }
+    if (label === 'critic:r1') return { verified: [{ id: 0, valid: true, outcome_linked: false, reason: 'no outcome' }, { id: 1, valid: true, outcome_linked: false, reason: 'no outcome' }] }
+    if (label === 'summarizer') return { synthesis: 'unchanged', minority: 'none', proposals: [] }
+    if (label === 'critic:final') return { alive: false, reason: 'no outcome movement' }
+    throw new Error(`unexpected convergence label: ${label}`)
+  },
+)
+assert.equal(converged.output.cost.rounds, 1)
+assert.equal(converged.output.receipt.counters.model_calls, 7)
+assert.ok(converged.logs.some(line => /CONVERGED/.test(line)), converged.logs)
+
+const solo = await execute(
+  'solo.workflow.js',
+  {
+    objective: 'mechanical edit',
+    worktreePath: '/tmp/track',
+    branch: 'task/track',
+    persona: { name: 'dev', body: 'make the bounded edit' },
+    criteria: [{ id: 'AC-1', source_ref: 'spec.md#AC-1', measure: 'node test_one.js', mechanical: true }],
+    criteriaDigest: `sha256:${createHash('sha256').update(
+      JSON.stringify([{ id: 'AC-1', mechanical: true, measure: 'node test_one.js', source_ref: 'spec.md#AC-1' }]),
+    ).digest('hex')}`,
+  },
+  label => {
+    assert.equal(label, 'solo:dev')
+    return {
+      synthesis: 'edited', changedFiles: ['one.js'],
+      verification: [{ command: 'node test_one.js', result: 'pass' }],
+      blockedChecks: [],
+      criterionResults: [{ id: 'AC-1', pass: true, evidence: 'node test_one.js passed' }],
+    }
+  },
+  [10, 18],
+)
+assert.equal(solo.output.receipt.counters.model_calls, 1)
+assert.equal(solo.output.receipt.quality.interaction_applicable, false)
+assert.equal(solo.output.readyForIntegration, false)
+assert.equal(solo.output.developmentReady, true)
+assert.deepEqual(solo.output.delta_log, [])
+assert.equal(solo.output.criterion_bindings[0].source_ref, 'spec.md#AC-1')
+assert.match(solo.output.criteria_digest, /^sha256:/)
+assert.equal(converged.output.delta_log.filter(delta => !delta.dry).length, 0)
+assert.equal(converged.output.delta_log.filter(delta => delta.dry).length, 2)
+assert.equal(converged.output.receipt.counters.valid_deltas, 0)
 
 let qaRound = 0
 const pairing = await execute(
