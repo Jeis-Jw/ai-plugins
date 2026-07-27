@@ -1,5 +1,5 @@
-import { readFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { readFile, writeFile } from 'node:fs/promises'
+import { dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -9,9 +9,13 @@ const source = (await readFile(join(HERE, '..', 'broker', 'brainstorm.workflow.j
 const broker = new AsyncFunction('args', 'budget', 'phase', 'parallel', 'agent', 'log', source)
 const corpusIndex = process.argv.indexOf('--representative-corpus')
 const corpusPath = corpusIndex >= 0 ? process.argv[corpusIndex + 1] : null
+const outputIndex = process.argv.indexOf('--output')
+const outputPath = outputIndex >= 0 ? process.argv[outputIndex + 1] : null
+if (outputPath && !isAbsolute(outputPath)) throw new Error('--output must be an absolute path')
 
 async function run(profile, personas) {
   let calls = 0
+  let explicitContextBytes = 0
   const output = await broker(
     {
       agenda: 'Choose one bounded parser contract',
@@ -22,18 +26,25 @@ async function run(profile, personas) {
     { spent: () => null },
     () => {},
     jobs => Promise.all(jobs.map(job => job())),
-    async (_prompt, options) => {
+    async (prompt, options) => {
       calls += 1
+      explicitContextBytes += Buffer.byteLength(prompt, 'utf8')
       if (options.label.startsWith('diverge:')) return { utterance: 'independent preparation', deltas: [] }
-      if (options.label === 'debate:r1:a') return {
-        utterance: 'reject implicit configuration',
-        deltas: [{ changed_what: 'implicit configuration rejected', anchor: 'rejected-alternative', evidence: 'AC-1' }],
+      if (options.label.startsWith('debate:') && options.label.endsWith(':a')) {
+        const round = Number(options.label.match(/^debate:r(\d+):/)?.[1])
+        return {
+          utterance: round === 1 ? 'reject implicit configuration' : `bind contract clause ${round}`,
+          deltas: [{
+            changed_what: round === 1 ? 'implicit configuration rejected' : `contract clause ${round} bound`,
+            anchor: round === 1 ? 'rejected-alternative' : 'acceptance-criteria',
+            evidence: `AC-${round}`,
+          }],
+        }
       }
       if (options.label.startsWith('debate:')) return { utterance: 'no outcome change', deltas: [] }
-      if (options.label === 'critic:r1') return {
-        verified: [{ id: 0, valid: true, outcome_linked: true, reason: 'changes AC-1 decision' }],
+      if (options.label.startsWith('critic:r')) return {
+        verified: [{ id: 0, valid: true, outcome_linked: true, reason: 'changes a fixed contract clause' }],
       }
-      if (options.label.startsWith('critic:r')) return { verified: [] }
       if (options.label === 'summarizer') return { synthesis: 'explicit configuration only', minority: 'none', proposals: [] }
       if (options.label === 'critic:final') return { alive: true, reason: 'AC-1 decision changed' }
       throw new Error(`unexpected label: ${options.label}`)
@@ -44,6 +55,7 @@ async function run(profile, personas) {
   return {
     profile,
     calls,
+    explicit_context_bytes: explicitContextBytes,
     elapsed_ms: output.receipt.elapsed_ms,
     receipt: output.receipt,
     quality: {
@@ -57,7 +69,7 @@ const baseline = await run('full', [
   { name: 'a' }, { name: 'b' }, { name: 'c' },
 ])
 const variant = await run('standard', [
-  { name: 'a' }, { name: 'b' },
+  { name: 'a' }, { name: 'b' }, { name: 'c' },
 ])
 const reduction = (before, after) => Number((((before - after) / before) * 100).toFixed(2))
 const callReduction = reduction(baseline.calls, variant.calls)
@@ -98,6 +110,50 @@ const result = {
     deterministic_elapsed_reduction_percent: null,
     deterministic_quality_drop_percent: null,
   },
+  adapter_profile_matrix: {
+    coverage: 'deterministic-contract-proxy',
+    isolated_cli: {
+      full: {
+        logical_model_calls: baseline.calls,
+        physical_process_spawns: baseline.calls,
+        explicit_context_bytes: baseline.explicit_context_bytes,
+      },
+      standard: {
+        logical_model_calls: variant.calls,
+        physical_process_spawns: variant.calls,
+        explicit_context_bytes: variant.explicit_context_bytes,
+      },
+    },
+    native_persistent: {
+      full: {
+        logical_model_calls: baseline.calls,
+        physical_agent_spawns: 5,
+        same_handle_followups: baseline.calls - 5,
+        explicit_context_bytes: null,
+      },
+      standard: {
+        logical_model_calls: variant.calls,
+        physical_agent_spawns: 5,
+        same_handle_followups: variant.calls - 5,
+        explicit_context_bytes: null,
+      },
+    },
+    calculations: {
+      profile_logical_call_reduction_percent: callReduction,
+      isolated_cli_profile_process_spawn_reduction_percent: callReduction,
+      isolated_cli_profile_context_byte_reduction_percent: reduction(
+        baseline.explicit_context_bytes,
+        variant.explicit_context_bytes,
+      ),
+      standard_native_vs_isolated_physical_spawn_reduction_percent: reduction(variant.calls, 5),
+      full_native_vs_isolated_physical_spawn_reduction_percent: reduction(baseline.calls, 5),
+    },
+    limits: [
+      'native persistent rows are derived from the one-spawn-per-role broker contract, not a fresh live 2x2 run',
+      'explicit persistent context bytes are unavailable',
+      'wall time and token cost are not inferred from deterministic proxy counts',
+    ],
+  },
   representative,
   telemetry: {
     model_call_coverage: 'exact',
@@ -127,4 +183,6 @@ if (!result.gates.deterministic_calls_at_least_30_percent
   process.stderr.write(`${JSON.stringify(result, null, 2)}\n`)
   process.exit(1)
 }
-process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
+const encoded = `${JSON.stringify(result, null, 2)}\n`
+if (outputPath) await writeFile(outputPath, encoded, { mode: 0o600 })
+process.stdout.write(encoded)

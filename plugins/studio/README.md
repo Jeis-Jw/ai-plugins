@@ -329,13 +329,14 @@ production scale과 independent review edge는 별도 축이다.
 
 ## 상태
 
-version-ready(next) — workflow-scoped persistent crew의 read-only brainstorm canary와
-item별 `solo|standard|major` 정적 production scale, 1-call solo,
-outcome-linked brainstorm 수렴, exact model-call 계측을 추가했다. deterministic control은
-calls 17→10(41.18%)을 확인하지만 synthetic elapsed/quality로 Owner gate를 통과시키지
-않는다. reviewed representative fixture는 quality replay만 보조하며 live/cost-matched
-wall-time A/B와 독립 검토가 끝날 때까지 30%/5% 완료는 pending이다. token coverage도
-unavailable이므로 token 절감은 주장하지 않는다.
+v0.9.0 — workflow-scoped persistent crew의 read-only brainstorm canary와 item별
+`solo|standard|major` 정적 production scale, 1-call solo, outcome-linked brainstorm
+수렴, exact model-call 계측을 추가했다. Standard 기술 설계는 QA를 보존하고 summarizer가
+고정 agenda 요구사항을 누락하지 않도록 한다. deterministic control은 동일 3인 cast에서
+calls 21→13(38.10%)과 representative replay quality drop 0%를 확인한다. 이전 live
+wall-time A/B는 51.47% 감소였지만 QA 보강 전 quality drop 10%였으므로 현재 30%/5%
+fresh-live 통과 증거로 재사용하지 않는다. token coverage도 unavailable이므로 token
+절감은 주장하지 않는다.
 
 v0.8.1 — 설치 artifact 내부 canonical execution contract를 기본으로 사용하고,
 직렬화 경계의 physical claim 상태와 timezone-aware timestamp 검증을 정합화했다.

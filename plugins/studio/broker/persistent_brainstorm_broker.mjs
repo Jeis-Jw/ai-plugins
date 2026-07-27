@@ -304,6 +304,8 @@ function promptFor(state, actor, phase, round) {
   return [
     `Canonical identity: ${actor.canonical_label}`,
     'Summarize only the supplied transcript and verified deltas. Do not invent positions or deltas.',
+    'Preserve every explicit agenda requirement and rejected alternative that the transcript or verified deltas addressed.',
+    `Agenda:\n${state.agenda}`,
     `Transcript:\n${state.transcript || '(empty)'}`,
     `Verified deltas:\n${JSON.stringify(state.delta_log)}`,
   ].join('\n\n')
@@ -726,7 +728,16 @@ function applyIdentity(state, action, result) {
       throw new PersistentBrokerError('spawn_identity_invalid', 'successful spawn requires host_handle')
     }
     if (result.host_handle) {
-      actor.host_handle = String(result.host_handle)
+      const hostHandle = String(result.host_handle)
+      const alias = [...state.participants, state.critic, state.summarizer]
+        .find(other => other.actor_id !== actor.actor_id && other.host_handle === hostHandle)
+      if (alias) {
+        throw new PersistentBrokerError(
+          'host_handle_alias',
+          'physical host_handle must be unique across participant, critic, and summarizer roles',
+        )
+      }
+      actor.host_handle = hostHandle
       actor.spawn_count = 1
     }
   } else if (actor.spawn_count !== 1 || result.host_handle !== actor.host_handle) {
@@ -937,6 +948,7 @@ function mutatingApply(state, receipt) {
     const pairs = pending.actions.map((action, index) => ({ action, result: receipt.results[index] }))
     let incomplete = false
     for (const { action, result } of pairs) {
+      let resultIncomplete = false
       let telemetry
       try {
         telemetry = validateTelemetry(result)
@@ -944,12 +956,13 @@ function mutatingApply(state, receipt) {
         if (result.status === 'succeeded') validateContextualOutput(state, action, result.output)
         if (!(result.status === 'cancelled' || (
           result.status === 'succeeded' && result.output.cancelled === true
-        ))) incomplete = true
+        ))) resultIncomplete = true
       } catch {
         telemetry = { tokens: null, token_coverage: 'unavailable' }
-        incomplete = true
+        resultIncomplete = true
       }
-      appendResult(state, action, result, telemetry, incomplete ? 'cancel_unresolved' : result.status)
+      if (resultIncomplete) incomplete = true
+      appendResult(state, action, result, telemetry, resultIncomplete ? 'cancel_unresolved' : result.status)
     }
     if (incomplete) markRecoveryRequired(state, pairs)
     else finishAbort(state)

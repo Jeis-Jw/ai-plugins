@@ -264,7 +264,9 @@ const SYNTH_SCHEMA = {
 const synth = await modelCall([
   'You are the broker summarizer. You are neutral — not a persona, not the producer.',
   'Summarize the transcript into a consensus + preserved minority. Do NOT invent new positions.',
+  'Preserve every explicit agenda requirement and rejected alternative that the transcript or verified deltas addressed; shorter production profiles must not silently drop them.',
   'List any backlog proposals the crew raised (spontaneous initiatives).',
+  '\n--- fixed agenda requirements ---\n' + AGENDA,
   '\n--- transcript ---\n' + transcript,
   '\n--- verified deltas (do not add to these) ---\n' + JSON.stringify(deltaLog, null, 2),
 ].join('\n'), { schema: SYNTH_SCHEMA, label: 'summarizer', phase: 'Converge', ...policyFor('summarizer', 'converge', 'summarizer') }) || { synthesis: '(summarizer failed)', minority: 'none', proposals: [] }

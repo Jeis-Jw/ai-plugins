@@ -25,7 +25,7 @@ async function execute(name, args, responder, spentValues = [0, 0]) {
       { spent: () => spentValues[Math.min(spentIndex++, spentValues.length - 1)] },
       value => phases.push(value),
       jobs => Promise.all(jobs.map(job => job())),
-      (_prompt, options) => Promise.resolve(responder(options.label, options)),
+      (_prompt, options) => Promise.resolve(responder(options.label, options, _prompt)),
       value => logs.push(value),
     ),
     phases,
@@ -33,6 +33,7 @@ async function execute(name, args, responder, spentValues = [0, 0]) {
   }
 }
 
+let standardSummarizerPrompt = null
 const brainstorm = await execute(
   'brainstorm.workflow.js',
   {
@@ -44,7 +45,7 @@ const brainstorm = await execute(
     maxRounds: 2,
     dryStop: 1,
   },
-  label => {
+  (label, _options, prompt) => {
     if (label.startsWith('diverge:')) return { utterance: `seed ${label}`, deltas: [] }
     if (label === 'debate:r1:a') return {
       utterance: 'drop implicit config',
@@ -60,7 +61,10 @@ const brainstorm = await execute(
     }
     if (label.startsWith('debate:r2:')) return { utterance: 'nothing new', deltas: [] }
     if (label === 'critic:r2') return { verified: [] }
-    if (label === 'summarizer') return { synthesis: 'bounded parser', minority: 'none', proposals: [] }
+    if (label === 'summarizer') {
+      standardSummarizerPrompt = prompt
+      return { synthesis: 'bounded parser', minority: 'none', proposals: [] }
+    }
     if (label === 'critic:final') return { alive: true, reason: 'one verified delta' }
     throw new Error(`unexpected brainstorm label: ${label}`)
   },
@@ -82,6 +86,8 @@ assert.equal(brainstorm.output.cost.tokens, 37)
 assert.equal(brainstorm.output.cost.elapsed_ms, brainstorm.output.receipt.elapsed_ms)
 assert.equal(brainstorm.output.receipt.counters.model_calls, 10)
 assert.equal(brainstorm.output.production_profile, 'standard')
+assert.match(standardSummarizerPrompt, /--- fixed agenda requirements ---\nchoose a bounded parser contract/)
+assert.match(standardSummarizerPrompt, /shorter production profiles must not silently drop them/)
 
 const fullProfile = await execute(
   'brainstorm.workflow.js',

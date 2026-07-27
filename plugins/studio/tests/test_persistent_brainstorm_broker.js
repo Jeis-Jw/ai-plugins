@@ -296,6 +296,8 @@ test('summarizer and final verdict malformed output use one bounded same-handle 
   state = apply(state, [{ utterance: 'b dry', deltas: [] }])
   state = apply(state, [{ verified: [] }])
   assert.equal(state.phase, 'Converge')
+  assert.match(state.pending.actions[0].prompt, /Agenda:\n품질 하락을 제한하면서 반복 비용을 줄인다/)
+  assert.match(state.pending.actions[0].prompt, /Preserve every explicit agenda requirement/)
   state = apply(state, [{}])
   assert.equal(state.pending.actions[0].repair_attempt, 1)
   assert.equal(state.pending.actions[0].host_handle, 'host-summarizer:summarizer')
@@ -308,6 +310,27 @@ test('summarizer and final verdict malformed output use one bounded same-handle 
   state = apply(state, [{ alive: false }])
   assert.equal(state.pending.actions[0].repair_attempt, 1)
   assert.equal(state.pending.actions[0].host_handle, 'host-critic:critic')
+})
+
+test('physical host handles are unique across participant, critic, and summarizer roles', () => {
+  let state = createPersistentBrainstorm(input({ run_id: 'RUN-host-handle-alias' }))
+  state = apply(state, [
+    { utterance: 'a', deltas: [] },
+    { utterance: 'b', deltas: [] },
+  ], { handles: ['host-shared', 'host-b'] })
+  state = apply(state, [{ utterance: 'a dry', deltas: [] }])
+  state = apply(state, [{ utterance: 'b dry', deltas: [] }])
+  assert.equal(state.pending.actions[0].actor_id, 'critic:critic')
+
+  state = apply(state, [{ verified: [] }], { handles: ['host-shared'] })
+  assert.equal(state.status, 'cancelling')
+  assert.equal(state.critic.spawn_count, 0)
+  assert.equal(state.critic.host_handle, null)
+  assert.deepEqual(
+    state.pending.actions.map(action => action.host_handle).sort(),
+    ['host-b', 'host-shared'],
+  )
+  assert.equal(state.failure.code, 'host_handle_alias')
 })
 
 test('barrier transition is atomic and partial host outcomes enter truthful cancellation', () => {
@@ -333,6 +356,27 @@ test('barrier transition is atomic and partial host outcomes enter truthful canc
     () => applyPersistentBarrier(recovery, cancelFailed),
     error => error instanceof PersistentBrokerError && error.code === 'late_result',
   )
+})
+
+test('mixed cancellation labels each actor independently', () => {
+  let state = createPersistentBrainstorm(input({ run_id: 'RUN-mixed-cancel-labels' }))
+  state = apply(state, [
+    null,
+    { utterance: 'second', deltas: [] },
+  ], {
+    statuses: ['failed', 'succeeded'],
+    handles: ['host-a', 'host-b'],
+    errors: ['injected failure', null],
+  })
+  assert.equal(state.status, 'cancelling')
+  state = apply(state, [{ cancelled: false }, { cancelled: true }], {
+    statuses: ['failed', 'cancelled'],
+    handles: ['host-a', 'host-b'],
+  })
+  assert.equal(state.status, 'recovery_required')
+  const terminal = state.ledger.filter(entry => entry.event === 'result').slice(-2)
+  assert.deepEqual(terminal.map(entry => entry.status), ['cancel_unresolved', 'cancelled'])
+  assert.deepEqual(state.unresolved_handles, ['host-a'])
 })
 
 test('invalid telemetry fails closed while exact integers remain exact', () => {
