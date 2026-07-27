@@ -224,6 +224,24 @@ production Runner가 기존 `brainstorm.workflow.js` 또는 `pairing.workflow.js
 로드하고 `agent/parallel/phase/log/budget` 경계를 주입한다. broker source는 runtime별로
 fork하지 않는다.
 
+`persistent_brainstorm_broker.mjs`와 runtime-owned file store는 현재
+**deterministic canary harness**다. actual collaboration host를 실행한 evidence나 production
+admission은 아직 없다. Harness에서는 reducer만 phase/order/barrier/maxRounds/dryStop을
+전이하고 driver apply는 caller state를 받지 않으며
+`run_id + expected_state_revision/digest + receipt`만 runtime store에 전달한다. store는
+exclusive create, lock, digest fence, temp+rename update로 stale/replay/tamper를 fail-close한다.
+
+Action은 turn/generation/state digest/transition, exact canonical label, host-valid immutable
+`task_name`을 포함한다. structured output은 exact schema로 검증하고 malformed result는
+original handle에 한 번만 repair한다. partial failure는 clone-before-commit으로 cancel
+전이하며 cancel evidence가 불완전하면 `recovery_required`다. token은 nonnegative integer와
+exact coverage가 함께 있을 때만 measured이고 그 외 측정 불가는 null/unavailable이다.
+
+이 harness의 `admission:"canary"`는 live dispatch 허가가 아니다. owner-approved fresh host
+receipt가 spawn/follow-up/wait/cancel, stable handle, repair, late-result rejection, telemetry를
+증명하기 전에는 persistent crew 지원을 주장하지 않는다. 기존 isolated Runner가 production
+default이고 pairing은 hard write confinement가 입증되기 전까지 그 경계를 유지한다.
+
 ```bash
 node plugins/studio/scripts/codex_workflow_runner.mjs \
   --broker brainstorm \
@@ -251,7 +269,8 @@ Runner는 canonical `studio-runtime-capability/v1`의 exact shape와 digest를 �
 광고된 model/effort가 있으면 각 agent의 resolved 값을 spawn 전에 대조한다. capability가
 unknown/unavailable이면 dispatch하지 않는다. CLI output에는 신뢰할 수 있는 token usage가
 없으므로 broker receipt는 `tokens:null`, `token_coverage:"unavailable"`을 유지한다.
-UI 표시와 token telemetry 구현은 이 Runner의 범위가 아니다.
+UI card-title projection과 token telemetry 구현은 이 Runner의 범위가 아니다. 따라서
+Runner는 persistent crew 또는 UI title 지원을 주장하지 않는다.
 
 ## casting helper
 
@@ -325,7 +344,8 @@ v0.4.0 — stable review cycle·delta/full QA gate·evidence reuse·compact hand
 위키(INT/DEC studio) + `drafts/agent-team-concept.md`.
 검증 테스트: `python3 plugins/studio/tests/test_studio.py`,
 `node --test plugins/studio/tests/test_broker_semantics.js`,
-`node --test plugins/studio/tests/test_codex_runner.js`.
+`node --test plugins/studio/tests/test_codex_runner.js`,
+`node --test plugins/studio/tests/test_persistent_brainstorm_broker.js`.
 
 후순위(정의만, MVP 비활성): 마케팅/판매 운영 역할, 동적 채용(casting), standup/retro/demo
 리추얼과 추가 external workflow adapter.

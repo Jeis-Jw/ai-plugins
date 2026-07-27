@@ -261,6 +261,8 @@ test('brainstorm agents are read-only and broker phase/result ordering survives'
     })
     assert.equal(result.schema, 'studio-codex-workflow-runner/v1')
     assert.equal(result.dispatch_allowed, true)
+    assert.equal(result.execution_profile, 'isolated-cli-non-persistent')
+    assert.equal(result.persistent_crew, false)
     assert.deepEqual(result.phases, ['Diverge', 'Debate', 'Converge'])
     assert.equal(result.output.ritual, 'brainstorm')
     assert.deepEqual(result.output.participants, ['a', 'b'])

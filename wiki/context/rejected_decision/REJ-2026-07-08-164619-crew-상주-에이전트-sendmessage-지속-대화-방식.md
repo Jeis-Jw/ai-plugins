@@ -22,3 +22,13 @@ crew를 세션 상주 에이전트로 스폰해 두고 SendMessage continuation�
 ## 재고 조건
 
 워크플로 내에서 서브에이전트 continuation이 지원되고, R>5 장기 리추얼이 실제로 흔해져 중간 합성 압축으로도 비용이 안 잡힐 때.
+
+## 재분류 후보 (2026-07-27)
+
+deterministic barrier/result validation harness가 구현됐지만 actual native host
+continuation evidence는 아직 없어 재고 조건이 충족됐다고 보지 않는다.
+`DEC-2026-07-27-020408-studio-brainstorm을-workflow-scoped-persistent-crew로-운영`에
+따른 persistent brainstorm은 owner-approved live canary 이후의 채택 후보일 뿐이다.
+현재는 기존 반려 상태를 유지하며, future verified native brainstorm에서만 재분류를 다시
+검토한다. isolated CLI Runner와 hard write confinement가 없는 pairing에는 기존 반려 사유가
+계속 유효하다. record retire/type 이동은 별도 owner capture gate에서 확정한다.

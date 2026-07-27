@@ -11,6 +11,14 @@ affects_paths: [plugins/studio/**, plugins/task-worker/**, plugins/task-github/*
 
 Studio 0.8.1은 owner의 미션을 research, planning, strategy, design, architecture, implementation, creation, QA, independent review, critique, curation, summarization 역할로 분해하고 ready-set을 병렬 실행하는 상위 orchestration layer다. native harness만으로 전체 흐름을 완주하며 외부 plugin은 기능 필수가 아니다. callable Workflow가 없는 Codex에서는 verified runtime capability가 있을 때 production Runner가 기존 broker를 실행한다. canonical execution permit·atomic claim·immutable evidence로 동일 물리 실행만 차단한다.
 
+Persistent brainstorm은 현재 deterministic reducer/store **harness**까지만 구현됐다.
+actual collaboration host canary와 production admission evidence는 없다. Harness의 reducer가
+phase/order/barrier/maxRounds/dryStop을 전이하고 runtime-owned store가 caller state를
+차단하며 revision/digest/lock/atomic rename fence를 적용한다. action contract는
+turn/generation/state digest/transition, canonical label, host-valid immutable `task_name`을
+포함한다. exact schema result는 original handle에서 한 번만 repair하며 incomplete cancel은
+`recovery_required`다. 이는 live persistent 지원 완료 주장이 아니다.
+
 ## 초기화와 진단
 
 `studio:init`은 `.studio/` 작업장과 `.studio.yml` 정책을 한 번에 생성한다. 동일 내용은
@@ -39,6 +47,8 @@ validation만 반환한다. `--worker`와 `--reviewer`는 명시한 provider만 
 | 물리 실행 절감 | 같은 HEAD/command/environment/tool version의 valid evidence는 재사용하고 finding 수정은 delta QA한다. |
 | 실행 허가 | 실제 명령은 canonical permit/profile의 허용 범위를 dispatch·result·evidence 세 경계에서 모두 만족해야 한다. |
 | compact handoff | criteria, open finding, changed paths, valid evidence, next action만 전달한다. transcript와 settled context를 다시 수집하지 않는다. |
+| persistent crew | 현재 deterministic harness만 존재한다. owner-approved fresh host receipt 전에는 live canary와 persistent 지원을 활성화·주장하지 않는다. UI card-title projection은 독립 capability다. |
+| fallback fence | native persistent action dispatch 후 isolated CLI Runner로 중간 fallback하거나 replacement spawn하지 않는다. pairing은 hard write confinement 전까지 기존 isolated Runner를 유지한다. |
 
 ## 도구 라우팅
 
