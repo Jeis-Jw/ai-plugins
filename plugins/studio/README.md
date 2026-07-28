@@ -224,12 +224,11 @@ production Runner가 기존 `brainstorm.workflow.js` 또는 `pairing.workflow.js
 로드하고 `agent/parallel/phase/log/budget` 경계를 주입한다. broker source는 runtime별로
 fork하지 않는다.
 
-`persistent_brainstorm_broker.mjs`와 runtime-owned file store는 현재
-**deterministic canary harness**다. actual collaboration host를 실행한 evidence나 production
-admission은 아직 없다. Harness에서는 reducer만 phase/order/barrier/maxRounds/dryStop을
-전이하고 driver apply는 caller state를 받지 않으며
-`run_id + expected_state_revision/digest + receipt`만 runtime store에 전달한다. store는
-exclusive create, lock, digest fence, temp+rename update로 stale/replay/tamper를 fail-close한다.
+Read-only brainstorm의 Production 기본 경로는
+`persistent_brainstorm_controller.mjs`다. reducer만
+phase/order/barrier/maxRounds/dryStop을 전이하고 Controller는 runtime-owned store의 opaque
+state ref와 pending action만 실제 bundled Codex app-server에 relay한다. store는 exclusive
+create, lock, digest fence, temp+rename update로 stale/replay/tamper를 fail-close한다.
 
 Action은 turn/generation/state digest/transition, exact canonical label, host-valid immutable
 `task_name`을 포함한다. structured output은 exact schema로 검증하고 malformed result는
@@ -237,10 +236,60 @@ original handle에 한 번만 repair한다. partial failure는 clone-before-comm
 전이하며 cancel evidence가 불완전하면 `recovery_required`다. token은 nonnegative integer와
 exact coverage가 함께 있을 때만 measured이고 그 외 측정 불가는 null/unavailable이다.
 
-이 harness의 `admission:"canary"`는 live dispatch 허가가 아니다. owner-approved fresh host
-receipt가 spawn/follow-up/wait/cancel, stable handle, repair, late-result rejection, telemetry를
-증명하기 전에는 persistent crew 지원을 주장하지 않는다. 기존 isolated Runner가 production
-default이고 pairing은 hard write confinement가 입증되기 전까지 그 경계를 유지한다.
+Production adapter는 pinned binary/version/schema/config, 빈 tool inventory, 빈 instruction
+source, read-only sandbox를 admission에서 검증한다. 각 action은 durable `request_sent` 뒤
+`spawn|followup`하며, 첫 dispatch 뒤 fallback과 replacement spawn을 금지한다. 병렬 sibling은
+실패 시에도 drain하고 active turn interrupt 및 role delete를 시도한다. 시작된 workflow lease는
+admission TTL을 넘어 wait/resume/interrupt/cleanup할 수 있지만 종료 뒤 새 dispatch는
+금지된다. agent tool·sandbox network 차단은 provider model transport 차단을 뜻하지 않는다.
+
+```bash
+install -d -m 700 /absolute/dedicated/studio-state /absolute/dedicated/studio-runtime
+node plugins/studio/scripts/persistent_brainstorm_controller.mjs \
+  --request-file /absolute/path/to/persistent-request.json \
+  --state-root /absolute/dedicated/studio-state \
+  --runtime-root /absolute/dedicated/studio-runtime \
+  --cwd /absolute/path/to/read-only-project
+```
+
+성공은 `ok:true`, root/envelope `status:"completed"`,
+`execution_path:"persistent-native-app-server"`, `fallback_allowed:false`, exact Production
+workflow receipt가 모두 일치할 때뿐이다. pre-dispatch admission이 명시적으로
+`status:"fallback_required"`, `fallback_allowed:true`,
+`execution_path:"isolated-runner"`를 모두 반환한 경우만 아래 isolated Runner를 사용한다.
+`aborted|failed|error|recovery_required`와 불완전 출력은 STOP한다. 민감한
+ContextPack·credential·사용자 데이터는 context-only brainstorm request에서 제외한다.
+회의 workflow가 배정된 작업 단위라면 그 완료조건과 outstanding interaction이 모두
+해소된 뒤에만 role thread와 rollout을 delete한다. 회의·round·turn·run의 종료 자체는
+종료 사유가 아니며 작업 단위 사이의 기억은 보존하지 않는다.
+
+### Native crew instance lifecycle
+
+Studio의 모든 native crew는 **역할 기반으로 인스턴스를 배정하고, 인스턴스 수명은
+동적으로 정한 작업 단위 기준으로 관리**한다. 인스턴스 하나는 명확한 단일 역할을 맡는다.
+같은 역할이라도 독립 작업 단위가 여러 개면 별도 인스턴스를 둘 수 있지만, 역할명·인원수·
+A/B 같은 예시 이름을 topology로 고정하지 않는다.
+
+- 최초 배정에서만 spawn한다. 같은 작업 단위의 후속 의견교류, peer/QA/review 대기,
+  feedback 대응, 재작업, 재검증은 original physical handle에 follow-up한다.
+- `waiting-for-peer`와 `rework`는 active 상태다. 담당 완료조건 충족과 outstanding
+  peer/review interaction 0이 함께 확인될 때만 terminal로 전이하고 cleanup한다.
+- 독립 판단이 필요한 reviewer는 별도 역할·작업 단위·인스턴스로 배정한다. reviewer도
+  자기 review 단위가 끝날 때까지 유지한다.
+- 예를 들어 서로 다른 작업 단위를 맡은 같은 developer 역할 인스턴스가 둘일 수 있다.
+  한 단위의 review finding은 그 단위의 original developer에게 follow-up하고 같은 review
+  흐름으로 재확인한다. review 대기 중 developer도 active다.
+
+Producer는 owner intent·범위·완료조건을 정본으로 유지하는 Studio control plane이다.
+role↔instance↔work-unit mapping과 상태를 관리하고 dependency·질문·산출물·review
+feedback을 original instance 사이에 왜곡 없이 relay한다. 전체 상태와 gate는 owner와
+대화하되 crew 산출물을 직접 만들거나 crew 판단을 대신 합성하지 않으며, 내부 workflow가
+owner 요구를 재정의하거나 범위를 확대하지 못하게 한다.
+
+이 계약은 brainstorm, development/pairing, QA, review, critic 등 모든 native crew에
+공통이다. 기존 Workflow/Runner, task-worker, task-github, worktree,
+execution-control을 그대로 사용하며, 외부 executor나 continuation handle을 제공하지 않는
+호환 경로에는 persistence를 주장하지 않는다.
 
 ```bash
 node plugins/studio/scripts/codex_workflow_runner.mjs \
@@ -256,8 +305,9 @@ node plugins/studio/scripts/codex_workflow_runner.mjs \
   배타적일 때만 `anyOf`로 낮추고, overlap/판정 불가는 dispatch 전에
   `schema_unsupported`로 거부한다.
 - 경계: schema/output은 1 MiB 제한과 임시 디렉터리 cleanup을 적용한다. brainstorm은
-  전부 read-only다. pairing은 검증된 secondary worktree의 dev만 workspace-write이며
-  target과 Runner cwd의 git common-dir가 같아야 한다. qa/critic은 read-only다.
+  전부 read-only다. fallback pairing은 검증된 secondary worktree의 dev만
+  workspace-write이며 target과 Runner cwd의 git common-dir가 같아야 한다.
+  qa/critic은 read-only다.
 - 종료: timeout은 process group에 TERM 후 KILL을 적용하고 recursion을 거부한다.
   dispatch 뒤 generic subagent로 자동 fallback하지 않는다.
 - 출력: 성공은
@@ -329,14 +379,18 @@ production scale과 independent review edge는 별도 축이다.
 
 ## 상태
 
+v0.10.0 — pinned bundled Codex app-server의 read-only persistent brainstorm를 Production
+route로 활성화하고, 모든 native crew에 역할 기반 배정·작업 단위 기준 instance lifecycle·
+original-handle rework continuation 계약을 명시했다. 새 write runtime 없이 기존
+Workflow/Runner와 task-worker/task-github/worktree/execution-control 경계를 유지한다.
+Brainstorm sealed replay는 full 21 calls 대비 standard 13 calls(38.10%), criterion floor
+100점, quality degradation 0%를 유지한다. 작업 단위 완료와 outstanding interaction 0이
+확인된 뒤 cleanup하며 cross-work-unit 기억은 제공하지 않는다.
+
 v0.9.0 — workflow-scoped persistent crew의 read-only brainstorm canary와 item별
 `solo|standard|major` 정적 production scale, 1-call solo, outcome-linked brainstorm
 수렴, exact model-call 계측을 추가했다. Standard 기술 설계는 QA를 보존하고 summarizer가
-고정 agenda 요구사항을 누락하지 않도록 한다. deterministic control은 동일 3인 cast에서
-calls 21→13(38.10%)과 representative replay quality drop 0%를 확인한다. 이전 live
-wall-time A/B는 51.47% 감소였지만 QA 보강 전 quality drop 10%였으므로 현재 30%/5%
-fresh-live 통과 증거로 재사용하지 않는다. token coverage도 unavailable이므로 token
-절감은 주장하지 않는다.
+고정 agenda 요구사항을 누락하지 않도록 한다.
 
 v0.8.1 — 설치 artifact 내부 canonical execution contract를 기본으로 사용하고,
 직렬화 경계의 physical claim 상태와 timezone-aware timestamp 검증을 정합화했다.
@@ -359,9 +413,15 @@ v0.4.0 — stable review cycle·delta/full QA gate·evidence reuse·compact hand
 기존 schema-v1 workflow receipt·QualityPlan·Context Kernel·optional external executor도 유지한다. 설계 정본은 이 repo
 위키(INT/DEC studio) + `drafts/agent-team-concept.md`.
 검증 테스트: `python3 plugins/studio/tests/test_studio.py`,
+`python3 plugins/studio/tests/test_execution_control.py`,
+`python3 plugins/studio/tests/test_routing_contracts.py`,
 `node --test plugins/studio/tests/test_broker_semantics.js`,
 `node --test plugins/studio/tests/test_codex_runner.js`,
-`node --test plugins/studio/tests/test_persistent_brainstorm_broker.js`.
+`node --test plugins/studio/tests/test_persistent_brainstorm_broker.js`,
+`node --test plugins/studio/tests/test_persistent_brainstorm_controller.js`,
+`node --test plugins/studio/tests/test_persistent_native_app_server.js`,
+`node --test plugins/studio/tests/test_persistent_native_live_canary.js`,
+`node --test plugins/studio/tests/test_production_profiles_benchmark.js`.
 
 후순위(정의만, MVP 비활성): 마케팅/판매 운영 역할, 동적 채용(casting), standup/retro/demo
 리추얼과 추가 external workflow adapter.

@@ -15,7 +15,11 @@ import {
   persistentStateDigest,
   validatePersistentState,
 } from '../broker/persistent_brainstorm_broker.mjs'
-import { PersistentBrainstormStore } from '../broker/persistent_brainstorm_store.mjs'
+import {
+  DISPATCH_JOURNAL_SCHEMA,
+  PersistentBrainstormStore,
+  persistentDispatchJournalDigest,
+} from '../broker/persistent_brainstorm_store.mjs'
 import { executePersistentRequest } from '../scripts/persistent_brainstorm_driver.mjs'
 
 function capability(overrides = {}) {
@@ -210,7 +214,7 @@ test('revision fences cover create, debate, repair, cancel, and completed transi
     minority: 'none',
     proposals: [],
   }])
-  completed = apply(completed, [{ alive: true, reason: 'verified' }])
+  completed = apply(completed, [{ alive: false, reason: 'no verified delta' }])
   assert.equal(completed.status, 'completed')
   assert.equal(completed.pending, null)
   assertRevisionFenceChain(completed)
@@ -310,6 +314,57 @@ test('summarizer and final verdict malformed output use one bounded same-handle 
   state = apply(state, [{ alive: false }])
   assert.equal(state.pending.actions[0].repair_attempt, 1)
   assert.equal(state.pending.actions[0].host_handle, 'host-critic:critic')
+})
+
+test('final alive const follows the verified outcome-linked delta invariant', () => {
+  function advanceToVerdict(runId, withDelta) {
+    let state = createPersistentBrainstorm(input({ run_id: runId, maxRounds: 1 }))
+    state = apply(state, [
+      { utterance: 'a', deltas: [] },
+      { utterance: 'b', deltas: [] },
+    ])
+    state = apply(state, [{
+      utterance: withDelta ? 'choose explicit config' : 'a dry',
+      deltas: withDelta ? [{
+        changed_what: 'implicit configuration rejected',
+        anchor: 'rejected-alternative',
+        evidence: 'AC-1',
+      }] : [],
+    }])
+    state = apply(state, [{ utterance: 'b dry', deltas: [] }])
+    state = apply(state, [{
+      verified: withDelta ? [{
+        id: 0,
+        valid: true,
+        outcome_linked: true,
+        reason: 'AC-1 changes the bounded contract',
+      }] : [],
+    }])
+    state = apply(state, [{
+      synthesis: 'bounded',
+      minority: 'none',
+      proposals: [],
+    }])
+    assert.equal(state.phase, 'Verdict')
+    return state
+  }
+
+  let alive = advanceToVerdict('RUN-alive-const-true', true)
+  assert.equal(alive.pending.actions[0].output_schema.properties.alive.const, true)
+  alive = apply(alive, [{ alive: false, reason: 'contradicts verified deltas' }])
+  assert.equal(alive.pending.actions[0].repair_attempt, 1)
+  assert.equal(alive.pending.actions[0].output_schema.properties.alive.const, true)
+  alive = apply(alive, [{ alive: true, reason: 'verified delta changed AC-1' }])
+  assert.equal(alive.status, 'completed')
+  assert.equal(alive.output.verdict.alive, true)
+
+  let dry = advanceToVerdict('RUN-alive-const-false', false)
+  assert.equal(dry.pending.actions[0].output_schema.properties.alive.const, false)
+  dry = apply(dry, [{ alive: true, reason: 'contradicts empty delta log' }])
+  assert.equal(dry.pending.actions[0].repair_attempt, 1)
+  dry = apply(dry, [{ alive: false, reason: 'no verified outcome-linked delta' }])
+  assert.equal(dry.status, 'completed')
+  assert.equal(dry.output.verdict.alive, false)
 })
 
 test('physical host handles are unique across every participant, critic, and summarizer pair', () => {
@@ -503,6 +558,91 @@ test('runtime-owned store accepts no caller state, rejects duplicate/stale repla
       store.read('RUN-store'),
       error => error instanceof PersistentBrokerError && error.code === 'state_tampered',
     )
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('first durable request_sent closes fallback before a two-action barrier continues', async () => {
+  const root = await canonicalScratch('studio-persistent-production-fence-')
+  try {
+    const store = new PersistentBrainstormStore(root)
+    await store.initialize()
+    const state = createPersistentBrainstorm(input({ run_id: 'RUN-production-fence' }))
+    state.admission = 'production'
+    state.capability = {
+      schema: 'studio-native-persistent-capability/v2',
+      verified: true,
+      adapter_owned: true,
+    }
+    state.native_started = false
+    state.fallback_allowed = true
+    rebindCurrentDigest(state)
+    validatePersistentState(state)
+    const now = '2026-07-28T00:00:00.000Z'
+    const journal = {
+      schema: DISPATCH_JOURNAL_SCHEMA,
+      run_id: state.run_id,
+      journal_revision: 1,
+      journal_digest: null,
+      state_ref: {
+        run_id: state.run_id,
+        state_revision: state.state_revision,
+        state_digest: state.state_digest,
+      },
+      status: 'active',
+      dispatch_started: false,
+      native_response_received: false,
+      entries: state.pending.actions.map(action => ({
+        action_id: action.action_id,
+        ordinal: action.ordinal,
+        actor_id: action.actor_id,
+        kind: action.kind,
+        barrier_id: action.barrier_id,
+        prompt_schema_digest: action.prompt_schema_digest,
+        dispatch_state_revision: action.state_revision,
+        dispatch_state_digest: action.state_digest,
+        stage: 'scheduled',
+        binding: null,
+        receipt: null,
+        result: null,
+        applied_state_revision: null,
+      })),
+      created_at: now,
+      updated_at: now,
+      recovery: null,
+      tombstone: null,
+    }
+    journal.journal_digest = persistentDispatchJournalDigest(journal)
+    const paths = store.paths(state.run_id)
+    await writeFile(paths.state, `${JSON.stringify(state)}\n`, { mode: 0o600 })
+    await writeFile(paths.dispatch, `${JSON.stringify(journal)}\n`, { mode: 0o600 })
+
+    await store.recordRequestSent({
+      run_id: state.run_id,
+      expected_state_revision: state.state_revision,
+      expected_state_digest: state.state_digest,
+      action_id: state.pending.actions[0].action_id,
+    })
+    const fenced = await store.read(state.run_id)
+    const projection = store.project(fenced)
+    assert.equal(fenced.native_started, true)
+    assert.equal(fenced.fallback_allowed, false)
+    assert.equal(projection.envelope.fallback_allowed, false)
+    assert.equal(fenced.state_revision, state.state_revision + 1)
+
+    await store.recordRequestSent({
+      run_id: fenced.run_id,
+      expected_state_revision: fenced.state_revision,
+      expected_state_digest: fenced.state_digest,
+      action_id: fenced.pending.actions[1].action_id,
+    })
+    const dispatch = await store.readDispatch(state.run_id)
+    assert.deepEqual(dispatch.entries.map(entry => entry.stage), [
+      'request_sent',
+      'request_sent',
+    ])
+    assert.equal(dispatch.state_ref.state_digest, fenced.state_digest)
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -795,6 +935,6 @@ test('admission, capability, ordering, stale and malformed terminal outputs fail
     error => error instanceof PersistentBrokerError && error.code === 'stale_result',
   )
   const envelope = persistentBrainstormEnvelope(state)
-  assert.equal(envelope.live_host_canary_approved, false)
+  assert.equal(Object.hasOwn(envelope, 'live_host_canary_approved'), false)
   assert.equal(envelope.evidence_status, 'deterministic-harness-only')
 })

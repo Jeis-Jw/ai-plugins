@@ -1163,6 +1163,14 @@ def main() -> None:
         r = run(["cast", "suggest", "idea", "--item-scale", "major"], tmp)
         assert r["ok"] and r["kind"] == "idea", r
         assert r["ritual"] == "brainstorm", r
+        assert r["execution_route"] == {
+            "schema": "studio-ritual-execution-route/v1",
+            "execution_path": "persistent-native-app-server",
+            "controller": "scripts/persistent_brainstorm_controller.mjs",
+            "runtime_capability_required": True,
+            "fallback_path": "isolated-runner",
+            "fallback_allowed_until": "request_sent",
+        }, r
         assert r["crew"] == ["planner-a", "planner-b", "researcher", "critic"], r
         assert r["participants"] == ["planner-a", "planner-b", "researcher"], r
         assert r["critic"] is True, r
@@ -1173,6 +1181,7 @@ def main() -> None:
 
         r = run(["cast", "suggest", "implementation", "--item-scale", "major"], tmp)
         assert r["ritual"] == "pairing", r
+        assert r["execution_route"]["execution_path"] == "isolated-runner", r
         assert r["crew"] == ["dev", "qa"], r
         assert r["participants"] == ["dev", "qa"], r
         assert r["critic"] is True, r
@@ -1183,6 +1192,7 @@ def main() -> None:
             "--review-owner", "task-worker",
         ], tmp)
         assert r["ritual"] == "solo" and r["participants"] == ["dev"], r
+        assert r["execution_route"]["execution_path"] == "isolated-runner", r
         assert r["limits"] == {"max_rounds": 1, "dry_stop": 0}, r
         assert r["critic"] is False and not r["interaction_applicable"], r
         assert r["verification"]["owner"] == "task-worker" and not r["verification"]["dispatch"], r
@@ -1338,7 +1348,7 @@ def main() -> None:
         assert "python3 \"$STUDIO\" doctor --json" in doctor_skill, doctor_skill
         assert "discovery/probe하지 않으며" in doctor_skill, doctor_skill
         for manifest_path in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json"):
-            assert json.loads(plugin_text(manifest_path))["version"] == "0.9.0", manifest_path
+            assert json.loads(plugin_text(manifest_path))["version"] == "0.10.0", manifest_path
 
         # producer main thread may coordinate, not edit/integrate
         producer = plugin_text("skills/producer/SKILL.md")
@@ -1361,6 +1371,12 @@ def main() -> None:
             "provider가 absent/unknown이면 `context outbox`",
             "`references/review-cycle.md`",
             "`references/execution-control.md`",
+            "owner intent·범위·완료조건을 정본",
+            "`role ↔ original physical instance ↔ work unit`",
+            "original physical handle에 follow-up",
+            "`waiting-for-peer`와 `rework`는 active",
+            "사이에 **왜곡 없이 relay**",
+            "외부 executor와 isolated Runner에는",
         ):
             assert phrase in producer, phrase
         review_reference = plugin_text("skills/producer/references/review-cycle.md")

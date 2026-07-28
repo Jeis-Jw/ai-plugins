@@ -3,24 +3,46 @@ title: Studio 플러그인
 created_at: 2026-07-14
 summary: native-first 에이전트 팀과 명시적 외부 도구 라우팅, runtime별 agent 정책, 단일 review owner 및 evidence 재사용 설계 정본
 tags: [studio, orchestration, routing, review, qa, evidence]
-verified_at: 2026-07-27
+verified_at: 2026-07-29
 affects_paths: [plugins/studio/**, plugins/task-worker/**, plugins/task-github/**]
 ---
 
 ## 현재 상태
 
-Studio 0.9.0은 owner의 미션을 research, planning, strategy, design, architecture, implementation, creation, QA, independent review, critique, curation, summarization 역할로 분해하고 ready-set을 병렬 실행하는 상위 orchestration layer다. native harness만으로 전체 흐름을 완주하며 외부 plugin은 기능 필수가 아니다. callable Workflow가 없는 Codex에서는 verified runtime capability가 있을 때 production Runner가 기존 broker를 실행한다. canonical execution permit·atomic claim·immutable evidence로 동일 물리 실행만 차단한다.
+Studio 0.10.0은 owner의 미션을 research, planning, strategy, design, architecture, implementation, creation, QA, independent review, critique, curation, summarization 역할로 분해하고 ready-set을 병렬 실행하는 상위 orchestration layer다. read-only brainstorm는 pinned bundled Codex app-server의 persistent Production controller를 사용한다. 모든 native crew는 역할 기반으로 인스턴스를 배정하고 인스턴스 수명은 동적 작업 단위 기준으로 관리한다.
 
-Persistent brainstorm은 deterministic reducer/store **harness**와 owner-approved actual
-collaboration host positive-path canary까지 구현·실행됐다. 다만 production admission은
-독립 audit closure 전까지 닫혀 있다. Harness의 reducer가
-phase/order/barrier/maxRounds/dryStop을 전이하고 runtime-owned store가 caller state를
-차단하며 revision/digest/lock/atomic rename fence를 적용한다. action contract는
+Persistent brainstorm Production은 reducer가 phase/order/barrier/maxRounds/dryStop을
+전이하고 runtime-owned store가 caller state를 차단하며 revision/digest/lock/atomic rename
+fence를 적용한다. Controller는 admission 뒤 pending action마다 durable `request_sent`를
+먼저 기록하고 `spawn`에서만 role thread를 만들며 이후 exact same-thread follow-up을
+사용한다. action contract는
 turn/generation/state digest/transition, canonical label, host-valid immutable `task_name`을
 포함한다. exact schema result는 original handle에서 한 번만 repair하며 incomplete cancel은
 `recovery_required`다. Physical host handle은 participant, critic, summarizer 역할 간
-alias를 fail-closed하며 mixed cancel 결과를 actor별로 기록한다. 이는 live persistent
-production 지원 완료 주장이 아니다.
+alias를 fail-closed하며 mixed cancel 결과를 actor별로 기록한다. 병렬 sibling 실패도 drain한
+후 interrupt/delete하고, 시작된 workflow lease는 admission TTL 이후에도 정상 cleanup할 수
+있다.
+
+Native crew 인스턴스 하나는 명확한 단일 역할을 맡는다. 같은 역할이라도 독립 작업 단위가
+여러 개면 별도 인스턴스를 둘 수 있지만 역할명·인원수·A/B 같은 예시 이름은 고정 topology가
+아니다. 최초 배정에서만 spawn하고 같은 작업 단위의 의견교류, peer/review 대기, feedback
+대응, 재작업, 재검증은 original physical handle에 follow-up한다.
+
+`waiting-for-peer`와 `rework`는 active다. 담당 완료조건 충족과 outstanding peer/review
+interaction 0이 함께 확인될 때만 terminal/cleanup한다. 독립 reviewer는 별도 역할·작업
+단위·인스턴스로 배정하며 자기 review 단위가 끝날 때까지 유지한다. 이 계약은 brainstorm,
+development/pairing, QA, review, critic 등 모든 native crew에 공통이다.
+
+Producer는 owner intent·범위·완료조건을 정본으로 유지하는 Studio control plane이다.
+role↔instance↔work-unit mapping과 상태를 관리하고 dependency·질문·산출물·review
+feedback을 original instance 사이에 왜곡 없이 relay한다. owner와 전체 상태·gate를
+대화하되 산출물을 직접 만들거나 crew 판단을 대리 합성하지 않고, 내부 workflow가 owner
+요구를 재정의하거나 범위를 확대하지 못하게 한다.
+
+현재 Production persistence 구현은 read-only brainstorm에 한정한다. 기존
+Workflow/Runner, task-worker, task-github, worktree, execution-control을 그대로
+사용하며 외부 executor나 continuation handle을 제공하지 않는 호환 경로에는 persistence를
+주장하지 않는다. 작업 단위 간 기억과 민감 ContextPack 전송은 지원하지 않는다.
 
 Production scale v1은 backlog item마다 `solo|standard|major`를 정적으로 선택한다. `solo`는
 upstream criterion source와 기계적 measure가 있는 item만 crew 1명·1회로 처리한다.
@@ -58,8 +80,12 @@ validation만 반환한다. `--worker`와 `--reviewer`는 명시한 provider만 
 | 물리 실행 절감 | 같은 HEAD/command/environment/tool version의 valid evidence는 재사용하고 finding 수정은 delta QA한다. |
 | 실행 허가 | 실제 명령은 canonical permit/profile의 허용 범위를 dispatch·result·evidence 세 경계에서 모두 만족해야 한다. |
 | compact handoff | criteria, open finding, changed paths, valid evidence, next action만 전달한다. transcript와 settled context를 다시 수집하지 않는다. |
-| persistent crew | deterministic harness와 owner-approved positive-path live canary가 존재하지만 독립 audit closure 전에는 production persistent 지원을 활성화·주장하지 않는다. UI card-title projection은 독립 capability다. |
-| fallback fence | native persistent action dispatch 후 isolated CLI Runner로 중간 fallback하거나 replacement spawn하지 않는다. pairing은 hard write confinement 전까지 기존 isolated Runner를 유지한다. |
+| native crew lifecycle | 역할 기반으로 배정하고 작업 단위 기준으로 수명을 관리한다. 최초 spawn 뒤 같은 단위의 peer 대기·feedback·재작업·재검증은 original handle에 follow-up한다. |
+| terminal gate | `waiting-for-peer`/`rework`는 active다. 담당 완료조건과 outstanding peer/review interaction 0이 함께 확인될 때만 cleanup한다. |
+| producer control plane | owner intent·범위·완료조건과 role↔instance↔work-unit mapping을 관리하고 original instance 사이 메시지를 왜곡 없이 relay한다. 산출물 제작·판단 대리 합성은 금지한다. |
+| persistence claim | verified native continuation handle이 있는 경로만 persistent라고 부른다. 외부 executor와 isolated Runner에는 persistence를 주장하지 않는다. |
+| fallback fence | brainstorm은 명시적인 pre-dispatch `fallback_required`에서만 isolated Runner로 fallback한다. 첫 durable request 뒤에는 중간 fallback이나 replacement spawn을 금지한다. |
+| delivery boundary | task-worker가 decomposition·ready-set·worktree·verification·integration gate를, task-github가 GitHub projection/delivery를 소유한다. Studio는 둘을 대체하지 않는다. |
 
 ## 도구 라우팅
 
@@ -123,12 +149,15 @@ Studio와 worker 어느 쪽도 schema 축약본이나 parity가 검증되지 않
 - evidence 재사용은 physical identity뿐 아니라 criteria/path/surface/impact/purpose/independence까지 일치해야 한다. invalidation은 새 canonical digest로 한 번 기록한 뒤 되돌리지 않는다. final 독립 판단, integration HEAD full gate, release/device/production preflight는 fresh permit을 요구한다.
 - capability 실패는 `(mission_id, capability_id, environment_digest)`에 한 번 기록해 병렬 track이 같은 probe를 반복하지 않는다. 외부 mutation은 passed preflight를 요구하고, 비용이 있으면 owner-approved authorization quota를 mutation 전에 원자 claim한다. consumption과 mutation receipt는 서로의 최종 ref/digest를 교차 검증한다.
 - token telemetry는 permit의 `fail-closed|report-only`를 따른다. null/unavailable을 0으로 계산하지 않는다. closeout은 integration HEAD에 적용 가능한 verification/review/delivery/mutation/cleanup/user-change ref와 zero open finding을 reconciliation한 뒤에만 완료한다.
-- broker receipt의 model call과 elapsed는 실제 run마다 coverage를 기록한다. 동일 3인 cast의
-  deterministic control은 full 21 calls 대비 standard 13 calls로 38.10% 감소했고 reviewed
-  representative fixture의 quality replay drop은 0%다. synthetic timing과 scripted verdict는
-  wall-time Owner gate evidence가 아니다. 보강 전 live A/B의 wall time은 51.47% 감소했지만
-  quality drop 10%였으므로 현재 30%/5% fresh-live 통과 증거로 재사용하지 않는다. token
-  coverage unavailable도 token 절감 claim을 금지한다.
+- broker receipt의 model call은 actual reducer result ledger와 교차 검증한다. 구현과 분리된
+  reviewer가 승인한 sealed 4-scenario input/response tape에서 각 criterion floor 100점과
+  quality degradation 0%를 확인했다. 동일 3인 cast의 기존 full 21 calls 대비 persistent
+  standard 13 calls는 38.10%의 **profile 효율 하한**이며 native adapter, wall-time, token,
+  physical process 절감 주장이 아니다. elapsed/token coverage는 unavailable이다.
+- development 보정-loop 합성 E2E는 actual logical turns 5개를 유지하면서 fresh-thread
+  topology baseline 5개 대비 persistent role thread 3개를 사용해 thread start를 40% 줄였다.
+  모든 permit-bound verification은 pass했으며 target late write는 없었다. 이 수치는
+  wall-time/token 또는 production workload 평균 절감 주장이 아니다.
 - `execution summary`는 board를 변경하지 않고 logical check, physical run, full/delta QA, reuse/duplicate 방지, capability cache, token coverage, owner intervention, external spend를 `efficiency-summary/v1`로 투영한다.
 
 이 control plane은 명령을 직접 실행하거나 provider API를 호출하지 않는다. Studio native harness와
