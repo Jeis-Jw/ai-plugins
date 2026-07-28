@@ -1,31 +1,149 @@
 {
-  "schema": "studio-production-profile-replay-corpus/v1",
-  "provenance": "reviewed-representative-fixture",
+  "schema": "studio-production-profile-replay-corpus/v3",
+  "provenance": "sealed-independent-review",
+  "sealed_at": "2026-07-28T11:27:52.000Z",
   "source_refs": [
+    "plugins/studio/broker/brainstorm.workflow.js",
+    "plugins/studio/broker/persistent_brainstorm_broker.mjs",
     "wiki/context/decision/DEC-2026-07-26-031028-studio-production-scale과-producer-manager-only-운영-모델.md",
-    "wiki/context/observation/OBS-2026-07-26-031054-studio-production-scale-구현-전-남은-admission-reviewer-edge-계측-계약.md"
+    "wiki/context/observation/OBS-2026-07-26-031054-studio-production-scale-구현-전-남은-admission-reviewer-edge-계측-계약.md",
+    "wiki/task/TASK-2026-07-28-155552-studio-native-persistent-crew-production-경로-적용.md"
   ],
-  "cases": [
+  "review": {
+    "reviewer_ref": "adversarial-security-20260728",
+    "method": "independent-semantic-review",
+    "verdict": "approved",
+    "seal_digest": "sha256:c605b95d8c288a331cb7b2845aab115da8dd038007ce5ab9bd1e05bc44e2dcb5",
+    "review_digest": "sha256:c75c505e74cbf0f6fc8a60a7983cc8f8979272fcd078dfcbebfeaea18bbf0db1"
+  },
+  "scenarios": [
     {
-      "id": "bounded-contract-choice",
-      "outcome_kind": "rejected-alternative",
-      "expected": {"decision": "reject-implicit-config", "criterion_pass": true},
-      "baseline_observed": {"decision": "reject-implicit-config", "criterion_pass": true},
-      "variant_observed": {"decision": "reject-implicit-config", "criterion_pass": true}
+      "id": "accepted-delta",
+      "outcome_kind": "accepted-outcome-linked-delta",
+      "input": {
+        "agenda": "Choose one bounded parser contract and preserve the rejected alternative.",
+        "critic_rubric": "Accept only outcome-linked contract, risk, or rejected-alternative evidence.",
+        "personas": [
+          {"name":"a","crew":"a","role":"contract choice","prior":"explicit","body":"Prefer explicit contracts."},
+          {"name":"b","crew":"b","role":"risk challenge","prior":"safe","body":"Challenge hidden risk."},
+          {"name":"c","crew":"c","role":"criteria review","prior":"testable","body":"Bind acceptance criteria."}
+        ]
+      },
+      "tape": {
+        "diverge": {"utterance":"independent preparation","deltas":[]},
+        "participant_a_rounds": [
+          {"utterance":"bind explicit parser contract in round 1","deltas":[{"changed_what":"explicit parser contract 1","anchor":"acceptance-criteria","evidence":"AC-1 now requires explicit parser configuration","rejected_alternative":"implicit configuration"}]},
+          {"utterance":"bind explicit parser contract in round 2","deltas":[{"changed_what":"explicit parser contract 2","anchor":"acceptance-criteria","evidence":"AC-2 now requires explicit parser configuration","rejected_alternative":"implicit configuration"}]},
+          {"utterance":"bind explicit parser contract in round 3","deltas":[{"changed_what":"explicit parser contract 3","anchor":"acceptance-criteria","evidence":"AC-3 now requires explicit parser configuration","rejected_alternative":"implicit configuration"}]},
+          {"utterance":"bind explicit parser contract in round 4","deltas":[{"changed_what":"explicit parser contract 4","anchor":"acceptance-criteria","evidence":"AC-4 now requires explicit parser configuration","rejected_alternative":"implicit configuration"}]}
+        ],
+        "other_participant": {"utterance":"no additional state change","deltas":[]},
+        "critic": {"valid":true,"outcome_linked":true,"reason":"changes the fixed parser contract"},
+        "summarizer": {"synthesis":"explicit parser configuration selected","minority":"none","proposals":[]},
+        "final_verdict": {"alive":true,"reason":"verified contract delta exists"}
+      },
+      "criteria": [
+        {"id":"accepted-has-valid","field":"has_valid_delta","expected":true,"minimum_score":100},
+        {"id":"accepted-alive","field":"alive","expected":true,"minimum_score":100},
+        {"id":"accepted-not-theatre","field":"theatre","expected":false,"minimum_score":100},
+        {"id":"accepted-rejected-alternative","field":"rejected_alternative_preserved","expected":true,"minimum_score":100}
+      ]
     },
     {
-      "id": "dry-wording-only",
-      "outcome_kind": "no-outcome-change",
-      "expected": {"alive": false, "valid_delta_count": 0},
-      "baseline_observed": {"alive": false, "valid_delta_count": 0},
-      "variant_observed": {"alive": false, "valid_delta_count": 0}
+      "id": "rejected-delta",
+      "outcome_kind": "critic-rejected-submission",
+      "input": {
+        "agenda": "Choose one bounded parser contract and preserve the rejected alternative.",
+        "critic_rubric": "Accept only outcome-linked contract, risk, or rejected-alternative evidence.",
+        "personas": [
+          {"name":"a","crew":"a","role":"contract choice","prior":"explicit","body":"Prefer explicit contracts."},
+          {"name":"b","crew":"b","role":"risk challenge","prior":"safe","body":"Challenge hidden risk."},
+          {"name":"c","crew":"c","role":"criteria review","prior":"testable","body":"Bind acceptance criteria."}
+        ]
+      },
+      "tape": {
+        "diverge": {"utterance":"independent preparation","deltas":[]},
+        "participant_a_rounds": [
+          {"utterance":"claim an ungrounded change 1","deltas":[{"changed_what":"ungrounded parser preference 1","anchor":"artifact","evidence":"no concrete artifact outcome","rejected_alternative":"implicit configuration"}]},
+          {"utterance":"claim an ungrounded change 2","deltas":[{"changed_what":"ungrounded parser preference 2","anchor":"artifact","evidence":"no concrete artifact outcome","rejected_alternative":"implicit configuration"}]},
+          {"utterance":"claim an ungrounded change 3","deltas":[{"changed_what":"ungrounded parser preference 3","anchor":"artifact","evidence":"no concrete artifact outcome","rejected_alternative":"implicit configuration"}]},
+          {"utterance":"claim an ungrounded change 4","deltas":[{"changed_what":"ungrounded parser preference 4","anchor":"artifact","evidence":"no concrete artifact outcome","rejected_alternative":"implicit configuration"}]}
+        ],
+        "other_participant": {"utterance":"no additional state change","deltas":[]},
+        "critic": {"valid":false,"outcome_linked":false,"reason":"claim lacks a concrete outcome"},
+        "summarizer": {"synthesis":"no verified parser change","minority":"none","proposals":[]},
+        "final_verdict": {"alive":false,"reason":"no verified delta exists"}
+      },
+      "criteria": [
+        {"id":"rejected-valid-count-zero","field":"valid_delta_count","expected":0,"minimum_score":100},
+        {"id":"rejected-not-alive","field":"alive","expected":false,"minimum_score":100},
+        {"id":"rejected-theatre","field":"theatre","expected":true,"minimum_score":100},
+        {"id":"rejected-audited","field":"rejected_submission_audited","expected":true,"minimum_score":100}
+      ]
     },
     {
-      "id": "risk-minority-preserved",
-      "outcome_kind": "risk",
-      "expected": {"risk": "criteria-source-missing", "minority_preserved": true},
-      "baseline_observed": {"risk": "criteria-source-missing", "minority_preserved": true},
-      "variant_observed": {"risk": "criteria-source-missing", "minority_preserved": true}
+      "id": "dry-close",
+      "outcome_kind": "dry-convergence-close",
+      "input": {
+        "agenda": "Choose one bounded parser contract and preserve the rejected alternative.",
+        "critic_rubric": "Accept only outcome-linked contract, risk, or rejected-alternative evidence.",
+        "personas": [
+          {"name":"a","crew":"a","role":"contract choice","prior":"explicit","body":"Prefer explicit contracts."},
+          {"name":"b","crew":"b","role":"risk challenge","prior":"safe","body":"Challenge hidden risk."},
+          {"name":"c","crew":"c","role":"criteria review","prior":"testable","body":"Bind acceptance criteria."}
+        ]
+      },
+      "tape": {
+        "diverge": {"utterance":"independent preparation","deltas":[]},
+        "participant_a_rounds": [
+          {"utterance":"no state change 1","deltas":[]},
+          {"utterance":"no state change 2","deltas":[]},
+          {"utterance":"no state change 3","deltas":[]},
+          {"utterance":"no state change 4","deltas":[]}
+        ],
+        "other_participant": {"utterance":"no additional state change","deltas":[]},
+        "critic": {"valid":false,"outcome_linked":false,"reason":"no submitted delta"},
+        "summarizer": {"synthesis":"no outcome-linked change","minority":"none","proposals":[]},
+        "final_verdict": {"alive":false,"reason":"no verified delta exists"}
+      },
+      "criteria": [
+        {"id":"dry-no-delta","field":"no_delta_logged","expected":true,"minimum_score":100},
+        {"id":"dry-not-alive","field":"alive","expected":false,"minimum_score":100},
+        {"id":"dry-closes-before-max","field":"closed_before_profile_max","expected":true,"minimum_score":100}
+      ]
+    },
+    {
+      "id": "minority-preserved",
+      "outcome_kind": "minority-risk-preservation",
+      "input": {
+        "agenda": "Choose one bounded parser contract and preserve the rejected alternative.",
+        "critic_rubric": "Accept only outcome-linked contract, risk, or rejected-alternative evidence.",
+        "personas": [
+          {"name":"a","crew":"a","role":"contract choice","prior":"explicit","body":"Prefer explicit contracts."},
+          {"name":"b","crew":"b","role":"risk challenge","prior":"safe","body":"Challenge hidden risk."},
+          {"name":"c","crew":"c","role":"criteria review","prior":"testable","body":"Bind acceptance criteria."}
+        ]
+      },
+      "tape": {
+        "diverge": {"utterance":"independent preparation","deltas":[]},
+        "participant_a_rounds": [
+          {"utterance":"bind explicit parser contract in round 1","deltas":[{"changed_what":"explicit parser contract 1","anchor":"acceptance-criteria","evidence":"AC-1 now requires explicit parser configuration","rejected_alternative":"implicit configuration"}]},
+          {"utterance":"bind explicit parser contract in round 2","deltas":[{"changed_what":"explicit parser contract 2","anchor":"acceptance-criteria","evidence":"AC-2 now requires explicit parser configuration","rejected_alternative":"implicit configuration"}]},
+          {"utterance":"bind explicit parser contract in round 3","deltas":[{"changed_what":"explicit parser contract 3","anchor":"acceptance-criteria","evidence":"AC-3 now requires explicit parser configuration","rejected_alternative":"implicit configuration"}]},
+          {"utterance":"bind explicit parser contract in round 4","deltas":[{"changed_what":"explicit parser contract 4","anchor":"acceptance-criteria","evidence":"AC-4 now requires explicit parser configuration","rejected_alternative":"implicit configuration"}]}
+        ],
+        "other_participant": {"utterance":"no additional state change","deltas":[]},
+        "critic": {"valid":true,"outcome_linked":true,"reason":"changes the fixed parser contract"},
+        "summarizer": {"synthesis":"explicit parser configuration selected","minority":"retain the streaming-parser risk","proposals":[]},
+        "final_verdict": {"alive":true,"reason":"verified contract delta exists"}
+      },
+      "criteria": [
+        {"id":"minority-has-valid","field":"has_valid_delta","expected":true,"minimum_score":100},
+        {"id":"minority-alive","field":"alive","expected":true,"minimum_score":100},
+        {"id":"minority-not-theatre","field":"theatre","expected":false,"minimum_score":100},
+        {"id":"minority-exact","field":"minority","expected":"retain the streaming-parser risk","minimum_score":100}
+      ]
     }
-  ]
+  ],
+  "seal_digest": "sha256:c605b95d8c288a331cb7b2845aab115da8dd038007ce5ab9bd1e05bc44e2dcb5"
 }

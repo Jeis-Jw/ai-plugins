@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto'
+import { isAdapterOwnedPersistentCapability } from '../scripts/persistent_native_app_server.mjs'
 
 export const PERSISTENT_BRAINSTORM_SCHEMA = 'studio-persistent-brainstorm/v2'
 export const ACTION_SCHEMA = 'studio-crew-action/v2'
 export const CAPABILITY_SCHEMA = 'studio-native-persistent-capability/v1'
+export const PRODUCTION_CAPABILITY_SCHEMA = 'studio-native-persistent-capability/v2'
 export const BARRIER_RESULT_SCHEMA = 'studio-crew-barrier-result/v2'
 export const TASK_NAME_MAX = 64
 export const REQUIRED_CAPABILITIES = Object.freeze([
@@ -19,6 +21,7 @@ const DELTA_ANCHORS = Object.freeze([
   'rejected-alternative',
   'repro-test',
 ])
+const DEFAULT_CRITIC_RUBRIC = 'Reject any delta whose changed_what has no concrete outcome-linked anchor.'
 
 export class PersistentBrokerError extends Error {
   constructor(code, message, details = {}) {
@@ -105,7 +108,7 @@ function positiveInteger(value, fallback, label) {
   return resolved
 }
 
-function validateCapability(capability) {
+function validateCanaryCapability(capability) {
   const expected = new Set([
     'schema', 'verified', 'spawn', 'followup', 'wait_barrier',
     'interrupt_cancel', 'structured_result', 'card_title_projection',
@@ -125,6 +128,92 @@ function validateCapability(capability) {
     )
   }
   return clone(capability)
+}
+
+function validateProductionCapability(capability) {
+  const toolCapture = capability?.tool_inventory_capture
+  if (
+    !isAdapterOwnedPersistentCapability(capability)
+    || capability.schema !== PRODUCTION_CAPABILITY_SCHEMA
+    || capability.verified !== true
+    || capability.persistent_roles !== true
+    || capability.structured_result !== true
+    || capability.interrupt_cancel !== true
+    || capability.adapter_owned !== true
+    || capability.contract_stability !== 'pinned-experimental-v2'
+    || capability.experimental_api !== true
+    || capability.auth_snapshot_removed !== true
+    || capability.system_skills_removed !== true
+    || capability.model_tool_surface !== 'context-only-empty'
+    || capability.repository_mutation_allowed !== false
+    || capability.agent_tool_network_access !== false
+    || capability.sandbox_network_access !== false
+    || capability.provider_model_transport !== 'required-outside-agent-tool-sandbox'
+    || capability.auth_snapshot_hygiene_only !== true
+    || capability.credential_confidentiality_guaranteed !== false
+    || capability.same_user_filesystem_read_confidentiality !== 'out-of-scope'
+    || !/^sha256:[0-9a-f]{64}$/.test(capability.admission_evidence_digest || '')
+    || !capability.inventory_evidence
+    || !Array.isArray(capability.inventory_evidence.enabled_local_execution_features)
+    || capability.inventory_evidence.enabled_local_execution_features.length !== 0
+    || toolCapture?.captured !== true
+    || toolCapture?.evidence_class !== 'live-loopback-raw-request'
+    || toolCapture?.provider_scope !== 'loopback-only'
+    || !Number.isInteger(toolCapture?.tool_count)
+    || toolCapture.tool_count !== 0
+    || !Array.isArray(toolCapture.tools)
+    || toolCapture.tools.length !== 0
+    || toolCapture.raw_tools_digest !== digest([])
+    || !/^sha256:[0-9a-f]{64}$/.test(toolCapture.raw_tools_digest || '')
+    || toolCapture.capture_ref !== toolCapture.raw_tools_digest
+    || !/^sha256:[0-9a-f]{64}$/.test(toolCapture.request_projection_digest || '')
+    || !/^sha256:[0-9a-f]{64}$/.test(toolCapture.provider_delta_digest || '')
+    || !/^sha256:[0-9a-f]{64}$/.test(toolCapture.evidence_digest || '')
+    || !Number.isFinite(Date.parse(capability.expires_at))
+    || Date.parse(capability.expires_at) <= Date.now()
+  ) {
+    throw new PersistentBrokerError(
+      'production_capability_required',
+      'Production requires a fresh capability minted by the native app-server adapter',
+    )
+  }
+  return {
+    schema: capability.schema,
+    verified: true,
+    persistent_roles: true,
+    structured_result: true,
+    interrupt_cancel: true,
+    adapter_owned: true,
+    contract_stability: capability.contract_stability,
+    experimental_api: true,
+    auth_snapshot_removed: true,
+    system_skills_removed: true,
+    model_tool_surface: 'context-only-empty',
+    repository_mutation_allowed: false,
+    agent_tool_network_access: false,
+    sandbox_network_access: false,
+    provider_model_transport: 'required-outside-agent-tool-sandbox',
+    auth_snapshot_hygiene_only: true,
+    credential_confidentiality_guaranteed: false,
+    same_user_filesystem_read_confidentiality: 'out-of-scope',
+    admission_evidence_digest: capability.admission_evidence_digest,
+    inventory_evidence: clone(capability.inventory_evidence),
+    tool_inventory_capture: clone(toolCapture),
+    card_title_projection: false,
+    version: capability.version,
+    binary_digest: capability.binary_digest,
+    schema_digest: capability.schema_digest,
+    config_digest: capability.config_digest,
+    environment_digest: capability.environment_digest,
+    verified_at: capability.verified_at,
+    expires_at: capability.expires_at,
+  }
+}
+
+function validateCapability(capability, admission) {
+  return admission === 'production'
+    ? validateProductionCapability(capability)
+    : validateCanaryCapability(capability)
 }
 
 function makeActor(input, runId, workflowName, namespace) {
@@ -192,10 +281,11 @@ function turnSchema(kind) {
           items: {
             type: 'object',
             additionalProperties: false,
-            required: ['id', 'valid', 'reason'],
+            required: ['id', 'valid', 'outcome_linked', 'reason'],
             properties: {
               id: { type: 'integer' },
               valid: { type: 'boolean' },
+              outcome_linked: { type: 'boolean' },
               reason: { type: 'string', minLength: 1 },
             },
           },
@@ -215,13 +305,13 @@ function turnSchema(kind) {
   }
 }
 
-function verdictSchema() {
+function verdictSchema(expectedAlive) {
   return {
     type: 'object',
     additionalProperties: false,
     required: ['alive', 'reason'],
     properties: {
-      alive: { type: 'boolean' },
+      alive: { type: 'boolean', const: expectedAlive },
       reason: { type: 'string', minLength: 1 },
     },
   }
@@ -247,6 +337,9 @@ function typeMatches(value, type) {
 function validateSchema(value, schema, at = '$') {
   if (!typeMatches(value, schema.type)) {
     throw new PersistentBrokerError('output_schema_mismatch', `${at} must be ${schema.type}`)
+  }
+  if (Object.hasOwn(schema, 'const') && value !== schema.const) {
+    throw new PersistentBrokerError('output_schema_mismatch', `${at} differs from const`)
   }
   if (schema.enum && !schema.enum.includes(value)) {
     throw new PersistentBrokerError('output_schema_mismatch', `${at} is outside enum`)
@@ -298,6 +391,7 @@ function promptFor(state, actor, phase, round) {
     return [
       `Canonical identity: ${actor.canonical_label}`,
       'Verification only. Do not create, strengthen, reorder, or synthesize participant deltas.',
+      `Rubric:\n${state.critic_rubric}`,
       `Submitted deltas:\n${JSON.stringify(state.round_submitted)}`,
     ].join('\n\n')
   }
@@ -433,13 +527,19 @@ function scheduleFinalCritic(state) {
   state.round = null
   const actor = state.critic
   const kind = actor.spawn_count === 0 ? 'spawn' : 'followup'
+  const expectedAlive = state.delta_log.length > 0
   const prompt = [
     `Canonical identity: ${actor.canonical_label}`,
     'Final verification only. Do not add, strengthen, reorder, or synthesize deltas.',
+    `The broker has ${state.delta_log.length} already verified outcome-linked delta(s).`,
+    `The contract therefore requires alive=${expectedAlive}; explain that exact verdict.`,
     `Verified deltas:\n${JSON.stringify(state.delta_log)}`,
     `Broker synthesis:\n${JSON.stringify(state.converge_synthesis)}`,
   ].join('\n\n')
-  setPending(state, [makeAction(state, actor, kind, 'Verdict', null, prompt, verdictSchema())])
+  setPending(
+    state,
+    [makeAction(state, actor, kind, 'Verdict', null, prompt, verdictSchema(expectedAlive))],
+  )
 }
 
 function stateTampered(message) {
@@ -519,6 +619,28 @@ export function validatePersistentState(state) {
   }
   if (!Number.isInteger(state.state_revision) || state.state_revision < 1) {
     throw new PersistentBrokerError('state_invalid', 'state revision is invalid')
+  }
+  if (
+    !['canary', 'production'].includes(state.admission)
+    || !['standard', 'full'].includes(state.production_profile)
+    || typeof state.critic_rubric !== 'string'
+    || !state.critic_rubric.trim()
+    || !Number.isFinite(Date.parse(state.started_at))
+  ) {
+    stateTampered('admission, profile, rubric, or start timestamp is invalid')
+  }
+  if (state.admission === 'canary') {
+    if (state.capability?.schema !== CAPABILITY_SCHEMA || !state.native_started || state.fallback_allowed) {
+      stateTampered('canary capability and native lifecycle are invalid')
+    }
+  } else if (
+    state.capability?.schema !== PRODUCTION_CAPABILITY_SCHEMA
+    || state.capability.adapter_owned !== true
+    || state.capability.verified !== true
+    || (state.native_started && state.fallback_allowed)
+    || (state.status === 'running' && !state.native_started && !state.fallback_allowed)
+  ) {
+    stateTampered('Production capability or native lifecycle is invalid')
   }
   const actors = [...state.participants, state.critic, state.summarizer]
   if (new Set(actors.map(actor => actor.task_name)).size !== actors.length) {
@@ -916,9 +1038,38 @@ function finish(state, verdict) {
   state.phase = 'Complete'
   state.pending = null
   state.finished_at = new Date().toISOString()
+  const elapsedMs = Math.max(0, Date.parse(state.finished_at) - Date.parse(state.started_at))
+  const tokens = exact ? results.reduce((sum, entry) => sum + entry.tokens, 0) : null
+  const receipt = {
+    schema: 'workflow-receipt/v1',
+    emitter: 'studio',
+    workflow: 'studio-brainstorm',
+    run_id: state.run_id,
+    started_at: state.started_at,
+    finished_at: state.finished_at,
+    elapsed_ms: elapsedMs,
+    tokens,
+    token_coverage: exact ? 'exact' : 'unavailable',
+    counters: {
+      model_calls: results.length,
+      rounds: state.rounds_run,
+      participants: state.participants.length,
+      valid_deltas: state.delta_log.length,
+      dry_deltas: state.dry_log.length,
+    },
+    quality: {
+      alive: Boolean(verdict.alive),
+      theatre: state.delta_log.length === 0,
+      interaction_applicable: true,
+      model_call_coverage: 'exact',
+      elapsed_coverage: 'exact',
+      token_savings_claim_eligible: exact,
+    },
+  }
   state.output = {
     run_id: state.run_id,
     ritual: 'brainstorm',
+    production_profile: state.production_profile,
     participants: state.participants.map(actor => actor.crew),
     synthesis: state.converge_synthesis.synthesis,
     minority: state.converge_synthesis.minority,
@@ -926,10 +1077,12 @@ function finish(state, verdict) {
     delta_log: [...state.delta_log, ...state.dry_log],
     verdict,
     cost: {
-      tokens: exact ? results.reduce((sum, entry) => sum + entry.tokens, 0) : null,
+      tokens,
       token_coverage: exact ? 'exact' : 'unavailable',
+      elapsed_ms: elapsedMs,
       rounds: state.rounds_run,
     },
+    receipt,
   }
 }
 
@@ -959,7 +1112,10 @@ function continueWorkflow(state, pending, results) {
     const verified = new Map(results[0].output.verified.map(item => [item.id, item]))
     let valid = 0
     for (const submission of state.round_submitted) {
-      if (verified.get(submission.id).valid === true) {
+      if (
+        verified.get(submission.id).valid === true
+        && verified.get(submission.id).outcome_linked === true
+      ) {
         state.delta_log.push(submission)
         valid += 1
       } else {
@@ -1104,13 +1260,18 @@ function mutatingApply(state, receipt) {
 }
 
 export function createPersistentBrainstorm(input) {
-  if (input.admission !== 'canary') {
+  if (!['canary', 'production'].includes(input.admission)) {
     throw new PersistentBrokerError(
       'canary_admission_required',
-      'persistent brainstorm is deterministic-harness canary only, not production default',
+      'persistent brainstorm admission must be canary or adapter-authorized production',
     )
   }
-  const capability = validateCapability(input.capability)
+  const admission = input.admission
+  const capability = validateCapability(input.capability, admission)
+  const productionProfile = input.productionProfile || 'standard'
+  if (!['standard', 'full'].includes(productionProfile)) {
+    throw new PersistentBrokerError('invalid_config', 'productionProfile must be standard or full')
+  }
   const workflowName = String(input.workflow_name || '').trim()
   const runId = String(input.run_id || '').trim()
   if (!workflowName || !runId) throw new PersistentBrokerError('invalid_config', 'run_id and workflow_name are required')
@@ -1132,11 +1293,13 @@ export function createPersistentBrainstorm(input) {
     run_id: runId,
     workflow_name: workflowName,
     agenda: String(input.agenda || '(no agenda provided)'),
-    admission: 'canary',
+    admission,
     capability,
+    production_profile: productionProfile,
+    critic_rubric: String(input.criticRubric || DEFAULT_CRITIC_RUBRIC),
     config: {
-      max_rounds: positiveInteger(input.maxRounds, 4, 'maxRounds'),
-      dry_stop: positiveInteger(input.dryStop, 2, 'dryStop'),
+      max_rounds: positiveInteger(input.maxRounds, productionProfile === 'standard' ? 2 : 4, 'maxRounds'),
+      dry_stop: positiveInteger(input.dryStop, productionProfile === 'standard' ? 1 : 2, 'dryStop'),
     },
     participants,
     critic,
@@ -1159,16 +1322,37 @@ export function createPersistentBrainstorm(input) {
     next_barrier: 1,
     pending: null,
     repair_context: null,
-    native_started: true,
-    fallback_allowed: false,
+    native_started: admission === 'canary',
+    fallback_allowed: admission === 'production',
     failure: null,
     unresolved_handles: [],
     output: null,
     converge_synthesis: null,
+    started_at: new Date().toISOString(),
     finished_at: null,
   }
   scheduleDiverge(state)
   return sealState(state)
+}
+
+export function markPersistentNativeStarted(state) {
+  validatePersistentState(state)
+  if (state.admission !== 'production') {
+    throw new PersistentBrokerError('native_start_invalid', 'only Production state uses native start transition')
+  }
+  if (state.native_started) return clone(state)
+  if (!state.fallback_allowed || state.status !== 'running' || !state.pending) {
+    throw new PersistentBrokerError('native_start_invalid', 'native start transition is outside dispatchable state')
+  }
+  const next = clone(state)
+  next.revision_fences.push({
+    revision: state.state_revision,
+    digest: state.state_digest,
+  })
+  next.native_started = true
+  next.fallback_allowed = false
+  next.state_revision += 1
+  return sealState(next)
 }
 
 export function applyPersistentBarrier(state, receipt) {
@@ -1200,8 +1384,7 @@ export function persistentBrainstormEnvelope(state) {
     max_rounds: state.config.max_rounds,
     dry_stop: state.config.dry_stop,
     admission: state.admission,
-    evidence_status: 'deterministic-harness-only',
-    live_host_canary_approved: false,
+    evidence_status: state.admission === 'production' ? 'adapter-verified' : 'deterministic-harness-only',
     native_started: state.native_started,
     fallback_allowed: state.fallback_allowed,
     capability: clone(state.capability),

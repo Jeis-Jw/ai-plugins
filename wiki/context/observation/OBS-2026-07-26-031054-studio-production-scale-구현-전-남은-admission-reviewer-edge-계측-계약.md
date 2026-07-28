@@ -3,7 +3,7 @@ title: Studio production scale 구현 전 남은 admission·reviewer edge·계�
 created_at: 2026-07-26
 summary: production scale 구현 전에 solo admission 비용 조건, independent reviewer 실행 edge, studio.py 변경 표면, mixed-scale track 계약과 token telemetry를 닫아야 한다.
 tags: [studio, production-scale, implementation-gap, telemetry, review]
-verified_at: 2026-07-26
+verified_at: 2026-07-29
 search_terms: [solo admission, reviewer edge, mixed-scale track, token telemetry, studio evidence]
 affects_paths: [plugins/studio/**]
 relations:
@@ -31,17 +31,26 @@ solo.workflow.js만 추가하면 interaction 호출 수는 줄어도 계약 고�
 
 ## 현재 처리
 
-아직 구현 task를 만들지 않는다. 다음 설계 단계에서 ① admission에 criterion source ref와 mechanical measure를 포함하고 ② routing 결과가 production profile과 verification edge를 분리해 반환하도록 하며 ③ reviewer edge primitive와 Producer 판정권을 확정하고 ④ scripts/studio.py·rubric까지 변경 범위에 포함한다. telemetry 복구 전에는 static routing을 구현할 수 있지만 비용 개선 검증이나 dynamic tuning 완료를 주장하지 않는다.
+`TASK-2026-07-28-155552-studio-native-persistent-crew-production-경로-적용`에서 후속
+구현을 추적한다. criterion source와 mechanical measure를 solo admission에 결합하고,
+production profile과 verification edge를 분리했으며, `scripts/studio.py`를 포함한
+정적 계약을 회귀 검증했다. read-only brainstorm의 native persistence는 회의 workflow
+범위로만 Production에 올리고 pairing/write와 cross-meeting persistence는 제외한다.
+token·wall-time·물리 실행 telemetry가 없는 상태에서 그 절감을 주장하지 않는다.
 
 ## 구현 후 상태
 
 다섯 공백을 static v1 계약으로 구현했다. solo admission은 source ref+mechanical measure와
 criteria digest를 end-to-end bind하고, production profile과 review owner를 분리한다.
 mixed-scale track은 board-backed plan/dispatch/complete 전이에서 item binding과 same-file
-선행 완료를 강제한다. deterministic control은 calls 17→10을 확인했지만 synthetic
-elapsed/quality는 완료 evidence에서 제외했다. live/cost-matched wall-time A/B와 독립
-quality review는 pending이며 token unavailable도 그대로 보존한다.
+선행 완료를 강제한다. sealed independent-review broker replay는 동일한 4개
+시나리오에서 기존 isolated `full` 21 calls와 persistent `standard` 13 calls를 확인했고,
+15개 criterion 모두 100점 floor를 통과했다. 이 38.10%는 Studio 0.9 profile 효율 하한
+보존이며 native adapter, wall-time, token, 물리 실행 절감 근거가 아니다. token
+unavailable은 그대로 보존한다.
 
 ## 후속 분류 조건
 
-위 계약이 owner/DEC gate에서 확정되면 implementation task의 acceptance criteria로 승격하고 Studio SSOT를 갱신한다. 실제 run receipt가 production profile별 token·elapsed·quality coverage를 제공하면 비용 가설을 observation에서 검증된 운영 사실 또는 후속 최적화 decision으로 재분류한다. mixed-scale track이 필요 없다는 구현 증거가 나오면 해당 공백은 근거와 함께 닫는다.
+Production live canary와 전체 회귀·wiki integrity를 최종 integration gate에서 fresh
+검증한다. 실제 운영 receipt가 profile별 token·elapsed·physical-process coverage를
+제공하기 전에는 비용 개선을 운영 사실로 승격하거나 dynamic tuning 완료로 분류하지 않는다.

@@ -59,6 +59,7 @@ evaluate_golden_case = _execution_control.evaluate_golden_case
 execution_invalidate_evidence = _execution_control.invalidate_evidence
 load_execution_contract = _execution_control.load_contract
 execution_physical_key = _execution_control.physical_key
+execution_persistent_ritual_route = _execution_control.persistent_ritual_route
 record_capability_snapshot = _execution_control.record_capability_snapshot
 execution_record_closeout = _execution_control.record_closeout
 execution_record_closeout_ref = _execution_control.record_closeout_ref
@@ -4398,6 +4399,7 @@ def cmd_cast_suggest(args: argparse.Namespace) -> None:
             else "standard"
         ),
         ritual=ritual,
+        execution_route=execution_persistent_ritual_route(ritual, scale),
         limits=limits,
         crew=crew,
         participants=[p["name"] for p in personas],

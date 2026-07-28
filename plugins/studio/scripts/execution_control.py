@@ -52,6 +52,7 @@ CLAIM_REQUIRED_FIELDS = frozenset((
     "permit_source", "mutation_receipt_ref", "evidence_refs",
 ))
 CLAIM_STATES = frozenset(("claimed", "waiting-gate", "succeeded", "failed", "cancelled"))
+RITUAL_EXECUTION_ROUTE_SCHEMA = "studio-ritual-execution-route/v1"
 
 
 class ControlError(ValueError):
@@ -60,6 +61,31 @@ class ControlError(ValueError):
         self.code = code
         self.message = message
         self.details = details
+
+
+def persistent_ritual_route(ritual: str, item_scale: str) -> dict[str, Any]:
+    """Return the executable route without claiming runtime admission."""
+    if ritual == "brainstorm" and item_scale in {"standard", "major"}:
+        return {
+            "schema": RITUAL_EXECUTION_ROUTE_SCHEMA,
+            "execution_path": "persistent-native-app-server",
+            "controller": "scripts/persistent_brainstorm_controller.mjs",
+            "runtime_capability_required": True,
+            "fallback_path": "isolated-runner",
+            "fallback_allowed_until": "request_sent",
+        }
+    return {
+        "schema": RITUAL_EXECUTION_ROUTE_SCHEMA,
+        "execution_path": "isolated-runner",
+        "controller": None,
+        "runtime_capability_required": False,
+        "fallback_path": None,
+        "fallback_allowed_until": None,
+    }
+
+
+# Compatibility for callers that imported the 0.9 helper by name.
+persistent_brainstorm_route = persistent_ritual_route
 
 
 def canonical_digest(value: Any) -> str:
