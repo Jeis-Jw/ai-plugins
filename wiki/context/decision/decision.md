@@ -53,4 +53,4 @@ audience: [human, agent]
 - [[DEC-2026-07-10-133629-studio-실행-경계-mission-quality-context-gate-소유와-선택적-single-executor]] — Studio가 mission·quality·context·owner gate를 소유하고 track별 외부 workflow는 단일 선택 executor로 위임한다. task-github와 wiki-markdown은 각각 reference adapter와 optional promotion provider이며 hard dependency가 아니다.
 - [[DEC-2026-07-10-161845-작업-정의와-github-기록을-분리하고-전체-트리만-투영]] — define은 provider-neutral DefinitionArtifact를 만들고 GitHub 기록을 선택하면 root 전체 tree를 누락 없이 materialize한다.
 - [[DEC-2026-07-26-031028-studio-production-scale과-producer-manager-only-운영-모델]] — Producer는 항상 manager로 남고 backlog item별 production scale이 제작 crew·ritual·rounds·critic을 정하며 verification independence·task gear·parallelism은 직교한다.
-- [[DEC-2026-07-27-020408-studio-brainstorm을-workflow-scoped-persistent-crew로-운영]] — verified native brainstorm crew를 workflow 범위에서 한 번 spawn하고 canonical broker의 same-handle action/barrier ledger로만 운영한다.
+- [[DEC-2026-07-27-020408-studio-brainstorm을-workflow-scoped-persistent-crew로-운영]] — verified native capability에서 brainstorm crew를 한 번 spawn하고 same-handle follow-up하며 canonical broker action ledger만 orchestration 정본으로 사용한다.
