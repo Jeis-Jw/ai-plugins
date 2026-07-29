@@ -382,7 +382,162 @@ def main() -> None:
         r = run(["budget", "settle", "res-1", "--lease-id", "lease-1", "--tokens", "30"], tmp)
         assert not r["changed"] and r["reservation"]["settled_tokens"] == 30, r
 
-        # 6f) malformed run outputs hit the exit-code contract, not a crash
+        # 6f) mission budgets are additive scopes over the cumulative workspace ledger
+        mission_root = tmp / "mission-budget-project"
+        mission_root.mkdir()
+        run(["init"], mission_root)
+        mission_ws = mission_root / ".studio"
+        assert board_state(mission_ws)["budget"]["missions"] == {}, board_state(mission_ws)
+        run(["budget", "--set-total", "1000", "--set-per-run", "100"], mission_root)
+        r = run([
+            "budget", "--mission-id", "mission-a",
+            "--set-total", "100", "--set-per-run", "40",
+        ], mission_root)
+        assert r["budget"] == {
+            "total_tokens": 100, "per_run_default": 40, "spent_tokens": 0,
+        }, r
+        state = board_state(mission_ws)
+        assert state["budget"]["total_tokens"] == 1000, state
+        assert state["budget"]["missions"]["mission-a"]["total_tokens"] == 100, state
+
+        r = run([
+            "budget", "reserve", "mission-res-1",
+            "--lease-id", "mission-lease-1", "--tokens", "60",
+            "--mission-id", "mission-a",
+        ], mission_root)
+        assert r["reservation"]["mission_id"] == "mission-a", r
+        run([
+            "budget", "reserve", "mission-over",
+            "--lease-id", "mission-over-lease", "--tokens", "41",
+            "--mission-id", "mission-a",
+        ], mission_root, expect=6)
+        run([
+            "budget", "dispatch", "mission-res-1",
+            "--lease-id", "mission-lease-1",
+        ], mission_root)
+        r = run([
+            "budget", "settle", "mission-res-1",
+            "--lease-id", "mission-lease-1", "--tokens", "30",
+        ], mission_root)
+        assert r["spent_tokens"] == 30 and r["mission_spent_tokens"] == 30, r
+        state = board_state(mission_ws)
+        assert state["budget"]["spent_tokens"] == 30, state
+        assert state["budget"]["missions"]["mission-a"]["spent_tokens"] == 30, state
+
+        # Existing unscoped reservations bind only through an exact reserve replay.
+        run([
+            "budget", "reserve", "legacy-active",
+            "--lease-id", "legacy-active-lease", "--tokens", "25",
+        ], mission_root)
+        run([
+            "budget", "dispatch", "legacy-active",
+            "--lease-id", "legacy-active-lease", "--mission-id", "mission-a",
+        ], mission_root, expect=6)
+        r = run([
+            "budget", "reserve", "legacy-active",
+            "--lease-id", "legacy-active-lease", "--tokens", "25",
+            "--mission-id", "mission-a",
+        ], mission_root)
+        assert r["changed"] and r["reservation"]["mission_id"] == "mission-a", r
+        r = run([
+            "budget", "reserve", "legacy-active",
+            "--lease-id", "legacy-active-lease", "--tokens", "25",
+            "--mission-id", "mission-a",
+        ], mission_root)
+        assert not r["changed"], r
+        run([
+            "budget", "dispatch", "legacy-active",
+            "--lease-id", "legacy-active-lease",
+        ], mission_root)
+        r = run([
+            "budget", "settle", "legacy-active",
+            "--lease-id", "legacy-active-lease", "--tokens", "20",
+        ], mission_root)
+        assert r["mission_spent_tokens"] == 50, r
+
+        # A known settled legacy reservation contributes to mission spend exactly once.
+        run([
+            "budget", "reserve", "legacy-settled",
+            "--lease-id", "legacy-settled-lease", "--tokens", "15",
+        ], mission_root)
+        run([
+            "budget", "dispatch", "legacy-settled",
+            "--lease-id", "legacy-settled-lease",
+        ], mission_root)
+        run([
+            "budget", "settle", "legacy-settled",
+            "--lease-id", "legacy-settled-lease", "--tokens", "12",
+        ], mission_root)
+        r = run([
+            "budget", "reserve", "legacy-settled",
+            "--lease-id", "legacy-settled-lease", "--tokens", "15",
+            "--mission-id", "mission-a",
+        ], mission_root)
+        assert r["changed"] and r["mission_spent_tokens"] == 62, r
+        r = run([
+            "budget", "reserve", "legacy-settled",
+            "--lease-id", "legacy-settled-lease", "--tokens", "15",
+            "--mission-id", "mission-a",
+        ], mission_root)
+        assert not r["changed"], r
+        assert board_state(mission_ws)["budget"]["missions"]["mission-a"]["spent_tokens"] == 62
+
+        # Both caps apply; mission reservations do not consume another mission's cap.
+        run(["budget", "--mission-id", "mission-a", "--set-total", "70"], mission_root)
+        run([
+            "budget", "reserve", "mission-a-over",
+            "--lease-id", "mission-a-over-lease", "--tokens", "9",
+            "--mission-id", "mission-a",
+        ], mission_root, expect=6)
+        run([
+            "budget", "--mission-id", "mission-b",
+            "--set-total", "500", "--set-per-run", "100",
+        ], mission_root)
+        r = run([
+            "budget", "reserve", "mission-b-ok",
+            "--lease-id", "mission-b-ok-lease", "--tokens", "100",
+            "--mission-id", "mission-b",
+        ], mission_root)
+        assert r["changed"], r
+        run([
+            "budget", "release", "mission-b-ok",
+            "--lease-id", "mission-b-ok-lease", "--mission-id", "mission-b",
+        ], mission_root)
+        run(["budget", "--set-total", "62"], mission_root)
+        run([
+            "budget", "reserve", "workspace-over",
+            "--lease-id", "workspace-over-lease", "--tokens", "1",
+            "--mission-id", "mission-b",
+        ], mission_root, expect=6)
+        run(["budget", "--set-total", "1000"], mission_root)
+
+        # run record charges both ledgers and preserves the binding on legacy replay.
+        run([
+            "budget", "--mission-id", "mission-run",
+            "--set-total", "10", "--set-per-run", "10",
+        ], mission_root)
+        mission_run = {
+            **run_out,
+            "run_id": "RUN-mission-budget",
+            "cost": {"tokens": 7, "rounds": 2},
+        }
+        r = run([
+            "run", "record", "--json", "-", "--mission-id", "mission-run",
+        ], mission_root, stdin=json.dumps(mission_run))
+        assert r["mission_spent_tokens"] == 7 and not r["mission_budget_exceeded"], r
+        r = run(["run", "record", "--json", "-"], mission_root, stdin=json.dumps(mission_run))
+        assert r["mission_id"] == "mission-run" and r["mission_spent_tokens"] == 7, r
+        mission_run["cost"] = {"tokens": 9, "rounds": 2}
+        r = run(["run", "record", "--json", "-"], mission_root, stdin=json.dumps(mission_run))
+        assert r["mission_spent_tokens"] == 9, r
+        run([
+            "run", "record", "--json", "-", "--mission-id", "mission-b",
+        ], mission_root, expect=6, stdin=json.dumps(mission_run))
+        state = board_state(mission_ws)
+        stored_run = next(item for item in state["runs"] if item["run_id"] == "RUN-mission-budget")
+        assert stored_run["mission_id"] == "mission-run", stored_run
+
+        # 6g) malformed run outputs hit the exit-code contract, not a crash
         run(["run", "record", "--json", "-"], tmp, expect=4,
             stdin=json.dumps({"run_id": "z", "cost": {"tokens": "lots"}}))       # non-numeric cost
         run(["run", "record", "--json", "@/no/such/file.json"], tmp, expect=4)    # missing @file
@@ -527,6 +682,7 @@ def main() -> None:
         assert board_state(legacy)["schema"] == 1  # read-only projection does not rewrite
         run(["--workspace", str(legacy), "budget", "--set-total", "60"], tmp)
         assert board_state(legacy)["schema"] == 2
+        assert board_state(legacy)["budget"]["missions"] == {}
 
         # 8b) QualityPlan: evidence/floors gate before utility; unknown telemetry stays incomplete
         quality_plan = {
@@ -692,7 +848,14 @@ def main() -> None:
                  "--plan", json.dumps(quality_plan), "--capabilities", json.dumps(capabilities),
                  "--lease-id", "lease-tampered-context"], tmp, expect=6)
         assert r["error_code"] == "digest_mismatch", r
-        run(["budget", "reserve", "res-wf-ext", "--lease-id", "lease-wf-ext", "--tokens", "120"], tmp)
+        run([
+            "budget", "--mission-id", "mission-workflow",
+            "--set-total", "500", "--set-per-run", "120",
+        ], tmp)
+        run([
+            "budget", "reserve", "res-wf-ext", "--lease-id", "lease-wf-ext",
+            "--tokens", "120", "--mission-id", "mission-workflow",
+        ], tmp)
         r = run(["workflow", "dispatch", "--packet", json.dumps(packet),
                  "--plan", json.dumps(quality_plan),
                  "--capabilities", json.dumps(capabilities), "--lease-id", "lease-wf-ext"], tmp)
@@ -721,6 +884,7 @@ def main() -> None:
         assert r["readyForIntegration"] and r["lease"]["state"] == "succeeded", r
         assert r["lease"]["external_ref"] == "issue:54" and r["lease"]["coarse_status"] == "succeeded", r
         assert not ({"issue", "branch", "pr", "raw_transcript"} & set(r["lease"])), r
+        assert board_state(ws)["budget"]["missions"]["mission-workflow"]["spent_tokens"] == 100
         r = run(["workflow", "result", "--packet", json.dumps(packet), "--plan", json.dumps(quality_plan),
                  "--json", json.dumps(success), "--lease-id", "lease-wf-ext"], tmp)
         assert not r["changed"], r
@@ -732,8 +896,15 @@ def main() -> None:
             "track_id": "track-unknown-tokens",
             "budget_reservation_id": "res-unknown-tokens",
         }
-        run(["budget", "reserve", "res-unknown-tokens", "--lease-id", "lease-unknown-tokens",
-             "--tokens", "80"], tmp)
+        run([
+            "budget", "--mission-id", "mission-unknown-tokens",
+            "--set-total", "80", "--set-per-run", "80",
+        ], tmp)
+        run([
+            "budget", "reserve", "res-unknown-tokens",
+            "--lease-id", "lease-unknown-tokens", "--tokens", "80",
+            "--mission-id", "mission-unknown-tokens",
+        ], tmp)
         run(["workflow", "dispatch", "--packet", json.dumps(unknown_packet),
              "--plan", json.dumps(quality_plan), "--capabilities", json.dumps(capabilities),
              "--lease-id", "lease-unknown-tokens"], tmp)
@@ -756,6 +927,13 @@ def main() -> None:
         assert unknown_reservation["status"] == "settled", unknown_reservation
         assert unknown_reservation["token_coverage"] == "unavailable", unknown_reservation
         assert "settled_tokens" not in unknown_reservation, unknown_reservation
+        assert unknown_reservation["mission_id"] == "mission-unknown-tokens", unknown_reservation
+        assert board_after_unknown["budget"]["missions"]["mission-unknown-tokens"]["spent_tokens"] == 0
+        run([
+            "budget", "reserve", "mission-after-unknown",
+            "--lease-id", "mission-after-unknown-lease", "--tokens", "1",
+            "--mission-id", "mission-unknown-tokens",
+        ], tmp, expect=6)
         r = run(["workflow", "result", "--packet", json.dumps(unknown_packet),
                  "--plan", json.dumps(quality_plan), "--json", json.dumps(unknown_success),
                  "--lease-id", "lease-unknown-tokens"], tmp)

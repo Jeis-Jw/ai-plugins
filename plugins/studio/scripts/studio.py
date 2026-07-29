@@ -385,6 +385,7 @@ def migrate_board(board: dict) -> dict:
     budget.setdefault("per_run_default", None)
     budget.setdefault("spent_tokens", 0)
     budget.setdefault("reservations", {})
+    budget.setdefault("missions", {})
     return board
 
 
@@ -834,6 +835,7 @@ def _initial_board() -> dict:
             "per_run_default": None,
             "spent_tokens": 0,
             "reservations": {},
+            "missions": {},
         },
         "tracks": {},
         "runs": [],
@@ -1113,25 +1115,57 @@ def cmd_doctor(args: argparse.Namespace) -> None:
 def cmd_budget(args: argparse.Namespace) -> None:
     ws = workspace(args)
     require_workspace(ws)
+    mission_id = (
+        validate_safe_id(args.mission_id, "mission_id")
+        if getattr(args, "mission_id", None)
+        else None
+    )
     with board_transaction(ws) as board:
         bud = board.setdefault("budget", {"spent_tokens": 0, "reservations": {}})
         bud.setdefault("reservations", {})
+        missions = _budget_missions(bud)
+        target = bud
+        if mission_id is not None:
+            target = missions.get(mission_id)
+            if target is None:
+                if args.set_total is None and args.set_per_run is None:
+                    fail(4, "mission_budget_not_found", f"unknown mission budget: {mission_id}")
+                target = {
+                    "total_tokens": None,
+                    "per_run_default": None,
+                    "spent_tokens": 0,
+                }
+                missions[mission_id] = target
+            elif not isinstance(target, dict):
+                fail(4, "bad_budget", f"budget.missions.{mission_id} must be an object")
+            target.setdefault("total_tokens", None)
+            target.setdefault("per_run_default", None)
+            target.setdefault("spent_tokens", 0)
         changed = {}
         if args.set_total is not None:
             if args.set_total < 0:
                 fail(2, "bad_budget", "total must be >= 0")
-            bud["total_tokens"] = args.set_total
+            target["total_tokens"] = args.set_total
             changed["total_tokens"] = args.set_total
         if args.set_per_run is not None:
             if args.set_per_run < 0:
                 fail(2, "bad_budget", "per_run must be >= 0")
-            bud["per_run_default"] = args.set_per_run
+            target["per_run_default"] = args.set_per_run
             changed["per_run_default"] = args.set_per_run
         # clearing paused if we just raised the cap above spend
-        total = bud.get("total_tokens")
-        if total is not None and int(bud.get("spent_tokens") or 0) <= total:
+        total = target.get("total_tokens")
+        if (
+            mission_id is None
+            and total is not None
+            and int(target.get("spent_tokens") or 0) <= total
+        ):
             board.pop("mission_state", None)
-    ok(budget=bud, changed=changed)
+    ok(
+        budget=target,
+        workspace_budget=bud if mission_id is not None else None,
+        mission_id=mission_id,
+        changed=changed,
+    )
 
 
 def _budget_reservations(budget: dict) -> dict:
@@ -1141,18 +1175,76 @@ def _budget_reservations(budget: dict) -> dict:
     return reservations
 
 
-def _active_reserved_tokens(reservations: dict) -> int:
+def _budget_missions(budget: dict) -> dict:
+    missions = budget.setdefault("missions", {})
+    if not isinstance(missions, dict):
+        fail(4, "bad_budget", "budget.missions must be an object")
+    return missions
+
+
+def _mission_budget(budget: dict, mission_id: str) -> dict:
+    mission = _budget_missions(budget).get(mission_id)
+    if not isinstance(mission, dict):
+        fail(4, "mission_budget_not_found", f"unknown mission budget: {mission_id}")
+    mission.setdefault("total_tokens", None)
+    mission.setdefault("per_run_default", None)
+    mission.setdefault("spent_tokens", 0)
+    return mission
+
+
+def _reservation_is_committed(item: dict) -> bool:
+    return (
+        item.get("status") in ("reserved", "dispatched")
+        or (
+            item.get("status") == "settled"
+            and item.get("token_coverage") == "unavailable"
+        )
+    )
+
+
+def _active_reserved_tokens(reservations: dict, mission_id: str | None = None) -> int:
     return sum(
         int(item.get("tokens") or 0)
         for item in reservations.values()
-        if (
-            item.get("status") in ("reserved", "dispatched")
-            or (
-                item.get("status") == "settled"
-                and item.get("token_coverage") == "unavailable"
-            )
-        )
+        if _reservation_is_committed(item)
+        and (mission_id is None or item.get("mission_id") == mission_id)
     )
+
+
+def _adjust_known_spend(budget: dict, tokens: int, mission_id: str | None = None) -> None:
+    budget["spent_tokens"] = int(budget.get("spent_tokens") or 0) + tokens
+    if mission_id is not None:
+        mission = _mission_budget(budget, mission_id)
+        mission["spent_tokens"] = int(mission.get("spent_tokens") or 0) + tokens
+
+
+def _bind_reservation_mission(
+    budget: dict, reservations: dict, reservation: dict, mission_id: str,
+) -> bool:
+    current_mission = reservation.get("mission_id")
+    if current_mission is not None:
+        if current_mission != mission_id:
+            fail(6, "reservation_conflict", "reservation is already bound to another mission")
+        return False
+    mission = _mission_budget(budget, mission_id)
+    if _reservation_is_committed(reservation):
+        total = mission.get("total_tokens")
+        committed = (
+            int(mission.get("spent_tokens") or 0)
+            + _active_reserved_tokens(reservations, mission_id)
+            + int(reservation.get("tokens") or 0)
+        )
+        if total is not None and committed > total:
+            fail(6, "budget_exceeded", "reservation binding would exceed mission token budget")
+    reservation["mission_id"] = mission_id
+    if reservation.get("status") == "settled" and isinstance(
+        reservation.get("settled_tokens"), int
+    ):
+        mission["spent_tokens"] = (
+            int(mission.get("spent_tokens") or 0)
+            + int(reservation["settled_tokens"])
+        )
+    return True
 
 
 def cmd_budget_lifecycle(args: argparse.Namespace) -> None:
@@ -1160,9 +1252,15 @@ def cmd_budget_lifecycle(args: argparse.Namespace) -> None:
     require_workspace(ws)
     reservation_id = validate_safe_id(args.reservation_id, "reservation_id")
     lease_id = validate_safe_id(args.lease_id, "lease_id")
+    requested_mission_id = (
+        validate_safe_id(args.mission_id, "mission_id")
+        if getattr(args, "mission_id", None)
+        else None
+    )
 
     with board_transaction(ws) as board:
         budget = board.setdefault("budget", {"spent_tokens": 0, "reservations": {}})
+        _budget_missions(budget)
         reservations = _budget_reservations(budget)
         current = reservations.get(reservation_id)
         changed = False
@@ -1176,26 +1274,57 @@ def cmd_budget_lifecycle(args: argparse.Namespace) -> None:
                 "tokens": args.tokens,
                 "status": "reserved",
             }
+            if requested_mission_id is not None:
+                desired["mission_id"] = requested_mission_id
             if current is not None:
                 if (
                     current.get("lease_id") == lease_id
                     and current.get("tokens") == args.tokens
                 ):
-                    ok(reservation=current, changed=False)
-                fail(6, "reservation_conflict", f"reservation {reservation_id} already exists with different data")
-            total = budget.get("total_tokens")
-            committed = int(budget.get("spent_tokens") or 0) + _active_reserved_tokens(reservations)
-            if total is not None and committed + args.tokens > total:
-                fail(6, "budget_exceeded", "reservation would exceed total token budget")
-            reservations[reservation_id] = desired
-            current = desired
-            changed = True
+                    changed = (
+                        _bind_reservation_mission(
+                            budget, reservations, current, requested_mission_id
+                        )
+                        if requested_mission_id is not None
+                        else False
+                    )
+                    if not changed:
+                        ok(reservation=current, changed=False)
+                else:
+                    fail(6, "reservation_conflict", f"reservation {reservation_id} already exists with different data")
+            if current is None:
+                total = budget.get("total_tokens")
+                committed = int(budget.get("spent_tokens") or 0) + _active_reserved_tokens(reservations)
+                if total is not None and committed + args.tokens > total:
+                    fail(6, "budget_exceeded", "reservation would exceed workspace total token budget")
+                if requested_mission_id is not None:
+                    mission = _mission_budget(budget, requested_mission_id)
+                    mission_total = mission.get("total_tokens")
+                    mission_committed = (
+                        int(mission.get("spent_tokens") or 0)
+                        + _active_reserved_tokens(reservations, requested_mission_id)
+                    )
+                    if mission_total is not None and mission_committed + args.tokens > mission_total:
+                        fail(6, "budget_exceeded", "reservation would exceed mission total token budget")
+                reservations[reservation_id] = desired
+                current = desired
+                changed = True
 
         else:
             if current is None:
                 fail(4, "reservation_not_found", f"unknown reservation: {reservation_id}")
             if current.get("lease_id") != lease_id:
                 fail(6, "stale_lease", f"reservation {reservation_id} is fenced by another lease")
+            current_mission_id = current.get("mission_id")
+            if requested_mission_id is not None:
+                if current_mission_id is None:
+                    fail(
+                        6,
+                        "mission_binding_required",
+                        "bind an existing reservation by repeating reserve with --mission-id",
+                    )
+                if current_mission_id != requested_mission_id:
+                    fail(6, "reservation_conflict", "reservation belongs to another mission")
 
             if args.lifecycle == "dispatch":
                 if current.get("status") == "dispatched":
@@ -1215,7 +1344,7 @@ def cmd_budget_lifecycle(args: argparse.Namespace) -> None:
                     fail(6, "invalid_budget_transition", f"cannot settle from {current.get('status')}")
                 current["status"] = "settled"
                 current["settled_tokens"] = args.tokens
-                budget["spent_tokens"] = int(budget.get("spent_tokens") or 0) + args.tokens
+                _adjust_known_spend(budget, args.tokens, current_mission_id)
                 changed = True
             elif args.lifecycle == "release":
                 if current.get("status") == "released":
@@ -1227,7 +1356,19 @@ def cmd_budget_lifecycle(args: argparse.Namespace) -> None:
             else:  # argparse guarantees this; keep the state machine explicit.
                 fail(2, "bad_budget_action", f"unknown lifecycle action: {args.lifecycle}")
 
-    ok(reservation=current, changed=changed, spent_tokens=budget.get("spent_tokens", 0))
+    effective_mission_id = current.get("mission_id")
+    mission = (
+        _mission_budget(budget, effective_mission_id)
+        if effective_mission_id is not None
+        else None
+    )
+    ok(
+        reservation=current,
+        changed=changed,
+        spent_tokens=budget.get("spent_tokens", 0),
+        mission_id=effective_mission_id,
+        mission_spent_tokens=mission.get("spent_tokens", 0) if mission else None,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -1582,6 +1723,11 @@ def cmd_run_record(args: argparse.Namespace) -> None:
     ws = workspace(args)
     require_workspace(ws)
     out = _load_run_output(args)
+    requested_mission_id = (
+        validate_safe_id(args.mission_id, "mission_id")
+        if getattr(args, "mission_id", None)
+        else None
+    )
 
     ritual = out.get("ritual", "unknown")
     # id precedence: explicit output field > --id > clock+random (random suffix
@@ -1680,21 +1826,48 @@ def cmd_run_record(args: argparse.Namespace) -> None:
                 if issue_event is not None:
                     issue_events.append(issue_event)
         bud = board.setdefault("budget", {"spent_tokens": 0, "reservations": {}})
+        _budget_missions(bud)
         runs = board.setdefault("runs", [])
         if not isinstance(runs, list):
             fail(4, "bad_board", "board.runs must be a list")
         spent = int(bud.get("spent_tokens") or 0)
         prior = next((r for r in runs if r.get("run_id") == run_id), None)
+        prior_mission_id = prior.get("mission_id") if prior is not None else None
+        if (
+            requested_mission_id is not None
+            and prior_mission_id is not None
+            and requested_mission_id != prior_mission_id
+        ):
+            fail(6, "run_mission_conflict", "recorded run is already bound to another mission")
+        mission_id = requested_mission_id or prior_mission_id
+        mission = _mission_budget(bud, mission_id) if mission_id is not None else None
         if prior is not None:
             prior_tokens = prior.get("cost_tokens")
-            if cost_tokens is not None and prior_tokens is not None:
+            if prior_tokens is not None:
                 spent -= int(prior_tokens)   # undo the old known cost
+            if prior_mission_id is not None and prior_tokens is not None:
+                prior_mission = _mission_budget(bud, prior_mission_id)
+                prior_mission["spent_tokens"] = (
+                    int(prior_mission.get("spent_tokens") or 0)
+                    - int(prior_tokens)
+                )
             board["runs"] = [r for r in runs if r.get("run_id") != run_id]
+        if mission_id is not None:
+            entry["mission_id"] = mission_id
         board["runs"].append(entry)
         bud["spent_tokens"] = spent + (cost_tokens if cost_tokens is not None else 0)
+        if mission is not None and cost_tokens is not None:
+            mission["spent_tokens"] = int(mission.get("spent_tokens") or 0) + cost_tokens
         total = bud.get("total_tokens")
-        exceeded = total is not None and bud["spent_tokens"] > total
-        if exceeded:
+        workspace_exceeded = total is not None and bud["spent_tokens"] > total
+        mission_total = mission.get("total_tokens") if mission is not None else None
+        mission_exceeded = (
+            mission is not None
+            and mission_total is not None
+            and int(mission.get("spent_tokens") or 0) > mission_total
+        )
+        exceeded = workspace_exceeded or mission_exceeded
+        if workspace_exceeded:
             board["mission_state"] = "paused"  # budget exhausted → owner gate to resume
         atomic_write_text(minutes_path, body)
 
@@ -1714,6 +1887,11 @@ def cmd_run_record(args: argparse.Namespace) -> None:
         spent_tokens=bud["spent_tokens"],
         budget_total=total,
         budget_exceeded=exceeded,
+        workspace_budget_exceeded=workspace_exceeded,
+        mission_id=mission_id,
+        mission_spent_tokens=mission.get("spent_tokens", 0) if mission else None,
+        mission_budget_total=mission_total,
+        mission_budget_exceeded=mission_exceeded,
         receipt=receipt,
         review_cycle_id=review_cycle_delta["cycle_id"] if review_cycle_delta else None,
         issue_events=issue_events,
@@ -4422,7 +4600,9 @@ def cmd_workflow_result(args: argparse.Namespace) -> None:
                     reservation["token_coverage"] = "unavailable"
                 else:
                     reservation["settled_tokens"] = tokens
-                    board["budget"]["spent_tokens"] = int(board["budget"].get("spent_tokens") or 0) + tokens
+                    _adjust_known_spend(
+                        board["budget"], tokens, reservation.get("mission_id")
+                    )
             elif (
                 reservation.get("status") != "settled"
                 or (
@@ -5162,12 +5342,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("budget", help="set the mission budget ledger caps")
     sp.add_argument("--set-total", type=int, help="total token cap (enables the exhausted→paused gate)")
     sp.add_argument("--set-per-run", type=int, help="advisory per-run token cap the producer applies at convene")
+    sp.add_argument("--mission-id", help="set or read a mission-scoped budget instead of the workspace ledger")
     sp.set_defaults(func=cmd_budget)
     blife = sp.add_subparsers(dest="lifecycle")
     for action in ("reserve", "dispatch", "settle", "release"):
         bp = blife.add_parser(action, help=f"{action} an idempotent budget reservation")
         bp.add_argument("reservation_id")
         bp.add_argument("--lease-id", required=True)
+        bp.add_argument("--mission-id", help="bind or validate the reservation's mission budget")
         if action in ("reserve", "settle"):
             bp.add_argument("--tokens", type=int, required=True)
         bp.set_defaults(func=cmd_budget_lifecycle)
@@ -5178,6 +5360,7 @@ def build_parser() -> argparse.ArgumentParser:
     rr.add_argument("--json", help="run output JSON (inline, @file, or - for stdin)")
     rr.add_argument("--id", help="override run id (else derived from output/clock)")
     rr.add_argument("--track", help="track slug this run belongs to (producer-owned)")
+    rr.add_argument("--mission-id", help="charge known run spend to this mission budget")
     rr.add_argument("--receipt-log", help="optional JSONL receipt sink; append failure is warning-only")
     rr.set_defaults(func=cmd_run_record)
 
