@@ -514,7 +514,9 @@ context는 구조화된 사유가 있을 때만 쓰는 것이다. criteria/Issue
 판별 가치, attempt 상한, residual risk를 `continuation-decided` event에 먼저 기록하고
 그 decision id를 handoff가 참조해야 한다. 새 ref만 추가되거나 low/none materiality이면
 착지하며, attempt 초과는 owner reapproval gate다. 실제 제품 repro와 criterion-linked
-bounded verifier mutation은 계속할 수 있다.
+bounded verifier mutation은 계속할 수 있다. 모든 decision은 cycle에 고정된 work class,
+terminal outcome kind, criterion refs와 일치해야 하며 `land|stop|owner-gate` 뒤에는 새
+owner-approved cycle 없이 `continue`로 돌아갈 수 없다.
 각 물리 run 비용은 record하되 같은 event 재전송은 no-op이며, summary는 측정된 token/time만
 coverage와 함께 합산한다.
 

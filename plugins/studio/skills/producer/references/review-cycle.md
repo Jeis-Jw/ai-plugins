@@ -157,6 +157,10 @@ residual risk, `continue|land|stop|owner-gate`, authority/reapproval을 모두 �
 - non-fresh `handoff-recorded.continuation_ref`는 원장에 기록된 `continue` decision id여야 한다.
 - continue decision은 최신 basis lineage의 1회용 permit이다. 같은 handoff event id 재전송만
   no-op이고, 다른 handoff의 재사용이나 더 새 decision 뒤의 stale reference는 거부한다.
+- 모든 새 decision의 work class, outcome kind, criterion refs는 cycle의 canonical
+  classification과 일치해야 한다. legacy/unclassified cycle은 새 decision을 만들 수 없다.
+- `land | stop | owner-gate`는 terminal이다. 이후 `continue`가 필요하면 이 cycle을 되살리지
+  말고 owner 승인을 받은 새 cycle을 연다.
 - 기존 저장 cycle/event/handoff는 migration 없이 읽는다. 이 강제는 새 event에만 적용한다.
 
 `outcome-recorded`는 `delivered | decision | blocker-resolution | quality-defense |

@@ -1060,6 +1060,30 @@ def main() -> None:
             decision=exhausted,
         ))], tmp, expect=6)
         assert r["error_code"] == "continuation_attempt_exhausted", r
+        for event_id, mismatched in (
+            ("REV-economics-class-mismatch", {
+                **decision,
+                "decision_id": "CD-economics-class-mismatch",
+                "work_class": "construction",
+                "materiality": {
+                    **decision["materiality"], "surface": "product", "exists": True,
+                },
+            }),
+            ("REV-economics-outcome-mismatch", {
+                **decision,
+                "decision_id": "CD-economics-outcome-mismatch",
+                "outcome_kind": "delivered",
+            }),
+            ("REV-economics-criteria-mismatch", {
+                **decision,
+                "decision_id": "CD-economics-criteria-mismatch",
+                "criterion_refs": ["unknown-criterion"],
+            }),
+        ):
+            r = run(["review", "event", "RC-economics", "--json", json.dumps(review_event(
+                "RC-economics", event_id, "continuation-decided", decision=mismatched,
+            ))], tmp, expect=6)
+            assert r["error_code"] == "continuation_classification_mismatch", r
         r = run(["review", "event", "RC-economics", "--json", json.dumps(review_event(
             "RC-economics", "REV-economics-continue", "continuation-decided",
             decision=decision,
@@ -1123,6 +1147,18 @@ def main() -> None:
             "RC-economics", "REV-economics-owner", "continuation-decided",
             decision=owner_gate,
         ))], tmp)
+        after_terminal = {
+            **decision,
+            "decision_id": "CD-economics-after-terminal",
+            "prior_basis_digest": owner_gate["basis_digest"],
+            "basis_digest": sha("a"),
+            "attempt": 1,
+        }
+        r = run(["review", "event", "RC-economics", "--json", json.dumps(review_event(
+            "RC-economics", "REV-economics-after-terminal", "continuation-decided",
+            decision=after_terminal,
+        ))], tmp, expect=6)
+        assert r["error_code"] == "continuation_terminal", r
 
         judgment_classification_body = {
             "schema": "studio-work-classification/v1",
@@ -1239,6 +1275,11 @@ def main() -> None:
         )
         r = run(["review", "status", "RC-economics-legacy"], tmp)
         assert "continuation_decisions" not in r["cycle"], r
+        r = run(["review", "event", "RC-economics-legacy", "--json", json.dumps(review_event(
+            "RC-economics-legacy", "REV-economics-legacy-continue", "continuation-decided",
+            decision={**decision, "decision_id": "CD-economics-legacy"},
+        ))], tmp, expect=6)
+        assert r["error_code"] == "continuation_classification_required", r
         r = run(["review", "event", "RC-economics-legacy", "--json", json.dumps(review_event(
             "RC-economics-legacy", "REV-economics-legacy-outcome", "outcome-recorded",
             outcome={**outcome, "outcome_id": "OUT-economics-legacy"},

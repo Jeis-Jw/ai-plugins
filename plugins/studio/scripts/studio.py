@@ -3093,7 +3093,35 @@ def _apply_review_event(cycle: dict, raw: Any) -> tuple[dict, bool, dict | None]
         prior_decision = continuation_decisions.get(decision["decision_id"])
         if prior_decision is not None:
             fail(6, "continuation_decision_conflict", "decision_id is already recorded; retry the original event_id")
+        classification = cycle.get("work_classification")
+        if not isinstance(classification, dict):
+            fail(
+                6, "continuation_classification_required",
+                "legacy/unclassified cycles cannot mint new continuation decisions",
+            )
+        classification_problems = validate_work_classification(classification)
+        if classification_problems:
+            fail(6, "continuation_classification_invalid", "; ".join(classification_problems))
+        terminal = classification["terminal_outcome"]
+        if (
+            decision["work_class"] != classification["work_class"]
+            or decision["outcome_kind"] != terminal["kind"]
+            or set(decision["criterion_refs"]) != set(terminal["criterion_refs"])
+        ):
+            fail(
+                6, "continuation_classification_mismatch",
+                "continuation decision must match the cycle work class, terminal outcome, and criteria",
+            )
         latest_decision = next(reversed(continuation_decisions.values()), None)
+        if (
+            latest_decision is not None
+            and latest_decision.get("decision") in {"land", "stop", "owner-gate"}
+            and decision["decision"] == "continue"
+        ):
+            fail(
+                6, "continuation_terminal",
+                "terminal decision cannot return to continue; start a new owner-approved cycle",
+            )
         if (
             latest_decision is not None
             and decision["prior_basis_digest"] != latest_decision.get("basis_digest")
