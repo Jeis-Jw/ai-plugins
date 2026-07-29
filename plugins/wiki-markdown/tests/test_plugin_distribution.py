@@ -63,13 +63,25 @@ class PluginDistributionTests(unittest.TestCase):
             self.assertIn(name, codex_marketplace_entries)
             self.assertEqual(claude["version"], codex_marketplace_entries[name]["version"])
 
-    def test_studio_v2_runtime_and_distribution_surfaces_are_present(self):
+    def test_studio_is_a_host_native_skill_without_runtime_surfaces(self):
         studio = REPO / "plugins" / "studio"
+        producer = (studio / "skills" / "producer" / "SKILL.md").read_text()
 
-        self.assertTrue((studio / "scripts" / "studio.py").exists())
-        self.assertTrue((studio / "tests" / "test_broker_semantics.js").exists())
-        self.assertTrue((studio / "broker" / "brainstorm.workflow.js").exists())
-        self.assertTrue((studio / "broker" / "pairing.workflow.js").exists())
+        self.assertIn("spawn_agent", producer)
+        self.assertIn("followup_task", producer)
+        self.assertIn("Agent", producer)
+        self.assertIn("SendMessage", producer)
+        self.assertNotIn("python3", producer)
+        self.assertTrue((studio / "rules" / "casting.md").exists())
+        self.assertTrue((studio / "crew" / "planner.md").exists())
+        self.assertFalse((studio / "scripts" / "studio.py").exists())
+        self.assertFalse((studio / "broker" / "brainstorm.workflow.js").exists())
+        self.assertFalse((studio / "contracts" / "studio-verification-contract-v1.json").exists())
+        for role in (studio / "crew").glob("*.md"):
+            text = role.read_text()
+            with self.subTest(role=role.name):
+                self.assertNotIn("requested_tools", text)
+                self.assertNotIn("activation:", text)
 
 
 if __name__ == "__main__":

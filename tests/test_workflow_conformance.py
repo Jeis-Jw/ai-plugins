@@ -35,10 +35,6 @@ class WorkflowReceiptConformanceTests(unittest.TestCase):
             "session_review_status",
             REPO / "plugins/session-review/scripts/session_review.py",
         )
-        cls.studio = load_module(
-            "studio_runtime",
-            REPO / "plugins/studio/scripts/studio.py",
-        )
 
     def assert_receipt(self, receipt):
         self.assertEqual(set(receipt), RECEIPT_FIELDS)
@@ -54,7 +50,7 @@ class WorkflowReceiptConformanceTests(unittest.TestCase):
         self.assertIsInstance(receipt["counters"], dict)
         self.assertIsInstance(receipt["quality"], dict)
 
-    def test_workflow_emitters_share_schema_v1_and_null_token_semantics(self):
+    def test_runtime_emitters_share_schema_v1_and_null_token_semantics(self):
         worker_state = {
             "schema": self.task_worker.RUN_SCHEMA,
             "status": "closed",
@@ -76,27 +72,7 @@ class WorkflowReceiptConformanceTests(unittest.TestCase):
                 finished_at="2026-07-10T00:00:01Z", tokens=8,
             ),
         )
-        studio_receipt = {
-            "schema": "workflow-receipt/v1",
-            "emitter": "studio",
-            "workflow": "studio-pairing",
-            "run_id": "studio-60",
-            "started_at": "2026-07-10T00:00:00.000Z",
-            "finished_at": "2026-07-10T00:00:01.000Z",
-            "elapsed_ms": 1000,
-            "tokens": 12,
-            "token_coverage": "exact",
-            "counters": {"rounds": 1},
-            "quality": {"alive": True},
-        }
-        studio_receipts = (
-            studio_receipt,
-            {**studio_receipt, "tokens": None, "token_coverage": "unavailable"},
-        )
-        for receipt in studio_receipts:
-            self.assertEqual(self.studio.workflow_receipt_problems(receipt), [])
-
-        for receipt in (*worker_receipts, *review_receipts, *studio_receipts):
+        for receipt in (*worker_receipts, *review_receipts):
             with self.subTest(emitter=receipt["emitter"], tokens=receipt["tokens"]):
                 self.assert_receipt(receipt)
 

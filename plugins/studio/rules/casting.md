@@ -1,78 +1,28 @@
-# studio casting policy
+# Studio casting
 
-Producer는 모든 crew를 부르지 않는다. mission을 분류하고, 가장 작은 조합을 소집한다.
-`producer` 이름은 메인스레드 전용이다. crew role로 재사용하지 않는다.
+Producer는 미션에 필요한 가장 작은 역할 조합을 선택한다. 이 표는 기본값이며 고정
+topology가 아니다.
 
-## Production scale
+| kind | 기본 역할 |
+|---|---|
+| `idea` | `planner`, `researcher`, `reviewer` |
+| `product-direction` | `strategist`, `planner`, `product-designer`, `reviewer` |
+| `technical-design` | `architect`, `dev`, `qa`, `reviewer` |
+| `ui-build` | `product-designer`, `visual-designer`, `dev`, `qa` |
+| `content` | `strategist`, `creator`, `visual-designer`, `reviewer` |
+| `implementation` | `dev`, `qa`, `reviewer` |
+| `launch` | `qa`, `reviewer`, `curator` |
 
-판정 단위는 track이 아니라 dispatch 가능한 backlog item이다.
+## 선택 규칙
 
-| scale | admission | production |
-|---|---|---|
-| `solo` | upstream criterion source와 기계적 pass/fail measure가 모두 존재하고 새 domain 해석이 없음 | 담당 crew 1명·1회, interaction critic/theatre 미적용 |
-| `standard` | 일반적인 bounded work | 최소 cast, brainstorm 2 rounds·dryStop 1 또는 pairing 2 rounds |
-| `major` | high uncertainty, irreversible/high-blast-radius, 중요한 상충 판단 | 기존 full cast/ritual, brainstorm 4 rounds·dryStop 2 |
+- 독립적인 관점이나 작업이 있을 때만 역할을 추가한다.
+- 한 agent가 자연스럽게 끝낼 수 있는 작업을 회의로 만들지 않는다.
+- 구현자는 만들고, QA는 깨고, reviewer는 완료 여부를 독립적으로 판정한다.
+- 같은 작업의 피드백과 재작업은 원래 agent handle로 돌려보낸다.
+- 역할은 작업 단위 동안 유지하며, 작업이 끝나면 종료한다.
+- Producer는 crew 역할이 아니며 산출물을 직접 만들지 않는다.
 
-production scale과 verification independence는 직교한다. `solo`여도 필요한 independent
-review edge와 통합 HEAD full QA는 유지한다. mixed-scale item은 item별 criteria digest,
-review cycle, readiness를 유지하고 같은 파일 write는 직렬화한다.
+## 실행 경계
 
-## Crew catalog
-
-| 영역 | crew | 책임 |
-|---|---|---|
-| 전략/기획 | `planner-a` | growth stance. 기회, 확장, 사용자 가치 |
-| 전략/기획 | `planner-b` | risk stance. 실패 비용, 복잡도, 되돌림 가능성 |
-| 전략/기획 | `strategist` | 제품 방향, 포지셔닝, 범위 선택 |
-| 자료수집/분석 | `researcher` | 내부/외부 근거 수집과 해석 |
-| 제품/설계 | `product-designer` | UX, 사용자 흐름, 정보구조 |
-| 제품/설계 | `visual-designer` | 시각 품질, 레이아웃, 브랜드/톤 |
-| 제품/설계 | `architect` | 기술 구조, 경계, API/CLI/schema 계약 |
-| 제작/실행 | `dev` | 소프트웨어 구현 |
-| 제작/실행 | `creator` | copy, visual, docs 등 artifact 제작 |
-| 검수/검증 | `qa` | 재현 가능한 실패, 테스트, edge case |
-| 검수/검증 | `reviewer` | 독립 승인/반려 판단 |
-| 검수/검증 | `critic` | run의 delta/evidence/theatre 판정. rubric-backed system role |
-| 기록/지식 | `curator` | wiki 기록 후보와 승격 gate 정리 |
-
-## Default casts
-
-`studio.py cast suggest <kind> --item-scale standard`가 정적 기본값을 JSON으로 돌려준다.
-기존 표의 cast는 `--item-scale major` full fallback이다.
-
-| kind | 상황 | ritual | cast |
-|---|---|---|---|
-| `idea` | 아이디어 탐색 / 방향 모호 | `brainstorm` | `planner-a`, `planner-b`, `researcher`, `critic` |
-| `product-direction` | 제품 방향 / 범위 결정 | `brainstorm` | `strategist`, `planner-a`, `planner-b`, `product-designer`, `critic` |
-| `technical-design` | 기술 설계 필요 | `brainstorm` | `architect`, `dev`, `qa`, `critic` |
-| `ui-build` | UI/UX 포함 제작 | `brainstorm` | `product-designer`, `visual-designer`, `dev`, `qa` |
-| `content` | 콘텐츠/자료 제작 | `brainstorm` | `strategist`, `creator`, `visual-designer`, `reviewer` |
-| `implementation` | 구현 | `pairing` | `dev`, `qa` |
-| `launch` | 출시/완료 판단 | `brainstorm` | `qa`, `reviewer`, `curator` |
-
-`critic`은 일반 persona가 아니라 ritual 검증 역할이다. `cast suggest`의 `participants`에는
-broker에 넘길 persona만 들어가고, `critic: true`이면 critic rubric을 붙인다.
-brainstorm persona의 설정 key는 `roleId || name`이다. `role`은 화면과 prompt에 쓰는 표시용
-문구이므로 `설계`, `자료수집` 같은 현지화된 값으로 policy lookup을 하지 않는다.
-
-## Tool policy
-
-Studio native harness가 기본이며 위 crew catalog 전체를 외부 plugin 없이 사용할 수 있다. 외부 도구는 run parameter 또는 `.studio.yml`에 이름이 있을 때만 후보로 평가한다. 미설정 도구는 discovery/probe하지 않는다.
-
-- worker 후보가 명시됨: `task-worker|task-github` 중 하나만 track lease. task-github 선택 시 task-worker 별도 lease 금지.
-- reviewer 후보가 명시됨: risk/independence-required edge에서만 `session-review`를 고려하고 동일 episode를 재사용.
-- wiki가 명시됨: 굳은 context/decision handoff에만 사용. runtime 상태를 복제하지 않음.
-- 후보 없음: native cast와 critic/reviewer로 완주.
-
-도구 선택 우선순위는 run parameter > `.studio.yml` > native다. explicit unavailable은 STOP, configured unavailable은 선언된 fallback을 따른다.
-
-## Owner gates
-
-Producer가 묻는 것은 줄인다. 다만 아래는 owner 전권이다.
-
-- mission 계약 확정 또는 변경
-- 신규 epic / 방향 전환
-- 비가역 변경
-- 외부 공개 또는 출시
-- 예산 상향
-- decision / rejected_decision wiki 승격
+Studio는 역할과 작업만 정한다. agent 실행, 권한, sandbox, tool access, context window와
+수명주기는 Codex 또는 Claude Code가 제공하는 native subagent 기능이 소유한다.

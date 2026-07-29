@@ -49,9 +49,16 @@ init은 전체 대상의 충돌을 먼저 확인한다. 같은 내용은 skip하
 
 ## 0.5.0 execution control
 
-Studio와 task-worker는 `studio-verification-contract-set/v1`의 exact digest와 golden cases를 공유한다. repo root `tests/fixtures/studio-verification-contract-v1.json`은 task-worker runtime과 parity 검사의 golden source이고, Studio runtime은 배포 artifact 내부 `plugins/studio/contracts/studio-verification-contract-v1.json`의 검증된 동일본을 기본으로 읽는다. task-worker는 command profile과 impact rule로 허용 QA mode/명령을 결정하고, profile과 다른 argv·사유 없는 full QA·동일 physical identity의 중복 claim을 실행 전에 거부한다.
+task-worker가 execution control과 canonical fixture를 단독 소유한다. 기존 consumer와 저장된
+artifact 호환을 위해 `studio-verification-contract-set/v1` schema id와
+`tests/fixtures/studio-verification-contract-v1.json` 파일명은 유지하지만 Studio runtime
+복제본이나 cross-package parity 검사는 없다. task-worker는 command profile과 impact rule로
+허용 QA mode/명령을 결정하고, profile과 다른 argv·forbidden argv·machine-readable reason
+없는 full QA·동일 physical identity의 중복 claim을 실행 전에 거부한다.
 
-`command_digest`의 canonical preimage는 두 consumer 모두 실제 실행 직전 해석된 `{executable,args,cwd,environment}`다. profile/cycle/unit/target 같은 attribution은 command digest나 physical identity에 넣지 않는다.
+`command_digest`의 canonical preimage는 실제 실행 직전 해석된
+`{executable,args,cwd,environment}`다. profile/cycle/unit/target 같은 attribution은 command
+digest나 physical identity에 넣지 않는다.
 
 physical identity는 `head + command_digest + environment_digest + tool_version + purpose + optional fresh_requirement_id`만 사용한다. definition/node/cycle/unit/target/profile id는 attribution이며 identity에 섞지 않는다. 성공 결과는 immutable command receipt와 verification evidence의 digest/source binding이 유효할 때만 재사용한다. 이 제어층은 logical node 분해, 전체 ready set, worktree 격리, 독립 review와 root integration gate를 줄이지 않는다.
 

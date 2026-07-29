@@ -1,31 +1,26 @@
 # mission — <제목>
 
-> 이 파일은 팀 자율성의 **정본**이다. 팀(producer 포함) 누구도 이 계약 밖의
-> 자율을 행사하지 못한다. 계약 변경은 owner 게이트다.
-> 아래 ```json 블록이 머신 상태 — `studio.py mission validate <이 파일>`로 검증한다.
+> Producer와 crew가 공유하는 미션 계약이다. 목표나 완료 조건 변경은 owner gate다.
 
 ```json
 {
-  "mission": "한 문단으로: 무엇을 왜 이룬다.",
-  "kpi": [
-    { "id": "k1", "goal": "측정 가능한 목표 1" },
-    { "id": "k2", "goal": "측정 가능한 목표 2" }
+  "mission_id": "mission-example",
+  "objective": "무엇을 왜 달성하는지 한 문단으로 쓴다.",
+  "done_when": "완료로 판정할 수 있는 관찰 가능한 조건을 쓴다.",
+  "constraints": [
+    "변경하면 안 되는 범위",
+    "반드시 지켜야 하는 제품·운영 조건"
   ],
-  "done_when": "완료로 간주하는 조건 (owner 시연 승인 등).",
-  "budget": { "total_tokens": 200000, "per_run_default": 40000 },
-  "gates": ["mission-contract", "new-epic", "irreversible", "decision-promotion", "external-publish", "budget-raise"],
-  "autonomy": "팀이 묻지 않고 해도 되는 것의 서술 — 초안·리서치·구현+검증·백로그 제안·역할 노트·run 예산 배분(한도 내)."
+  "owner_gates": [
+    "제품 방향 변경",
+    "비가역 변경",
+    "외부 공개"
+  ],
+  "autonomy": "역할 선택, 작업 배정, 검증 가능한 재작업은 Producer가 묻지 않고 진행한다."
 }
 ```
 
-## 배경 (사람용 서술 — 파서는 무시)
+## 배경
 
-미션의 맥락, 제약, 참고 링크 등을 자유롭게 적는다. 머신 상태는 위 json 블록만이다.
-
-## 도구·검증 라우팅 확인표
-
-- run parameter에 worker/reviewer가 명시됐는가? 없으면 `.studio.yml`, 그것도 없으면 native다.
-- 설정되지 않은 plugin은 discovery/probe하지 않는다.
-- 외부 provider를 선택했다면 capability owner와 mission/environment digest를 한 번 고정한다.
-- ready-set 병렬 실행, worktree 격리, 독립 판단, 통합 HEAD full gate를 유지한다.
-- 개발 중 최소 검증 → 통합 full 1회 → finding delta QA로 배치하고 valid evidence를 재사용한다.
+crew가 작업에 필요한 배경, 관련 파일과 기존 결정을 짧게 적는다. 실행 transcript나
+호스트 내부 상태를 복제하지 않는다.

@@ -41,7 +41,11 @@ affects_paths: [plugins/task-worker/**, plugins/task-github/**]
 
 task-github 0.26.0은 `task_worker_bridge.py`를 통해 이 JSON CLI contract, review permit, execution-control handshake와 cleanup receipt를 소비한다. task-github의 구 `definition_artifact.py`는 CLI forwarder만 남았고 DefinitionArtifact 생성, local lifecycle, generic ready planner의 중복 구현은 제거됐다. 기존 GitHub Issue Tree도 import하면 WorkGraphSnapshot·context·provider binding으로 고정해 `manual|worker` 두 dispatch에서 재사용한다.
 
-canonical execution-control contract는 `studio-verification-contract-set/v1`, digest `sha256:7df570d1faaba445865c74fd6dffff73178f0102cd3a5728183abf6791ce2b65`로 고정한다. task-worker는 `STUDIO_VERIFICATION_CONTRACT`가 없으면 공유 golden source인 `tests/fixtures/studio-verification-contract-v1.json`을 읽고, Studio runtime은 이 source와 parity가 검증된 package-local `plugins/studio/contracts/studio-verification-contract-v1.json`을 기본으로 읽는다. schema·root canonical digest가 하나라도 다르면 실행 전에 중단한다.
+canonical execution-control contract는 task-worker가 단독으로 소유한다. 하위 호환을 위해
+schema id `studio-verification-contract-set/v1`, 환경변수 `STUDIO_VERIFICATION_CONTRACT`,
+fixture 이름 `tests/fixtures/studio-verification-contract-v1.json`은 유지하지만 Studio
+runtime이나 package-local 복제본은 더 이상 없다. task-worker는 root canonical digest가
+다르면 실행 전에 중단한다.
 
 `scripts/execution_control.py`는 command profile/impact rule을 읽어 허용된 profile·QA mode만 선택하고, profile과 다른 argv·forbidden argv·machine-readable reason 없는 full QA를 거부한다. physical identity는 contract B1에 따라 `head + command_digest + environment_digest + tool_version + purpose + optional fresh_requirement_id`만 hash한다. `definition_id`, `node_id`, `cycle_id`, `unit_id`, `target`, profile id는 attribution이며 identity에 섞지 않는다.
 
@@ -486,7 +490,12 @@ telemetry 누락은 선택적 추가 실행을 제한할 수 있지만 필수 �
 
 ### 14. Conformance fixture
 
-task-worker의 canonical fixture 기본값은 공유 golden source인 `tests/fixtures/studio-verification-contract-v1.json`, Studio runtime 기본값은 parity가 검증된 `plugins/studio/contracts/studio-verification-contract-v1.json`이다. leaf 검증 override는 `STUDIO_VERIFICATION_CONTRACT=/private/tmp/studio-verification-contract-v1.json`이다. root digest와 golden input/nested instance digest를 그대로 소비하며 consumer가 fixture를 임의로 재작성하지 않는다.
+task-worker의 canonical fixture 기본값은
+`tests/fixtures/studio-verification-contract-v1.json`이다. schema id와 파일명은 기존
+consumer 호환을 위해 유지한다. leaf 검증 override는
+`STUDIO_VERIFICATION_CONTRACT=/private/tmp/studio-verification-contract-v1.json`이다.
+root digest와 golden input/nested instance digest를 그대로 소비하며 adapter가 fixture를
+복제하거나 재작성하지 않는다.
 
 분리 구현은 최소 다음을 replay한다.
 

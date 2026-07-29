@@ -1,7 +1,7 @@
 {
   "name": "studio",
-  "version": "0.11.1",
-  "description": "Native-first autonomous agent team with outcome-based work classification and continuation accounting, persistent brainstorm, isolated development, and strict quality gates.",
+  "version": "0.12.0",
+  "description": "Host-native crew orchestrator for Codex and Claude Code subagents.",
   "author": {
     "name": "Jinwuk-Lee",
     "url": "https://github.com/Jeis-Jw"
@@ -9,21 +9,17 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Studio",
-    "shortDescription": "Run a quality-gated, outcome-accounted living agent team.",
-    "longDescription": "The owner gives a mission; Studio classifies the work, selects the minimum sufficient crew and review path, and accounts for delivered outcomes separately from motion and telemetry. It preserves adversarial QA, strict critics, judgment diversity, worktree isolation, single-owner reviews, and the integrated full gate.",
+    "shortDescription": "Convene and manage role-based native subagents.",
+    "longDescription": "Studio selects the minimum useful crew, assigns work through the host's native subagent tools, relays messages, reuses the original agent for rework, and reports results. It does not ship an agent runtime, sandbox, auth layer, or execution platform.",
     "developerName": "Jinwuk-Lee",
     "category": "Productivity",
-    "capabilities": ["Read", "Write", "Workflow", "Validation"],
+    "capabilities": ["Agents", "Orchestration"],
     "defaultPrompt": [
-      "Use $producer to run a mission through the living agent team.",
-      "The producer convenes crew into background runs; it never makes artifacts itself.",
-      "Require artifact and context evidence to pass QualityPlan floors before integration.",
-      "Use WorkPacket v2 work classification for new dispatches; mixed or unknown work fails closed to standard judgment.",
-      "Continue only from a material, criterion-linked, single-use review decision; terminal decisions require a new owner-approved cycle.",
-      "Treat quality completion as the delivery gate and telemetry completion only as the efficiency-claim gate.",
-      "Use task-worker without GitHub, task-github for GitHub delivery, and never lease both for one track.",
-      "Use session-review selectively for major or independence-required review edges.",
-      "Owner gates: mission contract, new epic, irreversible, external-publish, budget-raise."
+      "Use $producer to turn the owner's mission into the smallest useful role-based crew.",
+      "Use the current host's native subagent tools; never launch a separate Codex or Claude runtime.",
+      "The producer assigns work, relays messages, tracks handles and results, and never authors the deliverable.",
+      "Send review findings and rework to the original agent handle when the role and task are unchanged.",
+      "Let task-worker own implementation execution, session-review own review workflow, task-github own GitHub delivery, and wiki-markdown own durable knowledge."
     ]
   }
 }

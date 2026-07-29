@@ -1,5 +1,4 @@
 import json
-import importlib.util
 import os
 import subprocess
 import sys
@@ -12,13 +11,6 @@ TASK_WORKER = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TASK_WORKER / "scripts"))
 
 import execution_control as control  # noqa: E402
-
-
-STUDIO_CONTROL_PATH = TASK_WORKER.parent / "studio" / "scripts" / "execution_control.py"
-STUDIO_SPEC = importlib.util.spec_from_file_location("studio_execution_control", STUDIO_CONTROL_PATH)
-studio_control = importlib.util.module_from_spec(STUDIO_SPEC)
-assert STUDIO_SPEC.loader is not None
-STUDIO_SPEC.loader.exec_module(studio_control)
 
 
 class CanonicalContractTests(unittest.TestCase):
@@ -36,11 +28,10 @@ class CanonicalContractTests(unittest.TestCase):
         self.assertEqual(self.contract["digest"], control.CONTRACT_DIGEST)
         self.assertEqual(control.instance_digest(self.contract), control.CONTRACT_DIGEST)
 
-    def test_cross_surface_command_and_physical_identity_golden_vector(self):
+    def test_command_and_physical_identity_golden_vector(self):
         command = self._command()
         expected_command_digest = "sha256:f627a1f81afaa6d418f18d1da598520ca34b81be72462d478c23e5c5fc996376"
         self.assertEqual(control.command_digest(command), expected_command_digest)
-        self.assertEqual(studio_control.command_digest(command), expected_command_digest)
 
         permit = {
             "head": "abc1234",
@@ -56,7 +47,6 @@ class CanonicalContractTests(unittest.TestCase):
         }
         expected_physical_key = "sha256:a515fe2c20c0daa7454835789e0a1286c6ef93f7234f770a99cffc3742bf5a60"
         self.assertEqual(control.physical_identity(permit), expected_physical_key)
-        self.assertEqual(studio_control.physical_key(permit), expected_physical_key)
 
         attribution_changed = {
             **permit,
@@ -159,7 +149,7 @@ class CanonicalContractTests(unittest.TestCase):
             "owner_approved": True,
             "approved_by": "owner",
             "approved_at": "2026-07-15T00:00:00Z",
-            "expires_at": "2026-07-16T00:00:00Z",
+            "expires_at": "2099-07-16T00:00:00Z",
         }
         value["digest"] = control.instance_digest(value)
         return value

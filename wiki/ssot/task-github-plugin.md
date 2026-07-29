@@ -41,7 +41,11 @@ task-github를 단순 기록기나 Issue comment writer로 축소하지 않는�
 
 task-worker 위임은 subprocess contract call이며 추가 agent/session hop을 만들지 않는다. ready planner는 단일 action이 아니라 전체 ready set을 반환하므로 기존 병렬성도 보존한다.
 
-execution-control handshake는 `studio-verification-contract-set/v1`, digest `sha256:7df570d1faaba445865c74fd6dffff73178f0102cd3a5728183abf6791ce2b65`를 요구한다. task-github는 profile 선택, impact/QA 판정, duplicate/run-cap, token policy, evidence applicability를 재구현하지 않는다. task-worker가 반환한 immutable `command-receipt/v1`과 `verification-evidence/v1` reference를 Issue comment/ledger/delivery evidence에 투영할 뿐이다.
+execution-control handshake는 task-worker가 공개하는
+`studio-verification-contract-set/v1`을 소비한다. schema id는 하위 호환 이름일 뿐
+Studio runtime dependency가 아니다. task-github는 profile 선택, impact/QA 판정,
+duplicate/run-cap, token policy, evidence applicability를 재구현하지 않고 task-worker가
+반환한 receipt/evidence reference만 GitHub delivery 상태에 투영한다.
 
 ### 핵심 불변식
 

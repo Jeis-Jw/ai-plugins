@@ -26,8 +26,8 @@
     {
       "name": "studio",
       "source": "./plugins/studio",
-      "description": "Native-first 자율운영 팀 — outcome 기반 work classification·연장 회계, persistent brainstorm·격리 개발, 엄격한 품질 gate",
-      "version": "0.11.1"
+      "description": "Codex와 Claude Code의 native subagent를 역할별 crew로 소집·중계·관리하는 오케스트레이터",
+      "version": "0.12.0"
     },
     {
       "name": "task-worker",
