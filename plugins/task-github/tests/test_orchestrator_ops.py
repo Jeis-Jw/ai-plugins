@@ -10,12 +10,12 @@ sys.path.insert(0, str(TASK_GITHUB / "skills" / "orchestrate" / "scripts"))
 import orchestrator_ops  # noqa: E402
 
 
-def studio_review_lease(**overrides):
+def external_review_lease(**overrides):
     lease = {
         "schema": "workflow-review-lease/v1",
-        "lease_id": "lease-studio-1",
-        "owner": "studio",
-        "provider": "session-review",
+        "lease_id": "lease-external-1",
+        "owner": "external",
+        "provider": "review-command",
         "episode_id": "episode-1",
         "edge_id": "pr-22",
         "requirement": "independent",
@@ -28,8 +28,8 @@ def studio_review_lease(**overrides):
     return lease
 
 
-def studio_review_permit():
-    lease = studio_review_lease()
+def external_review_permit():
+    lease = external_review_lease()
     return {
         "schema": "task-worker.review-permit/v1",
         "status": "externally-owned",
@@ -42,7 +42,7 @@ def studio_review_permit():
 
 
 def task_worker_review_permit():
-    lease = studio_review_lease()
+    lease = external_review_lease()
     lease["owner"] = "task-worker"
     lease["provider"] = "native"
     encoded = json.dumps(
@@ -130,7 +130,7 @@ class OrchestratorOpsTests(unittest.TestCase):
         self.assertFalse(orchestrator_ops.review_required("skip", "gear:major"))
         self.assertTrue(orchestrator_ops.review_required("all", "gear:micro"))
         self.assertTrue(orchestrator_ops.review_required(
-            "skip", "gear:micro", review_lease=studio_review_lease()
+            "skip", "gear:micro", review_lease=external_review_lease()
         ))
 
     def test_flow_policy_defaults_and_overrides(self):
@@ -304,7 +304,7 @@ class OrchestratorOpsTests(unittest.TestCase):
 
         self.assertEqual(plan, {"action": "stop", "stop_reason": "human_gate_review"})
 
-    def test_plan_tick_studio_lease_preserves_transport_and_never_dispatches_reviewer(self):
+    def test_plan_tick_external_lease_preserves_transport_and_never_dispatches_reviewer(self):
         plan = orchestrator_ops.plan_tick(
             {
                 "ok": False,
@@ -314,19 +314,19 @@ class OrchestratorOpsTests(unittest.TestCase):
                     "pr": 22,
                     "base": "task/issue-1",
                     "head": "task/issue-2",
-                    "expected_review_lease": studio_review_lease(),
+                    "expected_review_lease": external_review_lease(),
                 }],
             },
             review_tool="session-review:request-review",
             review_command="self turnkey",
-            review_permits={2: studio_review_permit()},
+            review_permits={2: external_review_permit()},
         )
 
         self.assertEqual(plan["action"], "handoff_external_reviews")
         self.assertEqual(plan["status"], "externally-owned")
         self.assertNotIn("command", plan)
         self.assertEqual(plan["handoffs"][0]["pr"], 22)
-        self.assertEqual(plan["handoffs"][0]["review_lease"]["owner"], "studio")
+        self.assertEqual(plan["handoffs"][0]["review_lease"]["owner"], "external")
 
     def test_plan_tick_expected_lease_without_permit_stops_before_reviewer_dispatch(self):
         plan = orchestrator_ops.plan_tick(
@@ -338,7 +338,7 @@ class OrchestratorOpsTests(unittest.TestCase):
                     "pr": 22,
                     "base": "task/issue-1",
                     "head": "task/issue-2",
-                    "expected_review_lease": studio_review_lease(),
+                    "expected_review_lease": external_review_lease(),
                 }],
             },
             review_tool="session-review:request-review",
@@ -354,9 +354,9 @@ class OrchestratorOpsTests(unittest.TestCase):
         self.assertNotIn("command", plan)
 
     def test_plan_tick_expected_lease_mismatch_stops_before_reviewer_dispatch(self):
-        expected = studio_review_lease()
-        mismatched = studio_review_permit()
-        mismatched["review_lease"] = studio_review_lease(episode_id="other")
+        expected = external_review_lease()
+        mismatched = external_review_permit()
+        mismatched["review_lease"] = external_review_lease(episode_id="other")
         plan = orchestrator_ops.plan_tick(
             {
                 "ok": False,
@@ -402,7 +402,7 @@ class OrchestratorOpsTests(unittest.TestCase):
                 "review_waiting": [{"number": 2}],
             },
             review_tool="session-review:request-review",
-            review_permits={2: studio_review_permit()},
+            review_permits={2: external_review_permit()},
         )
 
         self.assertEqual(plan["action"], "call_review_tool")

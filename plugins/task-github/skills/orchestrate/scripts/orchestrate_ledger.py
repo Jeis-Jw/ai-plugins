@@ -299,18 +299,18 @@ def _expected_external_review(issue: dict[str, Any]) -> tuple[dict[str, Any] | N
     if not isinstance(expected, dict):
         return None, None
     expected = orchestrator_ops.validate_review_lease(expected)
-    if expected["owner"] != "studio":
+    if not orchestrator_ops.is_external_review_lease(expected):
         return expected, None
     external = issue.get("external_review")
     if not isinstance(external, dict):
-        raise ValueError("expected Studio review has no recorded handoff")
+        raise ValueError("expected external review has no recorded handoff")
     if external.get("review_lease") != expected:
         raise ValueError("external review lease differs from expected review lease")
     if external.get("status") != "approved" or external.get("verdict") != "approved":
-        raise ValueError("expected Studio review is not approved; closeout is forbidden")
+        raise ValueError("expected external review is not approved; closeout is forbidden")
     evidence = external.get("verdict_evidence_refs")
     if not isinstance(evidence, list) or set(expected["evidence_refs"]) - set(evidence):
-        raise ValueError("expected Studio review lacks required evidence; closeout is forbidden")
+        raise ValueError("expected external review lacks required evidence; closeout is forbidden")
     return expected, external
 
 
@@ -381,8 +381,8 @@ def apply_event(payload: dict[str, Any], event: dict[str, Any]) -> None:
             issue["expected_review_lease"] = lease
         elif kind == "external_review_waiting":
             lease = orchestrator_ops.validate_review_lease(event.get("review_lease"))
-            if lease["owner"] != "studio":
-                raise ValueError("external review handoff requires owner=studio")
+            if not orchestrator_ops.is_external_review_lease(lease):
+                raise ValueError("external review handoff requires an external owner")
             expected = issue.get("expected_review_lease")
             if expected is None:
                 raise ValueError("external review handoff requires an expected review lease pin")
@@ -439,8 +439,8 @@ def apply_event(payload: dict[str, Any], event: dict[str, Any]) -> None:
                 _add_label(issue, "changes-requested")
         elif kind == "pr_merged":
             expected, _ = _expected_external_review(issue)
-            if expected is not None and expected["owner"] == "studio" and issue.get("state") != "closeout_started":
-                raise ValueError("expected Studio review merge cannot run before closeout_started")
+            if expected is not None and orchestrator_ops.is_external_review_lease(expected) and issue.get("state") != "closeout_started":
+                raise ValueError("expected external review merge cannot run before closeout_started")
             # Idempotent: a re-applied merge event must not regress a CLOSED issue back to
             # close_expected (the thrash the orchestrator saw), and must not wipe evidence
             # keys a prior writer (e.g. the orchestrator) already recorded — merge, don't replace.
@@ -508,7 +508,7 @@ def apply_event(payload: dict[str, Any], event: dict[str, Any]) -> None:
             _remove_state_labels(issue)
         elif kind == "closeout_started":
             expected, _ = _expected_external_review(issue)
-            if expected is not None and expected["owner"] == "studio" and issue.get("state") != "closeout_ready":
+            if expected is not None and orchestrator_ops.is_external_review_lease(expected) and issue.get("state") != "closeout_ready":
                 raise ValueError("closeout cannot start before ready_for_closeout")
             issue["state"] = "closeout_started"
             started = dict(issue.get("closeout_started") or issue.get("ready_for_closeout") or {})
@@ -522,7 +522,7 @@ def apply_event(payload: dict[str, Any], event: dict[str, Any]) -> None:
             expected, _ = _expected_external_review(issue)
             if (
                 expected is not None
-                and expected["owner"] == "studio"
+                and orchestrator_ops.is_external_review_lease(expected)
                 and issue.get("state") not in {"closeout_started", "close_expected"}
             ):
                 raise ValueError("closeout cannot finish before closeout_started")
@@ -615,8 +615,8 @@ def record_external_review_handoff(
     head_sha: str | None = None,
 ) -> tuple[dict[str, Any], bool]:
     lease = orchestrator_ops.validate_review_lease(review_lease)
-    if lease["owner"] != "studio":
-        raise ValueError("external review handoff requires owner=studio")
+    if not orchestrator_ops.is_external_review_lease(lease):
+        raise ValueError("external review handoff requires an external owner")
     payload = load_ledger(path)
     item = _issue(payload, issue)
     if item.get("expected_review_lease") != lease:

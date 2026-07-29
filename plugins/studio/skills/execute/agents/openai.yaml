@@ -1,0 +1,4 @@
+interface:
+  display_name: "Studio Execute"
+  short_description: "Route and execute Studio missions from the root Producer"
+  default_prompt: "Use $execute to route and run this mission from the root Producer session."

@@ -39,7 +39,7 @@ CONTEXT_SCHEMA = "task-worker.context-packet/v1"
 EVIDENCE_SCHEMA = "task-worker.verification-evidence/v1"
 REVIEW_LEASE_SCHEMA = "workflow-review-lease/v1"
 REVIEW_PERMIT_SCHEMA = "task-worker.review-permit/v1"
-PLUGIN_VERSION = "0.7.0"
+PLUGIN_VERSION = "0.8.0"
 SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 DELIVERY_MODES = {"local-ff", "external"}
 DISPATCH_MODES = {"worker", "manual"}
@@ -52,8 +52,7 @@ RUN_TRANSITIONS = {
 }
 ACTIVE_STATUSES = {"started", "running", "verified", "done"}
 GRAPH_STATUSES = {"open", "active", "completed", "gated", "failed"}
-REVIEW_LEASE_OWNERS = {"studio", "task-worker"}
-REVIEW_LEASE_PROVIDERS = {"native", "session-review"}
+INTERNAL_REVIEW_OWNER = "task-worker"
 REVIEW_REQUIREMENTS = {"self", "independent"}
 REVIEW_LEASE_KEYS = {
     "schema", "lease_id", "owner", "provider", "episode_id", "edge_id",
@@ -104,10 +103,8 @@ def validate_review_lease(lease: dict[str, Any]) -> dict[str, Any]:
         )
     for key in ("lease_id", "episode_id", "edge_id"):
         _safe_id(lease.get(key), f"review_lease.{key}")
-    if lease.get("owner") not in REVIEW_LEASE_OWNERS:
-        raise DefinitionError("bad_review_lease", "review_lease.owner must be studio or task-worker")
-    if lease.get("provider") not in REVIEW_LEASE_PROVIDERS:
-        raise DefinitionError("bad_review_lease", "review_lease.provider must be native or session-review")
+    _safe_id(lease.get("owner"), "review_lease.owner")
+    _safe_id(lease.get("provider"), "review_lease.provider")
     if lease.get("requirement") not in REVIEW_REQUIREMENTS:
         raise DefinitionError("bad_review_lease", "review_lease.requirement must be self or independent")
     criteria_digest = lease.get("criteria_digest")
@@ -124,6 +121,36 @@ def validate_review_lease(lease: dict[str, Any]) -> dict[str, Any]:
     if lease.get("digest") != expected:
         raise DefinitionError("review_lease_digest_mismatch", "review lease digest does not match canonical content")
     return lease
+
+
+def create_review_lease(
+    *,
+    owner: str,
+    provider: str,
+    episode_id: str,
+    edge_id: str,
+    requirement: str,
+    criteria_digest: str,
+    evidence_refs: Iterable[str] = (),
+    lease_id: str | None = None,
+) -> dict[str, Any]:
+    """Create the generic review-owner contract without caller schema knowledge."""
+    payload = {
+        "schema": REVIEW_LEASE_SCHEMA,
+        "lease_id": lease_id,
+        "owner": owner,
+        "provider": provider,
+        "episode_id": episode_id,
+        "edge_id": edge_id,
+        "requirement": requirement,
+        "criteria_digest": criteria_digest,
+        "evidence_refs": list(evidence_refs),
+    }
+    if lease_id is None:
+        identity = {key: value for key, value in payload.items() if key != "lease_id"}
+        payload["lease_id"] = f"lease-{stable_digest(identity)[:20]}"
+    payload["digest"] = tagged_digest(payload)
+    return validate_review_lease(payload)
 
 
 def _artifact_payload(artifact: dict[str, Any]) -> dict[str, Any]:
@@ -1125,7 +1152,7 @@ def review_permit(
             "binding_path": str(path),
         }
     lease = validate_review_lease(matches[0])
-    externally_owned = lease["owner"] == "studio"
+    externally_owned = lease["owner"] != INTERNAL_REVIEW_OWNER
     return {
         "schema": REVIEW_PERMIT_SCHEMA,
         "status": "externally-owned" if externally_owned else "task-worker-owned",
@@ -1392,6 +1419,15 @@ def build_parser() -> argparse.ArgumentParser:
     review_permit_parser.add_argument("--episode-id", required=True)
     review_permit_parser.add_argument("--edge-id", required=True)
     review_permit_parser.add_argument("--state-root", default=".task-worker/local")
+    review_lease_parser = sub.add_parser("review-lease")
+    review_lease_parser.add_argument("--owner", required=True)
+    review_lease_parser.add_argument("--provider", required=True)
+    review_lease_parser.add_argument("--episode-id", required=True)
+    review_lease_parser.add_argument("--edge-id", required=True)
+    review_lease_parser.add_argument("--requirement", choices=sorted(REVIEW_REQUIREMENTS), required=True)
+    review_lease_parser.add_argument("--criteria-digest", required=True)
+    review_lease_parser.add_argument("--evidence-ref", action="append", default=[])
+    review_lease_parser.add_argument("--lease-id")
     evidence_check = sub.add_parser("evidence-plan")
     evidence_check.add_argument("--request", required=True)
     evidence_check.add_argument("--state-root", default=".task-worker/local")
@@ -1516,7 +1552,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                     "create", "revise", "validate", "export", "store", "plan-graph", "ready",
                     "local-start", "local-event", "recover", "receipt", "capabilities",
                     "bind", "resolve", "resume", "evidence-plan", "evidence-record",
-                    "provider-event", "review-permit",
+                    "provider-event", "review-lease", "review-permit",
                     "policy-plan", "execution-evaluate", "execution-claim",
                     "execution-complete", "execution-project",
                     "spend-claim", "mutation-record", "capability-plan", "capability-record",
@@ -1579,6 +1615,20 @@ def main(argv: Iterable[str] | None = None) -> int:
                     state_root=args.state_root,
                     episode_id=args.episode_id,
                     edge_id=args.edge_id,
+                ),
+            }
+        elif args.command == "review-lease":
+            payload = {
+                "ok": True,
+                "review_lease": create_review_lease(
+                    owner=args.owner,
+                    provider=args.provider,
+                    episode_id=args.episode_id,
+                    edge_id=args.edge_id,
+                    requirement=args.requirement,
+                    criteria_digest=args.criteria_digest,
+                    evidence_refs=args.evidence_ref,
+                    lease_id=args.lease_id,
                 ),
             }
         elif args.command == "evidence-plan":

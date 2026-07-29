@@ -17,6 +17,7 @@ DEFAULT_GEAR_OPTIONS = {
     "major": {"plan": True, "verify": True, "pr-review": True},
 }
 REVIEW_LEASE_SCHEMA = "workflow-review-lease/v1"
+INTERNAL_REVIEW_OWNER = "task-worker"
 REVIEW_REQUIREMENTS = {"self", "independent"}
 REVIEW_LEASE_KEYS = {
     "schema", "lease_id", "owner", "provider", "episode_id", "edge_id",
@@ -34,13 +35,9 @@ def validate_review_lease(lease: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("review lease fields differ from workflow-review-lease/v1")
     if lease.get("schema") != REVIEW_LEASE_SCHEMA:
         raise ValueError("review lease schema mismatch")
-    if lease.get("owner") not in {"studio", "task-worker"}:
-        raise ValueError("review lease owner must be studio or task-worker")
-    if lease.get("provider") not in {"native", "session-review"}:
-        raise ValueError("review lease provider must be native or session-review")
     if lease.get("requirement") not in REVIEW_REQUIREMENTS:
         raise ValueError("review lease requirement must be self or independent")
-    for key in ("lease_id", "episode_id", "edge_id"):
+    for key in ("lease_id", "owner", "provider", "episode_id", "edge_id"):
         if not isinstance(lease.get(key), str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", lease[key]):
             raise ValueError(f"review lease {key} must be a path-safe identifier")
     if not isinstance(lease.get("criteria_digest"), str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", lease["criteria_digest"]):
@@ -52,6 +49,10 @@ def validate_review_lease(lease: dict[str, Any]) -> dict[str, Any]:
     if lease.get("digest") != expected:
         raise ValueError("review lease digest mismatch")
     return lease
+
+
+def is_external_review_lease(lease: dict[str, Any]) -> bool:
+    return validate_review_lease(lease)["owner"] != INTERNAL_REVIEW_OWNER
 
 
 def issue_branch(number: int) -> str:
@@ -616,12 +617,12 @@ def worker_feedback_handoff(*, issue: int, pr: int, branch: str, feedback: list[
 
 
 def external_review_handoff(item: dict[str, Any], permit: dict[str, Any]) -> dict[str, Any]:
-    """Preserve GitHub transport while returning reviewer ownership to Studio."""
+    """Preserve GitHub transport while returning reviewer ownership to its caller."""
     if permit.get("schema") != "task-worker.review-permit/v1":
         raise ValueError("task-worker review permit schema mismatch")
     lease = validate_review_lease(permit.get("review_lease"))
-    if permit.get("dispatch_reviewer") is not False or lease["owner"] != "studio":
-        raise ValueError("external review handoff requires a Studio-owned skip permit")
+    if permit.get("dispatch_reviewer") is not False or not is_external_review_lease(lease):
+        raise ValueError("external review handoff requires an external-owner skip permit")
     required = ("number", "pr", "base", "head")
     missing = [key for key in required if item.get(key) is None]
     if missing:
@@ -657,7 +658,7 @@ def review_permit_action(
         raise ValueError("review_permit_mismatch") from exc
     if actual != expected:
         raise ValueError("review_permit_mismatch")
-    if expected["owner"] == "studio":
+    if is_external_review_lease(expected):
         if (
             permit.get("status") != "externally-owned"
             or permit.get("dispatch_reviewer") is not False

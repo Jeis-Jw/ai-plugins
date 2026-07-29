@@ -23,8 +23,9 @@ python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py
 ```
 
 - lease 없음: 기존 task-worker review policy를 그대로 적용한다.
-- `owner=task-worker`: 선택한 native/session-review reviewer를 기존 흐름으로 dispatch한다.
-- `owner=studio`: reviewer를 dispatch하지 않고 `externally-owned` handoff를 Studio에 반환한다.
+- `owner=task-worker`: task-worker가 선택한 reviewer를 기존 흐름으로 dispatch한다.
+- 그 밖의 opaque owner: reviewer를 dispatch하지 않고 `externally-owned` handoff를 caller에
+  반환한다.
 - permit은 reviewer dispatch만 제어한다. `run`, `verify`, `done`, integration evidence와 gate는 어떤 owner에서도 생략하지 않는다.
 - 각 lane의 physical command는 실행 직전 atomic execution claim을 가져야 한다. 같은 identity의 active claim은 중복 dispatch하지 않고, 성공 evidence는 applicability가 맞을 때만 재사용하며, run cap은 owner-visible STOP으로 올린다.
 - merge로 새 head가 생긴 `integration_candidates[]`는 `purpose: integration-full`로 별도 identity를 만들고 최종 integration gate를 1회 수행한다. leaf delta receipt나 reviewer receipt로 이를 대체하지 않는다.
@@ -41,6 +42,6 @@ python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py
 - `ready_actions[0]`만 반복 실행해 그래프를 직렬화하지 않는다.
 - parallelism을 높이려고 같은 worktree에서 동시에 수정하지 않는다.
 - 비용 절감을 이유로 독립 node나 필수 review/integration gate를 제거하지 않는다.
-- `owner=studio` handoff를 review 완료로 간주하거나 verify/integration gate를 건너뛰지 않는다.
+- external handoff를 review 완료로 간주하거나 verify/integration gate를 건너뛰지 않는다.
 - plugin을 호출할 때마다 fresh agent/session을 만들지 않는다.
 - tracker 기록이 필요하면 caller가 provider adapter를 연결한다. task-worker가 직접 외부 상태를 쓰지 않는다.

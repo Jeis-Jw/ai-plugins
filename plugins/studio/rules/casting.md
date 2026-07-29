@@ -21,8 +21,11 @@ topology가 아니다.
 - 같은 작업의 피드백과 재작업은 원래 agent handle로 돌려보낸다.
 - 역할은 작업 단위 동안 유지하며, 작업이 끝나면 종료한다.
 - Producer는 crew 역할이 아니며 산출물을 직접 만들지 않는다.
+- leaf crew는 배정된 작업만 수행하며 작업 재분해, orchestration, nested agent 생성을 하지
+  않는다.
 
 ## 실행 경계
 
-Studio는 역할과 작업만 정한다. agent 실행, 권한, sandbox, tool access, context window와
-수명주기는 Codex 또는 Claude Code가 제공하는 native subagent 기능이 소유한다.
+Studio는 역할과 작업을 정하고, `.studio.yml`이 있으면 해당 provider×role의 model/effort
+spawn policy를 해석한다. agent 실행, 권한, sandbox, tool access, context window와 수명주기는
+Codex 또는 Claude Code가 제공하는 native subagent 기능이 소유한다.

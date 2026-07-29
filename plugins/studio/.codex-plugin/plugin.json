@@ -1,7 +1,7 @@
 {
   "name": "studio",
-  "version": "0.12.0",
-  "description": "Host-native crew orchestrator for Codex and Claude Code subagents.",
+  "version": "0.13.0",
+  "description": "Root Producer orchestrator with optional execution commands and role-specific model/effort policy.",
   "author": {
     "name": "Jinwuk-Lee",
     "url": "https://github.com/Jeis-Jw"
@@ -9,17 +9,15 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Studio",
-    "shortDescription": "Convene and manage role-based native subagents.",
-    "longDescription": "Studio selects the minimum useful crew, assigns work through the host's native subagent tools, relays messages, reuses the original agent for rework, and reports results. It does not ship an agent runtime, sandbox, auth layer, or execution platform.",
+    "shortDescription": "Route missions and manage role-based native subagents.",
+    "longDescription": "Studio keeps the main Producer on the control plane, resolves optional work, review, and delivery commands plus provider- and role-specific model/effort policy, and dispatches native leaf crews without shipping another runtime or copying command state.",
     "developerName": "Jinwuk-Lee",
     "category": "Productivity",
     "capabilities": ["Agents", "Orchestration"],
     "defaultPrompt": [
-      "Use $producer to turn the owner's mission into the smallest useful role-based crew.",
-      "Use the current host's native subagent tools; never launch a separate Codex or Claude runtime.",
-      "The producer assigns work, relays messages, tracks handles and results, and never authors the deliverable.",
-      "Send review findings and rework to the original agent handle when the role and task are unchanged.",
-      "Let task-worker own implementation execution, session-review own review workflow, task-github own GitHub delivery, and wiki-markdown own durable knowledge."
+      "Use $execute in the root Producer session to route and run missions through configured optional commands.",
+      "Use $producer to cast the smallest useful crew and keep orchestration out of leaf agents.",
+      "Resolve .studio.yml model/effort before every fresh spawn and reuse original handles for rework."
     ]
   }
 }

@@ -16,12 +16,12 @@ import task_worker_bridge as bridge  # noqa: E402
 import github_projection as projection  # noqa: E402
 
 
-def studio_review_lease():
+def external_review_lease():
     lease = {
         "schema": "workflow-review-lease/v1",
-        "lease_id": "lease-studio-1",
-        "owner": "studio",
-        "provider": "session-review",
+        "lease_id": "lease-external-1",
+        "owner": "external",
+        "provider": "review-command",
         "episode_id": "episode-1",
         "edge_id": "pr-22",
         "requirement": "independent",
@@ -46,7 +46,7 @@ class TaskWorkerBridgeTests(unittest.TestCase):
         self.assertEqual(payload["contracts"]["review_permit"], "task-worker.review-permit/v1")
         self.assertTrue(bridge.REQUIRED_COMMANDS.issubset(set(payload["commands"])))
 
-    def test_bridge_binds_and_consumes_studio_review_permit(self):
+    def test_bridge_binds_and_consumes_external_review_permit(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             spec = root / "spec.json"
@@ -58,7 +58,7 @@ class TaskWorkerBridgeTests(unittest.TestCase):
             }), encoding="utf-8")
             created = bridge.call_worker(["create", "--spec", str(spec), "--store", str(root / "defs")])
             artifact_path.write_text(json.dumps(created["artifact"]), encoding="utf-8")
-            lease = studio_review_lease()
+            lease = external_review_lease()
             lease_path.write_text(json.dumps(lease), encoding="utf-8")
             binding = bridge.bind_artifact(
                 artifact_path,
