@@ -169,7 +169,10 @@ null이면 초과 판정 불가). 반드시 미션 계약 값으로 설정한다
 완료·통합 후보를 dispatch하기 전에 artifact/context criterion을 모두 포함하는
 QualityPlan을 고정한다. 각 criterion 필수 필드는 `{id, kind, weight, floor, measure}`다.
 criterion-bound evidence 누락이나 floor 미달은 weighted utility로 상쇄할 수 없다.
-telemetry의 `tokens:null` 또는 필드 누락은 incomplete이며 0으로 대체하지 않는다.
+`quality_complete`는 delivery/integration 판단, `telemetry_complete`는 utility·효율 주장
+가능 여부다. telemetry의 `tokens:null` 또는 필드 누락은 후자만 incomplete로 만들며
+0으로 대체하거나 품질 완료를 막지 않는다. 예산 reservation은 unmeasured로 닫고 실제
+spent에 더하지 않는다.
 
 실제 명령 실행, capability probe, 외부 mutation, closeout이 있는 run은 소집 전에
 `references/execution-control.md`를 읽는다. `review plan-next`의 `allowed_commands` 문자열은
@@ -236,6 +239,13 @@ python3 "$STUDIO" config get   # JSON → common defaults/roles/agents/rituals +
 - **per-run 예산**: mission `budget.per_run_default`를 이 run의 Workflow 예산
   목표(토큰 상한)로 건다. 단 토큰 상한은 보조 장치이고, run을 실제로 멈추는 하드
   스톱은 `maxRounds`와 `dryStop`이다(transcript O(R²) 성장 방지 — 이게 정본 레버).
+- **work class 선고정**: 새 dispatch는 `studio-work-classification/v1`을 WorkPacket v2의
+  `constraints.work_classification`에 넣는다. `retrieval | judgment | construction |
+  verifier-hardening | integration` 중 하나와 기존 `production_scale`, `qa_mode`, terminal
+  outcome을 결합한다. mixed/unknown은 `standard judgment`로 fail-closed한다. retrieval은
+  solo evidence digest, judgment는 다인 decision, construction은 integration-ready
+  delivery, verifier-hardening은 defense evidence, integration은 통합 HEAD delivery가
+  terminal이다. `evidence-only`와 `motion`은 delivered outcome으로 세지 않는다.
 - backlog item마다 `solo|standard|major` production scale을 정적으로 선택한다. solo는
   criterion source ref와 기계적 measure가 이미 있고 새 domain 해석이 없을 때만 허용한다.
   scale과 reviewer owner/independence를 결합하지 않는다. 같은 track의 mixed-scale item은
@@ -465,7 +475,8 @@ lease를 잡는다.
 
 WorkPacket 필수 필드는 `schema`, `track_id`, `objective`, `acceptance_criteria`,
 `context_ref`, `digest`, `quality_plan_ref`, `constraints`, `budget_reservation_id`, `gates`,
-`executor`다. ResultEnvelope 필수 필드는 `status`, `external_ref`, `artifact_refs`,
+`executor`다. 새 WorkPacket은 `schema:2`와 위 work classification을 요구한다. 기존
+`schema:1` packet/resume은 읽기·결과 회수를 계속 지원한다. ResultEnvelope 필수 필드는 `status`, `external_ref`, `artifact_refs`,
 criterion-bound `evidence_refs`, `context_delta_refs`, `telemetry`, `gates`, `failure_class`다.
 
 ## 4) 회수 (run record)
@@ -499,6 +510,11 @@ QA pass 뒤 producer가 결함을 발견하거나 owner가 결함을 지적하�
 같은 Issue/criteria에서는 `F-xxxx`와 유효 evidence를 이어받아 delta QA하고, full QA·fresh
 context는 구조화된 사유가 있을 때만 쓰는 것이다. criteria/Issue scope 변경은 새 cycle,
 환경/tool 변경은 관련 evidence 재실행, transient/tool/config 실패는 같은 cycle의 retry다.
+새 non-fresh continuation은 materiality와 criterion link, content/surface digest 변화,
+판별 가치, attempt 상한, residual risk를 `continuation-decided` event에 먼저 기록하고
+그 decision id를 handoff가 참조해야 한다. 새 ref만 추가되거나 low/none materiality이면
+착지하며, attempt 초과는 owner reapproval gate다. 실제 제품 repro와 criterion-linked
+bounded verifier mutation은 계속할 수 있다.
 각 물리 run 비용은 record하되 같은 event 재전송은 no-op이며, summary는 측정된 token/time만
 coverage와 함께 합산한다.
 

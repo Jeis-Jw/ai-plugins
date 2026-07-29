@@ -10,6 +10,8 @@ Issue/DefinitionArtifact/track의 점유·완료 의미와 physical run 기록�
 - 같은 scope/criteria의 발견·수정·재검증은 physical run이나 worker가 바뀌어도 같은 cycle.
 - criteria 또는 Issue scope가 바뀌면 새 cycle. full QA로 덮지 않는다.
 - `integration-ready`가 terminal success다. `criteria-gap`은 `blocked`와 새 cycle 판단을 만든다.
+- retrieval/토론/검증의 새 physical continuation은 별도 terminal이 아니다. 아래
+  `continuation-decided`가 `continue`를 허용하고 handoff가 그 id를 참조해야 한다.
 
 ## 열기와 조회
 
@@ -53,7 +55,7 @@ python3 "$STUDIO" review event RC-issue-58 --json @event.json
   "schema": "studio-review-event/v1",
   "event_id": "REV-58-...",
   "cycle_id": "RC-issue-58",
-  "type": "finding-opened|evidence-recorded|fix-submitted|qa-completed|retry-recorded|handoff-recorded"
+  "type": "finding-opened|evidence-recorded|fix-submitted|qa-completed|retry-recorded|handoff-recorded|continuation-decided|outcome-recorded|outcome-reopened"
 }
 ```
 
@@ -67,6 +69,9 @@ python3 "$STUDIO" review event RC-issue-58 --json @event.json
 | `qa-completed` | `qa_mode`, `head`, `passed`, `checks[]`, `blocked_checks[]`, `evidence_refs[]`, `finding_results[]`, `full_qa_reason?` |
 | `retry-recorded` | `classification`, `failure`, `attempt`, `finding_ids?` |
 | `handoff-recorded` | `fresh_context`, `continuation_ref?`, `reason?` |
+| `continuation-decided` | `decision:studio-continuation-decision/v1` |
+| `outcome-recorded` | `outcome:studio-outcome/v1` |
+| `outcome-reopened` | `outcome_id`, `reason`, `evidence_refs[]` |
 
 Finding id를 생략하면 원장이 `F-0001`부터 부여한다. QA가 finding을 `closed`로 만들려면
 `passed:true`이고 유효한 defense `evidence_refs`가 있어야 한다.
@@ -133,6 +138,28 @@ block한다.
 Fresh context reason은 `context-unavailable | domain-shift | complexity-boundary |
 independence-required | cycle-ledger-invalid` 중 하나여야 한다. 나머지는 worker가 바뀌어도
 compact handoff를 사용한다.
+
+## 연장과 outcome 회계
+
+새 non-fresh handoff 전에 `continuation-decided`를 기록한다. decision은 intent와
+criterion refs, work class/outcome kind, 현재·직전 content/surface digest, 새 판별 가치,
+`materiality:{surface,exists,criterion_linked,bounded,level}`, attempt/max attempts,
+residual risk, `continue|land|stop|owner-gate`, authority/reapproval을 모두 가진다.
+
+- `continue`: materiality가 medium/high이고 criterion-linked+bounded여야 한다. 제품 surface는
+  실제 존재해야 한다. verifier-hardening은 실제 repro 방어를 위한 bounded synthetic
+  verifier surface도 허용한다.
+- basis digest가 직전과 같으면 새 ref만 생긴 것이므로 연장하지 않는다.
+- attempt 상한을 넘으면 `owner-gate`와 owner reapproval만 허용한다.
+- non-fresh `handoff-recorded.continuation_ref`는 원장에 기록된 `continue` decision id여야 한다.
+- 기존 저장 cycle/event/handoff는 migration 없이 읽는다. 이 강제는 새 event에만 적용한다.
+
+`outcome-recorded`는 `delivered | decision | blocker-resolution | quality-defense |
+evidence-only | motion`을 구분한다. 앞의 네 종류만 credit하며 judgment credit은
+producer/owner가 adopted한 결정과 residual risk를 요구한다. verifier quality-defense는
+유효 cycle evidence가 필요하고 construction/integration delivery는 `integration-ready`에서만
+기록한다. `outcome-reopened`는 active credit을 `-1` offset하며 summary는 gross, reopen
+offset, net credit을 함께 보고한다.
 
 물리 검증 배치는 `개발 중 변경 범위 최소 검증 → 통합 HEAD full QA 1회 → finding 수정 범위 delta QA`다. full integration gate와 독립 판단을 없애지 않는다. 실행·evidence 정본은 `studio-verification-contract-set/v1` (`sha256:7df570d1faaba445865c74fd6dffff73178f0102cd3a5728183abf6791ce2b65`)이다. 같은 `head/command/environment/tool/purpose`와 criteria/path/surface/impact/independence가 맞는 deterministic evidence만 재사용한다. final 독립 판단, integration HEAD full gate, Release/device/production 환경처럼 fresh execution 자체가 완료 조건인 check는 서로 다른 `fresh_requirement_id`의 permit으로 실행한다.
 

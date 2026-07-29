@@ -93,9 +93,10 @@ Studio가 mission·QualityPlan·context·owner gate의 정본을 소유한다. �
 
 - **QualityPlan**: artifact/context criterion은 각각 `{id, kind, weight, floor, measure}`를
   가진다. criterion-bound evidence가 없거나 `score < floor`이면 비용 점수와 무관하게
-  통합 불가다. floor 통과 후에만 quality 최고 비중의 utility를 계산한다.
+  통합 불가다. floor 통과는 `quality_complete`이며 delivery/integration 판단에 사용한다.
 - **telemetry**: `{tokens, elapsed_ms, avoidable_owner_questions}` 중 하나라도 불완전하거나
-  `tokens:null`이면 incomplete다. 알 수 없는 값을 0으로 바꾸지 않는다.
+  `tokens:null`이면 효율 주장은 incomplete다. 품질 완료를 막지 않으며 알 수 없는 값을
+  0으로 바꾸지 않는다. utility는 quality와 telemetry가 모두 완결됐을 때만 계산한다.
 - **receipt**: broker는 `budget.spent()`의 실행 전후 차이를 `tokens/exact`로 기록하고
   wall-clock `elapsed_ms`를 함께 반환한다. 측정 불가 token은 `null/unavailable`이며
   `run record`가 budget spend를 변경하지 않는다. `--receipt-log` JSONL append 실패는

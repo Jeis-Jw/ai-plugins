@@ -553,11 +553,13 @@ def main() -> None:
         unknown_tokens = {**telemetry, "tokens": None}
         r = run(["quality", "evaluate", "--plan", json.dumps(quality_plan),
                  "--evidence", json.dumps(evidence), "--telemetry", json.dumps(unknown_tokens)], tmp)
-        assert r["evaluation"]["floors_passed"] and not r["evaluation"]["telemetry_complete"], r
+        assert r["evaluation"]["quality_complete"] and not r["evaluation"]["telemetry_complete"], r
+        assert not r["evaluation"]["complete"] and not r["evaluation"]["efficiency_claim_available"], r
         assert r["evaluation"]["utility"] is None, r
         r = run(["quality", "evaluate", "--plan", json.dumps(quality_plan),
                  "--evidence", json.dumps(evidence), "--telemetry", json.dumps(telemetry)], tmp)
-        assert r["evaluation"]["complete"] and isinstance(r["evaluation"]["utility"], float), r
+        assert r["evaluation"]["quality_complete"] and r["evaluation"]["complete"], r
+        assert r["evaluation"]["efficiency_claim_available"] and isinstance(r["evaluation"]["utility"], float), r
 
         # 8c) Context Kernel projection is immutable/idempotent; compact and prune are local
         item1 = {"id": "item-1", "kind": "fact", "content": "bounded", "source_ref": "issue:54"}
@@ -620,6 +622,41 @@ def main() -> None:
             "budget_reservation_id": "res-wf-ext", "gates": ["integration"],
             "executor": "task-github",
         }
+        classification_body = {
+            "schema": "studio-work-classification/v1",
+            "requested_class": "construction",
+            "work_class": "construction",
+            "production_scale": "standard",
+            "qa_mode": "delta",
+            "terminal_outcome": {
+                "kind": "delivered",
+                "statement": "integration-ready parser",
+                "criterion_refs": ["artifact-correct"],
+            },
+        }
+        classification = {**classification_body, "digest": digest(classification_body)}
+        packet_v2 = {
+            **packet,
+            "schema": 2,
+            "constraints": {
+                **packet["constraints"],
+                "work_classification": classification,
+            },
+        }
+        run(["workflow", "validate-packet", "--json", json.dumps(packet_v2)], tmp)
+        invalid_mixed = {
+            **classification,
+            "requested_class": "mixed",
+        }
+        invalid_mixed["digest"] = digest({key: value for key, value in invalid_mixed.items() if key != "digest"})
+        run(["workflow", "validate-packet", "--json", json.dumps({
+            **packet_v2,
+            "constraints": {"work_classification": invalid_mixed},
+        })], tmp, expect=6)
+        run(["workflow", "validate-packet", "--json", json.dumps({
+            **packet,
+            "schema": 2,
+        })], tmp, expect=6)
         capabilities = {
             "schema": 1, "source": "agent-visible-skill-catalog",
             "catalog": ["task-github:start", "task-github:run", "task-github:done", "task-github:doctor"],
@@ -688,7 +725,8 @@ def main() -> None:
                  "--json", json.dumps(success), "--lease-id", "lease-wf-ext"], tmp)
         assert not r["changed"], r
 
-        # succeeded artifacts/evidence/gates still wait when token telemetry is unknown
+        # Unknown token telemetry does not block delivery, fabricate spend, or
+        # make an efficiency claim.
         unknown_packet = {
             **packet,
             "track_id": "track-unknown-tokens",
@@ -708,12 +746,15 @@ def main() -> None:
         r = run(["workflow", "result", "--packet", json.dumps(unknown_packet),
                  "--plan", json.dumps(quality_plan), "--json", json.dumps(unknown_success),
                  "--lease-id", "lease-unknown-tokens"], tmp)
-        assert not r["readyForIntegration"] and not r["evaluation"]["telemetry_complete"], r
-        assert r["lease"]["state"] == "waiting_gate" and r["lease"]["coarse_status"] == "incomplete", r
+        assert r["readyForIntegration"] and r["evaluation"]["quality_complete"], r
+        assert not r["evaluation"]["telemetry_complete"], r
+        assert not r["evaluation"]["efficiency_claim_available"], r
+        assert r["lease"]["state"] == "succeeded" and r["lease"]["coarse_status"] == "succeeded", r
         board_after_unknown = board_state(ws)
         assert board_after_unknown["budget"]["spent_tokens"] == spent_before_unknown, board_after_unknown
         unknown_reservation = board_after_unknown["budget"]["reservations"]["res-unknown-tokens"]
-        assert unknown_reservation["status"] == "dispatched", unknown_reservation
+        assert unknown_reservation["status"] == "settled", unknown_reservation
+        assert unknown_reservation["token_coverage"] == "unavailable", unknown_reservation
         assert "settled_tokens" not in unknown_reservation, unknown_reservation
 
         # pre-dispatch unavailable/unknown falls back to native before any external start
@@ -914,6 +955,169 @@ def main() -> None:
             "physical_runs": 1, "tokens": None, "token_coverage": "unavailable",
             "elapsed_ms": 1, "elapsed_coverage": "exact",
         }, r
+
+        # 8h) new continuation runs require a content-bound, material, bounded
+        # ledger decision; legacy cycle documents remain readable.
+        economics_binding = {
+            **cycle_binding,
+            "cycle_id": "RC-economics",
+            "track_id": "track-economics",
+            "issue_ref": None,
+            "requires_final_qa": False,
+            "requires_integration_gate": False,
+        }
+        run(["review", "open", "--json", json.dumps(economics_binding)], tmp)
+        decision = {
+            "schema": "studio-continuation-decision/v1",
+            "decision_id": "CD-economics-1",
+            "intent": "kill a verifier mutation not covered by the current defense",
+            "criterion_refs": ["artifact-correct"],
+            "work_class": "verifier-hardening",
+            "outcome_kind": "quality-defense",
+            "basis_digest": sha("8"),
+            "prior_basis_digest": sha("7"),
+            "discriminating_value": "the mutation distinguishes a fake green from a real defense",
+            "materiality": {
+                "surface": "verifier", "exists": False, "criterion_linked": True,
+                "bounded": True, "level": "medium",
+            },
+            "attempt": 2,
+            "max_attempts": 3,
+            "residual_risk": "one bounded mutation family remains",
+            "decision": "continue",
+            "authority": "producer",
+            "reapproval_required": False,
+        }
+        low_materiality = {
+            **decision,
+            "decision_id": "CD-economics-low",
+            "materiality": {**decision["materiality"], "level": "low"},
+        }
+        r = run(["review", "event", "RC-economics", "--json", json.dumps(review_event(
+            "RC-economics", "REV-economics-low", "continuation-decided",
+            decision=low_materiality,
+        ))], tmp, expect=6)
+        assert r["error_code"] == "continuation_not_material", r
+        unchanged_basis = {
+            **decision,
+            "decision_id": "CD-economics-ref-only",
+            "basis_digest": decision["prior_basis_digest"],
+        }
+        r = run(["review", "event", "RC-economics", "--json", json.dumps(review_event(
+            "RC-economics", "REV-economics-ref-only", "continuation-decided",
+            decision=unchanged_basis,
+        ))], tmp, expect=6)
+        assert r["error_code"] == "continuation_no_new_value", r
+        exhausted = {
+            **decision,
+            "decision_id": "CD-economics-exhausted",
+            "attempt": 4,
+        }
+        r = run(["review", "event", "RC-economics", "--json", json.dumps(review_event(
+            "RC-economics", "REV-economics-exhausted", "continuation-decided",
+            decision=exhausted,
+        ))], tmp, expect=6)
+        assert r["error_code"] == "continuation_attempt_exhausted", r
+        r = run(["review", "event", "RC-economics", "--json", json.dumps(review_event(
+            "RC-economics", "REV-economics-continue", "continuation-decided",
+            decision=decision,
+        ))], tmp)
+        assert r["cycle"]["continuation_decisions"]["CD-economics-1"]["decision"] == "continue", r
+        r = run(["review", "event", "RC-economics", "--json", json.dumps(review_event(
+            "RC-economics", "REV-economics-handoff-missing", "handoff-recorded",
+            fresh_context=False, continuation_ref=None,
+        ))], tmp, expect=6)
+        assert r["error_code"] == "continuation_decision_required", r
+        run(["review", "event", "RC-economics", "--json", json.dumps(review_event(
+            "RC-economics", "REV-economics-handoff", "handoff-recorded",
+            fresh_context=False, continuation_ref="CD-economics-1",
+        ))], tmp)
+        owner_gate = {
+            **decision,
+            "decision_id": "CD-economics-owner",
+            "attempt": 4,
+            "decision": "owner-gate",
+            "authority": "owner",
+            "reapproval_required": True,
+        }
+        run(["review", "event", "RC-economics", "--json", json.dumps(review_event(
+            "RC-economics", "REV-economics-owner", "continuation-decided",
+            decision=owner_gate,
+        ))], tmp)
+
+        judgment_classification_body = {
+            "schema": "studio-work-classification/v1",
+            "requested_class": "judgment",
+            "work_class": "judgment",
+            "production_scale": "standard",
+            "qa_mode": None,
+            "terminal_outcome": {
+                "kind": "decision",
+                "statement": "owner-adopted routing decision",
+                "criterion_refs": ["context-usable"],
+            },
+        }
+        judgment_classification = {
+            **judgment_classification_body,
+            "digest": digest(judgment_classification_body),
+        }
+        outcome = {
+            "schema": "studio-outcome/v1",
+            "outcome_id": "OUT-economics-1",
+            "work_class": "judgment",
+            "kind": "decision",
+            "criterion_refs": ["context-usable"],
+            "evidence_refs": ["decision:owner-adopted"],
+            "summary": "owner adopted the work-class routing rule",
+            "classification_digest": judgment_classification["digest"],
+            "authority": "owner",
+            "adopted": True,
+            "residual_risk": "classification quality still depends on the supplied criteria",
+        }
+        rejected_outcome = {**outcome, "outcome_id": "OUT-economics-rejected", "authority": "crew", "adopted": False}
+        run(["review", "event", "RC-economics", "--json", json.dumps(review_event(
+            "RC-economics", "REV-economics-outcome-rejected", "outcome-recorded",
+            outcome=rejected_outcome,
+        ))], tmp, expect=6)
+        run(["review", "event", "RC-economics", "--json", json.dumps(review_event(
+            "RC-economics", "REV-economics-outcome", "outcome-recorded",
+            outcome=outcome,
+        ))], tmp)
+        r = run(["review", "summary", "RC-economics"], tmp)
+        assert r["summary"]["outcome_accounting"]["net_credited"] == 1, r
+        run(["review", "event", "RC-economics", "--json", json.dumps(review_event(
+            "RC-economics", "REV-economics-reopen", "outcome-reopened",
+            outcome_id="OUT-economics-1", reason="owner found an unmet criterion",
+            evidence_refs=["owner:reopen"],
+        ))], tmp)
+        r = run(["review", "summary", "RC-economics"], tmp)
+        assert r["summary"]["outcome_accounting"] == {
+            "gross_credited": 1, "reopen_offset": -1, "net_credited": 0,
+            "reopened": 1, "evidence_only": 0, "motion": 0,
+        }, r
+
+        legacy_binding = {
+            **economics_binding,
+            "cycle_id": "RC-economics-legacy",
+            "track_id": "track-economics-legacy",
+        }
+        run(["review", "open", "--json", json.dumps(legacy_binding)], tmp)
+        legacy_board = board_state(ws)
+        legacy_cycle = legacy_board["review_cycles"]["RC-economics-legacy"]
+        legacy_cycle.pop("continuation_decisions")
+        legacy_cycle.pop("outcomes")
+        for key in (
+            "continuations", "lands", "stops", "owner_gates",
+            "outcomes_credited", "outcomes_reopened",
+        ):
+            legacy_cycle["counters"].pop(key)
+        legacy_cycle["digest"] = digest({key: value for key, value in legacy_cycle.items() if key != "digest"})
+        (ws / "board.md").write_text(
+            "# Studio board\n\n```json\n" + json.dumps(legacy_board, ensure_ascii=False, indent=2) + "\n```\n",
+            encoding="utf-8",
+        )
+        r = run(["review", "status", "RC-economics-legacy"], tmp)
+        assert "continuation_decisions" not in r["cycle"], r
 
         # 9) config (.studio.yml) — scaffold, validate, parse, guards
         cfg = tmp / "scaffold.yml"

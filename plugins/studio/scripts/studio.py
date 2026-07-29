@@ -98,7 +98,25 @@ WORKFLOW_RECEIPT_FIELDS = frozenset((
 REVIEW_CYCLE_SCHEMA = "studio-review-cycle/v1"
 REVIEW_EVENT_SCHEMA = "studio-review-event/v1"
 ISSUE_EVENT_SCHEMA = "studio-issue-event/v1"
+WORK_CLASSIFICATION_SCHEMA = "studio-work-classification/v1"
+CONTINUATION_DECISION_SCHEMA = "studio-continuation-decision/v1"
+OUTCOME_SCHEMA = "studio-outcome/v1"
 QA_MODES = frozenset(("development", "delta", "full", "final", "integration"))
+WORK_CLASSES = frozenset(("retrieval", "judgment", "construction", "verifier-hardening", "integration"))
+REQUESTED_WORK_CLASSES = WORK_CLASSES | frozenset(("mixed", "unknown"))
+PRODUCTION_SCALES = frozenset(("solo", "standard", "major"))
+OUTCOME_KINDS = frozenset((
+    "delivered", "decision", "blocker-resolution", "quality-defense",
+    "evidence-only", "motion",
+))
+CREDITED_OUTCOME_KINDS = frozenset((
+    "delivered", "decision", "blocker-resolution", "quality-defense",
+))
+CONTINUATION_DECISIONS = frozenset(("continue", "land", "stop", "owner-gate"))
+MATERIALITY_LEVELS = frozenset(("none", "low", "medium", "high"))
+MATERIALITY_SURFACES = frozenset((
+    "product", "verifier", "decision", "repository", "integration-head",
+))
 FULL_QA_REASONS = frozenset((
     "impact-unknown", "shared-contract-changed", "cross-track-change",
     "dependency-surface-changed", "independence-required", "integration-gate",
@@ -113,7 +131,8 @@ FRESH_CONTEXT_REASONS = frozenset((
 ))
 REVIEW_EVENT_TYPES = frozenset((
     "finding-opened", "fix-submitted", "qa-completed", "retry-recorded",
-    "handoff-recorded", "evidence-recorded",
+    "handoff-recorded", "evidence-recorded", "continuation-decided",
+    "outcome-recorded", "outcome-reopened",
 ))
 REVIEW_EVENT_FIELDS = {
     "finding-opened": {"head", "finding"},
@@ -125,6 +144,9 @@ REVIEW_EVENT_FIELDS = {
     "retry-recorded": {"classification", "failure", "attempt", "finding_ids"},
     "handoff-recorded": {"fresh_context", "continuation_ref", "reason"},
     "evidence-recorded": {"evidence"},
+    "continuation-decided": {"decision"},
+    "outcome-recorded": {"outcome"},
+    "outcome-reopened": {"outcome_id", "reason", "evidence_refs"},
 }
 
 # agent policy config (.studio.yml)
@@ -1871,8 +1893,12 @@ def evaluate_quality(plan: dict, evidence_refs: Any, telemetry: Any) -> dict:
         "criteria": results,
         "floors_passed": floors_passed,
         "quality_score": quality_score,
+        "quality_complete": floors_passed,
         "telemetry_complete": telemetry_complete,
+        "efficiency_claim_available": utility is not None,
         "utility": utility,
+        # Compatibility: existing consumers use `complete` as the combined
+        # quality+telemetry signal. Delivery paths use `quality_complete`.
         "complete": floors_passed and telemetry_complete,
     }
 
@@ -2149,6 +2175,216 @@ def cmd_lease_transition(args: argparse.Namespace) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# operating-economics contracts — classify work before dispatch and require a
+# content-bound marginal-value decision before another physical run.
+# --------------------------------------------------------------------------- #
+def _string_list_problems(value: Any, field: str, *, non_empty: bool = True) -> list[str]:
+    if not isinstance(value, list) or any(not isinstance(item, str) or not item.strip() for item in value):
+        return [f"{field} must be a string list"]
+    if non_empty and not value:
+        return [f"{field} must not be empty"]
+    if len(value) != len(set(value)):
+        return [f"{field} must not contain duplicates"]
+    return []
+
+
+def _work_classification_digest(value: dict) -> str:
+    return canonical_digest({key: item for key, item in value.items() if key != "digest"})
+
+
+def validate_work_classification(value: Any) -> list[str]:
+    if not isinstance(value, dict):
+        return ["work classification must be an object"]
+    fields = {
+        "schema", "requested_class", "work_class", "production_scale",
+        "qa_mode", "terminal_outcome", "digest",
+    }
+    problems = []
+    if set(value) != fields:
+        problems.append("work classification fields do not match studio-work-classification/v1")
+    if value.get("schema") != WORK_CLASSIFICATION_SCHEMA:
+        problems.append(f"work classification schema must be {WORK_CLASSIFICATION_SCHEMA}")
+    requested = value.get("requested_class")
+    work_class = value.get("work_class")
+    scale = value.get("production_scale")
+    qa_mode = value.get("qa_mode")
+    if requested not in REQUESTED_WORK_CLASSES:
+        problems.append(f"requested_class must be one of {sorted(REQUESTED_WORK_CLASSES)}")
+    if work_class not in WORK_CLASSES:
+        problems.append(f"work_class must be one of {sorted(WORK_CLASSES)}")
+    if scale not in PRODUCTION_SCALES:
+        problems.append(f"production_scale must be one of {sorted(PRODUCTION_SCALES)}")
+    if qa_mode is not None and qa_mode not in QA_MODES:
+        problems.append(f"qa_mode must be null or one of {sorted(QA_MODES)}")
+
+    outcome = value.get("terminal_outcome")
+    if not isinstance(outcome, dict) or set(outcome) != {"kind", "statement", "criterion_refs"}:
+        problems.append("terminal_outcome must contain kind, statement, criterion_refs")
+        outcome = {}
+    else:
+        if outcome.get("kind") not in OUTCOME_KINDS:
+            problems.append(f"terminal_outcome.kind must be one of {sorted(OUTCOME_KINDS)}")
+        if not isinstance(outcome.get("statement"), str) or not outcome["statement"].strip():
+            problems.append("terminal_outcome.statement must be non-empty")
+        problems.extend(_string_list_problems(outcome.get("criterion_refs"), "terminal_outcome.criterion_refs"))
+
+    if requested in {"mixed", "unknown"}:
+        if work_class != "judgment" or scale != "standard":
+            problems.append("mixed/unknown work must fail closed to standard judgment")
+    elif requested in WORK_CLASSES and requested != work_class:
+        problems.append("non-mixed requested_class must equal work_class")
+
+    kind = outcome.get("kind")
+    allowed_terminal = {
+        "retrieval": ({"evidence-only"}, {"solo"}, {None}),
+        "judgment": ({"decision", "blocker-resolution"}, {"standard", "major"}, {None}),
+        "construction": ({"delivered", "blocker-resolution"}, PRODUCTION_SCALES, {"development", "delta"}),
+        "verifier-hardening": ({"quality-defense"}, {"standard", "major"}, {"development", "delta", "full"}),
+        "integration": ({"delivered"}, {"standard", "major"}, {"integration"}),
+    }
+    if work_class in allowed_terminal:
+        kinds, scales, qa_modes = allowed_terminal[work_class]
+        if kind not in kinds:
+            problems.append(f"{work_class} terminal outcome must be one of {sorted(kinds)}")
+        if scale not in scales:
+            problems.append(f"{work_class} production_scale must be one of {sorted(scales)}")
+        if qa_mode not in qa_modes:
+            problems.append(f"{work_class} qa_mode must be one of {sorted(str(item) for item in qa_modes)}")
+    digest = value.get("digest")
+    if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+        problems.append("work classification digest must be sha256")
+    elif digest != _work_classification_digest(value):
+        problems.append("work classification digest mismatch")
+    return problems
+
+
+def _normalise_continuation_decision(value: Any) -> dict:
+    if not isinstance(value, dict):
+        fail(6, "invalid_continuation_decision", "continuation decision must be an object")
+    decision = json.loads(json.dumps(value))
+    fields = {
+        "schema", "decision_id", "intent", "criterion_refs", "work_class",
+        "outcome_kind", "basis_digest", "prior_basis_digest",
+        "discriminating_value", "materiality", "attempt", "max_attempts",
+        "residual_risk", "decision", "authority", "reapproval_required",
+    }
+    if set(decision) != fields:
+        fail(6, "invalid_continuation_decision", "continuation decision fields are invalid")
+    if decision.get("schema") != CONTINUATION_DECISION_SCHEMA:
+        fail(6, "invalid_continuation_decision", f"schema must be {CONTINUATION_DECISION_SCHEMA}")
+    decision["decision_id"] = validate_safe_id(decision.get("decision_id"), "decision_id")
+    for field in ("intent", "discriminating_value", "residual_risk"):
+        decision[field] = _review_text(decision.get(field), field)
+    decision["criterion_refs"] = _review_string_list(
+        decision.get("criterion_refs"), "criterion_refs", non_empty=True,
+    )
+    if decision.get("work_class") not in WORK_CLASSES:
+        fail(6, "invalid_continuation_decision", f"work_class must be one of {sorted(WORK_CLASSES)}")
+    if decision.get("outcome_kind") not in OUTCOME_KINDS:
+        fail(6, "invalid_continuation_decision", f"outcome_kind must be one of {sorted(OUTCOME_KINDS)}")
+    decision["basis_digest"] = _review_digest(decision.get("basis_digest"), "basis_digest")
+    prior = decision.get("prior_basis_digest")
+    if prior is not None:
+        decision["prior_basis_digest"] = _review_digest(prior, "prior_basis_digest")
+    materiality = decision.get("materiality")
+    if not isinstance(materiality, dict) or set(materiality) != {
+        "surface", "exists", "criterion_linked", "bounded", "level",
+    }:
+        fail(6, "invalid_continuation_decision", "materiality fields are invalid")
+    if materiality.get("surface") not in MATERIALITY_SURFACES:
+        fail(6, "invalid_continuation_decision", f"materiality.surface must be one of {sorted(MATERIALITY_SURFACES)}")
+    if any(not isinstance(materiality.get(field), bool) for field in ("exists", "criterion_linked", "bounded")):
+        fail(6, "invalid_continuation_decision", "materiality existence/link/bounded fields must be boolean")
+    if materiality.get("level") not in MATERIALITY_LEVELS:
+        fail(6, "invalid_continuation_decision", f"materiality.level must be one of {sorted(MATERIALITY_LEVELS)}")
+    for field in ("attempt", "max_attempts"):
+        if not isinstance(decision.get(field), int) or isinstance(decision.get(field), bool) or decision[field] < 1:
+            fail(6, "invalid_continuation_decision", f"{field} must be a positive integer")
+    if decision.get("decision") not in CONTINUATION_DECISIONS:
+        fail(6, "invalid_continuation_decision", f"decision must be one of {sorted(CONTINUATION_DECISIONS)}")
+    if decision.get("authority") not in {"crew", "producer", "owner"}:
+        fail(6, "invalid_continuation_decision", "authority must be crew, producer, or owner")
+    if not isinstance(decision.get("reapproval_required"), bool):
+        fail(6, "invalid_continuation_decision", "reapproval_required must be boolean")
+
+    if decision["decision"] == "continue":
+        synthetic_verifier = (
+            decision["work_class"] == "verifier-hardening"
+            and materiality["surface"] == "verifier"
+        )
+        if (
+            not materiality["criterion_linked"]
+            or not materiality["bounded"]
+            or materiality["level"] not in {"medium", "high"}
+            or not (materiality["exists"] or synthetic_verifier)
+        ):
+            fail(6, "continuation_not_material", "continue requires a real criterion-linked surface or bounded verifier hardening")
+        if decision["prior_basis_digest"] is not None and decision["basis_digest"] == decision["prior_basis_digest"]:
+            fail(6, "continuation_no_new_value", "a new reference without changed content/surface cannot continue")
+        if decision["attempt"] > decision["max_attempts"]:
+            fail(6, "continuation_attempt_exhausted", "attempt exceeds max_attempts; request an owner gate")
+        if decision["reapproval_required"]:
+            fail(6, "invalid_continuation_decision", "continue cannot bypass required owner reapproval")
+    if decision["attempt"] > decision["max_attempts"] and decision["decision"] != "owner-gate":
+        fail(6, "continuation_attempt_exhausted", "attempt exhaustion requires owner-gate")
+    if decision["decision"] == "owner-gate" and (
+        not decision["reapproval_required"] or decision["authority"] != "owner"
+    ):
+        fail(6, "continuation_reapproval_required", "owner-gate requires owner authority and reapproval")
+    return decision
+
+
+def _normalise_outcome(value: Any) -> dict:
+    if not isinstance(value, dict):
+        fail(6, "invalid_outcome", "outcome must be an object")
+    outcome = json.loads(json.dumps(value))
+    if set(outcome) != {
+        "schema", "outcome_id", "work_class", "kind", "criterion_refs",
+        "evidence_refs", "summary", "classification_digest", "authority",
+        "adopted", "residual_risk",
+    }:
+        fail(6, "invalid_outcome", "outcome fields are invalid")
+    if outcome.get("schema") != OUTCOME_SCHEMA:
+        fail(6, "invalid_outcome", f"schema must be {OUTCOME_SCHEMA}")
+    outcome["outcome_id"] = validate_safe_id(outcome.get("outcome_id"), "outcome_id")
+    if outcome.get("work_class") not in WORK_CLASSES:
+        fail(6, "invalid_outcome", f"work_class must be one of {sorted(WORK_CLASSES)}")
+    if outcome.get("kind") not in OUTCOME_KINDS:
+        fail(6, "invalid_outcome", f"kind must be one of {sorted(OUTCOME_KINDS)}")
+    outcome["criterion_refs"] = _review_string_list(outcome.get("criterion_refs"), "criterion_refs", non_empty=True)
+    outcome["evidence_refs"] = _review_string_list(outcome.get("evidence_refs"), "evidence_refs")
+    outcome["summary"] = _review_text(outcome.get("summary"), "summary")
+    if outcome.get("authority") not in {"crew", "producer", "owner"}:
+        fail(6, "invalid_outcome", "authority must be crew, producer, or owner")
+    if not isinstance(outcome.get("adopted"), bool):
+        fail(6, "invalid_outcome", "adopted must be boolean")
+    outcome["residual_risk"] = _review_text(outcome.get("residual_risk"), "residual_risk")
+    outcome["classification_digest"] = _review_digest(
+        outcome.get("classification_digest"), "classification_digest",
+    )
+    allowed = {
+        "retrieval": {"evidence-only"},
+        "judgment": {"decision", "blocker-resolution", "motion"},
+        "construction": {"delivered", "blocker-resolution", "motion"},
+        "verifier-hardening": {"quality-defense", "motion"},
+        "integration": {"delivered", "motion"},
+    }
+    if outcome["kind"] not in allowed[outcome["work_class"]]:
+        fail(6, "invalid_outcome", "outcome kind is not terminal for its work class")
+    if outcome["kind"] in CREDITED_OUTCOME_KINDS and not outcome["evidence_refs"]:
+        fail(6, "invalid_outcome", "credited outcomes require evidence_refs")
+    if (
+        outcome["work_class"] == "judgment"
+        and outcome["kind"] in CREDITED_OUTCOME_KINDS
+        and (not outcome["adopted"] or outcome["authority"] not in {"producer", "owner"})
+    ):
+        fail(6, "outcome_not_adopted", "credited judgment requires producer/owner adoption and residual-risk disclosure")
+    outcome["credited"] = outcome["kind"] in CREDITED_OUTCOME_KINDS
+    outcome["status"] = "active"
+    return outcome
+
+
+# --------------------------------------------------------------------------- #
 # review cycle — stable findings, delta QA, evidence reuse, compact handoff
 # --------------------------------------------------------------------------- #
 def _review_cycles(board: dict) -> dict:
@@ -2239,6 +2475,8 @@ def _new_review_cycle(binding: dict) -> dict:
         "state": "review-cycle",
         "findings": {},
         "evidence": {},
+        "continuation_decisions": {},
+        "outcomes": {},
         "events": [],
         "next_finding_seq": 1,
         "required_full_qa_reason": None,
@@ -2258,6 +2496,12 @@ def _new_review_cycle(binding: dict) -> dict:
             "fresh_contexts": 0,
             "evidence_reused": 0,
             "evidence_invalidated": 0,
+            "continuations": 0,
+            "lands": 0,
+            "stops": 0,
+            "owner_gates": 0,
+            "outcomes_credited": 0,
+            "outcomes_reopened": 0,
         },
         "full_qa_reason_counts": {},
     }
@@ -2588,6 +2832,13 @@ def _apply_review_event(cycle: dict, raw: Any) -> tuple[dict, bool, dict | None]
 
     findings = cycle["findings"]
     counters = cycle["counters"]
+    continuation_decisions = cycle.setdefault("continuation_decisions", {})
+    outcomes = cycle.setdefault("outcomes", {})
+    for key in (
+        "continuations", "lands", "stops", "owner_gates",
+        "outcomes_credited", "outcomes_reopened",
+    ):
+        counters.setdefault(key, 0)
     event_type = event["type"]
     if event_type == "finding-opened":
         finding = event.get("finding")
@@ -2801,8 +3052,64 @@ def _apply_review_event(cycle: dict, raw: Any) -> tuple[dict, bool, dict | None]
             fail(6, "fresh_context_reason_required", "fresh context requires a machine-readable reason")
         if not event["fresh_context"] and reason is not None:
             fail(6, "invalid_review_event", "continuation handoff does not take a fresh-context reason")
+        if not event["fresh_context"]:
+            if continuation is None:
+                fail(6, "continuation_decision_required", "new continuation handoff requires a continuation decision ref")
+            continuation = validate_safe_id(continuation, "continuation_ref")
+            bound_decision = continuation_decisions.get(continuation)
+            if not isinstance(bound_decision, dict) or bound_decision.get("decision") != "continue":
+                fail(6, "continuation_decision_required", "continuation_ref must bind a recorded continue decision")
+            event["continuation_ref"] = continuation
         counters["handoffs"] += 1
         counters["fresh_contexts"] += int(event["fresh_context"])
+    elif event_type == "continuation-decided":
+        decision = _normalise_continuation_decision(event.get("decision"))
+        prior_decision = continuation_decisions.get(decision["decision_id"])
+        if prior_decision is not None:
+            fail(6, "continuation_decision_conflict", "decision_id is already recorded; retry the original event_id")
+        continuation_decisions[decision["decision_id"]] = decision
+        event["decision"] = decision
+        counter_key = {
+            "continue": "continuations",
+            "land": "lands",
+            "stop": "stops",
+            "owner-gate": "owner_gates",
+        }[decision["decision"]]
+        counters[counter_key] += 1
+    elif event_type == "outcome-recorded":
+        outcome = _normalise_outcome(event.get("outcome"))
+        if outcome["outcome_id"] in outcomes:
+            fail(6, "outcome_conflict", "outcome_id already exists")
+        if outcome["work_class"] in {"construction", "integration"} and outcome["credited"]:
+            if cycle["state"] != "integration-ready":
+                fail(6, "outcome_not_terminal", "delivered construction/integration requires integration-ready")
+        if outcome["work_class"] == "verifier-hardening" and outcome["credited"]:
+            invalid_refs = [
+                ref for ref in outcome["evidence_refs"]
+                if cycle["evidence"].get(ref, {}).get("status") != "valid"
+            ]
+            if invalid_refs:
+                fail(
+                    6, "outcome_not_terminal",
+                    "quality-defense requires valid cycle evidence",
+                    invalid_evidence_refs=invalid_refs,
+                )
+        outcomes[outcome["outcome_id"]] = outcome
+        event["outcome"] = outcome
+        counters["outcomes_credited"] += int(outcome["credited"])
+    elif event_type == "outcome-reopened":
+        outcome_id = validate_safe_id(event.get("outcome_id"), "outcome_id")
+        outcome = outcomes.get(outcome_id)
+        if outcome is None:
+            fail(6, "outcome_not_found", f"unknown outcome: {outcome_id}")
+        if not outcome.get("credited") or outcome.get("status") != "active":
+            fail(6, "invalid_outcome_transition", "only an active credited outcome can be reopened")
+        event["reason"] = _review_text(event.get("reason"), "reason")
+        event["evidence_refs"] = _review_string_list(event.get("evidence_refs"), "evidence_refs", non_empty=True)
+        outcome["status"] = "reopened"
+        outcome["reopened_by"] = event["event_id"]
+        outcome["credit_offset"] = -1
+        counters["outcomes_reopened"] += 1
 
     event["digest"] = canonical_digest(event)
     cycle["events"].append(event)
@@ -2872,6 +3179,22 @@ def _review_summary(cycle: dict, board: dict) -> dict:
     elapsed_values = [run.get("cost_elapsed_ms") for run in runs]
     known_tokens = [value for value in token_values if isinstance(value, int) and not isinstance(value, bool)]
     known_elapsed = [value for value in elapsed_values if isinstance(value, int) and not isinstance(value, bool)]
+    outcomes = cycle.get("outcomes") if isinstance(cycle.get("outcomes"), dict) else {}
+    credited_outcomes = sum(
+        bool(item.get("credited")) and item.get("status") == "active"
+        for item in outcomes.values()
+        if isinstance(item, dict)
+    )
+    gross_credited_outcomes = sum(
+        bool(item.get("credited"))
+        for item in outcomes.values()
+        if isinstance(item, dict)
+    )
+    reopened_outcomes = sum(
+        item.get("status") == "reopened"
+        for item in outcomes.values()
+        if isinstance(item, dict)
+    )
 
     def coverage(known: list[int], total: int) -> str:
         if not total or not known:
@@ -2888,6 +3211,22 @@ def _review_summary(cycle: dict, board: dict) -> dict:
         ),
         "counters": cycle["counters"],
         "full_qa_reason_counts": cycle["full_qa_reason_counts"],
+        "outcome_accounting": {
+            "gross_credited": gross_credited_outcomes,
+            "reopen_offset": -reopened_outcomes,
+            "net_credited": credited_outcomes,
+            "reopened": reopened_outcomes,
+            "evidence_only": sum(
+                item.get("kind") == "evidence-only"
+                for item in outcomes.values()
+                if isinstance(item, dict)
+            ),
+            "motion": sum(
+                item.get("kind") == "motion"
+                for item in outcomes.values()
+                if isinstance(item, dict)
+            ),
+        },
         "cost": {
             "physical_runs": len(runs),
             "tokens": sum(known_tokens) if known_tokens else None,
@@ -3574,8 +3913,8 @@ def validate_work_packet(packet: Any) -> list[str]:
     problems = []
     if set(packet) != WORK_PACKET_FIELDS:
         problems.append("WorkPacket fields do not match the binding contract")
-    if packet.get("schema") != 1:
-        problems.append("WorkPacket.schema must be 1")
+    if packet.get("schema") not in (1, 2):
+        problems.append("WorkPacket.schema must be 1 or 2")
     for key in ("track_id", "quality_plan_ref", "budget_reservation_id"):
         if not isinstance(packet.get(key), str) or not SAFE_ID_RE.fullmatch(packet.get(key, "")):
             problems.append(f"WorkPacket.{key} must be a path-safe identifier")
@@ -3594,6 +3933,11 @@ def validate_work_packet(packet: Any) -> list[str]:
         review_lease = packet["constraints"].get("review_lease")
         if review_lease is not None:
             problems.extend(validate_review_lease(review_lease))
+        classification = packet["constraints"].get("work_classification")
+        if packet.get("schema") == 2 and classification is None:
+            problems.append("WorkPacket.schema=2 requires constraints.work_classification")
+        if classification is not None:
+            problems.extend(validate_work_classification(classification))
     gates = packet.get("gates")
     if not isinstance(gates, list) or any(not isinstance(gate, str) or not gate.strip() for gate in gates) or len(gates) != len(set(gates or [])):
         problems.append("WorkPacket.gates must be a unique string list")
@@ -3755,6 +4099,17 @@ def cmd_workflow_dispatch(args: argparse.Namespace) -> None:
             {"lease_id": review_lease["lease_id"], "digest": review_lease["digest"]}
             if review_lease else None
         ),
+        "work_classification": (
+            {
+                "digest": packet["constraints"]["work_classification"]["digest"],
+                "canonical": json.loads(json.dumps(
+                    packet["constraints"]["work_classification"],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )),
+            }
+            if packet["constraints"].get("work_classification") else None
+        ),
     }
 
     snapshot = None
@@ -3881,7 +4236,7 @@ def cmd_workflow_result(args: argparse.Namespace) -> None:
     ready = bool(
         envelope["status"] == "succeeded"
         and envelope["artifact_refs"]
-        and evaluation["complete"]
+        and evaluation["quality_complete"]
         and gates_passed
     )
 
@@ -3922,6 +4277,20 @@ def cmd_workflow_result(args: argparse.Namespace) -> None:
         )
         if binding.get("review_lease") != expected_review_binding:
             fail(6, "review_lease_binding_mismatch", "ResultEnvelope review lease differs from dispatch")
+        expected_classification = packet["constraints"].get("work_classification")
+        classification_binding = binding.get("work_classification")
+        if classification_binding is not None:
+            if expected_classification is None or classification_binding != {
+                "digest": expected_classification["digest"],
+                "canonical": json.loads(json.dumps(
+                    expected_classification,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )),
+            }:
+                fail(6, "work_classification_binding_mismatch", "ResultEnvelope WorkPacket classification differs from dispatch")
+        elif expected_classification is not None:
+            fail(6, "work_classification_binding_mismatch", "legacy dispatch cannot accept a later work classification")
         if lease.get("executor") == "external" and not envelope.get("external_ref"):
             fail(6, "external_ref_required", "external executor ResultEnvelope requires external_ref")
         if lease.get("executor") == "native" and envelope.get("external_ref") is not None:
@@ -3959,9 +4328,22 @@ def cmd_workflow_result(args: argparse.Namespace) -> None:
             tokens = envelope["telemetry"]["tokens"]
             if reservation.get("status") == "dispatched":
                 reservation["status"] = "settled"
-                reservation["settled_tokens"] = tokens
-                board["budget"]["spent_tokens"] = int(board["budget"].get("spent_tokens") or 0) + tokens
-            elif reservation.get("status") != "settled" or reservation.get("settled_tokens") != tokens:
+                if tokens is None:
+                    reservation["token_coverage"] = "unavailable"
+                else:
+                    reservation["settled_tokens"] = tokens
+                    board["budget"]["spent_tokens"] = int(board["budget"].get("spent_tokens") or 0) + tokens
+            elif (
+                reservation.get("status") != "settled"
+                or (
+                    tokens is None
+                    and (
+                        reservation.get("token_coverage") != "unavailable"
+                        or "settled_tokens" in reservation
+                    )
+                )
+                or (tokens is not None and reservation.get("settled_tokens") != tokens)
+            ):
                 fail(6, "invalid_budget_transition", "successful result cannot settle reservation")
             lease, _ = _transition_lease(board, packet["track_id"], lease_id, "succeeded")
             lease["coarse_status"] = "succeeded"
