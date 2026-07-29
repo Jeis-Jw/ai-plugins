@@ -519,8 +519,9 @@ bounded verifier mutation은 계속할 수 있다.
 coverage와 함께 합산한다.
 
 pairing output만으로 통합하지 않는다. 실제 verification, artifact/context criterion evidence,
-quality floor, telemetry, owner gate가 모두 완결되어 `workflow result`가
+quality floor, owner gate가 모두 완결되어 `workflow result`가
 `readyForIntegration:true`를 반환하고 owner가 승인해야만 integration으로 넘어간다.
+telemetry 완결성은 효율 주장만 gate하며 integration readiness를 막지 않는다.
 owner gate 문구는 다음처럼 쓴다:
 
 > QA pass. track 변경을 main에 반영할까요?
@@ -583,7 +584,8 @@ cleanup 실패는 `cleanup_pending`으로 남기며 미션 closeout을 완료로
 - `track`은 선택이다 — 없으면 record의 `--track`이 채운다.
 - broker receipt는 실행 구간의 exact token delta와 elapsed time을 담는다. token 측정이
   불가능하면 `tokens:null`, `token_coverage:unavailable`이며 budget spent를 0만큼
-  정산한 것으로 가장하지 않고 그대로 미측정 상태로 기록한다.
+  정산한 것으로 가장하지 않고 그대로 미측정 상태로 기록한다. 완료된 unknown-token
+  reservation의 원래 상한은 다음 reservation admission에서 committed exposure로 유지한다.
 - optional JSONL sink가 필요할 때만 `run record --receipt-log <path>`를 사용한다.
   append 실패는 core run 기록을 실패시키지 않고 `warnings`에 남는다.
 - pairing에서 `readyForIntegration:false`이면 owner gate 대신 dev/fix → QA loop로 되돌린다.

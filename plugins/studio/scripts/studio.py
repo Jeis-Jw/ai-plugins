@@ -1145,7 +1145,13 @@ def _active_reserved_tokens(reservations: dict) -> int:
     return sum(
         int(item.get("tokens") or 0)
         for item in reservations.values()
-        if item.get("status") in ("reserved", "dispatched")
+        if (
+            item.get("status") in ("reserved", "dispatched")
+            or (
+                item.get("status") == "settled"
+                and item.get("token_coverage") == "unavailable"
+            )
+        )
     )
 
 
@@ -2432,6 +2438,7 @@ def _review_binding(payload: dict) -> dict:
     }
     allowed = required | {
         "definition_ref", "issue_ref", "requires_final_qa", "requires_integration_gate",
+        "work_classification",
     }
     unknown = sorted(set(payload) - allowed)
     missing = sorted(required - set(payload))
@@ -2454,6 +2461,18 @@ def _review_binding(payload: dict) -> dict:
     for key in ("requires_final_qa", "requires_integration_gate"):
         if key in payload and not isinstance(payload[key], bool):
             fail(6, "invalid_review_contract", f"{key} must be boolean")
+    work_classification = payload.get("work_classification")
+    if work_classification is not None:
+        classification_problems = validate_work_classification(work_classification)
+        if classification_problems:
+            fail(
+                6, "invalid_review_contract",
+                "; ".join(classification_problems),
+                problems=classification_problems,
+            )
+        work_classification = json.loads(json.dumps(
+            work_classification, ensure_ascii=False, sort_keys=True,
+        ))
     return {
         "cycle_id": cycle_id,
         "track_id": track_id,
@@ -2464,6 +2483,7 @@ def _review_binding(payload: dict) -> dict:
         "issue_ref": issue_ref.strip() if isinstance(issue_ref, str) else None,
         "requires_final_qa": payload.get("requires_final_qa", True),
         "requires_integration_gate": payload.get("requires_integration_gate", True),
+        "work_classification": work_classification,
     }
 
 
@@ -3059,6 +3079,12 @@ def _apply_review_event(cycle: dict, raw: Any) -> tuple[dict, bool, dict | None]
             bound_decision = continuation_decisions.get(continuation)
             if not isinstance(bound_decision, dict) or bound_decision.get("decision") != "continue":
                 fail(6, "continuation_decision_required", "continuation_ref must bind a recorded continue decision")
+            latest_decision = next(reversed(continuation_decisions.values()), None)
+            if bound_decision is not latest_decision:
+                fail(6, "continuation_decision_stale", "continuation_ref must bind the latest decision in the basis lineage")
+            if bound_decision.get("consumed_by") is not None:
+                fail(6, "continuation_decision_consumed", "continue decision is single-use")
+            bound_decision["consumed_by"] = event["event_id"]
             event["continuation_ref"] = continuation
         counters["handoffs"] += 1
         counters["fresh_contexts"] += int(event["fresh_context"])
@@ -3067,7 +3093,18 @@ def _apply_review_event(cycle: dict, raw: Any) -> tuple[dict, bool, dict | None]
         prior_decision = continuation_decisions.get(decision["decision_id"])
         if prior_decision is not None:
             fail(6, "continuation_decision_conflict", "decision_id is already recorded; retry the original event_id")
-        continuation_decisions[decision["decision_id"]] = decision
+        latest_decision = next(reversed(continuation_decisions.values()), None)
+        if (
+            latest_decision is not None
+            and decision["prior_basis_digest"] != latest_decision.get("basis_digest")
+        ):
+            fail(6, "continuation_lineage_mismatch", "new decision must continue from the latest basis digest")
+        continuation_decisions[decision["decision_id"]] = {
+            **decision,
+            "recorded_event_id": event["event_id"],
+            "sequence": len(continuation_decisions) + 1,
+            "consumed_by": None,
+        }
         event["decision"] = decision
         counter_key = {
             "continue": "continuations",
@@ -3080,20 +3117,45 @@ def _apply_review_event(cycle: dict, raw: Any) -> tuple[dict, bool, dict | None]
         outcome = _normalise_outcome(event.get("outcome"))
         if outcome["outcome_id"] in outcomes:
             fail(6, "outcome_conflict", "outcome_id already exists")
-        if outcome["work_class"] in {"construction", "integration"} and outcome["credited"]:
-            if cycle["state"] != "integration-ready":
-                fail(6, "outcome_not_terminal", "delivered construction/integration requires integration-ready")
-        if outcome["work_class"] == "verifier-hardening" and outcome["credited"]:
+        if outcome["credited"]:
+            classification = cycle.get("work_classification")
+            if not isinstance(classification, dict):
+                fail(
+                    6, "outcome_classification_required",
+                    "legacy/unclassified cycles cannot mint credited outcomes",
+                )
+            classification_problems = validate_work_classification(classification)
+            if classification_problems:
+                fail(6, "outcome_classification_invalid", "; ".join(classification_problems))
+            terminal = classification["terminal_outcome"]
+            if (
+                outcome["classification_digest"] != classification["digest"]
+                or outcome["work_class"] != classification["work_class"]
+                or outcome["kind"] != terminal["kind"]
+            ):
+                fail(6, "outcome_classification_mismatch", "credited outcome must match the cycle work classification")
+            unknown_criteria = sorted(
+                set(outcome["criterion_refs"]) - set(terminal["criterion_refs"])
+            )
+            if unknown_criteria:
+                fail(
+                    6, "outcome_criterion_mismatch",
+                    "credited outcome criteria must be bound by the terminal classification",
+                    unknown_criteria=unknown_criteria,
+                )
             invalid_refs = [
                 ref for ref in outcome["evidence_refs"]
                 if cycle["evidence"].get(ref, {}).get("status") != "valid"
             ]
             if invalid_refs:
                 fail(
-                    6, "outcome_not_terminal",
-                    "quality-defense requires valid cycle evidence",
+                    6, "outcome_evidence_invalid",
+                    "credited outcome requires valid cycle evidence",
                     invalid_evidence_refs=invalid_refs,
                 )
+        if outcome["work_class"] in {"construction", "integration"} and outcome["credited"]:
+            if cycle["state"] != "integration-ready":
+                fail(6, "outcome_not_terminal", "delivered construction/integration requires integration-ready")
         outcomes[outcome["outcome_id"]] = outcome
         event["outcome"] = outcome
         counters["outcomes_credited"] += int(outcome["credited"])

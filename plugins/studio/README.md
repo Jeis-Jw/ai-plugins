@@ -356,8 +356,9 @@ production scale과 independent review edge는 별도 축이다.
 5. 완료 회수 → native ritual은 `run record`, external executor는 `workflow result`로 기록.
 6. post-QA 결함은 같은 review cycle/finding ID로 dev/fix → 영향 범위 delta QA를 이어간다.
    전체 handoff/full QA는 구조화된 사유가 있을 때만 사용한다.
-7. verification·criterion evidence·quality floor·telemetry·gate가 모두 완결돼
-   `readyForIntegration:true`일 때만 owner에게 반영 게이트를 묻는다.
+7. verification·criterion evidence·quality floor·gate가 모두 완결돼
+   `readyForIntegration:true`일 때만 owner에게 반영 게이트를 묻는다. telemetry 누락은
+   효율 주장만 unavailable로 만들며 통합 readiness를 막지 않는다.
 8. 검증(baseline): 같은 소형 미션을 솔로 vs 팀으로 돌려 `studio.py evidence`로
    추가 delta를 센다. theatre면 리추얼 재설계.
 

@@ -34,13 +34,16 @@ python3 "$STUDIO" review summary RC-issue-58
   "definition_ref": {"schema": "definition-artifact/v1", "ref": "..."},
   "issue_ref": "issue:58",
   "requires_final_qa": true,
-  "requires_integration_gate": true
+  "requires_integration_gate": true,
+  "work_classification": {"schema": "studio-work-classification/v1", "...": "..."}
 }
 ```
 
 `definition_ref`, `issue_ref`는 nullable이다. 나머지는 필수다. 같은 `cycle_id` 재호출은 binding이
 완전히 같을 때만 no-op다. `handoff`는 활성 finding, 유효 evidence pin, pending full-QA
 reason만 반환하며 raw transcript를 포함하지 않는다.
+`work_classification`은 legacy read를 위해 nullable이지만 새 credited outcome을 기록할
+cycle에는 WorkPacket v2와 같은 exact canonical classification을 고정해야 한다.
 
 ## 이벤트 공통 계약
 
@@ -152,12 +155,16 @@ residual risk, `continue|land|stop|owner-gate`, authority/reapproval을 모두 �
 - basis digest가 직전과 같으면 새 ref만 생긴 것이므로 연장하지 않는다.
 - attempt 상한을 넘으면 `owner-gate`와 owner reapproval만 허용한다.
 - non-fresh `handoff-recorded.continuation_ref`는 원장에 기록된 `continue` decision id여야 한다.
+- continue decision은 최신 basis lineage의 1회용 permit이다. 같은 handoff event id 재전송만
+  no-op이고, 다른 handoff의 재사용이나 더 새 decision 뒤의 stale reference는 거부한다.
 - 기존 저장 cycle/event/handoff는 migration 없이 읽는다. 이 강제는 새 event에만 적용한다.
 
 `outcome-recorded`는 `delivered | decision | blocker-resolution | quality-defense |
 evidence-only | motion`을 구분한다. 앞의 네 종류만 credit하며 judgment credit은
 producer/owner가 adopted한 결정과 residual risk를 요구한다. verifier quality-defense는
-유효 cycle evidence가 필요하고 construction/integration delivery는 `integration-ready`에서만
+cycle에 고정된 classification digest/work class/terminal kind/criterion refs와 정확히
+일치하고 모든 evidence ref가 유효 cycle evidence여야 한다. legacy/unclassified cycle은
+새 credit을 만들 수 없다. construction/integration delivery는 `integration-ready`에서만
 기록한다. `outcome-reopened`는 active credit을 `-1` offset하며 summary는 gross, reopen
 offset, net credit을 함께 보고한다.
 

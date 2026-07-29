@@ -756,6 +756,31 @@ def main() -> None:
         assert unknown_reservation["status"] == "settled", unknown_reservation
         assert unknown_reservation["token_coverage"] == "unavailable", unknown_reservation
         assert "settled_tokens" not in unknown_reservation, unknown_reservation
+        r = run(["workflow", "result", "--packet", json.dumps(unknown_packet),
+                 "--plan", json.dumps(quality_plan), "--json", json.dumps(unknown_success),
+                 "--lease-id", "lease-unknown-tokens"], tmp)
+        assert not r["changed"], r
+        committed_exposure = (
+            board_after_unknown["budget"]["spent_tokens"]
+            + sum(
+                item["tokens"]
+                for item in board_after_unknown["budget"]["reservations"].values()
+                if item["status"] in {"reserved", "dispatched"}
+                or (
+                    item["status"] == "settled"
+                    and item.get("token_coverage") == "unavailable"
+                )
+            )
+        )
+        run(["budget", "--set-total", str(committed_exposure)], tmp)
+        run(["budget", "reserve", "res-after-unknown", "--lease-id", "lease-after-unknown",
+             "--tokens", "1"], tmp, expect=6)
+        run(["budget", "--set-total", str(committed_exposure + 1)], tmp)
+        r = run(["budget", "reserve", "res-after-unknown", "--lease-id", "lease-after-unknown",
+                 "--tokens", "1"], tmp)
+        assert r["changed"], r
+        run(["budget", "release", "res-after-unknown", "--lease-id", "lease-after-unknown"], tmp)
+        run(["budget", "--set-total", "1000"], tmp)
 
         # pre-dispatch unavailable/unknown falls back to native before any external start
         fallback_packet = {**packet, "track_id": "track-fallback", "budget_reservation_id": "res-fallback"}
@@ -958,6 +983,22 @@ def main() -> None:
 
         # 8h) new continuation runs require a content-bound, material, bounded
         # ledger decision; legacy cycle documents remain readable.
+        verifier_classification_body = {
+            "schema": "studio-work-classification/v1",
+            "requested_class": "verifier-hardening",
+            "work_class": "verifier-hardening",
+            "production_scale": "standard",
+            "qa_mode": "delta",
+            "terminal_outcome": {
+                "kind": "quality-defense",
+                "statement": "bounded mutation is killed by valid verifier evidence",
+                "criterion_refs": ["artifact-correct"],
+            },
+        }
+        verifier_classification = {
+            **verifier_classification_body,
+            "digest": digest(verifier_classification_body),
+        }
         economics_binding = {
             **cycle_binding,
             "cycle_id": "RC-economics",
@@ -965,6 +1006,7 @@ def main() -> None:
             "issue_ref": None,
             "requires_final_qa": False,
             "requires_integration_gate": False,
+            "work_classification": verifier_classification,
         }
         run(["review", "open", "--json", json.dumps(economics_binding)], tmp)
         decision = {
@@ -1032,9 +1074,46 @@ def main() -> None:
             "RC-economics", "REV-economics-handoff", "handoff-recorded",
             fresh_context=False, continuation_ref="CD-economics-1",
         ))], tmp)
+        r = run(["review", "event", "RC-economics", "--json", json.dumps(review_event(
+            "RC-economics", "REV-economics-handoff", "handoff-recorded",
+            fresh_context=False, continuation_ref="CD-economics-1",
+        ))], tmp)
+        assert not r["changed"], r
+        r = run(["review", "event", "RC-economics", "--json", json.dumps(review_event(
+            "RC-economics", "REV-economics-handoff-reuse", "handoff-recorded",
+            fresh_context=False, continuation_ref="CD-economics-1",
+        ))], tmp, expect=6)
+        assert r["error_code"] == "continuation_decision_consumed", r
+        decision_2 = {
+            **decision,
+            "decision_id": "CD-economics-2",
+            "prior_basis_digest": decision["basis_digest"],
+            "basis_digest": sha("9"),
+            "attempt": 3,
+        }
+        run(["review", "event", "RC-economics", "--json", json.dumps(review_event(
+            "RC-economics", "REV-economics-continue-2", "continuation-decided",
+            decision=decision_2,
+        ))], tmp)
+        r = run(["review", "event", "RC-economics", "--json", json.dumps(review_event(
+            "RC-economics", "REV-economics-handoff-stale", "handoff-recorded",
+            fresh_context=False, continuation_ref="CD-economics-1",
+        ))], tmp, expect=6)
+        assert r["error_code"] == "continuation_decision_stale", r
+        run(["review", "event", "RC-economics", "--json", json.dumps(review_event(
+            "RC-economics", "REV-economics-handoff-2", "handoff-recorded",
+            fresh_context=False, continuation_ref="CD-economics-2",
+        ))], tmp)
+        r = run(["review", "event", "RC-economics", "--json", json.dumps(review_event(
+            "RC-economics", "REV-economics-handoff-2-reuse", "handoff-recorded",
+            fresh_context=False, continuation_ref="CD-economics-2",
+        ))], tmp, expect=6)
+        assert r["error_code"] == "continuation_decision_consumed", r
         owner_gate = {
             **decision,
             "decision_id": "CD-economics-owner",
+            "prior_basis_digest": decision_2["basis_digest"],
+            "basis_digest": sha("0"),
             "attempt": 4,
             "decision": "owner-gate",
             "authority": "owner",
@@ -1061,13 +1140,33 @@ def main() -> None:
             **judgment_classification_body,
             "digest": digest(judgment_classification_body),
         }
+        outcome_binding = {
+            **cycle_binding,
+            "cycle_id": "RC-economics-outcome",
+            "track_id": "track-economics-outcome",
+            "issue_ref": None,
+            "requires_final_qa": False,
+            "requires_integration_gate": False,
+            "work_classification": judgment_classification,
+        }
+        run(["review", "open", "--json", json.dumps(outcome_binding)], tmp)
+        outcome_evidence = {
+            **evidence_1,
+            "ref": "EV-economics-outcome",
+            "criteria_digest": outcome_binding["criteria_digest"],
+            "command_digest": sha("6"),
+        }
+        run(["review", "event", "RC-economics-outcome", "--json", json.dumps(review_event(
+            "RC-economics-outcome", "REV-economics-outcome-evidence", "evidence-recorded",
+            evidence=outcome_evidence,
+        ))], tmp)
         outcome = {
             "schema": "studio-outcome/v1",
             "outcome_id": "OUT-economics-1",
             "work_class": "judgment",
             "kind": "decision",
             "criterion_refs": ["context-usable"],
-            "evidence_refs": ["decision:owner-adopted"],
+            "evidence_refs": ["EV-economics-outcome"],
             "summary": "owner adopted the work-class routing rule",
             "classification_digest": judgment_classification["digest"],
             "authority": "owner",
@@ -1075,37 +1174,59 @@ def main() -> None:
             "residual_risk": "classification quality still depends on the supplied criteria",
         }
         rejected_outcome = {**outcome, "outcome_id": "OUT-economics-rejected", "authority": "crew", "adopted": False}
-        run(["review", "event", "RC-economics", "--json", json.dumps(review_event(
-            "RC-economics", "REV-economics-outcome-rejected", "outcome-recorded",
+        run(["review", "event", "RC-economics-outcome", "--json", json.dumps(review_event(
+            "RC-economics-outcome", "REV-economics-outcome-rejected", "outcome-recorded",
             outcome=rejected_outcome,
         ))], tmp, expect=6)
-        run(["review", "event", "RC-economics", "--json", json.dumps(review_event(
-            "RC-economics", "REV-economics-outcome", "outcome-recorded",
+        for event_id, invalid_outcome, error_code in (
+            ("REV-economics-outcome-digest", {
+                **outcome, "outcome_id": "OUT-economics-digest",
+                "classification_digest": sha("f"),
+            }, "outcome_classification_mismatch"),
+            ("REV-economics-outcome-criterion", {
+                **outcome, "outcome_id": "OUT-economics-criterion",
+                "criterion_refs": ["unknown-criterion"],
+            }, "outcome_criterion_mismatch"),
+            ("REV-economics-outcome-evidence-bad", {
+                **outcome, "outcome_id": "OUT-economics-evidence-bad",
+                "evidence_refs": ["EV-unknown"],
+            }, "outcome_evidence_invalid"),
+        ):
+            r = run(["review", "event", "RC-economics-outcome", "--json", json.dumps(review_event(
+                "RC-economics-outcome", event_id, "outcome-recorded", outcome=invalid_outcome,
+            ))], tmp, expect=6)
+            assert r["error_code"] == error_code, r
+        run(["review", "event", "RC-economics-outcome", "--json", json.dumps(review_event(
+            "RC-economics-outcome", "REV-economics-outcome", "outcome-recorded",
             outcome=outcome,
         ))], tmp)
-        r = run(["review", "summary", "RC-economics"], tmp)
+        r = run(["review", "summary", "RC-economics-outcome"], tmp)
         assert r["summary"]["outcome_accounting"]["net_credited"] == 1, r
-        run(["review", "event", "RC-economics", "--json", json.dumps(review_event(
-            "RC-economics", "REV-economics-reopen", "outcome-reopened",
+        run(["review", "event", "RC-economics-outcome", "--json", json.dumps(review_event(
+            "RC-economics-outcome", "REV-economics-reopen", "outcome-reopened",
             outcome_id="OUT-economics-1", reason="owner found an unmet criterion",
             evidence_refs=["owner:reopen"],
         ))], tmp)
-        r = run(["review", "summary", "RC-economics"], tmp)
+        r = run(["review", "summary", "RC-economics-outcome"], tmp)
         assert r["summary"]["outcome_accounting"] == {
             "gross_credited": 1, "reopen_offset": -1, "net_credited": 0,
             "reopened": 1, "evidence_only": 0, "motion": 0,
         }, r
 
         legacy_binding = {
-            **economics_binding,
+            **cycle_binding,
             "cycle_id": "RC-economics-legacy",
             "track_id": "track-economics-legacy",
+            "issue_ref": None,
+            "requires_final_qa": False,
+            "requires_integration_gate": False,
         }
         run(["review", "open", "--json", json.dumps(legacy_binding)], tmp)
         legacy_board = board_state(ws)
         legacy_cycle = legacy_board["review_cycles"]["RC-economics-legacy"]
         legacy_cycle.pop("continuation_decisions")
         legacy_cycle.pop("outcomes")
+        legacy_cycle.pop("work_classification")
         for key in (
             "continuations", "lands", "stops", "owner_gates",
             "outcomes_credited", "outcomes_reopened",
@@ -1118,6 +1239,11 @@ def main() -> None:
         )
         r = run(["review", "status", "RC-economics-legacy"], tmp)
         assert "continuation_decisions" not in r["cycle"], r
+        r = run(["review", "event", "RC-economics-legacy", "--json", json.dumps(review_event(
+            "RC-economics-legacy", "REV-economics-legacy-outcome", "outcome-recorded",
+            outcome={**outcome, "outcome_id": "OUT-economics-legacy"},
+        ))], tmp, expect=6)
+        assert r["error_code"] == "outcome_classification_required", r
 
         # 9) config (.studio.yml) — scaffold, validate, parse, guards
         cfg = tmp / "scaffold.yml"
