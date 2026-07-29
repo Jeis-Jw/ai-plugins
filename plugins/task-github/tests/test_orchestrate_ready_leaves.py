@@ -12,12 +12,12 @@ import orchestrate_ledger  # noqa: E402
 import resume_closeout  # noqa: E402
 
 
-def studio_review_lease(**overrides):
+def external_review_lease(**overrides):
     lease = {
         "schema": "workflow-review-lease/v1",
-        "lease_id": "lease-studio-1",
-        "owner": "studio",
-        "provider": "session-review",
+        "lease_id": "lease-external-1",
+        "owner": "external",
+        "provider": "review-command",
         "episode_id": "episode-1",
         "edge_id": "pr-22",
         "requirement": "independent",
@@ -671,7 +671,7 @@ class MergeEdgeGearTreeTests(unittest.TestCase):
     def test_external_review_handoff_is_idempotent_and_blocks_closeout_until_verdict(self):
         import tempfile
 
-        lease = studio_review_lease()
+        lease = external_review_lease()
         with tempfile.TemporaryDirectory() as tmp:
             ledger = Path(tmp) / "ledger.json"
             orchestrate_ledger.record_snapshot(ledger, node(1, children=[node(2)]))
@@ -708,7 +708,7 @@ class MergeEdgeGearTreeTests(unittest.TestCase):
     def test_expected_review_lease_pin_is_idempotent_and_rebind_fails_closed(self):
         import tempfile
 
-        lease = studio_review_lease()
+        lease = external_review_lease()
         with tempfile.TemporaryDirectory() as tmp:
             ledger = Path(tmp) / "ledger.json"
             orchestrate_ledger.record_snapshot(ledger, node(1, children=[node(2)]))
@@ -722,7 +722,7 @@ class MergeEdgeGearTreeTests(unittest.TestCase):
                 orchestrate_ledger.record_expected_review_lease(
                     ledger,
                     issue=2,
-                    review_lease=studio_review_lease(episode_id="episode-2"),
+                    review_lease=external_review_lease(episode_id="episode-2"),
                 )
             with self.assertRaisesRegex(ValueError, "already pinned"):
                 orchestrate_ledger.record_expected_review_lease(
@@ -736,10 +736,10 @@ class MergeEdgeGearTreeTests(unittest.TestCase):
         self.assertEqual(payload, same)
         self.assertEqual(payload["issues"]["2"]["expected_review_lease"], lease)
 
-    def test_expected_studio_review_blocks_direct_closeout_before_handoff(self):
+    def test_expected_external_review_blocks_direct_closeout_before_handoff(self):
         import tempfile
 
-        lease = studio_review_lease()
+        lease = external_review_lease()
         with tempfile.TemporaryDirectory() as tmp:
             ledger = Path(tmp) / "ledger.json"
             orchestrate_ledger.record_snapshot(ledger, node(1, children=[node(2)]))
@@ -762,7 +762,7 @@ class MergeEdgeGearTreeTests(unittest.TestCase):
     def test_external_review_verdict_requires_same_lease_and_evidence_then_queues_once(self):
         import tempfile
 
-        lease = studio_review_lease()
+        lease = external_review_lease()
         with tempfile.TemporaryDirectory() as tmp:
             ledger = Path(tmp) / "ledger.json"
             orchestrate_ledger.record_snapshot(ledger, node(1, children=[node(2)]))
@@ -780,7 +780,7 @@ class MergeEdgeGearTreeTests(unittest.TestCase):
                 )
             with self.assertRaisesRegex(ValueError, "does not match"):
                 orchestrate_ledger.record_external_review_verdict(
-                    ledger, issue=2, review_lease=studio_review_lease(episode_id="episode-2"),
+                    ledger, issue=2, review_lease=external_review_lease(episode_id="episode-2"),
                     verdict="approved", evidence_refs=["EV-full-baseline"],
                 )
             changed_payload, changed = orchestrate_ledger.record_external_review_verdict(
@@ -802,7 +802,7 @@ class MergeEdgeGearTreeTests(unittest.TestCase):
     def test_external_changes_requested_never_queues_closeout(self):
         import tempfile
 
-        lease = studio_review_lease()
+        lease = external_review_lease()
         with tempfile.TemporaryDirectory() as tmp:
             ledger = Path(tmp) / "ledger.json"
             orchestrate_ledger.record_snapshot(ledger, node(1, children=[node(2)]))
@@ -824,7 +824,7 @@ class MergeEdgeGearTreeTests(unittest.TestCase):
     def test_approved_external_review_allows_one_fenced_closeout_resume(self):
         import tempfile
 
-        lease = studio_review_lease()
+        lease = external_review_lease()
         with tempfile.TemporaryDirectory() as tmp:
             ledger = Path(tmp) / "ledger.json"
             orchestrate_ledger.record_snapshot(ledger, node(1, children=[node(2)]))

@@ -105,7 +105,7 @@ root issue body에는 필요 시 `task-github-execution` fenced JSON block을 �
 
 머지 경로는 review 필요 여부가 결정한다(DEC-2026-07-02-224910). **micro/normal 리프**와 `--review=skip`의 major 리프는 PR 없이 worker가 `ready_for_closeout`을 기록하고, orchestrator의 `BASE_BRANCH`별 closeout lane이 로컬 FF(`git fetch . task/issue-{leaf}:task/issue-{parent}`, checkout 없는 refspec)로 부모에 합류시킨다. **review가 필요한 major 리프/컨테이너**만 PR+review 경로를 타며, 승인 뒤 `ready_for_pr_closeout`으로 같은 closeout lane에서 PR merge 순간을 직렬화한다. 컨테이너 gear는 자식 누적 승격(`container_gear_promotion`: micro×3→normal, normal×2→major)으로 계산하고, review skip이면 gear/skip evidence를 남긴다. closeout은 로컬 `git checkout`/`git merge`를 하지 않고 base 갱신도 fetch refspec으로 처리해, 오케스트레이션 중 메인 워크트리 HEAD가 trunk를 벗어나지 않는다(DEC-2026-07-02-212109 불변식 유지). 충돌은 항상 리프 worktree에서 해소한다.
 
-Studio가 외부 executor인 경우 task-github는 task-worker binding의 `workflow-review-lease/v1`을 하나의 구조화 계약으로 소비한다. issue edge별 `review-expectation`을 tick/review/closeout 전에 ledger의 immutable expected lease로 먼저 pin하며, missing/mismatch permit에서는 local reviewer 호출 없이 STOP한다. `owner=studio`에서도 PR 생성, CI/preflight, `in-review`/`review_waiting`, base/head transport와 closeout lane은 유지하고 reviewer tool/harness dispatch만 억제한다. public closeout/merge/resume은 external handoff 기록 순서와 무관하게 pinned lease와 같은 approved verdict 및 필수 evidence를 요구한다. lease 없음이나 valid `owner=task-worker`는 기존 review-tool/human gate/feedback loop를 유지한다.
+외부 orchestrator가 reviewer owner인 경우 task-github는 task-worker binding의 `workflow-review-lease/v1`을 하나의 구조화 계약으로 소비한다. issue edge별 `review-expectation`을 tick/review/closeout 전에 ledger의 immutable expected lease로 먼저 pin하며, missing/mismatch permit에서는 local reviewer 호출 없이 STOP한다. `owner=task-worker`가 아닌 opaque owner에서도 PR 생성, CI/preflight, `in-review`/`review_waiting`, base/head transport와 closeout lane은 유지하고 reviewer tool/harness dispatch만 억제한다. public closeout/merge/resume은 external handoff 기록 순서와 무관하게 pinned lease와 같은 approved verdict 및 필수 evidence를 요구한다. lease 없음이나 valid `owner=task-worker`는 기존 review-tool/human gate/feedback loop를 유지한다.
 
 ## Define Challenge Review
 
@@ -171,10 +171,12 @@ ledger v3는 비용 분석과 evidence reuse를 위해 `github_reads`, `read_dec
 
 ## 변경 이력
 
+- `0.27.0`: external review owner/provider를 opaque identifier로 소비해 특정 orchestrator
+  이름 의존을 제거하고 task-worker 0.8.0의 generic permit을 유지한다.
 - `0.26.0`: `closeout.delete-merged-remote-branches`를 실제 merge closeout에 연결했다. 로컬 worktree/branch cleanup 정본은 task-worker에 두고 기존 `delete-merged-branches`는 호환 alias로만 유지한다.
 - `0.25.0`: GitHub mutation 없는 `task-github:init`을 추가해 provider config/projection state/gitignore를 멱등 초기화한다. `setup`은 자기 init을 재사용하면서 기존 task-worker config scaffold bridge를 유지한다.
 - `0.24.0`: task-worker 0.5.0의 execution-control preflight·claim·completion을 exact bridge로 소비하고 immutable receipt/evidence reference만 GitHub ledger에 투영한다. GitHub adapter는 planner·중복 실행 판단·QA 범위를 재구현하지 않으며 Issue Tree·PR/CI/review·merge/closeout 책임은 유지한다.
-- `0.23.0`: task-worker 0.4.0의 exact review lease/permit preflight를 추가했다. Studio-owned review는 GitHub PR/CI/transport를 유지한 externally-owned ledger handoff로 전환하고, 동일 lease의 approved verdict와 evidence 전 closeout을 차단한다. standalone/task-worker-owned review 흐름은 유지한다.
+- `0.23.0`: task-worker 0.4.0의 exact review lease/permit preflight를 추가했다. external-owner review는 GitHub PR/CI/transport를 유지한 externally-owned ledger handoff로 전환하고, 동일 lease의 approved verdict와 evidence 전 closeout을 차단한다. standalone/task-worker-owned review 흐름은 유지한다.
 - `0.22.0`: `.task-worker.yml`/`.task-github.yml` 설정 경계를 분리하고 legacy translation warning을 추가했다. 기존 Issue Tree를 `manual|worker` dispatch의 DefinitionArtifact/work-graph/binding으로 가져오는 import 경로와 TASK/root Issue 기반 세션 재개를 추가했다.
 - `0.21.0`: provider-neutral 실행 코어를 `task-worker` 0.2.0으로 완전히 위임했다. `task_worker_bridge.py`의 capability preflight와 versioned JSON contract, `github_projection.py`의 GitHub binding checkpoint를 추가했고, 기존 `definition_artifact.py`는 호환 forwarder로 축소했다. GitHub Issue snapshot은 `task-worker.work-graph/v1`로 변환해 공통 ready/integration planner를 사용하며 기존 ready-leaf 병렬성, gear, PR/review, merge/closeout gate는 그대로 유지한다.
 - `0.20.0`: provider-neutral immutable DefinitionArtifact revision과 stable node id, digest/previous_digest/run pinning, local lifecycle/recovery/stable branch-worktree identity를 추가했다. `record:none|github`과 `delivery:local-ff|pull-request`를 분리하고, GitHub full-tree node/edge projection checkpoint·failure resume·coverage 실행 gate, binding receipt schema v1 emitter를 제공한다. 기존 Issue-first `--spec` 경로는 호환 유지한다.

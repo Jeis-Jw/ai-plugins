@@ -1,0 +1,82 @@
+# Optional Studio native-subagent spawn and execution policy.
+# Copy to the consumer workspace root as `.studio.yml`.
+# Blank values inherit from the next layer and ultimately the host session.
+#
+# Resolution, most to least specific:
+#   explicit override > provider role > common role
+#   > provider defaults > common defaults > host session inheritance.
+#
+# Model and effort identifiers are owned by each provider. Studio preserves the
+# configured strings and passes the resolved pair to the host; it does not claim
+# that every provider supports every combination.
+#
+# Commands are opaque skill/plugin identifiers, not shell strings. Studio only
+# checks a configured command after the route selects it.
+
+execute:
+  work:
+    command: task-worker
+    activation: auto
+    fallback: native
+  review:
+    command: session-review
+    activation: auto
+    fallback: native
+  delivery:
+    command: task-github
+    enabled: false
+    fallback: skip
+
+defaults:
+  model:
+  effort:
+
+roles:
+  architect:
+    model:
+    effort:
+  dev:
+    model:
+    effort:
+  qa:
+    model:
+    effort:
+  reviewer:
+    model:
+    effort:
+
+providers:
+  codex:
+    defaults:
+      model:
+      effort:
+    roles:
+      architect:
+        model:
+        effort:
+      dev:
+        model:
+        effort:
+      qa:
+        model:
+        effort:
+      reviewer:
+        model:
+        effort:
+  claude:
+    defaults:
+      model:
+      effort:
+    roles:
+      architect:
+        model:
+        effort:
+      dev:
+        model:
+        effort:
+      qa:
+        model:
+        effort:
+      reviewer:
+        model:
+        effort:

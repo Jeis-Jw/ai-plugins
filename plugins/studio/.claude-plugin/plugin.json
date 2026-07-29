@@ -1,5 +1,5 @@
 {
   "name": "studio",
-  "version": "0.12.0",
-  "description": "Codex와 Claude Code의 native subagent를 역할별 crew로 소집·중계·관리하는 오케스트레이터"
+  "version": "0.13.0",
+  "description": "optional 실행 command와 role별 model/effort로 메인 Producer가 native crew를 지휘하는 오케스트레이터"
 }

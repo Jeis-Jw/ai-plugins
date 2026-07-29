@@ -30,6 +30,13 @@ started → running → verified → done → closed
 
 각 전이는 idempotent하다. `verify` event에는 구조화된 evidence를 붙인다. `ready`는 같은 artifact digest에 pin된 closed blocker만 완료로 인정하며, active run이 중복되면 fail-closed한다. provider snapshot에서는 unknown blocker를 미해결로 유지하고 dependency cycle이면 부분 ready set도 반환하지 않는다.
 
+## 0.8.0 generic external review owner
+
+`workflow-review-lease/v1`의 owner/provider는 path-safe opaque identifier다.
+`owner=task-worker`만 local reviewer dispatch를 뜻하고 다른 owner는 모두 external handoff다.
+`review-lease` command가 canonical digest와 stable lease id를 생성하므로 caller는 schema를
+복제하지 않는다.
+
 ## 0.7.0 deterministic cleanup
 
 `cleanup` policy는 merge/FF가 확인된 clean task worktree, local branch와 stale metadata 정리를
@@ -66,8 +73,8 @@ physical identity는 `head + command_digest + environment_digest + tool_version 
 
 `review_leases[]`는 provider dependency가 아니라 reviewer 소유권 fencing이다. exact fields는 `schema, lease_id, owner, provider, episode_id, edge_id, requirement, criteria_digest, evidence_refs, digest`이며 canonical digest와 `lease_id`/`edge_id` 유일성을 검증한다.
 
-- `owner=studio`: task-worker reviewer dispatch 금지, `externally-owned/skip` handoff 반환
-- `owner=task-worker`: 기존 native/session-review 선택과 feedback loop 유지
+- `owner=task-worker`: task-worker가 선택한 reviewer와 feedback loop 유지
+- 그 밖의 opaque owner: task-worker reviewer dispatch 금지, `externally-owned/skip` handoff 반환
 - lease 없음: standalone 기존 local review policy 유지
 
 lease는 review를 제거하지 않고 중복 dispatch만 막는다. node run, verification evidence, done, integration candidate gate는 기존 계약대로 실행한다.

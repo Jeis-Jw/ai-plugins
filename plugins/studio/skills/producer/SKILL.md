@@ -6,10 +6,12 @@ description: 사용자의 미션을 역할별 작업으로 나누고 Codex 또�
 # Producer
 
 Studio는 에이전트 런타임이 아니다. 현재 host가 제공하는 subagent 기능을 직접 사용한다.
+Producer는 메인 세션의 control plane이며 leaf crew가 아니다.
 
 ## 책임
 
 - 미션과 관찰 가능한 완료 조건 정리
+- 설정된 work/review/delivery command의 사용 여부 결정
 - 필요한 최소 역할 선택
 - 역할별 작업·범위·기대 결과 작성
 - host subagent 생성
@@ -28,6 +30,7 @@ subagent에게 맡긴다.
 - host agent id를 감싼 Studio session id나 lease 생성
 - task-worker, session-review, task-github, wiki의 상태 복제
 - 작업 가치와 무관한 고정 인원, round, 토론 의식
+- orchestration을 leaf crew에 위임하거나 leaf가 nested agent를 만들게 하는 것
 
 ## Host 기능
 
@@ -58,21 +61,88 @@ one-shot agent type은 지속적인 역할에 쓰지 않는다.
 호스트가 어떤 동작을 제공하지 않으면 실제 host 오류를 보고한다. 다른 runtime을 만들거나
 우회 실행하지 않는다.
 
+## 크루 model/effort 정책
+
+workspace 루트의 `.studio.yml`은 선택적인 native subagent spawn policy다. Studio runtime이나
+workflow 상태가 아니며, 파일이 없으면 host 세션 설정을 그대로 상속한다.
+
+새 agent를 만들기 전에 provider와 canonical role을 정하고 다음 resolver를 한 번 실행한다.
+명령의 cwd는 consumer workspace 루트다.
+
+```bash
+python3 "${STUDIO_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/studio_config.py" resolve \
+  --path .studio.yml \
+  --provider <codex|claude> \
+  --role <crew-role>
+```
+
+Claude Code는 plugin 실행 시 `CLAUDE_PLUGIN_ROOT`를 사용한다. 이 변수를 제공하지 않는
+Codex에서는 `STUDIO_ROOT`를 현재 로드된 Producer skill의 절대 plugin root로 설정한다.
+둘 다 해소되지 않으면 설정을 추정하거나 건너뛰지 말고 중단한다.
+
+해석 순서는 field별로 다음과 같다.
+
+```text
+명시적 spawn override
+> providers.<provider>.roles.<role>
+> roles.<role>
+> providers.<provider>.defaults
+> defaults
+> host session inheritance
+```
+
+- `model`과 `effort`는 각각 독립적으로 해석한다.
+- blank/null 또는 미설정 값은 다음 계층으로 넘어간다.
+- 값은 provider가 소유하는 문자열이다. Studio는 지원 모델 목록을 추정하지 않는다.
+- resolver가 반환한 non-null 값은 새 agent 생성 호출에 정확히 전달한다. 무시하거나 다른
+  값으로 낮추지 않는다.
+- host가 해당 값이나 조합을 지원하지 않으면 실제 host 오류를 보고한다. 다른 조합으로
+  조용히 fallback하지 않는다.
+- 재작업과 후속 작업은 원래 agent handle을 재사용한다. 같은 agent에 대해 설정을 다시
+  해석하거나 다른 model/effort로 재생성하지 않는다.
+
+Codex에서는 `model`을 `spawn_agent.model`, `effort`를
+`spawn_agent.reasoning_effort`로 전달한다. 둘 중 하나라도 지정된 spawn은 full-history
+fork를 쓰지 않고, `fork_turns:"none"` 또는 bounded fork와 완결된 task contract를 사용한다.
+
+Claude Code에서는 resolved `model`을 `Agent` 생성 인자에 전달한다. resolved `effort`는
+현재 host가 per-invocation effort를 지원하거나 같은 값을 가진 agent definition을 선택할 수
+있을 때만 생성한다. 적용할 수 없다면 설정을 누락한 채 생성하지 말고 unsupported 상태를
+보고한다.
+
+## 실행 라우팅
+
+실제 수행이 필요한 미션은 `$execute`를 메인 Producer 세션에서 적용한다. `.studio.yml`의
+`execute.work`, `execute.review`, `execute.delivery`는 optional command 후보일 뿐
+dependency 선언이 아니다.
+
+- 미설정·비활성 route는 해당 command를 discovery/probe하지 않는다.
+- `auto` route의 필요성은 Producer가 미션 복잡도·격리·병렬성·독립 리뷰 요구로 판단한다.
+- configured work command가 분해·ready planning·evidence·integration을 소유하면 Producer가
+  메인 세션에서 그 command를 실행하고 상태를 복제하지 않는다.
+- Producer가 ready action별 native subagent를 만들고 route의 model/effort를 적용한다.
+- leaf crew는 배정된 action만 수행한다. `execute`, 작업 재분해, orchestration, nested agent
+  생성은 금지한다.
+- delivery는 operator가 `enabled:true`로 켠 경우에만 사용하며 work orchestration을 대체하지
+  않는다.
+
 ## 소집
 
-1. 미션을 독립적으로 맡길 수 있는 작업으로 나눈다.
+1. native work route면 미션을 독립 작업으로 나누고, configured work route면 그 command가
+   반환한 ready action을 사용한다.
 2. `rules/casting.md`를 참고해 실제 할 일이 있는 역할만 선택한다.
-3. 각 agent에게 다음을 한 번에 전달한다.
+3. 각 역할의 model/effort 정책을 해석한다.
+4. 각 agent에게 다음을 한 번에 전달한다.
    - `crew/<role>.md`의 역할
    - 미션 objective와 자기 task
    - 읽거나 변경할 범위
    - 기대 결과 형식
    - 완료 조건과 검증 방법
-4. 서로 독립적으로 진행할 수 있는 작업만 병렬 생성한다.
-5. host가 반환한 agent id를 현재 대화의 역할↔agent 대응으로 유지한다.
+5. 서로 독립적으로 진행할 수 있는 작업만 병렬 생성한다.
+6. host가 반환한 agent id와 resolved model/effort를 현재 대화의 역할↔agent 대응으로
+   유지한다.
 
-model, effort, tool, sandbox와 권한은 host가 결정한다. owner가 특정 값을 요구한 경우에만
-host 호출이 지원하는 범위에서 전달한다.
+tool, sandbox와 권한은 host가 결정한다. `.studio.yml`은 이 값을 설정하지 않는다.
 
 ## 중계와 재작업
 
@@ -100,9 +170,9 @@ Producer는 agent를 대신해 결론을 만들지 않는다. 상충하는 결�
 blocking finding으로 받으며, finding은 원래 agent에게 전달한다. Studio가 review episode,
 permit, evidence ledger를 만들지 않는다.
 
-구현·worktree·검증이 필요하면 담당 agent가 `task-worker`, GitHub delivery가 필요하면
-`task-github`, 독립 review workflow가 필요하면 `session-review`, 장기 지식이 필요하면
-`wiki-markdown`을 사용한다. Studio는 이 기능을 대신 구현하지 않는다.
+work/review/delivery command 사용 여부와 orchestration은 `$execute`에 따라 Producer가
+결정한다. 담당 leaf agent에게 command 선택이나 orchestration을 넘기지 않는다. 장기 지식
+관리는 이 실행 경로와 독립적이며, 필요할 때 별도 `wiki-markdown` 흐름을 사용한다.
 
 ## Owner gate
 

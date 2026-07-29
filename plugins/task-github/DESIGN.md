@@ -11,7 +11,7 @@
 >
 > 충돌 시 신뢰 순서: **실행 명세(SKILL/rules/agents) > DESIGN > README**. 결합 규약(policy)은 mechanism(이 문서)과 **다른 계층**이므로 경쟁하지 않고 보완한다.
 
-> **현재 상태(0.26.0)**: provider-neutral DefinitionArtifact, local lifecycle, ready/integration planner, review lease permit, execution control과 merged-clean local cleanup은 `task-worker` 0.7.0이 소유한다. task-github는 versioned JSON CLI bridge로 이를 소비하고 GitHub projection·Issue snapshot adapter·PR/CI/review transport·merge/remote branch closeout을 소유한다. 외부 mutation 없는 `task-github:init`이 provider config와 projection state를 준비하며, 기존 `task-github:*`, Issue-first, `scripts/definition_artifact.py` 호출은 호환 facade로 유지한다. plugin delegation은 subprocess contract 경계이며 추가 agent/session hop이 아니다.
+> **현재 상태(0.27.0)**: provider-neutral DefinitionArtifact, local lifecycle, ready/integration planner, generic external review lease permit, execution control과 merged-clean local cleanup은 `task-worker` 0.8.0이 소유한다. task-github는 versioned JSON CLI bridge로 이를 소비하고 GitHub projection·Issue snapshot adapter·PR/CI/review transport·merge/remote branch closeout을 소유한다. 외부 mutation 없는 `task-github:init`이 provider config와 projection state를 준비하며, 기존 `task-github:*`, Issue-first, `scripts/definition_artifact.py` 호출은 호환 facade로 유지한다. plugin delegation은 subprocess contract 경계이며 추가 agent/session hop이 아니다.
 
 ---
 
@@ -23,9 +23,9 @@
 
 task-github는 task-worker 0.5.0의 canonical execution-control handshake를 preflight하고 permit decision·atomic claim·completion을 그대로 전달한다. command profile, impact/QA mode, duplicate/run-cap, token policy와 evidence applicability는 재구현하지 않는다. task-worker가 반환한 immutable command receipt와 verification evidence의 id+digest만 Issue ledger와 delivery evidence에 멱등 투영한다. GitHub provider의 PR/CI/review/merge/closeout 의미는 기존 adapter 책임으로 유지한다.
 
-### 0.23.0 externally-owned review
+### 0.27.0 generic externally-owned review
 
-task-worker binding에 exact `workflow-review-lease/v1`이 있으면 reviewer 선택권을 lease owner로 fencing한다. task-github는 edge별 `review-expectation`을 tick/review/closeout 전에 ledger의 immutable expected lease로 먼저 pin한다. pin/permit mismatch나 rebind는 reviewer 호출 전에 fail-closed한다. `owner=studio`는 reviewer tool/harness dispatch만 억제한다. task-github는 PR 생성, `in-review`/`review_waiting`, base/head transport, CI/preflight와 closeout lane을 계속 소유하고, ledger에 externally-owned handoff를 구조화해 보존한다. public closeout/merge/resume은 handoff 기록 순서와 무관하게 pinned lease의 approved verdict와 required evidence refs를 요구한다. mismatch, changes-requested, evidence 부족은 merge/closeout을 fail-closed한다. lease 없음/valid `owner=task-worker`는 기존 provider/human gate 흐름이다.
+task-worker binding에 exact `workflow-review-lease/v1`이 있으면 reviewer 선택권을 lease owner로 fencing한다. task-github는 edge별 `review-expectation`을 tick/review/closeout 전에 ledger의 immutable expected lease로 먼저 pin한다. pin/permit mismatch나 rebind는 reviewer 호출 전에 fail-closed한다. `owner=task-worker`가 아닌 opaque owner는 reviewer tool/harness dispatch만 억제한다. task-github는 PR 생성, `in-review`/`review_waiting`, base/head transport, CI/preflight와 closeout lane을 계속 소유하고, ledger에 externally-owned handoff를 구조화해 보존한다. public closeout/merge/resume은 handoff 기록 순서와 무관하게 pinned lease의 approved verdict와 required evidence refs를 요구한다. mismatch, changes-requested, evidence 부족은 merge/closeout을 fail-closed한다. lease 없음/valid `owner=task-worker`는 기존 provider/human gate 흐름이다.
 
 - **무엇으로**: GitHub Issue(작업 단위·트리) + Label(상태·성격) + Assignee(점유) + PR(코드 변경) + Issue 코멘트(실행 기록)
 - **어떻게 분류하나**: 작업을 **3개 축**으로 분류 — 프로파일(환경) · 기어(파급력) · 플로우(승인 관문)
@@ -157,14 +157,14 @@ root issue body에는 optional **Execution Contract** fenced block을 둔다. `s
 ```json
 {
   "name": "task-github",
-  "version": "0.26.0",
+  "version": "0.27.0",
   "description": "task-worker 기반 GitHub Issue tree·PR·merge adapter와 호환 facade"
 }
 ```
 
 루트 `.claude-plugin/marketplace.json`의 `plugins` 배열에 추가:
 ```json
-{ "name": "task-github", "source": "./plugins/task-github", "version": "0.26.0",
+{ "name": "task-github", "source": "./plugins/task-github", "version": "0.27.0",
   "description": "task-worker 기반 GitHub provider adapter와 wiki-markdown task 노드 연계" }
 ```
 

@@ -1,6 +1,7 @@
 # task-worker
 
-GitHub·Wiki·Studio와 무관하게 작업 정의, dependency planning, ready-set 병렬 실행, 검증 evidence, 통합 gate, 재개 상태를 소유하는 provider-neutral 실행 플러그인이다.
+외부 tracker·wiki·orchestrator와 무관하게 작업 정의, dependency planning, ready-set 병렬
+실행, 검증 evidence, 통합 gate, 재개 상태를 소유하는 provider-neutral 실행 플러그인이다.
 
 ## 핵심 계약
 
@@ -11,12 +12,15 @@ GitHub·Wiki·Studio와 무관하게 작업 정의, dependency planning, ready-s
 - binding/context/work-graph checkpoint를 통한 세션 간 재개
 - 동일 definition/node/HEAD/command/environment/tool version의 성공 evidence 재사용
 - provider closeout receipt의 idempotent event 기록
-- `workflow-review-lease/v1` owner permit으로 Studio/task-worker reviewer 이중 dispatch 차단
+- `workflow-review-lease/v1` owner permit으로 external/task-worker reviewer 이중 dispatch 차단
 - GitHub·Wiki API 호출 없는 provider-neutral runtime
 
 provider별 원격 상태와 mutation은 adapter가 담당한다. task-worker가 Wiki TASK ID나 GitHub root Issue를 alias로 보관할 수는 있지만, 그 문자열을 해석하거나 외부 API를 직접 호출하지 않는다.
 
-review가 필요한 edge만 binding의 `review_leases[]`에 exact lease를 저장한다. `review-permit`은 `owner=studio`이면 `externally-owned/skip` handoff를, `owner=task-worker` 또는 lease 없음이면 기존 local review policy를 반환한다. permit은 reviewer dispatch만 제어하며 구현·verify evidence·done·integration gate를 억제하지 않는다.
+review가 필요한 edge만 binding의 `review_leases[]`에 exact lease를 저장한다. owner와 provider는
+opaque caller identifier다. `owner=task-worker`만 local review를 뜻하고, 그 밖의 owner는
+`externally-owned/skip` handoff를 반환한다. permit은 reviewer dispatch만 제어하며
+구현·verify evidence·done·integration gate를 억제하지 않는다.
 
 ## 설정
 
@@ -92,6 +96,11 @@ python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py
   --ref TASK-2026-07-14-000000-example --episode-id episode-1 --edge-id pr-42 \
   --state-root .task-worker/local
 
+# caller가 schema/digest를 직접 만들지 않는 external review lease 생성
+python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py" review-lease \
+  --owner external --provider review-command --episode-id episode-1 --edge-id edge-1 \
+  --requirement independent --criteria-digest sha256:{64_HEX}
+
 # ready leaf 전체 계획
 python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py" ready \
   --artifact .task-worker/local/definitions/example/revision-000001.json \
@@ -117,9 +126,11 @@ python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py
 
 ## 변경 이력
 
+- `0.8.0`: review owner/provider를 opaque identifier로 일반화하고 `review-lease` builder를
+  추가해 특정 orchestrator나 review provider 이름 의존을 제거했다.
 - `0.7.0`: merged-clean worktree/local branch cleanup을 설정 정본과 결정적 receipt 실행기로 연결했다. primary, dirty, unmerged 작업은 항상 보존한다.
 - `0.6.0`: `task-worker:init`/`doctor`와 `local|manual|quality|minimal` preset을 추가했다. 프로젝트별 command/impact policy는 TODO/fail-closed skeleton으로만 만들고 provider 자동 탐색이나 외부 mutation은 하지 않는다. 기존 분해·ready-set 병렬성·worktree·독립 검증·통합 gate는 변경하지 않았다.
 - `0.5.0`: Studio와 공유하는 canonical verification contract를 기준으로 command profile·impact 범위·delta/full QA 허가를 계산하고, atomic physical execution claim, immutable receipt/evidence, run cap, token telemetry와 external spend gate를 추가했다. ready-set 병렬 실행·worktree 격리·독립 검증·통합 gate는 그대로 유지한다.
-- `0.4.0`: exact `workflow-review-lease/v1` binding과 digest/conflict 검증, reviewer dispatch 직전 `review-permit`을 추가했다. Studio-owned review는 externally-owned handoff로 반환하고 task-worker-owned/standalone review, verify evidence, integration gate는 그대로 유지한다.
+- `0.4.0`: exact `workflow-review-lease/v1` binding과 digest/conflict 검증, reviewer dispatch 직전 `review-permit`을 추가했다. external-owner review는 externally-owned handoff로 반환하고 task-worker-owned/standalone review, verify evidence, integration gate는 그대로 유지한다.
 - `0.3.0`: `.task-worker.yml`, `dispatch: manual|worker`, provider binding/context/work-graph resume, executable integration gate, evidence fingerprint duplicate guard, provider event receipt를 추가했다. task-github 기존 설정의 generic 실행 정책을 이쪽으로 이동했다.
 - `0.2.0`: task-github가 versioned JSON CLI contract로 planner/local lifecycle을 소비하도록 분리했다.

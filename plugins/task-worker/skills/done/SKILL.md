@@ -11,7 +11,8 @@ description: verified task-worker local run을 delivery 정책에 맞게 완료�
 - `external`: 임의로 PR/merge를 수행하지 않는다. adapter에 delivery request를 넘기고 provider receipt가 확인된 뒤 닫는다.
 - 사용자 소유 dirty change, branch, worktree를 무단 삭제하지 않는다.
 - binding에 provider가 있으면 closeout 결과를 provider adapter에 전달하고 성공 receipt를 `provider-event`로 기록한다. task-worker core가 Wiki/GitHub API를 직접 호출하지 않는다.
-- `owner=studio` review lease는 reviewer dispatch만 외부 소유다. verified/done/integration evidence와 provider delivery receipt를 억제하지 않는다.
+- external-owner review lease는 reviewer dispatch만 외부 소유다. verified/done/integration
+  evidence와 provider delivery receipt를 억제하지 않는다.
 
 `local-ff` merge/FF가 확인되면 아래 결정적 cleanup을 실행한다. primary, dirty, unmerged
 worktree/branch는 항상 보존한다. Studio나 provider가 execution owner가 아니면 같은 cleanup을

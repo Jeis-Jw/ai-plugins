@@ -15,7 +15,7 @@
     {
       "name": "task-github",
       "source": { "source": "local", "path": "./plugins/task-github" },
-      "version": "0.26.0",
+      "version": "0.27.0",
       "description": "GitHub adapter for task-worker Issue Trees, PR transport, externally owned review handoffs, and gated closeout.",
       "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
       "category": "Productivity"
@@ -31,8 +31,8 @@
     {
       "name": "studio",
       "source": { "source": "local", "path": "./plugins/studio" },
-      "version": "0.12.0",
-      "description": "Host-native crew orchestrator for Codex and Claude Code subagents.",
+      "version": "0.13.0",
+      "description": "Root Producer orchestrator with optional execution commands and role-specific model/effort policy.",
       "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
       "category": "Productivity"
     },
@@ -42,8 +42,8 @@
         "source": "local",
         "path": "./plugins/task-worker"
       },
-      "version": "0.7.0",
-      "description": "Provider-neutral work graphs with parallel ready sets, integration gates, pinned evidence, and single-owner review permits.",
+      "version": "0.8.0",
+      "description": "Provider-neutral work graphs with parallel ready sets, integration gates, and opaque external review ownership.",
       "policy": {
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL"

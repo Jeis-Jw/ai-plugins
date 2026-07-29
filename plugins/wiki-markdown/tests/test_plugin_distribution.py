@@ -63,7 +63,7 @@ class PluginDistributionTests(unittest.TestCase):
             self.assertIn(name, codex_marketplace_entries)
             self.assertEqual(claude["version"], codex_marketplace_entries[name]["version"])
 
-    def test_studio_is_a_host_native_skill_without_runtime_surfaces(self):
+    def test_studio_is_host_native_with_only_a_spawn_policy_helper(self):
         studio = REPO / "plugins" / "studio"
         producer = (studio / "skills" / "producer" / "SKILL.md").read_text()
 
@@ -71,9 +71,16 @@ class PluginDistributionTests(unittest.TestCase):
         self.assertIn("followup_task", producer)
         self.assertIn("Agent", producer)
         self.assertIn("SendMessage", producer)
-        self.assertNotIn("python3", producer)
+        self.assertIn("scripts/studio_config.py", producer)
+        self.assertIn("STUDIO_ROOT:-$CLAUDE_PLUGIN_ROOT", producer)
+        self.assertNotIn("CLAUDE_SKILL_DIR", producer)
+        execute = (studio / "skills" / "execute" / "SKILL.md").read_text()
+        self.assertIn("root Producer", execute)
+        self.assertIn("--kind work", execute)
+        self.assertIn("nested subagent 생성", execute)
         self.assertTrue((studio / "rules" / "casting.md").exists())
         self.assertTrue((studio / "crew" / "planner.md").exists())
+        self.assertTrue((studio / "scripts" / "studio_config.py").exists())
         self.assertFalse((studio / "scripts" / "studio.py").exists())
         self.assertFalse((studio / "broker" / "brainstorm.workflow.js").exists())
         self.assertFalse((studio / "contracts" / "studio-verification-contract-v1.json").exists())

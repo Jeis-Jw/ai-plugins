@@ -21,8 +21,8 @@ worker = load_module("task_worker_definition", PLUGIN / "scripts" / "definition_
 
 def review_lease(
     *,
-    lease_id="lease-studio-1",
-    owner="studio",
+    lease_id="lease-external-1",
+    owner="external",
     provider="session-review",
     episode_id="episode-1",
     edge_id="pr-22",
@@ -343,9 +343,9 @@ class DefinitionArtifactTests(unittest.TestCase):
                             aliases=("owner/repo#1",),
                         )
 
-    def test_studio_review_lease_is_persistent_idempotent_and_skips_dispatch(self):
+    def test_external_review_lease_is_persistent_idempotent_and_skips_dispatch(self):
         artifact = worker.create_artifact({
-            "definition_id": "studio-review",
+            "definition_id": "external-review",
             "root": {"title": "single", "body": "criteria"},
         })
         lease = review_lease()
@@ -381,6 +381,22 @@ class DefinitionArtifactTests(unittest.TestCase):
         self.assertEqual(permit["action"], "skip")
         self.assertFalse(permit["dispatch_reviewer"])
         self.assertEqual(permit["handoff"], lease)
+
+    def test_review_lease_builder_accepts_opaque_external_owner_and_provider(self):
+        lease = worker.create_review_lease(
+            owner="producer-a",
+            provider="future-review-command",
+            episode_id="episode-1",
+            edge_id="edge-1",
+            requirement="independent",
+            criteria_digest="sha256:" + "a" * 64,
+            evidence_refs=("EV-1",),
+        )
+
+        self.assertEqual(lease["owner"], "producer-a")
+        self.assertEqual(lease["provider"], "future-review-command")
+        self.assertTrue(lease["lease_id"].startswith("lease-"))
+        self.assertEqual(worker.validate_review_lease(lease), lease)
 
     def test_review_lease_conflicts_and_digest_mismatch_fail_closed(self):
         artifact = worker.create_artifact({
