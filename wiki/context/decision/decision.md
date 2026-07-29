@@ -54,3 +54,4 @@ audience: [human, agent]
 - [[DEC-2026-07-10-161845-작업-정의와-github-기록을-분리하고-전체-트리만-투영]] — define은 provider-neutral DefinitionArtifact를 만들고 GitHub 기록을 선택하면 root 전체 tree를 누락 없이 materialize한다.
 - [[DEC-2026-07-26-031028-studio-production-scale과-producer-manager-only-운영-모델]] — Producer는 항상 manager로 남고 backlog item별 production scale이 제작 crew·ritual·rounds·critic을 정하며 verification independence·task gear·parallelism은 직교한다.
 - [[DEC-2026-07-27-020408-studio-brainstorm을-workflow-scoped-persistent-crew로-운영]] — 역할별 original instance를 작업 단위 완료까지 유지하고 후속 의견·검수·재작업을 같은 handle에 전달한다.
+- [[DEC-2026-07-29-233844-studio는-호스트-에이전트만-오케스트레이션한다]] — Studio는 별도 에이전트 런타임을 만들지 않고 Codex와 Claude Code가 제공하는 서브에이전트 기능을 소집·중계·회수한다.
