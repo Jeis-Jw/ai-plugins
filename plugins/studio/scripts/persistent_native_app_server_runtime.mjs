@@ -646,7 +646,7 @@ export class AppServerStdio {
       }
     }
     const initialized = await this.#request('initialize', {
-      clientInfo: { name: 'studio-persistent-native', title: 'Studio Persistent Native', version: '0.11.0' },
+      clientInfo: { name: 'studio-persistent-native', title: 'Studio Persistent Native', version: '0.11.1' },
       capabilities: {
         experimentalApi: true,
         requestAttestation: false,

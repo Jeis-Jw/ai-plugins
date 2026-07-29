@@ -1,6 +1,6 @@
 {
   "name": "studio",
-  "version": "0.11.0",
+  "version": "0.11.1",
   "description": "Native-first autonomous agent team with outcome-based work classification and continuation accounting, persistent brainstorm, isolated development, and strict quality gates.",
   "author": {
     "name": "Jinwuk-Lee",

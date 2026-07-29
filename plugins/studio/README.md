@@ -400,6 +400,13 @@ mission 계약 값을 여기에 복사하지 않는다. 모든 mission을 합친
 
 ## 상태
 
+v0.11.1 — v0.11.0 운영 문제 수정판. Persistent Production admission 실패는 진단 가능한
+STOP으로 고정하고 isolated `codex exec` brainstorm fallback을 제거했다. 역할별 policy는
+verified runtime capability와 durable action receipt에 exact binding하며, delta 이중 적재를
+제거하고 normalized digest로 중복을 차단한다. mission budget은 누적 workspace ledger와
+분리하고 WorkPacket·reservation·RoutingPlan·run record를 같은 `mission_id`로 결합해
+admission과 지출을 exactly-once 정산한다.
+
 v0.11.0 — 효율을 token 최소화가 아니라 **고정된 품질·거버넌스 하에서 불필요한 작업을
 구조적으로 만들지 않고 terminal outcome에 착지하는 것**으로 정의한다. 새 WorkPacket v2는
 `retrieval | judgment | construction | verifier-hardening | integration`을 기존 production

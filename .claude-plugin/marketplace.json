@@ -27,7 +27,7 @@
       "name": "studio",
       "source": "./plugins/studio",
       "description": "Native-first 자율운영 팀 — outcome 기반 work classification·연장 회계, persistent brainstorm·격리 개발, 엄격한 품질 gate",
-      "version": "0.11.0"
+      "version": "0.11.1"
     },
     {
       "name": "task-worker",
