@@ -381,6 +381,18 @@ production scale과 independent review edge는 별도 축이다.
 
 ## 상태
 
+v0.11.0 — 효율을 token 최소화가 아니라 **고정된 품질·거버넌스 하에서 불필요한 작업을
+구조적으로 만들지 않고 terminal outcome에 착지하는 것**으로 정의한다. 새 WorkPacket v2는
+`retrieval | judgment | construction | verifier-hardening | integration`을 기존 production
+scale·QA mode와 결합하며 mixed/unknown은 standard judgment로 fail-closed한다.
+`quality_complete`는 delivery, `telemetry_complete`는 효율 주장에만 사용한다. review cycle은
+materiality·content/surface digest·attempt 상한이 결합된 최신 1회용 continuation decision과
+delivered/decision/blocker-resolution/quality-defense outcome 및 reopen 상계를 기록한다.
+실제 repro·bounded verifier hardening, strict critic, judgment 다인 검토, 통합 HEAD gate는
+완화하지 않는다. WorkPacket v1과 기존 review ledger/resume은 읽기 호환을 유지한다.
+실행 telemetry가 없는 구조 검증으로 token 절감률을 주장하지 않으며, 사용량 수치는 후속
+운영 피드백의 관찰값이다.
+
 v0.10.0 — pinned bundled Codex app-server의 read-only persistent brainstorm를 Production
 route로 활성화하고, 모든 native crew에 역할 기반 배정·작업 단위 기준 instance lifecycle·
 original-handle rework continuation 계약을 명시했다. 새 write runtime 없이 기존

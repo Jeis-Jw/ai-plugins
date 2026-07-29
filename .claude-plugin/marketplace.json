@@ -26,8 +26,8 @@
     {
       "name": "studio",
       "source": "./plugins/studio",
-      "description": "Native-first 에이전트 팀 — persistent brainstorm·격리 worktree 개발 crew, 명시적 도구 라우팅, 단일 review owner와 evidence 재사용",
-      "version": "0.10.0"
+      "description": "Native-first 자율운영 팀 — outcome 기반 work classification·연장 회계, persistent brainstorm·격리 개발, 엄격한 품질 gate",
+      "version": "0.11.0"
     },
     {
       "name": "task-worker",

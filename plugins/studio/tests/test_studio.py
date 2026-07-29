@@ -1719,7 +1719,18 @@ def main() -> None:
         assert "python3 \"$STUDIO\" doctor --json" in doctor_skill, doctor_skill
         assert "discovery/probe하지 않으며" in doctor_skill, doctor_skill
         for manifest_path in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json"):
-            assert json.loads(plugin_text(manifest_path))["version"] == "0.10.0", manifest_path
+            assert json.loads(plugin_text(manifest_path))["version"] == "0.11.0", manifest_path
+        repo = PLUGIN.parent.parent
+        for marketplace_path in (
+            repo / ".claude-plugin" / "marketplace.json",
+            repo / ".agents" / "plugins" / "marketplace.json",
+        ):
+            marketplace = json.loads(marketplace_path.read_text(encoding="utf-8"))
+            studio_entry = next(item for item in marketplace["plugins"] if item["name"] == "studio")
+            assert studio_entry["version"] == "0.11.0", marketplace_path
+        assert "version: '0.11.0'" in plugin_text(
+            "scripts/persistent_native_app_server_runtime.mjs"
+        )
 
         # producer main thread may coordinate, not edit/integrate
         producer = plugin_text("skills/producer/SKILL.md")
