@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import test from 'node:test'
 import { NativeAdapterError } from '../scripts/persistent_native_app_server.mjs'
 import {
@@ -28,6 +29,46 @@ const CONFIG = Object.freeze({
   runtimeRoot: '/tmp/studio-controller-runtime',
   cwd: '/tmp/studio-controller-cwd',
 })
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map(key => (
+      `${JSON.stringify(key)}:${canonicalJson(value[key])}`
+    )).join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+function digest(value) {
+  return `sha256:${createHash('sha256').update(canonicalJson(value)).digest('hex')}`
+}
+
+function runtimeCapability(overrides = {}) {
+  const capability = {
+    schema: 'studio-runtime-capability/v1',
+    runtime: 'codex',
+    version: 'test',
+    advertised_models: ['common-default', 'provider-diverge'],
+    advertised_efforts: ['low', 'xhigh'],
+    verified: true,
+    dispatch_allowed: true,
+    digest: null,
+    ...overrides,
+  }
+  capability.digest = digest({
+    schema: capability.schema,
+    runtime: capability.runtime,
+    version: capability.version,
+    advertised_models: capability.advertised_models === null
+      ? null
+      : [...capability.advertised_models].sort(),
+    advertised_efforts: capability.advertised_efforts === null
+      ? null
+      : [...capability.advertised_efforts].sort(),
+  })
+  return capability
+}
 
 function project(state) {
   return {
@@ -86,6 +127,7 @@ function oneBarrierStore(outputSchema = {
         action_id: `${REQUEST.run_id}:a0001`,
         actor_id: 'participant:a',
         kind: 'spawn',
+        phase: 'Diverge',
         prompt: 'return output',
         output_schema: outputSchema,
       }],
@@ -195,6 +237,7 @@ function twoActionFenceStore() {
         action_id: `${REQUEST.run_id}:a000${index + 1}`,
         actor_id: `participant:${crew}`,
         kind: 'spawn',
+        phase: 'Diverge',
         prompt: `return ${crew}`,
         output_schema: { type: 'object', additionalProperties: false, properties: {} },
       })),
@@ -329,6 +372,130 @@ test('controller completes the native journal sequence and never exposes raw sta
     execute({ ...REQUEST, capability: {} }, CONFIG),
     error => error.code === 'invalid_request',
   )
+})
+
+test('controller applies generic policy precedence and binds every persistent actor step', async () => {
+  const { store } = oneBarrierStore()
+  const observed = {}
+  const request = {
+    ...REQUEST,
+    personas: [
+      { crew: 'a', name: 'planner-a', roleId: 'planner', agentId: 'planner-a', role: 'one' },
+      { crew: 'b', name: 'planner-b', roleId: 'planner', agentId: 'planner-b', role: 'two' },
+    ],
+    agentRuntime: 'codex',
+    runtimeCapability: runtimeCapability(),
+    agentPolicy: {
+      defaults: { model: 'common-default', effort: 'low' },
+      agents: { 'planner-a': { model: 'common-default' } },
+      providers: {
+        codex: {
+          rituals: {
+            brainstorm: {
+              diverge: { model: 'provider-diverge' },
+            },
+          },
+        },
+      },
+    },
+    overrides: { effort: 'xhigh' },
+  }
+  const adapter = fakeAdapter({
+    startRole: async (_, { actorId, profile }) => {
+      observed.spawn = { actorId, profile }
+      return `role:${actorId}`
+    },
+    beginTurn: async (_, { actionId, profile }) => {
+      observed.turn = { actionId, profile }
+      return `turn:${actionId}`
+    },
+  })
+  const result = await testController(store, adapter)(request, CONFIG)
+  assert.equal(result.ok, true)
+  assert.equal(observed.spawn.profile.model, 'provider-diverge')
+  assert.equal(observed.spawn.profile.effort, 'xhigh')
+  assert.deepEqual(observed.turn.profile, observed.spawn.profile)
+  const binding = result.workflow_receipt.admission.policy_binding
+  assert.equal(binding.schema, 'studio-native-agent-policy-binding/v1')
+  assert.equal(binding.agent_runtime, 'codex')
+  assert.equal(binding.runtime_capability_digest, request.runtimeCapability.digest)
+  assert.equal(binding.resolved_profiles.length, 7)
+  assert.deepEqual(
+    binding.resolved_profiles.map(profile => [profile.actor_id, profile.step]),
+    [
+      ['participant:a', 'diverge'],
+      ['participant:a', 'debate'],
+      ['participant:b', 'diverge'],
+      ['participant:b', 'debate'],
+      ['critic:critic', 'critic'],
+      ['critic:critic', 'verdict'],
+      ['summarizer:summarizer', 'converge'],
+    ],
+  )
+  assert.match(binding.policy_digest, /^sha256:[0-9a-f]{64}$/)
+  assert.match(binding.digest, /^sha256:[0-9a-f]{64}$/)
+  assert.equal(
+    result.workflow_receipt.execution_input.policy_binding_digest,
+    binding.digest,
+  )
+})
+
+test('controller rejects unadvertised or unbound runtime policy before admission', async () => {
+  let admissions = 0
+  const adapter = fakeAdapter({
+    admit: async () => {
+      admissions += 1
+      return { schema: 'must-not-admit' }
+    },
+  })
+  const execute = testController(oneBarrierStore().store, adapter)
+  await assert.rejects(
+    execute({
+      ...REQUEST,
+      agentRuntime: 'codex',
+      runtimeCapability: runtimeCapability({ advertised_models: ['other-model'] }),
+      agentPolicy: { defaults: { model: 'common-default' } },
+    }, CONFIG),
+    error => error.code === 'unsupported_runtime_profile',
+  )
+  await assert.rejects(
+    execute({
+      ...REQUEST,
+      runtimeCapability: runtimeCapability(),
+    }, CONFIG),
+    error => error.code === 'invalid_runtime_capability',
+  )
+  await assert.rejects(
+    execute({
+      ...REQUEST,
+      agentRuntime: 'claude',
+      runtimeCapability: runtimeCapability({ runtime: 'claude' }),
+    }, CONFIG),
+    error => error.code === 'invalid_runtime_capability',
+  )
+  assert.equal(admissions, 0)
+})
+
+test('controller preserves unknown runtime support when capability advertisements are unavailable', async () => {
+  const request = {
+    ...REQUEST,
+    agentRuntime: 'codex',
+    runtimeCapability: runtimeCapability({
+      advertised_models: null,
+      advertised_efforts: null,
+    }),
+    agentPolicy: {
+      defaults: { model: 'runtime-owned-model', effort: 'runtime-owned-effort' },
+    },
+  }
+  const result = await testController(
+    oneBarrierStore().store,
+    fakeAdapter(),
+  )(request, CONFIG)
+  assert.equal(result.ok, true)
+  const profile = result.workflow_receipt.admission.policy_binding.resolved_profiles[0]
+  assert.equal(profile.model, 'runtime-owned-model')
+  assert.equal(profile.effort, 'runtime-owned-effort')
 })
 
 test('controller preserves broker const semantics through the host enum subset', async () => {

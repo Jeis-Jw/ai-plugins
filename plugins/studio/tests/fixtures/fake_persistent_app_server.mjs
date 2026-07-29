@@ -57,7 +57,7 @@ const threads = new Map()
 const pendingInterrupts = new Map()
 const backgroundProcesses = new Map()
 
-function threadResult(params, id, rolloutPath) {
+function threadResult(params, id, rolloutPath, settings = null) {
   return {
     thread: {
       id,
@@ -67,8 +67,11 @@ function threadResult(params, id, rolloutPath) {
       path: rolloutPath,
       threadSource: params.threadSource ?? null,
     },
-    model: 'fake-model',
-    modelProvider: 'fake-provider',
+    model: scenario === 'model-echo-mismatch' && params.model
+      ? 'unexpected-model'
+      : settings?.model || params.model || 'fake-model',
+    modelProvider: params.modelProvider || 'fake-provider',
+    reasoningEffort: settings?.effort ?? 'medium',
     cwd: params.cwd,
     approvalPolicy: scenario === 'unsafe-policy' ? 'on-request' : 'never',
     approvalsReviewer: 'user',
@@ -165,12 +168,16 @@ async function handle(message) {
     }
     const persisted = {
       params,
+      settings: {
+        model: params.model || 'fake-model',
+        effort: 'medium',
+      },
       rolloutPath,
       createdAt: Math.floor(Date.now() / 1000),
     }
     threads.set(threadId, persisted)
     if (rolloutPath) await persistThread(threadId, persisted)
-    emit({ id, result: threadResult(params, threadId, rolloutPath) })
+    emit({ id, result: threadResult(params, threadId, rolloutPath, persisted.settings) })
     return
   }
   if (method === 'thread/list') {
@@ -226,7 +233,12 @@ async function handle(message) {
     }
     emit({
       id,
-      result: threadResult(persisted.params, params.threadId, persisted.rolloutPath),
+      result: threadResult(
+        persisted.params,
+        params.threadId,
+        persisted.rolloutPath,
+        persisted.settings,
+      ),
     })
     return
   }
@@ -336,6 +348,29 @@ async function handle(message) {
   }
   if (method === 'turn/start') {
     const turnId = uuid(++turnSequence)
+    const persisted = threads.get(params.threadId)
+    if (persisted) {
+      const nextSettings = {
+        model: params.model ?? persisted.settings.model,
+        effort: params.effort ?? persisted.settings.effort,
+      }
+      if (
+        nextSettings.model !== persisted.settings.model
+        || nextSettings.effort !== persisted.settings.effort
+      ) {
+        persisted.settings = nextSettings
+        emit({
+          method: 'thread/settings/updated',
+          params: {
+            threadId: params.threadId,
+            threadSettings: {
+              model: nextSettings.model,
+              effort: nextSettings.effort,
+            },
+          },
+        })
+      }
+    }
     if (scenario === 'turn-missing-id') {
       emit({ id, result: { turn: { status: 'inProgress', items: [] } } })
       return

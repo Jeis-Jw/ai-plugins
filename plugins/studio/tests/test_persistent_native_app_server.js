@@ -37,6 +37,21 @@ function sha256(value) {
   return `sha256:${createHash('sha256').update(value).digest('hex')}`
 }
 
+function resolvedProfile(actorId, overrides = {}) {
+  return Object.freeze({
+    schema: 'studio-native-resolved-agent-profile/v1',
+    actor_id: actorId,
+    phase: 'Diverge',
+    step: 'diverge',
+    role_id: actorId,
+    agent_id: actorId,
+    model: null,
+    effort: null,
+    policy_digest: sha256('test-policy'),
+    ...overrides,
+  })
+}
+
 await chmod(FAKE, 0o755)
 const BINARY_DIGEST = sha256(await readFile(FAKE))
 const SCHEMA_DIGEST = sha256('{"protocol":"fake-codex-app-server-v2","version":1}')
@@ -150,6 +165,65 @@ test('success mints adapter-owned capability and exact host receipt', async t =>
   assert.equal(adapter.verifyReceipt(capability, structuredClone(receipt)), false)
   assert.ok(Object.isFrozen(capability))
   assert.ok(Object.isFrozen(receipt))
+})
+
+test('explicit controller policy is echoed by thread start and applied to every native turn', async t => {
+  const { adapter, callLog } = await harness(t)
+  const capability = await adapter.admit()
+  const actorId = 'participant:policy'
+  const diverge = resolvedProfile(actorId, {
+    model: 'policy-model',
+    effort: 'high',
+  })
+  const role = await adapter.startRole(capability, {
+    actorId,
+    profile: diverge,
+  })
+  const receipt = await adapter.runTurn(capability, {
+    role,
+    actionId: 'policy-a-1',
+    prompt: 'return structured output',
+    outputSchema: OUTPUT_SCHEMA,
+    profile: diverge,
+  })
+  assert.equal(receipt.resolved_profile.model, 'policy-model')
+  assert.equal(receipt.resolved_profile.effort, 'high')
+  assert.deepEqual(receipt.effective_profile, {
+    model: 'policy-model',
+    effort: 'high',
+  })
+  assert.match(receipt.policy_profile_digest, /^sha256:[0-9a-f]{64}$/)
+  const calls = await readJsonLinesEventually(
+    callLog,
+    values => values.some(value => (
+      value.method === 'turn/start' && value.params?.clientUserMessageId?.startsWith('studio-')
+    )),
+  )
+  const roleStart = calls.find(value => (
+    value.method === 'thread/start'
+    && value.params?.serviceName === 'studio-persistent-native'
+    && value.params?.model === 'policy-model'
+  ))
+  assert.equal(roleStart.params.allowProviderModelFallback, false)
+  const turnStart = calls.find(value => (
+    value.method === 'turn/start'
+    && value.params?.clientUserMessageId?.startsWith('studio-')
+  ))
+  assert.equal(turnStart.params.model, 'policy-model')
+  assert.equal(turnStart.params.effort, 'high')
+})
+
+test('role admission rejects a host model echo that differs from resolved policy', async t => {
+  const { adapter } = await harness(t, { scenario: 'model-echo-mismatch' })
+  const capability = await adapter.admit()
+  const actorId = 'participant:model-mismatch'
+  await assert.rejects(
+    adapter.startRole(capability, {
+      actorId,
+      profile: resolvedProfile(actorId, { model: 'policy-model' }),
+    }),
+    error => error instanceof NativeAdapterError && error.code === 'thread_policy_invalid',
+  )
 })
 
 test('test authority cannot mint a Production adapter capability', async t => {

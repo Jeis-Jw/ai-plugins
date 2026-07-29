@@ -18,6 +18,8 @@ const MAX_REQUEST_BYTES = 1024 * 1024
 const PRODUCTION_RESULTS = new WeakSet()
 const TEST_RESULTS = new WeakSet()
 const WORKFLOW_RECEIPT_SCHEMA = 'studio-persistent-production-workflow-receipt/v1'
+const POLICY_BINDING_SCHEMA = 'studio-native-agent-policy-binding/v1'
+const RESOLVED_PROFILE_SCHEMA = 'studio-native-resolved-agent-profile/v1'
 const REQUEST_FIELDS = new Set([
   'run_id',
   'workflow_name',
@@ -27,7 +29,25 @@ const REQUEST_FIELDS = new Set([
   'dryStop',
   'criticRubric',
   'personas',
+  'agentPolicy',
+  'agentRuntime',
+  'runtimeCapability',
+  'overrides',
 ])
+const RUNTIME_CAPABILITY_FIELDS = new Set([
+  'schema',
+  'runtime',
+  'version',
+  'advertised_models',
+  'advertised_efforts',
+  'verified',
+  'dispatch_allowed',
+  'digest',
+])
+const POLICY_FIELDS = new Set(['defaults', 'roles', 'agents', 'rituals', 'providers'])
+const PROVIDER_POLICY_FIELDS = new Set(['defaults', 'roles', 'agents', 'rituals'])
+const PROFILE_FIELDS = new Set(['model', 'effort'])
+const AGENT_RUNTIMES = new Set(['codex'])
 const PRODUCTION_OPTION_FIELDS = new Set([
   'stateRoot',
   'runtimeRoot',
@@ -58,6 +78,297 @@ function digest(value) {
   return `sha256:${createHash('sha256').update(canonicalJson(value), 'utf8').digest('hex')}`
 }
 
+function objectValue(value) {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
+}
+
+function validateProfile(value, where) {
+  if (!objectValue(value) || Object.keys(value).some(key => !PROFILE_FIELDS.has(key))) {
+    throw new PersistentBrokerError(
+      'invalid_agent_policy',
+      `${where} must contain only model and effort`,
+    )
+  }
+  for (const field of PROFILE_FIELDS) {
+    const item = value[field]
+    if (
+      item !== undefined
+      && item !== null
+      && (typeof item !== 'string' || !item.trim())
+    ) {
+      throw new PersistentBrokerError(
+        'invalid_agent_policy',
+        `${where}.${field} must be a non-empty string or null`,
+      )
+    }
+  }
+}
+
+function validateNamedProfiles(value, where) {
+  if (!objectValue(value)) {
+    throw new PersistentBrokerError('invalid_agent_policy', `${where} must be an object`)
+  }
+  for (const [name, profile] of Object.entries(value)) {
+    if (!name.trim()) {
+      throw new PersistentBrokerError('invalid_agent_policy', `${where} keys must be non-empty`)
+    }
+    validateProfile(profile, `${where}.${name}`)
+  }
+}
+
+function validateRituals(value, where) {
+  if (!objectValue(value)) {
+    throw new PersistentBrokerError('invalid_agent_policy', `${where} must be an object`)
+  }
+  for (const [ritual, steps] of Object.entries(value)) {
+    if (!ritual.trim() || !objectValue(steps)) {
+      throw new PersistentBrokerError(
+        'invalid_agent_policy',
+        `${where} ritual entries must be named step objects`,
+      )
+    }
+    validateNamedProfiles(steps, `${where}.${ritual}`)
+  }
+}
+
+function validatePolicyBlock(value, where, allowedFields = PROVIDER_POLICY_FIELDS) {
+  if (!objectValue(value) || Object.keys(value).some(key => !allowedFields.has(key))) {
+    throw new PersistentBrokerError(
+      'invalid_agent_policy',
+      `${where} contains an unsupported policy field`,
+    )
+  }
+  if (value.defaults !== undefined) validateProfile(value.defaults, `${where}.defaults`)
+  if (value.roles !== undefined) validateNamedProfiles(value.roles, `${where}.roles`)
+  if (value.agents !== undefined) validateNamedProfiles(value.agents, `${where}.agents`)
+  if (value.rituals !== undefined) validateRituals(value.rituals, `${where}.rituals`)
+}
+
+function validateAgentPolicy(value) {
+  if (value === undefined) return {}
+  validatePolicyBlock(value, 'agentPolicy', POLICY_FIELDS)
+  if (value.providers !== undefined) {
+    if (!objectValue(value.providers)) {
+      throw new PersistentBrokerError(
+        'invalid_agent_policy',
+        'agentPolicy.providers must be an object',
+      )
+    }
+    for (const [runtime, policy] of Object.entries(value.providers)) {
+      if (!['claude', 'codex'].includes(runtime)) {
+        throw new PersistentBrokerError(
+          'invalid_agent_policy',
+          `agentPolicy.providers.${runtime} is unsupported`,
+        )
+      }
+      validatePolicyBlock(policy, `agentPolicy.providers.${runtime}`)
+    }
+  }
+  return structuredClone(value)
+}
+
+function validateOverrides(value) {
+  if (value === undefined) return {}
+  validateProfile(value, 'overrides')
+  return structuredClone(value)
+}
+
+function runtimeCapabilityDigest(capability) {
+  return digest({
+    schema: capability.schema,
+    runtime: capability.runtime,
+    version: capability.version,
+    advertised_models: capability.advertised_models === null
+      ? null
+      : [...capability.advertised_models].sort(unicodeCompare),
+    advertised_efforts: capability.advertised_efforts === null
+      ? null
+      : [...capability.advertised_efforts].sort(unicodeCompare),
+  })
+}
+
+function validAdvertisedSet(value) {
+  return value === null || (
+    Array.isArray(value)
+    && value.every(item => typeof item === 'string' && item.trim())
+    && new Set(value).size === value.length
+  )
+}
+
+function validateRuntimeBinding(request) {
+  const runtime = request.agentRuntime ?? null
+  const capability = request.runtimeCapability ?? null
+  if (runtime !== null && !AGENT_RUNTIMES.has(runtime)) {
+    throw new PersistentBrokerError(
+      'invalid_runtime_capability',
+      'persistent Production agentRuntime must be codex',
+    )
+  }
+  if (runtime === null && capability !== null) {
+    throw new PersistentBrokerError(
+      'invalid_runtime_capability',
+      'runtimeCapability cannot be supplied without agentRuntime',
+    )
+  }
+  if (runtime === null) return { runtime: null, capability: null }
+  const fields = objectValue(capability) ? Object.keys(capability) : []
+  if (
+    fields.length !== RUNTIME_CAPABILITY_FIELDS.size
+    || fields.some(field => !RUNTIME_CAPABILITY_FIELDS.has(field))
+    || capability.schema !== 'studio-runtime-capability/v1'
+    || capability.runtime !== runtime
+    || !(
+      capability.version === null
+      || (typeof capability.version === 'string' && capability.version.trim())
+    )
+    || !validAdvertisedSet(capability.advertised_models)
+    || !validAdvertisedSet(capability.advertised_efforts)
+    || capability.verified !== true
+    || capability.dispatch_allowed !== true
+    || capability.digest !== runtimeCapabilityDigest(capability)
+  ) {
+    throw new PersistentBrokerError(
+      'invalid_runtime_capability',
+      'persistent Production requires the exact verified Codex runtime capability',
+    )
+  }
+  return {
+    runtime,
+    capability: {
+      ...structuredClone(capability),
+      advertised_models: capability.advertised_models === null
+        ? null
+        : [...capability.advertised_models].sort(unicodeCompare),
+      advertised_efforts: capability.advertised_efforts === null
+        ? null
+        : [...capability.advertised_efforts].sort(unicodeCompare),
+    },
+  }
+}
+
+function resolvedPolicyProfile(policy, overrides, runtime, role, step, agentId) {
+  const provider = runtime ? (policy.providers?.[runtime] || {}) : {}
+  const layers = [
+    overrides,
+    provider.rituals?.brainstorm?.[step],
+    policy.rituals?.brainstorm?.[step],
+    provider.agents?.[agentId],
+    policy.agents?.[agentId],
+    provider.roles?.[role],
+    policy.roles?.[role],
+    provider.defaults,
+    policy.defaults,
+  ]
+  const pick = field => {
+    for (const layer of layers) {
+      const value = layer?.[field]
+      if (value !== undefined && value !== null && value !== '') return value
+    }
+    return null
+  }
+  return { model: pick('model'), effort: pick('effort') }
+}
+
+function participantIdentity(persona) {
+  const crew = String(persona?.crew || persona?.name || '').trim()
+  const name = String(persona?.name || persona?.crew || '').trim()
+  return {
+    actor_id: `participant:${crew}`,
+    role_id: String(persona?.roleId || name).trim(),
+    agent_id: String(persona?.agentId || name).trim(),
+  }
+}
+
+function profileEntry(policyDigest, actor, phase, step, profile) {
+  return Object.freeze({
+    schema: RESOLVED_PROFILE_SCHEMA,
+    actor_id: actor.actor_id,
+    phase,
+    step,
+    role_id: actor.role_id,
+    agent_id: actor.agent_id,
+    model: profile.model,
+    effort: profile.effort,
+    policy_digest: policyDigest,
+  })
+}
+
+function buildPolicyBinding(request) {
+  const policy = validateAgentPolicy(request.agentPolicy)
+  const overrides = validateOverrides(request.overrides)
+  const { runtime, capability } = validateRuntimeBinding(request)
+  const policyDigest = digest({ agentPolicy: policy, overrides })
+  const definitions = []
+  for (const persona of request.personas) {
+    const actor = participantIdentity(persona)
+    for (const [phase, step] of [['Diverge', 'diverge'], ['Debate', 'debate']]) {
+      definitions.push([actor, phase, step])
+    }
+  }
+  definitions.push([
+    { actor_id: 'critic:critic', role_id: 'critic', agent_id: 'critic' },
+    'Debate',
+    'critic',
+  ])
+  definitions.push([
+    { actor_id: 'critic:critic', role_id: 'critic', agent_id: 'critic' },
+    'Verdict',
+    'verdict',
+  ])
+  definitions.push([
+    { actor_id: 'summarizer:summarizer', role_id: 'summarizer', agent_id: 'summarizer' },
+    'Converge',
+    'converge',
+  ])
+  const resolvedProfiles = definitions.map(([actor, phase, step]) => profileEntry(
+    policyDigest,
+    actor,
+    phase,
+    step,
+    resolvedPolicyProfile(policy, overrides, runtime, actor.role_id, step, actor.agent_id),
+  ))
+  if (capability) {
+    for (const profile of resolvedProfiles) {
+      for (const [field, advertised] of [
+        ['model', capability.advertised_models],
+        ['effort', capability.advertised_efforts],
+      ]) {
+        const value = profile[field]
+        if (value !== null && advertised !== null && !advertised.includes(value)) {
+          throw new PersistentBrokerError(
+            'unsupported_runtime_profile',
+            `${profile.actor_id}/${profile.step} ${field} is not advertised by the verified capability`,
+          )
+        }
+      }
+    }
+  }
+  const base = {
+    schema: POLICY_BINDING_SCHEMA,
+    agent_runtime: runtime,
+    runtime_capability_digest: capability?.digest || null,
+    policy_digest: policyDigest,
+    resolved_profiles: resolvedProfiles,
+  }
+  return Object.freeze({
+    ...base,
+    digest: digest(base),
+  })
+}
+
+function policyProfileForAction(binding, action) {
+  const profile = binding.resolved_profiles.find(item => (
+    item.actor_id === action.actor_id && item.phase === action.phase
+  ))
+  if (!profile) {
+    throw new PersistentBrokerError(
+      'unbound_agent_policy',
+      `no resolved agent policy is bound for ${action.actor_id}/${action.phase}`,
+    )
+  }
+  return profile
+}
+
 function strictProductionSchema(schema) {
   const value = structuredClone(schema)
   if (Object.hasOwn(value || {}, 'const')) {
@@ -78,6 +389,7 @@ function strictProductionSchema(schema) {
 function makeWorkflowReceipt({
   authority,
   capability,
+  policyBinding,
   request,
   concurrency,
   cwd,
@@ -128,6 +440,14 @@ function makeWorkflowReceipt({
       || typeof capability?.tool_inventory_capture?.model !== 'string'
       || !capability.tool_inventory_capture.model
     ))
+    || policyBinding?.schema !== POLICY_BINDING_SCHEMA
+    || policyBinding?.digest !== digest({
+      schema: policyBinding.schema,
+      agent_runtime: policyBinding.agent_runtime,
+      runtime_capability_digest: policyBinding.runtime_capability_digest,
+      policy_digest: policyBinding.policy_digest,
+      resolved_profiles: policyBinding.resolved_profiles,
+    })
   ) {
     throw new NativeAdapterError(
       'workflow_receipt_invalid',
@@ -152,9 +472,11 @@ function makeWorkflowReceipt({
       actual_model: capability?.tool_inventory_capture?.model || null,
       actual_reasoning_effort:
         capability?.tool_inventory_capture?.reasoning_effort ?? null,
+      policy_binding: structuredClone(policyBinding),
     },
     execution_input: {
       request_digest: digest(request),
+      policy_binding_digest: policyBinding.digest,
       concurrency,
       cwd_ref: digest(cwd),
     },
@@ -381,6 +703,7 @@ async function executeBrainstorm(request, {
 
   const runtimeStore = store
   const adapter = adapterFactory({ runtimeRoot, cwd })
+  const policyBinding = buildPolicyBinding(input)
   const roles = new Map()
   const activeTurns = new Map()
   let capability
@@ -433,7 +756,10 @@ async function executeBrainstorm(request, {
               'spawn action actor already has a native role',
             )
           }
-          role = await adapter.startRole(capability, { actorId: action.actor_id })
+          role = await adapter.startRole(capability, {
+            actorId: action.actor_id,
+            profile: policyProfileForAction(policyBinding, action),
+          })
           roles.set(action.actor_id, role)
         } else if (!role) {
           throw new NativeAdapterError('role_reference_invalid', 'canonical actor has no native role')
@@ -444,6 +770,7 @@ async function executeBrainstorm(request, {
           actionId: action.action_id,
           prompt: action.prompt,
           outputSchema: strictProductionSchema(action.output_schema),
+          profile: policyProfileForAction(policyBinding, action),
         })
         activeTurns.set(action.action_id, { action, turn, role })
         return {
@@ -538,6 +865,7 @@ async function executeBrainstorm(request, {
     const workflowReceipt = makeWorkflowReceipt({
       authority,
       capability,
+      policyBinding,
       request: input,
       concurrency,
       cwd,

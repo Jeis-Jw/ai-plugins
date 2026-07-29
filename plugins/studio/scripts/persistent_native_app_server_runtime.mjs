@@ -12,6 +12,7 @@ import {
 
 export const NATIVE_CAPABILITY_SCHEMA = 'studio-native-persistent-capability/v2'
 export const NATIVE_ACTION_RECEIPT_SCHEMA = 'studio-native-action-receipt/v1'
+const RESOLVED_PROFILE_SCHEMA = 'studio-native-resolved-agent-profile/v1'
 export const APP_SERVER_PROTOCOL = 'codex-app-server-stdio/v2'
 export const APP_SERVER_CONTRACT_STABILITY = 'pinned-experimental-v2'
 export const BUNDLED_CODEX_BINARY = '/Applications/ChatGPT.app/Contents/Resources/codex'
@@ -814,6 +815,27 @@ export class AppServerStdio {
         this.#protocolFatal(new NativeAdapterError(
           'protocol_event_invalid',
           'thread status notification is invalid',
+        ))
+        return
+      }
+    }
+    if (message.method === 'thread/settings/updated') {
+      const settings = message.params?.threadSettings
+      if (
+        !UUID_V7.test(message.params?.threadId || '')
+        || !settings
+        || typeof settings !== 'object'
+        || typeof settings.model !== 'string'
+        || !settings.model
+        || !(
+          settings.effort === null
+          || settings.effort === undefined
+          || (typeof settings.effort === 'string' && settings.effort)
+        )
+      ) {
+        this.#protocolFatal(new NativeAdapterError(
+          'protocol_event_invalid',
+          'thread settings notification is invalid',
         ))
         return
       }
@@ -1711,6 +1733,63 @@ function denialKind(output) {
   return null
 }
 
+function validateResolvedProfile(profile, actorId) {
+  const fields = new Set([
+    'schema',
+    'actor_id',
+    'phase',
+    'step',
+    'role_id',
+    'agent_id',
+    'model',
+    'effort',
+    'policy_digest',
+  ])
+  if (
+    !profile
+    || typeof profile !== 'object'
+    || Array.isArray(profile)
+    || Object.keys(profile).length !== fields.size
+    || Object.keys(profile).some(key => !fields.has(key))
+    || profile.schema !== RESOLVED_PROFILE_SCHEMA
+    || profile.actor_id !== actorId
+    || [profile.phase, profile.step, profile.role_id, profile.agent_id]
+      .some(value => typeof value !== 'string' || !value.trim())
+    || !/^sha256:[0-9a-f]{64}$/.test(profile.policy_digest || '')
+  ) {
+    throw new NativeAdapterError(
+      'agent_policy_invalid',
+      'native action requires the exact controller-resolved agent profile',
+    )
+  }
+  for (const field of ['model', 'effort']) {
+    if (
+      profile[field] !== null
+      && (typeof profile[field] !== 'string' || !profile[field].trim())
+    ) {
+      throw new NativeAdapterError(
+        'agent_policy_invalid',
+        `resolved ${field} must be a non-empty string or null`,
+      )
+    }
+  }
+  return deepFreeze(structuredClone(profile))
+}
+
+function inheritedResolvedProfile(actorId) {
+  return deepFreeze({
+    schema: RESOLVED_PROFILE_SCHEMA,
+    actor_id: actorId,
+    phase: 'Inherited',
+    step: 'inherit',
+    role_id: actorId,
+    agent_id: actorId,
+    model: null,
+    effort: null,
+    policy_digest: sha256('studio-native-inherited-agent-policy/v1'),
+  })
+}
+
 class PersistentNativeAppServer {
   #options
   #transport = null
@@ -1718,6 +1797,7 @@ class PersistentNativeAppServer {
   #isolatedHome = null
   #admissionEvidence = null
   #capability = null
+  #defaultProfile = null
   #rolesByActor = new Map()
   #startingActors = new Set()
   #roles = new WeakMap()
@@ -1782,6 +1862,10 @@ class PersistentNativeAppServer {
       this.#isolatedHome.auth_snapshot = false
       this.#isolatedHome.auth_snapshot_removed = true
       const probe = await this.#startThread(false)
+      this.#defaultProfile = deepFreeze({
+        model: probe.response.model,
+        effort: probe.response.reasoningEffort ?? null,
+      })
       const inventory = await this.#probeInventory(probe.threadId)
       const toolInventoryCapture = this.#options.authority === 'production'
         ? await captureOutboundToolInventory({
@@ -1904,10 +1988,11 @@ class PersistentNativeAppServer {
     }
   }
 
-  #threadParams(ephemeral) {
-    return {
+  #threadParams(ephemeral, model = null) {
+    const params = {
       ephemeral,
       cwd: this.#fingerprint.canonicalCwd,
+      allowProviderModelFallback: false,
       approvalPolicy: 'never',
       permissions: ':read-only',
       environments: [],
@@ -1916,9 +2001,14 @@ class PersistentNativeAppServer {
       runtimeWorkspaceRoots: [this.#fingerprint.canonicalCwd],
       serviceName: 'studio-persistent-native',
     }
+    if (model !== null) params.model = model
+    return params
   }
 
-  #validateThreadResponse(response, ephemeral) {
+  #validateThreadResponse(response, ephemeral, {
+    expectedModel = null,
+    expectedEffort = undefined,
+  } = {}) {
     const value = requireObject(response, 'thread_policy_invalid', 'thread/start returned no policy')
     const threadId = assertHostId(value.thread?.id, 'thread id')
     const rolloutPath = value.thread?.path
@@ -1934,6 +2024,15 @@ class PersistentNativeAppServer {
           || !pathWithin(this.#isolatedHome.path, rolloutPath)
         ))
       || value.cwd !== this.#fingerprint.canonicalCwd
+      || typeof value.model !== 'string'
+      || !value.model
+      || (expectedModel !== null && value.model !== expectedModel)
+      || !(
+        value.reasoningEffort === null
+        || value.reasoningEffort === undefined
+        || (typeof value.reasoningEffort === 'string' && value.reasoningEffort)
+      )
+      || (expectedEffort !== undefined && (value.reasoningEffort ?? null) !== expectedEffort)
       || value.approvalPolicy !== 'never'
       || value.activePermissionProfile?.id !== ':read-only'
       || value.sandbox?.type !== 'readOnly'
@@ -1947,6 +2046,10 @@ class PersistentNativeAppServer {
         'host effective thread policy is not isolated read-only',
         {
           cwd_matches: value.cwd === this.#fingerprint.canonicalCwd,
+          expected_model: expectedModel,
+          actual_model: value.model ?? null,
+          expected_effort: expectedEffort ?? null,
+          actual_effort: value.reasoningEffort ?? null,
           approval_policy: value.approvalPolicy || null,
           permission_profile: value.activePermissionProfile?.id || null,
           sandbox_type: value.sandbox?.type || null,
@@ -1973,9 +2076,12 @@ class PersistentNativeAppServer {
     return { threadId, rolloutPath, response: value }
   }
 
-  async #startThread(ephemeral = false) {
-    const response = await this.#transport.startThread(this.#threadParams(ephemeral))
-    return this.#validateThreadResponse(response, ephemeral)
+  async #startThread(ephemeral = false, profile = null) {
+    const expectedModel = profile?.model ?? null
+    const response = await this.#transport.startThread(
+      this.#threadParams(ephemeral, expectedModel),
+    )
+    return this.#validateThreadResponse(response, ephemeral, { expectedModel })
   }
 
   async #pagedInventory(method, params) {
@@ -2126,11 +2232,15 @@ class PersistentNativeAppServer {
     }
   }
 
-  async startRole(capability, { actorId }) {
+  async startRole(capability, { actorId, profile }) {
     this.#assertCapability(capability, { requiresFreshDispatch: true })
     if (typeof actorId !== 'string' || !actorId.trim() || actorId.length > 256) {
       throw new NativeAdapterError('actor_invalid', 'actorId must be a bounded non-empty string')
     }
+    const explicitPolicy = profile !== undefined
+    const resolvedProfile = explicitPolicy
+      ? validateResolvedProfile(profile, actorId)
+      : inheritedResolvedProfile(actorId)
     if (this.#rolesByActor.has(actorId)) return this.#rolesByActor.get(actorId).handle
     if (this.#startingActors.has(actorId)) {
       throw new NativeAdapterError(
@@ -2140,13 +2250,20 @@ class PersistentNativeAppServer {
     }
     this.#startingActors.add(actorId)
     try {
-      const thread = await this.#startThread(false)
+      const thread = await this.#startThread(false, resolvedProfile)
       const handle = roleReference(actorId)
       const record = {
         actorId,
         handle,
         threadId: thread.threadId,
         rolloutPath: thread.rolloutPath,
+        inheritedModel: this.#defaultProfile.model,
+        inheritedEffort: this.#defaultProfile.effort,
+        currentModel: thread.response.model,
+        currentEffort: thread.response.reasoningEffort ?? null,
+        policyDigest: resolvedProfile.policy_digest,
+        explicitPolicy,
+        initialProfile: resolvedProfile,
         activeTurns: new Set(),
         operation: null,
         cleaned: false,
@@ -2332,7 +2449,7 @@ class PersistentNativeAppServer {
     try {
       const response = await this.#transport.resumeThread({
         threadId: role.threadId,
-        ...this.#threadParams(false),
+        ...this.#threadParams(false, role.currentModel),
       })
       const threadId = assertHostId(response?.thread?.id, 'resumed thread id')
       if (
@@ -2340,6 +2457,8 @@ class PersistentNativeAppServer {
         || response.thread?.ephemeral !== false
         || response.thread?.path !== role.rolloutPath
         || response.cwd !== this.#fingerprint.canonicalCwd
+        || response.model !== role.currentModel
+        || (response.reasoningEffort ?? null) !== role.currentEffort
         || response.approvalPolicy !== 'never'
         || response.activePermissionProfile?.id !== ':read-only'
         || response.sandbox?.type !== 'readOnly'
@@ -2368,9 +2487,25 @@ class PersistentNativeAppServer {
     actionId,
     prompt,
     outputSchema,
+    profile,
   }) {
     this.#assertCapability(capability)
     const record = this.#requireRole(role)
+    if (record.explicitPolicy && profile === undefined) {
+      throw new NativeAdapterError(
+        'agent_policy_missing',
+        'controller-bound role turns require an explicit resolved profile',
+      )
+    }
+    const resolvedProfile = profile === undefined
+      ? record.initialProfile
+      : validateResolvedProfile(profile, record.actorId)
+    if (resolvedProfile.policy_digest !== record.policyDigest) {
+      throw new NativeAdapterError(
+        'agent_policy_rebound',
+        'role policy digest cannot change during the persistent workflow',
+      )
+    }
     this.#assertCapability(capability, { requiresFreshDispatch: true })
     if (
       typeof actionId !== 'string' || !actionId.trim() || actionId.length > 256
@@ -2391,11 +2526,15 @@ class PersistentNativeAppServer {
     }
     record.operation = 'begin_turn'
     const mark = this.#transport.notificationMark()
+    const effectiveModel = resolvedProfile.model ?? record.inheritedModel
+    const effectiveEffort = resolvedProfile.effort ?? record.inheritedEffort
+    const profileDigest = sha256(canonicalJson(resolvedProfile))
     const actionDigest = sha256(canonicalJson({
       actor_id: record.actorId,
       action_id: actionId,
       prompt_digest: sha256(prompt),
       schema_digest: sha256(canonicalJson(outputSchema)),
+      policy_profile_digest: profileDigest,
       environment_digest: this.#fingerprint.environmentDigest,
     }))
     try {
@@ -2404,6 +2543,8 @@ class PersistentNativeAppServer {
         input: [{ type: 'text', text: prompt }],
         outputSchema,
         clientUserMessageId: `studio-${actionDigest.slice(7)}`,
+        model: effectiveModel,
+        effort: effectiveEffort,
         approvalPolicy: 'never',
         permissions: ':read-only',
         environments: [],
@@ -2420,6 +2561,23 @@ class PersistentNativeAppServer {
         mark,
         this.#options.requestTimeoutMs,
       )
+      if (
+        effectiveModel !== record.currentModel
+        || effectiveEffort !== record.currentEffort
+      ) {
+        await this.#transport.waitFor(
+          'thread/settings/updated',
+          params => (
+            params?.threadId === record.threadId
+            && params?.threadSettings?.model === effectiveModel
+            && (params.threadSettings.effort ?? null) === effectiveEffort
+          ),
+          mark,
+          this.#options.requestTimeoutMs,
+        )
+        record.currentModel = effectiveModel
+        record.currentEffort = effectiveEffort
+      }
       const handle = deepFreeze({
         schema: 'studio-native-turn-reference/v1',
         action_ref: actionDigest,
@@ -2430,6 +2588,12 @@ class PersistentNativeAppServer {
         threadId: record.threadId,
         turnId,
         outputSchema: structuredClone(outputSchema),
+        resolvedProfile,
+        effectiveProfile: deepFreeze({
+          model: effectiveModel,
+          effort: effectiveEffort,
+        }),
+        profileDigest,
         actionDigest,
         mark,
         state: 'active',
@@ -2606,6 +2770,9 @@ class PersistentNativeAppServer {
     const base = {
       schema: NATIVE_ACTION_RECEIPT_SCHEMA,
       action_ref: turn.actionDigest,
+      policy_profile_digest: turn.profileDigest,
+      resolved_profile: structuredClone(turn.resolvedProfile),
+      effective_profile: structuredClone(turn.effectiveProfile),
       actor_ref: sha256(`actor:${turn.role.actorId}`),
       host_thread_id: turn.threadId,
       host_turn_id: turn.turnId,
@@ -2664,6 +2831,9 @@ class PersistentNativeAppServer {
     const base = {
       schema: 'studio-native-failure-receipt/v1',
       action_ref: turn.actionDigest,
+      policy_profile_digest: turn.profileDigest,
+      resolved_profile: structuredClone(turn.resolvedProfile),
+      effective_profile: structuredClone(turn.effectiveProfile),
       actor_ref: sha256(`actor:${turn.role.actorId}`),
       host_thread_id: turn.threadId,
       host_turn_id: turn.turnId,
