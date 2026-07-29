@@ -383,9 +383,9 @@ def migrate_board(board: dict) -> dict:
     budget = board.setdefault("budget", {})
     budget.setdefault("total_tokens", None)
     budget.setdefault("per_run_default", None)
+    budget.setdefault("workspace_total_tokens", None)
     budget.setdefault("spent_tokens", 0)
     budget.setdefault("reservations", {})
-    budget.setdefault("missions", {})
     return board
 
 
@@ -833,6 +833,7 @@ def _initial_board() -> dict:
         "budget": {
             "total_tokens": None,
             "per_run_default": None,
+            "workspace_total_tokens": None,
             "spent_tokens": 0,
             "reservations": {},
             "missions": {},
@@ -1123,9 +1124,11 @@ def cmd_budget(args: argparse.Namespace) -> None:
     with board_transaction(ws) as board:
         bud = board.setdefault("budget", {"spent_tokens": 0, "reservations": {}})
         bud.setdefault("reservations", {})
-        missions = _budget_missions(bud)
         target = bud
         if mission_id is not None:
+            if args.set_workspace_total is not None:
+                fail(2, "bad_budget", "--set-workspace-total cannot be mission-scoped")
+            missions = _budget_missions(bud)
             target = missions.get(mission_id)
             if target is None:
                 if args.set_total is None and args.set_per_run is None:
@@ -1152,6 +1155,11 @@ def cmd_budget(args: argparse.Namespace) -> None:
                 fail(2, "bad_budget", "per_run must be >= 0")
             target["per_run_default"] = args.set_per_run
             changed["per_run_default"] = args.set_per_run
+        if args.set_workspace_total is not None:
+            if args.set_workspace_total < 0:
+                fail(2, "bad_budget", "workspace total must be >= 0")
+            bud["workspace_total_tokens"] = args.set_workspace_total
+            changed["workspace_total_tokens"] = args.set_workspace_total
         # clearing paused if we just raised the cap above spend
         total = target.get("total_tokens")
         if (
@@ -1180,6 +1188,10 @@ def _budget_missions(budget: dict) -> dict:
     if not isinstance(missions, dict):
         fail(4, "bad_budget", "budget.missions must be an object")
     return missions
+
+
+def _mission_ledger_enabled(budget: dict) -> bool:
+    return "missions" in budget
 
 
 def _mission_budget(budget: dict, mission_id: str) -> dict:
@@ -1260,7 +1272,7 @@ def cmd_budget_lifecycle(args: argparse.Namespace) -> None:
 
     with board_transaction(ws) as board:
         budget = board.setdefault("budget", {"spent_tokens": 0, "reservations": {}})
-        _budget_missions(budget)
+        mission_ledger_enabled = _mission_ledger_enabled(budget)
         reservations = _budget_reservations(budget)
         current = reservations.get(reservation_id)
         changed = False
@@ -1293,10 +1305,23 @@ def cmd_budget_lifecycle(args: argparse.Namespace) -> None:
                 else:
                     fail(6, "reservation_conflict", f"reservation {reservation_id} already exists with different data")
             if current is None:
-                total = budget.get("total_tokens")
+                if mission_ledger_enabled and requested_mission_id is None:
+                    fail(
+                        6,
+                        "mission_binding_required",
+                        "mission-aware budget ledgers require --mission-id for new reservations",
+                    )
+                legacy_total = budget.get("total_tokens")
+                workspace_total = budget.get("workspace_total_tokens")
                 committed = int(budget.get("spent_tokens") or 0) + _active_reserved_tokens(reservations)
-                if total is not None and committed + args.tokens > total:
-                    fail(6, "budget_exceeded", "reservation would exceed workspace total token budget")
+                if (
+                    requested_mission_id is None
+                    and legacy_total is not None
+                    and committed + args.tokens > legacy_total
+                ):
+                    fail(6, "budget_exceeded", "reservation would exceed legacy unscoped token budget")
+                if workspace_total is not None and committed + args.tokens > workspace_total:
+                    fail(6, "budget_exceeded", "reservation would exceed explicit workspace token budget")
                 if requested_mission_id is not None:
                     mission = _mission_budget(budget, requested_mission_id)
                     mission_total = mission.get("total_tokens")
@@ -1316,6 +1341,12 @@ def cmd_budget_lifecycle(args: argparse.Namespace) -> None:
             if current.get("lease_id") != lease_id:
                 fail(6, "stale_lease", f"reservation {reservation_id} is fenced by another lease")
             current_mission_id = current.get("mission_id")
+            if mission_ledger_enabled and current_mission_id is None:
+                fail(
+                    6,
+                    "mission_binding_required",
+                    "bind an existing reservation by repeating reserve with --mission-id",
+                )
             if requested_mission_id is not None:
                 if current_mission_id is None:
                     fail(
@@ -1719,6 +1750,67 @@ def _append_receipt(path: str, receipt: dict) -> str | None:
     return None
 
 
+def _reconcile_run_reservation(
+    budget: dict,
+    reservation_id: str,
+    mission_id: str | None,
+    cost_tokens: int | None,
+    run_id: str,
+) -> tuple[dict, bool]:
+    reservations = _budget_reservations(budget)
+    reservation = reservations.get(reservation_id)
+    if not isinstance(reservation, dict):
+        fail(4, "reservation_not_found", f"unknown reservation: {reservation_id}")
+    reservation_mission_id = reservation.get("mission_id")
+    if reservation_mission_id != mission_id:
+        fail(6, "reservation_mismatch", "run mission differs from the budget reservation")
+    if _mission_ledger_enabled(budget) and reservation_mission_id is None:
+        fail(
+            6,
+            "mission_binding_required",
+            "mission-aware ledgers require a mission-bound reservation",
+        )
+    bound_run_id = reservation.get("run_id")
+    if bound_run_id is not None and bound_run_id != run_id:
+        fail(6, "reservation_conflict", "reservation is already bound to another run")
+    changed = False
+    if reservation.get("status") == "dispatched":
+        reservation["status"] = "settled"
+        if cost_tokens is None:
+            reservation["token_coverage"] = "unavailable"
+            reservation.pop("settled_tokens", None)
+        else:
+            reservation["token_coverage"] = "exact"
+            reservation["settled_tokens"] = cost_tokens
+            _adjust_known_spend(budget, cost_tokens, mission_id)
+        changed = True
+    elif reservation.get("status") == "settled":
+        if cost_tokens is None:
+            if (
+                reservation.get("token_coverage") != "unavailable"
+                or "settled_tokens" in reservation
+            ):
+                fail(6, "reservation_conflict", "run token coverage differs from settled reservation")
+        elif (
+            reservation.get("settled_tokens") != cost_tokens
+            or reservation.get("token_coverage") not in (None, "exact")
+        ):
+            fail(6, "reservation_conflict", "run tokens differ from settled reservation")
+        elif reservation.get("token_coverage") is None:
+            reservation["token_coverage"] = "exact"
+            changed = True
+    else:
+        fail(
+            6,
+            "invalid_budget_transition",
+            "run record requires a dispatched or matching settled reservation",
+        )
+    if bound_run_id is None:
+        reservation["run_id"] = run_id
+        changed = True
+    return reservation, changed
+
+
 def cmd_run_record(args: argparse.Namespace) -> None:
     ws = workspace(args)
     require_workspace(ws)
@@ -1728,6 +1820,17 @@ def cmd_run_record(args: argparse.Namespace) -> None:
         if getattr(args, "mission_id", None)
         else None
     )
+    requested_reservation_id = (
+        validate_safe_id(args.reservation_id, "reservation_id")
+        if getattr(args, "reservation_id", None)
+        else None
+    )
+    if requested_mission_id is not None and requested_reservation_id is None:
+        fail(
+            2,
+            "reservation_required",
+            "run record --mission-id requires --reservation-id",
+        )
 
     ritual = out.get("ritual", "unknown")
     # id precedence: explicit output field > --id > clock+random (random suffix
@@ -1826,40 +1929,83 @@ def cmd_run_record(args: argparse.Namespace) -> None:
                 if issue_event is not None:
                     issue_events.append(issue_event)
         bud = board.setdefault("budget", {"spent_tokens": 0, "reservations": {}})
-        _budget_missions(bud)
         runs = board.setdefault("runs", [])
         if not isinstance(runs, list):
             fail(4, "bad_board", "board.runs must be a list")
         spent = int(bud.get("spent_tokens") or 0)
         prior = next((r for r in runs if r.get("run_id") == run_id), None)
         prior_mission_id = prior.get("mission_id") if prior is not None else None
+        prior_reservation_id = (
+            prior.get("budget_reservation_id") if prior is not None else None
+        )
         if (
             requested_mission_id is not None
             and prior_mission_id is not None
             and requested_mission_id != prior_mission_id
         ):
             fail(6, "run_mission_conflict", "recorded run is already bound to another mission")
-        mission_id = requested_mission_id or prior_mission_id
+        if (
+            prior_reservation_id is not None
+            and requested_reservation_id is not None
+            and prior_reservation_id != requested_reservation_id
+        ):
+            fail(6, "run_reservation_conflict", "recorded run is already bound to another reservation")
+        reservation_id = requested_reservation_id or prior_reservation_id
+        reservation = (
+            _budget_reservations(bud).get(reservation_id)
+            if reservation_id is not None
+            else None
+        )
+        reservation_mission_id = (
+            reservation.get("mission_id") if isinstance(reservation, dict) else None
+        )
+        mission_id = requested_mission_id or prior_mission_id or reservation_mission_id
+        if mission_id is not None and reservation_id is None:
+            fail(2, "reservation_required", "mission-scoped run record requires --reservation-id")
         mission = _mission_budget(bud, mission_id) if mission_id is not None else None
         if prior is not None:
             prior_tokens = prior.get("cost_tokens")
-            if prior_tokens is not None:
+            prior_spend_was_direct = prior_reservation_id is None
+            if prior_tokens is not None and prior_spend_was_direct:
                 spent -= int(prior_tokens)   # undo the old known cost
-            if prior_mission_id is not None and prior_tokens is not None:
+            if (
+                prior_mission_id is not None
+                and prior_tokens is not None
+                and prior_spend_was_direct
+            ):
                 prior_mission = _mission_budget(bud, prior_mission_id)
                 prior_mission["spent_tokens"] = (
                     int(prior_mission.get("spent_tokens") or 0)
                     - int(prior_tokens)
                 )
             board["runs"] = [r for r in runs if r.get("run_id") != run_id]
+        bud["spent_tokens"] = spent
         if mission_id is not None:
             entry["mission_id"] = mission_id
+        if reservation_id is not None:
+            if not isinstance(reservation, dict):
+                fail(4, "reservation_not_found", f"unknown reservation: {reservation_id}")
+            entry["budget_reservation_id"] = reservation_id
+            _reconcile_run_reservation(
+                bud, reservation_id, mission_id, cost_tokens, run_id
+            )
         board["runs"].append(entry)
-        bud["spent_tokens"] = spent + (cost_tokens if cost_tokens is not None else 0)
-        if mission is not None and cost_tokens is not None:
-            mission["spent_tokens"] = int(mission.get("spent_tokens") or 0) + cost_tokens
+        if reservation_id is None:
+            bud["spent_tokens"] = spent + (cost_tokens if cost_tokens is not None else 0)
+        else:
+            bud["spent_tokens"] = int(bud.get("spent_tokens") or 0)
         total = bud.get("total_tokens")
-        workspace_exceeded = total is not None and bud["spent_tokens"] > total
+        workspace_total = bud.get("workspace_total_tokens")
+        legacy_unscoped_exceeded = (
+            mission_id is None
+            and total is not None
+            and bud["spent_tokens"] > total
+        )
+        explicit_workspace_exceeded = (
+            workspace_total is not None
+            and bud["spent_tokens"] > workspace_total
+        )
+        workspace_exceeded = legacy_unscoped_exceeded or explicit_workspace_exceeded
         mission_total = mission.get("total_tokens") if mission is not None else None
         mission_exceeded = (
             mission is not None
@@ -1888,7 +2034,9 @@ def cmd_run_record(args: argparse.Namespace) -> None:
         budget_total=total,
         budget_exceeded=exceeded,
         workspace_budget_exceeded=workspace_exceeded,
+        workspace_budget_total=workspace_total,
         mission_id=mission_id,
+        reservation_id=reservation_id,
         mission_spent_tokens=mission.get("spent_tokens", 0) if mission else None,
         mission_budget_total=mission_total,
         mission_budget_exceeded=mission_exceeded,
@@ -2274,10 +2422,29 @@ def _claim_lease(board: dict, track_id: str, lease_id: str, executor: str, reser
         fail(4, "bad_board", "board.tracks must be an object in schema 2")
     track = tracks.setdefault(track_id, {"track_id": track_id, "lease_history": []})
     current = track.get("executor_lease")
+    reservations = _budget_reservations(board["budget"])
+    reservation = reservations.get(reservation_id)
+    if not reservation or reservation.get("lease_id") != lease_id:
+        fail(6, "reservation_required", "claim requires a budget reservation fenced by the same lease")
+    if _mission_ledger_enabled(board["budget"]) and reservation.get("mission_id") is None:
+        fail(
+            6,
+            "mission_binding_required",
+            "bind the reservation to a mission before claiming a new workflow lease",
+        )
     if current and current.get("lease_id") == lease_id:
         if current.get("executor") == executor and current.get("budget_reservation_id") == reservation_id:
+            reservation_mission_id = reservation.get("mission_id")
+            current_mission_id = current.get("mission_id")
+            if current_mission_id not in (None, reservation_mission_id):
+                fail(6, "lease_conflict", "lease mission differs from its reservation")
+            if current_mission_id is None and reservation_mission_id is not None:
+                current["mission_id"] = reservation_mission_id
+                return current, True
             return current, False
         fail(6, "lease_conflict", "lease id already exists with different claim data")
+    if reservation.get("status") != "reserved":
+        fail(6, "reservation_required", "new claims require a reserved budget reservation")
     current_reservation = None
     if current:
         current_reservation = _budget_reservations(board["budget"]).get(current.get("budget_reservation_id"))
@@ -2287,10 +2454,6 @@ def _claim_lease(board: dict, track_id: str, lease_id: str, executor: str, reser
     )
     if replacement_fenced:
         fail(6, "active_lease_exists", f"track {track_id} already has fenced lease {current.get('lease_id')}")
-    reservations = _budget_reservations(board["budget"])
-    reservation = reservations.get(reservation_id)
-    if not reservation or reservation.get("lease_id") != lease_id or reservation.get("status") != "reserved":
-        fail(6, "reservation_required", "claim requires a reserved budget reservation fenced by the same lease")
     if current:
         track.setdefault("lease_history", []).append(current)
     current = {
@@ -2298,6 +2461,7 @@ def _claim_lease(board: dict, track_id: str, lease_id: str, executor: str, reser
         "executor": executor,
         "state": "claimed",
         "budget_reservation_id": reservation_id,
+        "mission_id": reservation.get("mission_id"),
         "external_ref": None,
         "coarse_status": "claimed",
     }
@@ -2330,6 +2494,15 @@ def _transition_lease(board: dict, track_id: str, lease_id: str, state: str, ext
         fail(6, "invalid_lease_transition", f"cannot transition {old_state} to {state}")
     reservation = _budget_reservations(board["budget"])[lease["budget_reservation_id"]]
     if state == "running":
+        if _mission_ledger_enabled(board["budget"]) and reservation.get("mission_id") is None:
+            fail(
+                6,
+                "mission_binding_required",
+                "bind the reservation to a mission before workflow dispatch",
+            )
+        if lease.get("mission_id") not in (None, reservation.get("mission_id")):
+            fail(6, "reservation_mismatch", "lease mission differs from its reservation")
+        lease["mission_id"] = reservation.get("mission_id")
         if reservation.get("lease_id") != lease_id:
             fail(6, "stale_lease", "budget reservation is fenced by another lease")
         if reservation.get("status") == "reserved":
@@ -4165,6 +4338,7 @@ WORK_PACKET_FIELDS = frozenset((
     "schema", "track_id", "objective", "acceptance_criteria", "context_ref",
     "digest", "quality_plan_ref", "constraints", "budget_reservation_id", "gates", "executor",
 ))
+WORK_PACKET_V2_OPTIONAL_FIELDS = frozenset(("mission_id",))
 RESULT_ENVELOPE_FIELDS = frozenset((
     "status", "external_ref", "artifact_refs", "evidence_refs", "context_delta_refs",
     "telemetry", "gates", "failure_class",
@@ -4179,13 +4353,24 @@ def validate_work_packet(packet: Any) -> list[str]:
     if not isinstance(packet, dict):
         return ["WorkPacket must be an object"]
     problems = []
-    if set(packet) != WORK_PACKET_FIELDS:
+    packet_fields = set(packet)
+    if (
+        not WORK_PACKET_FIELDS.issubset(packet_fields)
+        or not packet_fields.issubset(WORK_PACKET_FIELDS | WORK_PACKET_V2_OPTIONAL_FIELDS)
+    ):
         problems.append("WorkPacket fields do not match the binding contract")
     if packet.get("schema") not in (1, 2):
         problems.append("WorkPacket.schema must be 1 or 2")
     for key in ("track_id", "quality_plan_ref", "budget_reservation_id"):
         if not isinstance(packet.get(key), str) or not SAFE_ID_RE.fullmatch(packet.get(key, "")):
             problems.append(f"WorkPacket.{key} must be a path-safe identifier")
+    mission_id = packet.get("mission_id")
+    if mission_id is not None and (
+        packet.get("schema") != 2
+        or not isinstance(mission_id, str)
+        or not SAFE_ID_RE.fullmatch(mission_id)
+    ):
+        problems.append("WorkPacket.mission_id is optional only for schema=2 and must be path-safe")
     if not isinstance(packet.get("objective"), str) or not packet.get("objective", "").strip():
         problems.append("WorkPacket.objective must be a non-empty string")
     if not isinstance(packet.get("context_ref"), str) or not SAFE_ID_RE.fullmatch(packet.get("context_ref", "")):
@@ -4315,6 +4500,31 @@ def cmd_workflow_validate_result(args: argparse.Namespace) -> None:
     ok(result_envelope=envelope)
 
 
+def _validate_workflow_budget_binding(
+    board: dict, packet: dict, routing_plan: dict | None,
+) -> dict:
+    budget = board.setdefault("budget", {"spent_tokens": 0, "reservations": {}})
+    reservation = _budget_reservations(budget).get(packet["budget_reservation_id"])
+    if not isinstance(reservation, dict):
+        fail(4, "reservation_not_found", f"unknown reservation: {packet['budget_reservation_id']}")
+    packet_mission_id = packet.get("mission_id")
+    if _mission_ledger_enabled(budget) and (
+        packet.get("schema") != 2 or packet_mission_id is None
+    ):
+        fail(
+            6,
+            "mission_binding_required",
+            "mission-aware workflow dispatch requires WorkPacket schema=2 with mission_id",
+        )
+    if reservation.get("mission_id") != packet_mission_id:
+        fail(6, "reservation_mismatch", "WorkPacket mission differs from its reservation")
+    if packet_mission_id is not None:
+        _mission_budget(budget, packet_mission_id)
+        if routing_plan is not None and routing_plan.get("mission_id") != packet_mission_id:
+            fail(6, "routing_mission_mismatch", "WorkPacket mission differs from RoutingPlan")
+    return reservation
+
+
 def cmd_workflow_dispatch(args: argparse.Namespace) -> None:
     ws = workspace(args)
     require_workspace(ws)
@@ -4359,6 +4569,7 @@ def cmd_workflow_dispatch(args: argparse.Namespace) -> None:
             "ref": canonical_pack["id"],
             "digest": canonical_pack["digest"],
         },
+        "mission_id": packet.get("mission_id"),
         "routing_plan": (
             {"plan_id": routing_plan["plan_id"], "digest": routing_plan["digest"]}
             if routing_plan else None
@@ -4420,6 +4631,7 @@ def cmd_workflow_dispatch(args: argparse.Namespace) -> None:
     selected = "external" if external_ready else "native"
     fallback = routing_plan is None and packet["executor"] == "task-github" and selected == "native"
     with board_transaction(ws) as board:
+        _validate_workflow_budget_binding(board, packet, routing_plan)
         if routing_plan is not None:
             pinned = board.setdefault("routing_plans", {}).get(routing_plan["digest"])
             if pinned != routing_plan:
@@ -4509,6 +4721,7 @@ def cmd_workflow_result(args: argparse.Namespace) -> None:
     )
 
     with board_transaction(ws) as board:
+        _validate_workflow_budget_binding(board, packet, routing_plan)
         track = board.setdefault("tracks", {}).get(packet["track_id"])
         lease = track and track.get("executor_lease")
         if not lease:
@@ -4530,6 +4743,8 @@ def cmd_workflow_result(args: argparse.Namespace) -> None:
         context_binding = binding.get("context_pack") or {}
         if context_binding != {"ref": packet["context_ref"], "digest": packet["digest"]}:
             fail(6, "context_binding_mismatch", "ResultEnvelope WorkPacket context differs from the dispatch binding")
+        if binding.get("mission_id") != packet.get("mission_id"):
+            fail(6, "reservation_mismatch", "ResultEnvelope WorkPacket mission differs from dispatch")
         routing_binding = binding.get("routing_plan")
         if routing_binding is not None:
             if routing_plan is None:
@@ -5342,6 +5557,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("budget", help="set the mission budget ledger caps")
     sp.add_argument("--set-total", type=int, help="total token cap (enables the exhausted→paused gate)")
     sp.add_argument("--set-per-run", type=int, help="advisory per-run token cap the producer applies at convene")
+    sp.add_argument("--set-workspace-total", type=int, help="optional explicit cumulative workspace token cap")
     sp.add_argument("--mission-id", help="set or read a mission-scoped budget instead of the workspace ledger")
     sp.set_defaults(func=cmd_budget)
     blife = sp.add_subparsers(dest="lifecycle")
@@ -5361,6 +5577,7 @@ def build_parser() -> argparse.ArgumentParser:
     rr.add_argument("--id", help="override run id (else derived from output/clock)")
     rr.add_argument("--track", help="track slug this run belongs to (producer-owned)")
     rr.add_argument("--mission-id", help="charge known run spend to this mission budget")
+    rr.add_argument("--reservation-id", help="reconcile this run with its dispatched budget reservation")
     rr.add_argument("--receipt-log", help="optional JSONL receipt sink; append failure is warning-only")
     rr.set_defaults(func=cmd_run_record)
 

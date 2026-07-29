@@ -233,52 +233,20 @@ test('argv is shell-free, approval-denying, bounded, and rejects unsupported eff
   )
 })
 
-test('brainstorm agents are read-only and broker phase/result ordering survives', async () => {
-  const scratch = await temp()
-  try {
-    const record = join(scratch, 'record.jsonl')
-    const result = await executeWorkflow({
+test('Codex exec Runner rejects brainstorm before provider dispatch', async () => {
+  await assert.rejects(
+    executeWorkflow({
       brokerName: 'brainstorm',
       args: {
-        agenda: 'probe ordering',
-        personas: [
-          { name: 'a', role: 'architect', prior: 'small', body: 'design' },
-          { name: 'b', role: 'qa', prior: 'safe', body: 'attack' },
-        ],
-        maxRounds: 1,
-        dryStop: 1,
         agentRuntime: 'codex',
         runtimeCapability: runtimeCapability(),
       },
       cwd: REPO,
-      env: {
-        ...process.env,
-        STUDIO_CODEX_CLI: FAKE,
-        FAKE_CODEX_MODE: 'broker',
-        FAKE_CODEX_RECORD: record,
-      },
+      env: { ...process.env, STUDIO_CODEX_CLI: FAKE },
       timeoutMs: 2_000,
-    })
-    assert.equal(result.schema, 'studio-codex-workflow-runner/v1')
-    assert.equal(result.dispatch_allowed, true)
-    assert.equal(result.execution_profile, 'isolated-cli-non-persistent')
-    assert.equal(result.persistent_crew, false)
-    assert.deepEqual(result.phases, ['Diverge', 'Debate', 'Converge'])
-    assert.equal(result.output.ritual, 'brainstorm')
-    assert.deepEqual(result.output.participants, ['a', 'b'])
-    assert.equal(result.output.receipt.schema, 'workflow-receipt/v1')
-    const calls = (await readFile(record, 'utf8')).trim().split('\n').map(JSON.parse)
-    assert.ok(calls.length >= 7)
-    for (const call of calls) {
-      assert.equal(call.args[call.args.indexOf('--sandbox') + 1], 'read-only')
-      assert.equal(call.depth, '1')
-      assert.equal(call.providerSchemaHasOneOf, false, `provider schema retained oneOf for ${call.label}`)
-      for (const arg of FORBIDDEN) assert.ok(!call.args.includes(arg), arg)
-    }
-    assert.ok(calls.findIndex(call => call.label === 'summarizer') < calls.findIndex(call => call.label === 'critic:final'))
-  } finally {
-    await rm(scratch, { recursive: true, force: true })
-  }
+    }),
+    error => error instanceof RunnerError && error.code === 'broker_invalid',
+  )
 })
 
 async function secondaryWorktree(scratch, name = 'repo') {
@@ -405,30 +373,6 @@ test('pairing rejects a secondary worktree from an unrelated repository', async 
   } finally {
     await rm(scratch, { recursive: true, force: true })
   }
-})
-
-test('broker-declared errors keep the production envelope fail-closed', async () => {
-  const result = await executeWorkflow({
-    brokerName: 'brainstorm',
-    args: {
-      agenda: 'invalid cast',
-      personas: [{ name: 'only-one', role: 'architect', prior: 'single', body: 'single' }],
-      agentRuntime: 'codex',
-      runtimeCapability: runtimeCapability(),
-    },
-    cwd: REPO,
-    env: {
-      ...process.env,
-      STUDIO_CODEX_CLI: FAKE,
-      FAKE_CODEX_MODE: 'broker',
-    },
-    timeoutMs: 2_000,
-  })
-  assert.equal(result.schema, 'studio-codex-workflow-runner/v1')
-  assert.equal(result.dispatch_allowed, false)
-  assert.equal(result.error, 'broker_error')
-  assert.equal(result.details.output.ritual, 'brainstorm')
-  assert.match(result.message, /needs >=2 personas/)
 })
 
 test('production dispatch rejects absent or unverified Codex runtime capability', async () => {

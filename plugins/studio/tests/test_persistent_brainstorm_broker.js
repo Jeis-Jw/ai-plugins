@@ -647,6 +647,7 @@ test('first durable request_sent closes fallback before a two-action barrier con
         prompt_schema_digest: action.prompt_schema_digest,
         dispatch_state_revision: action.state_revision,
         dispatch_state_digest: action.state_digest,
+        policy_profile: null,
         stage: 'scheduled',
         binding: null,
         receipt: null,
@@ -662,12 +663,24 @@ test('first durable request_sent closes fallback before a two-action barrier con
     const paths = store.paths(state.run_id)
     await writeFile(paths.state, `${JSON.stringify(state)}\n`, { mode: 0o600 })
     await writeFile(paths.dispatch, `${JSON.stringify(journal)}\n`, { mode: 0o600 })
+    const policyProfile = action => ({
+      schema: 'studio-native-resolved-agent-profile/v1',
+      actor_id: action.actor_id,
+      phase: action.phase,
+      step: 'diverge',
+      role_id: action.actor_id,
+      agent_id: action.actor_id,
+      model: null,
+      effort: null,
+      policy_digest: `sha256:${'1'.repeat(64)}`,
+    })
 
     await store.recordRequestSent({
       run_id: state.run_id,
       expected_state_revision: state.state_revision,
       expected_state_digest: state.state_digest,
       action_id: state.pending.actions[0].action_id,
+      policy_profile: policyProfile(state.pending.actions[0]),
     })
     const fenced = await store.read(state.run_id)
     const projection = store.project(fenced)
@@ -681,6 +694,7 @@ test('first durable request_sent closes fallback before a two-action barrier con
       expected_state_revision: fenced.state_revision,
       expected_state_digest: fenced.state_digest,
       action_id: fenced.pending.actions[1].action_id,
+      policy_profile: policyProfile(fenced.pending.actions[1]),
     })
     const dispatch = await store.readDispatch(state.run_id)
     assert.deepEqual(dispatch.entries.map(entry => entry.stage), [

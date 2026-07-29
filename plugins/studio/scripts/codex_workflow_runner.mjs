@@ -535,8 +535,11 @@ export async function runCodexAgent(prompt, options, context) {
 }
 
 export async function loadBroker(name) {
-  if (!['brainstorm', 'pairing', 'solo'].includes(name)) {
-    throw new RunnerError('broker_invalid', 'broker must be brainstorm, pairing, or solo')
+  if (!['pairing', 'solo'].includes(name)) {
+    throw new RunnerError(
+      'broker_invalid',
+      'Codex exec Runner supports pairing or solo only; Production brainstorm requires the persistent app-server controller',
+    )
   }
   const path = join(PLUGIN, 'broker', `${name}.workflow.js`)
   const source = (await readFile(path, 'utf8')).replace('export const meta', 'const meta')
@@ -624,6 +627,12 @@ function parseCli(argv) {
   }
   if (!parsed.broker || !parsed['args-file']) {
     throw new RunnerError('usage', '--broker and --args-file are required')
+  }
+  if (!['pairing', 'solo'].includes(parsed.broker)) {
+    throw new RunnerError(
+      'broker_invalid',
+      '--broker must be pairing or solo; Production brainstorm requires the persistent app-server controller',
+    )
   }
   if (!isAbsolute(parsed['args-file'])) {
     throw new RunnerError('args_file_invalid', '--args-file must be an absolute sealed input path')

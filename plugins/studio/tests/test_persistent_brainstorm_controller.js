@@ -86,13 +86,19 @@ function project(state) {
 }
 
 function fakeAdapter(overrides = {}) {
-  return {
+  const profiles = new Map()
+  const customBeginTurn = overrides.beginTurn
+  const customWaitTurn = overrides.waitTurn
+  const receiptTransform = overrides.receiptTransform
+  const remaining = { ...overrides }
+  delete remaining.beginTurn
+  delete remaining.waitTurn
+  delete remaining.receiptTransform
+  const adapter = {
     admit: async () => ({ schema: 'opaque-capability' }),
     startRole: async (_, { actorId }) => `role:${actorId}`,
     resumeRole: async () => {},
-    beginTurn: async (_, { actionId }) => `turn:${actionId}`,
     inspectTurnBinding: (_, turn) => ({ schema: 'binding', turn }),
-    waitTurn: async () => ({ schema: 'receipt' }),
     interruptTurn: async (_, turn) => ({
       schema: 'interrupt-receipt',
       turn,
@@ -107,8 +113,40 @@ function fakeAdapter(overrides = {}) {
     }),
     verifyReceipt: () => true,
     close: async () => {},
-    ...overrides,
+    ...remaining,
   }
+  adapter.beginTurn = async (capability, input) => {
+    const turn = customBeginTurn
+      ? await customBeginTurn(capability, input)
+      : `turn:${input.actionId}`
+    profiles.set(turn, structuredClone(input.profile))
+    return turn
+  }
+  adapter.waitTurn = async (capability, turn) => {
+    if (customWaitTurn) {
+      const customReceipt = await customWaitTurn(capability, turn)
+      if (customReceipt !== undefined) return customReceipt
+    }
+    const resolvedProfile = profiles.get(turn)
+    const base = {
+      schema: 'studio-native-action-receipt/v1',
+      action_ref: digest({ turn }),
+      policy_profile_digest: digest(resolvedProfile),
+      resolved_profile: structuredClone(resolvedProfile),
+      effective_profile: {
+        model: resolvedProfile.model,
+        effort: resolvedProfile.effort,
+      },
+      actor_ref: digest({ actor: resolvedProfile.actor_id }),
+      host_thread_id: `thread:${resolvedProfile.actor_id}`,
+      host_turn_id: String(turn),
+      terminal_status: 'completed',
+      output: {},
+    }
+    const receipt = { ...base, receipt_digest: digest(base) }
+    return receiptTransform ? receiptTransform(structuredClone(receipt)) : receipt
+  }
+  return adapter
 }
 
 function oneBarrierStore(outputSchema = {
@@ -152,6 +190,7 @@ function oneBarrierStore(outputSchema = {
       ordinal: 1,
       actor_id: 'participant:a',
       kind: 'spawn',
+      policy_profile: null,
       stage: 'scheduled',
       binding: null,
       receipt: null,
@@ -167,6 +206,7 @@ function oneBarrierStore(outputSchema = {
       calls.push(['request_sent', request.action_id])
       journal.dispatch_started = true
       journal.entries[0].stage = 'request_sent'
+      journal.entries[0].policy_profile = structuredClone(request.policy_profile)
     },
     recordResponseReceived: async request => {
       calls.push(['response_received', request.action_id])
@@ -183,10 +223,7 @@ function oneBarrierStore(outputSchema = {
     recordTerminalEvent: async request => {
       calls.push(['terminal_event', request.action_id])
       journal.entries[0].stage = 'terminal_event'
-      journal.entries[0].receipt = {
-        schema: 'receipt',
-        receipt_digest: `sha256:${'5'.repeat(64)}`,
-      }
+      journal.entries[0].receipt = structuredClone(request.receipt)
       journal.entries[0].result = { status: 'succeeded' }
     },
     applyProductionBarrier: async () => {
@@ -249,6 +286,7 @@ function twoActionFenceStore() {
     ordinal: index + 1,
     actor_id: action.actor_id,
     kind: action.kind,
+    policy_profile: null,
     stage: 'scheduled',
     binding: null,
     receipt: null,
@@ -274,7 +312,9 @@ function twoActionFenceStore() {
       assert.equal(request.expected_state_revision, state.state_revision)
       assert.equal(request.expected_state_digest, state.state_digest)
       calls.push(['request_sent', request.action_id])
-      entries.find(entry => entry.action_id === request.action_id).stage = 'request_sent'
+      const entry = entries.find(candidate => candidate.action_id === request.action_id)
+      entry.stage = 'request_sent'
+      entry.policy_profile = structuredClone(request.policy_profile)
       journal.dispatch_started = true
       if (calls.filter(call => call[0] === 'request_sent').length === 1) {
         state.state_revision = 2
@@ -296,11 +336,7 @@ function twoActionFenceStore() {
       calls.push(['terminal_event', request.action_id])
       const entry = entries.find(candidate => candidate.action_id === request.action_id)
       entry.stage = 'terminal_event'
-      entry.receipt = {
-        schema: 'receipt',
-        action_ref: `sha256:${String(entry.ordinal).repeat(64)}`,
-        receipt_digest: `sha256:${String(entry.ordinal + 2).repeat(64)}`,
-      }
+      entry.receipt = structuredClone(request.receipt)
       entry.result = { status: 'succeeded' }
     },
     applyProductionBarrier: async () => {
@@ -476,6 +512,64 @@ test('controller rejects unadvertised or unbound runtime policy before admission
   assert.equal(admissions, 0)
 })
 
+test('controller allows session inheritance only when policy fields are omitted', async () => {
+  let admissions = 0
+  const adapter = fakeAdapter({
+    admit: async () => {
+      admissions += 1
+      return { schema: 'opaque-capability' }
+    },
+  })
+  const execute = testController(oneBarrierStore().store, adapter)
+  const inherited = await execute(REQUEST, CONFIG)
+  assert.equal(inherited.ok, true)
+  assert.equal(
+    inherited.workflow_receipt.admission.policy_binding.agent_runtime,
+    null,
+  )
+  assert.equal(
+    inherited.workflow_receipt.admission.policy_binding.runtime_capability_digest,
+    null,
+  )
+  assert.equal(
+    inherited.workflow_receipt.admission.policy_binding.resolved_profiles[0].model,
+    null,
+  )
+  assert.equal(
+    inherited.workflow_receipt.admission.policy_binding.resolved_profiles[0].effort,
+    null,
+  )
+
+  for (const policyInput of [
+    { agentPolicy: { defaults: { model: 'common-default' } } },
+    { overrides: { effort: 'xhigh' } },
+    { agentPolicy: {} },
+  ]) {
+    await assert.rejects(
+      execute({ ...REQUEST, ...policyInput }, CONFIG),
+      error => error.code === 'invalid_runtime_capability',
+    )
+  }
+  await assert.rejects(
+    execute({
+      ...REQUEST,
+      agentPolicy: { defaults: { model: 'common-default' } },
+      agentRuntime: 'codex',
+    }, CONFIG),
+    error => error.code === 'invalid_runtime_capability',
+  )
+  await assert.rejects(
+    execute({
+      ...REQUEST,
+      agentPolicy: { defaults: { model: 'common-default' } },
+      agentRuntime: 'codex',
+      runtimeCapability: runtimeCapability({ dispatch_allowed: false }),
+    }, CONFIG),
+    error => error.code === 'invalid_runtime_capability',
+  )
+  assert.equal(admissions, 1)
+})
+
 test('controller preserves unknown runtime support when capability advertisements are unavailable', async () => {
   const request = {
     ...REQUEST,
@@ -496,6 +590,35 @@ test('controller preserves unknown runtime support when capability advertisement
   const profile = result.workflow_receipt.admission.policy_binding.resolved_profiles[0]
   assert.equal(profile.model, 'runtime-owned-model')
   assert.equal(profile.effort, 'runtime-owned-effort')
+})
+
+test('controller rejects missing or self-consistent wrong policy receipt evidence', async () => {
+  const transforms = [
+    receipt => {
+      delete receipt.resolved_profile
+      return receipt
+    },
+    receipt => {
+      receipt.resolved_profile.model = 'self-consistent-wrong-model'
+      receipt.effective_profile.model = 'self-consistent-wrong-model'
+      receipt.policy_profile_digest = digest(receipt.resolved_profile)
+      const base = { ...receipt }
+      delete base.receipt_digest
+      receipt.receipt_digest = digest(base)
+      return receipt
+    },
+  ]
+  for (const receiptTransform of transforms) {
+    const { store, calls } = oneBarrierStore()
+    const result = await testController(
+      store,
+      fakeAdapter({ receiptTransform }),
+    )(REQUEST, CONFIG)
+    assert.equal(result.ok, false)
+    assert.equal(result.status, 'recovery_required')
+    assert.equal(result.fallback_allowed, false)
+    assert.equal(calls.some(call => call[0] === 'terminal_event'), false)
+  }
 })
 
 test('controller preserves broker const semantics through the host enum subset', async () => {
@@ -680,7 +803,7 @@ test('parallel begin and wait failures drain settled siblings before role cleanu
             throw new NativeAdapterError('wait_failed', 'injected wait failure')
           }
           if (stage === 'wait') await new Promise(resolveWait => setTimeout(resolveWait, 5))
-          return { schema: 'receipt' }
+          return undefined
         },
         interruptTurn: async (_, turn) => {
           events.push(`interrupt:${turn}`)
@@ -796,8 +919,22 @@ test('Production entry rejects dependency injection before adapter creation', as
 
 test('only completed output failures become exact-validator repair candidates', () => {
   const action = { action_id: 'a', kind: 'followup', host_handle: 'thread-a' }
+  const resolvedProfile = {
+    schema: 'studio-native-resolved-agent-profile/v1',
+    actor_id: 'participant:a',
+    phase: 'Debate',
+    step: 'debate',
+    role_id: 'planner',
+    agent_id: 'planner-a',
+    model: null,
+    effort: null,
+    policy_digest: `sha256:${'1'.repeat(64)}`,
+  }
   const failure = {
     schema: 'studio-native-failure-receipt/v1',
+    policy_profile_digest: digest(resolvedProfile),
+    resolved_profile: resolvedProfile,
+    effective_profile: { model: null, effort: null },
     terminal_status: 'completed',
     error_code: 'output_schema_mismatch',
     host_thread_id: 'thread-a',

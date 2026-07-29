@@ -106,7 +106,15 @@ Studio가 mission·QualityPlan·context·owner gate의 정본을 소유한다. �
   읽을 때 schema 2로 lazy projection되고 다음 mutation에서만 저장된다.
 - **lease/budget**: `reserve → dispatch → settle|release`는 reservation/lease 기준으로
   idempotent하며, track당 active lease는 1개다. 모든 전이는 `lease_id` fencing을 검증한다.
+  mission cap/spent는 `budget.missions[mission_id]`가 소유한다. 기존
+  `budget.total_tokens/per_run_default`는 mission ledger가 없는 legacy unscoped 실행에만
+  적용하며 mission admission은 이를 무시한다. 모든 실행의 누적 지출을 제한해야 할 때만
+  별도 `budget.workspace_total_tokens`를 명시적 optional 상한으로 설정한다.
 - **external adapter**: WorkPacket을 별도 worker에 넘기고 ResultEnvelope만 회수한다.
+  mission ledger가 활성화된 새 dispatch는 WorkPacket v2의 `mission_id`, reservation의
+  `mission_id`, RoutingPlan의 `mission_id`가 정확히 같아야 한다. legacy unscoped
+  reservation은 동일 reservation/lease/tokens로 `budget reserve --mission-id ...`를
+  재실행해 결합하기 전에는 dispatch할 수 없다.
   GitHub 기록이 없으면 `task-worker:*`, GitHub delivery가 필요하면 `task-github:*` facade를
   사용한다. callable API를 만들지 않으며 producer가 agent-visible catalog와 read-only
   doctor/preflight 결과로 capability snapshot을 만든다.
@@ -125,7 +133,7 @@ Studio가 mission·QualityPlan·context·owner gate의 정본을 소유한다. �
 ```bash
 python3 plugins/studio/scripts/studio.py quality evaluate --plan @plan.json --evidence @evidence.json --telemetry @telemetry.json
 python3 plugins/studio/scripts/studio.py context put item --json @item.json
-python3 plugins/studio/scripts/studio.py budget reserve <reservation> --lease-id <lease> --tokens <n>
+python3 plugins/studio/scripts/studio.py budget reserve <reservation> --mission-id <mission> --lease-id <lease> --tokens <n>
 python3 plugins/studio/scripts/studio.py workflow validate-packet --json @packet.json
 python3 plugins/studio/scripts/studio.py routing plan --mission-id <mission> --environment-digest <digest> --runtime-capability @runtime-capability.json
 python3 plugins/studio/scripts/studio.py workflow dispatch --packet @packet.json --plan @plan.json --capabilities @snapshot.json --lease-id <lease>
@@ -208,7 +216,7 @@ run override
 ```
 
 blank/null은 다음 층으로 넘어가고, 아무 층도 안 정하면 producer 세션 모델·에포트를
-그대로 상속한다. model/effort 값은 문자열 구조만 검사하며 global allowlist로 특정 provider 지원을 과장하지 않는다. `studio-runtime-capability/v1`의 verified runtime과 advertised model/effort set이 있으면 resolved non-null 값을 그 집합으로 fail-closed 검증하고, 광고 집합이 없으면 지원 상태는 `unknown`이다. runtime override는 profile 선택일 뿐 해당 harness capability를 새로 만들지 않는다. non-null profile은 verified host runtime과 일치할 때만 dispatch할 수 있다. producer는 broker에 matching `runtimeCapability`가 있을 때만 `agentRuntime`을 주입하고, brainstorm/pairing broker는 stable `agentId`와 canonical `roleId || name`으로 같은 resolver를 적용한다. `role`은 표시용이다.
+그대로 상속한다. model/effort 값은 문자열 구조만 검사하며 global allowlist로 특정 provider 지원을 과장하지 않는다. `agentPolicy`/`overrides`에 실제 non-null model/effort가 있으면 `agentRuntime:"codex"`와 exact verified·`dispatch_allowed:true` matching `runtimeCapability`가 모두 필요하다. capability 없이 session 설정을 상속할 때는 두 policy 필드를 모두 생략한다. `studio-runtime-capability/v1`의 advertised model/effort set이 있으면 resolved non-null 값을 그 집합으로 fail-closed 검증하고, 광고 집합이 null이면 지원 상태는 `unknown`이다. runtime override는 profile 선택일 뿐 해당 harness capability를 새로 만들지 않는다. producer는 broker에 matching `runtimeCapability`가 있을 때만 `agentRuntime`을 주입하고, brainstorm/pairing broker는 stable `agentId`와 canonical `roleId || name`으로 같은 resolver를 적용한다. `role`은 표시용이다.
 예: critic=high(연극 판정 날카롭게), summarizer=low(중립 압축은 싸게), diverge=low.
 
 ```bash
@@ -220,10 +228,9 @@ python3 plugins/studio/scripts/studio.py config resolve --agent-runtime codex --
 
 ## Codex Workflow Runner
 
-Codex host에 callable Workflow가 없으면 verified runtime capability가 있는 경우에만
-production Runner가 기존 `brainstorm.workflow.js` 또는 `pairing.workflow.js`를 그대로
-로드하고 `agent/parallel/phase/log/budget` 경계를 주입한다. broker source는 runtime별로
-fork하지 않는다.
+Codex host에서 명시적으로 선택한 non-persistent solo/pairing 실행은 verified runtime
+capability가 있는 경우에만 production Runner를 사용한다. 이 Runner는 persistent
+brainstorm Production admission 실패의 fallback이 아니다.
 
 Read-only brainstorm의 Production 기본 경로는
 `persistent_brainstorm_controller.mjs`다. reducer만
@@ -356,6 +363,23 @@ production scale과 independent review edge는 별도 축이다.
    효율 주장만 unavailable로 만들며 통합 readiness를 막지 않는다.
 8. 검증(baseline): 같은 소형 미션을 솔로 vs 팀으로 돌려 `studio.py evidence`로
    추가 delta를 센다. theatre면 리추얼 재설계.
+
+owner가 mission 계약을 승인한 뒤 mission-scoped 예산을 먼저 설정하고, native run도 같은
+mission identity로 기록한다.
+
+```bash
+python3 plugins/studio/scripts/studio.py budget --mission-id <mission-id> \
+  --set-total <total_tokens> --set-per-run <per_run_default>
+python3 plugins/studio/scripts/studio.py run record --mission-id <mission-id> \
+  --reservation-id <reservation-id> \
+  --json '<브로커가 반환한 JSON>' --track <track-slug>
+```
+
+`--mission-id` 없는 `budget --set-total/--set-per-run`은 mission ledger가 없는 legacy
+unscoped 실행 전용이다. 기존 누적 ledger의 이 값은 mission admission에 적용되지 않으며
+mission 계약 값을 여기에 복사하지 않는다. 모든 mission을 합친 명시적 상한이 필요할 때만
+`budget --set-workspace-total <tokens>`를 사용한다. migration은 legacy `total_tokens`를
+`workspace_total_tokens`로 자동 복사하지 않는다.
 
 ## MVP crew
 

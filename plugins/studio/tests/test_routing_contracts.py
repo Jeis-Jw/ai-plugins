@@ -117,20 +117,46 @@ def setup_dispatch_inputs(tmp: Path) -> tuple[dict, dict]:
             "avoidable_owner_question": 0.0,
         },
     }
+    classification_body = {
+        "schema": "studio-work-classification/v1",
+        "requested_class": "construction",
+        "work_class": "construction",
+        "production_scale": "standard",
+        "qa_mode": "delta",
+        "terminal_outcome": {
+            "kind": "delivered",
+            "statement": "runtime routing is enforced",
+            "criterion_refs": ["routing-correct"],
+        },
+    }
     packet = {
-        "schema": 1,
+        "schema": 2,
         "track_id": "track-routing",
+        "mission_id": "mission-runtime-verified",
         "objective": "enforce runtime routing",
         "acceptance_criteria": ["runtime capability is verified"],
         "context_ref": "bundle-routing",
         "digest": compacted["context"]["digest"],
         "quality_plan_ref": "quality-routing",
-        "constraints": {"state_copy": "references-only"},
+        "constraints": {
+            "state_copy": "references-only",
+            "work_classification": {
+                **classification_body,
+                "digest": digest(classification_body),
+            },
+        },
         "budget_reservation_id": "res-routing",
         "gates": ["integration"],
         "executor": "native",
     }
-    run(["budget", "reserve", "res-routing", "--lease-id", "lease-routing", "--tokens", "10"], tmp)
+    run([
+        "budget", "--mission-id", "mission-runtime-verified",
+        "--set-total", "10", "--set-per-run", "10",
+    ], tmp)
+    run([
+        "budget", "reserve", "res-routing", "--lease-id", "lease-routing", "--tokens", "10",
+        "--mission-id", "mission-runtime-verified",
+    ], tmp)
     return packet, plan
 
 

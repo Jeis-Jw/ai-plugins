@@ -158,11 +158,17 @@ owner 승인 전에는 어떤 run도 소집하지 않는다. 승인되면 계약
 싣는다(직접 편집 금지 — CLI로):
 
 ```bash
-python3 "$STUDIO" budget --set-total <total_tokens> --set-per-run <per_run_default>
+python3 "$STUDIO" budget --mission-id <mission-id> \
+  --set-total <total_tokens> --set-per-run <per_run_default>
 ```
 
-`--set-total`이 없으면 `exhausted → paused` 게이트가 영원히 안 걸린다(원장 상한이
-null이면 초과 판정 불가). 반드시 미션 계약 값으로 설정한다.
+미션의 `total_tokens`와 `per_run_default`는 반드시 위 mission-scoped 원장에 설정한다.
+`--mission-id` 없는 flat `budget --set-total/--set-per-run`은 mission ledger가 없는
+legacy unscoped 실행에만 적용한다. mission-scoped admission은 이 값을 무시한다. 모든
+미션 지출을 합산하는 상한이 정말 필요할 때만
+`budget --set-workspace-total <tokens>`로 `workspace_total_tokens`를 명시한다. migration은
+legacy `total_tokens`를 이 상한으로 자동 복사하지 않으며, 미션 계약 값을 flat 상한에
+복사하지 않는다.
 
 ### QualityPlan과 ContextPack 선고정
 
@@ -221,7 +227,10 @@ model/effort는 `.studio.yml`이 정한다. 현재 profile은 `claude|codex`만 
 ```bash
 python3 "$STUDIO" config get   # JSON → common defaults/roles/agents/rituals + providers
 ```
-그 `config`를 broker args의 `agentPolicy`로 넘긴다. 상황에 따라 동적으로 조일 때
+그 `config`에 실제 non-null model/effort 설정이 있으면 matching
+`agentRuntime:"codex"`와 exact verified·`dispatch_allowed:true`
+`runtimeCapability`를 함께 broker args에 넘긴다. capability 없이 session 설정을
+상속하려면 `agentPolicy`와 `overrides` 필드를 모두 생략한다. 상황에 따라 동적으로 조일 때
 (예: 예산 잔액 부족)는 `overrides: {effort: "low"}`를 함께 넘긴다. 해석 우선순위는
 브로커가 강제한다: **run override > provider ritual > common ritual > provider agent > common agent > provider role > common role > provider defaults > common defaults > 세션 상속**. blank/null은 다음 층으로 넘어간다. runtime override는 profile 선택일 뿐 실제 harness capability를 만들지 않는다. `.studio.yml`이 없으면 native와 세션 runtime/model/effort를 상속한다. non-null `agentRuntime`은 matching verified `studio-runtime-capability/v1`이 있고 `dispatch_allowed=true`일 때만 broker에 전달한다. advertised model/effort set이 있으면 resolved 값을 fail-closed 검증하고, 광고가 없으면 지원 상태를 `unknown`으로 유지한다.
 
@@ -361,10 +370,10 @@ acceptance criteria는 소집 **전에** 고정한다. run 도중 바꾸면 증�
 broker는 기존 `F-xxxx`를 이어받고 `studio-review-feedback/v1`을 반환한다. 이 모드의
 pairing은 development/delta QA일 뿐이므로 스스로 `readyForIntegration:true`가 되지 않는다.
 
-### Workflow unavailable fallback
+### Callable Workflow가 없는 solo/pairing Runner
 
-Claude runtime에서 브로커 Workflow가 callable이면 위 `scriptPath + args` 경로를 그대로
-사용한다. callable Workflow가 없을 때의 fallback은 runtime별로 다르다.
+이 절은 명시적으로 선택한 non-persistent solo/pairing 실행에만 적용한다. Persistent
+brainstorm Production admission 실패는 항상 STOP하며 이 Runner로 전환하지 않는다.
 
 - **Codex runtime**: matching `studio-runtime-capability/v1`이 `verified:true`,
   `dispatch_allowed:true`일 때만 production Runner를 exact invocation으로 실행한다.
@@ -372,10 +381,6 @@ Claude runtime에서 브로커 Workflow가 callable이면 위 `scriptPath + args
   executable·argv·cwd·env와 정확히 일치시킨다.
 
   ```bash
-  node "$STUDIO_ROOT/scripts/codex_workflow_runner.mjs" \
-    --broker brainstorm \
-    --args-file /absolute/path/to/sealed-brainstorm-args.json \
-    --timeout-ms 120000
   node "$STUDIO_ROOT/scripts/codex_workflow_runner.mjs" \
     --broker solo \
     --args-file /absolute/path/to/sealed-solo-args.json \
@@ -390,15 +395,11 @@ Claude runtime에서 브로커 Workflow가 callable이면 위 `scriptPath + args
   macOS bundled CLI 순서로 해석한다. 성공은
   `studio-codex-workflow-runner/v1`의 `dispatch_allowed:true` envelope여야 한다.
   capability가 unavailable/unknown이거나 envelope가 fail-closed이면 **STOP**한다.
-  Codex dispatch가 시작된 뒤 일반 서브에이전트나 다른 runner로 자동 fallback하지 않는다.
+  Codex dispatch가 시작된 뒤 일반 서브에이전트나 다른 runner로 전환하지 않는다.
   이 Runner는 매 agent 호출을 isolated `codex exec --ephemeral`로 실행하므로
   `persistent_crew:false`인 명시적 non-persistent profile이다.
-- **그 외 native runtime**: Workflow가 callable tool로 없으면 `multi_agent_v1` 같은 일반
-  서브에이전트 도구로 대체할 수 있다. brainstorm persistent capability가 검증된 경우에는
-  위 canonical broker action만 relay한다. 이때도 producer의 역할은 **spawn / wait / record / report**뿐이다. 수정은 dev worker, 검증은 qa worker,
-  통합은 integrator worker나 결정적 CLI가 맡는다.
-
-어느 경로든 fallback은 Studio의 역할 분리·독립 검증·owner gate를 약화하지 않는다.
+- **그 외 runtime**: callable Workflow가 없으면 해당 run은 STOP한다. 일반
+  서브에이전트나 다른 runner로 묵시적으로 대체하지 않는다.
 
 ## 3a) optional external executor — task-worker/task-github reference adapter
 
@@ -455,7 +456,10 @@ lease를 잡는다.
 
 WorkPacket 필수 필드는 `schema`, `track_id`, `objective`, `acceptance_criteria`,
 `context_ref`, `digest`, `quality_plan_ref`, `constraints`, `budget_reservation_id`, `gates`,
-`executor`다. 새 WorkPacket은 `schema:2`와 위 work classification을 요구한다. 기존
+`executor`다. mission ledger가 활성화된 새 WorkPacket은 `schema:2`, `mission_id`, 위
+work classification을 요구하며 reservation과 RoutingPlan의 `mission_id`가 정확히 같아야
+한다. 기존 unscoped reservation은 동일 reservation/lease/tokens로
+`budget reserve --mission-id ...`를 재실행해 결합하기 전에는 dispatch하지 않는다. 기존
 `schema:1` packet/resume은 읽기·결과 회수를 계속 지원한다. ResultEnvelope 필수 필드는 `status`, `external_ref`, `artifact_refs`,
 criterion-bound `evidence_refs`, `context_delta_refs`, `telemetry`, `gates`, `failure_class`다.
 
@@ -464,10 +468,17 @@ criterion-bound `evidence_refs`, `context_delta_refs`, `telemetry`, `gates`, `fa
 브로커가 반환한 run 출력 객체(§run I/O 계약)를 그대로 기록한다:
 
 ```bash
-python3 "$STUDIO" run record --json '<브로커가 반환한 JSON>' --track <track-slug>
+python3 "$STUDIO" run record --mission-id <mission-id> \
+  --reservation-id <reservation-id> \
+  --json '<브로커가 반환한 JSON>' --track <track-slug>
 # → .studio/minutes/<run-id>.md 작성, board 예산 원장 갱신, valid_deltas 집계 반환
 ```
 
+- mission run은 `--mission-id`와 matching `--reservation-id`를 모두 요구한다. record는
+  dispatched reservation을 원자적으로 settle하거나 이미 같은 값으로 settle된 reservation에
+  run을 연결한다. 후자는 지출을 다시 더하지 않는다. 측정 불가 token은
+  `token_coverage:unavailable`로 settle하며 committed exposure를 유지한다. unscoped
+  record는 legacy 호환 전용이다.
 - `--track`은 이 run이 속한 track을 board에 기록한다(track은 producer 소유 상태 —
   브로커는 모른다). 브로커 출력에 `track`이 있으면 그게 우선한다.
 - 같은 `run_id`로 다시 record하면 원장이 **덮어쓰기**(중복 계상 없음) — 재시도 안전.

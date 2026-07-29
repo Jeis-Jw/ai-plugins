@@ -297,6 +297,14 @@ function buildPolicyBinding(request) {
   const policy = validateAgentPolicy(request.agentPolicy)
   const overrides = validateOverrides(request.overrides)
   const { runtime, capability } = validateRuntimeBinding(request)
+  const hasExplicitPolicyFields = Object.hasOwn(request, 'agentPolicy')
+    || Object.hasOwn(request, 'overrides')
+  if (hasExplicitPolicyFields && runtime === null) {
+    throw new PersistentBrokerError(
+      'invalid_runtime_capability',
+      'explicit agentPolicy or overrides require agentRuntime codex and its exact verified runtimeCapability; omit both policy fields to inherit the session',
+    )
+  }
   const policyDigest = digest({ agentPolicy: policy, overrides })
   const definitions = []
   for (const persona of request.personas) {
@@ -367,6 +375,46 @@ function policyProfileForAction(binding, action) {
     )
   }
   return profile
+}
+
+function policyReceiptMatchesProfile(receipt, profile) {
+  const effective = receipt?.effective_profile
+  return Boolean(
+    receipt
+    && canonicalJson(receipt.resolved_profile) === canonicalJson(profile)
+    && receipt.policy_profile_digest === digest(profile)
+    && effective
+    && typeof effective === 'object'
+    && !Array.isArray(effective)
+    && Object.keys(effective).length === 2
+    && Object.hasOwn(effective, 'model')
+    && Object.hasOwn(effective, 'effort')
+    && [effective.model, effective.effort].every(value => (
+      value === null || (typeof value === 'string' && value.trim())
+    ))
+    && (profile.model === null || effective.model === profile.model)
+    && (profile.effort === null || effective.effort === profile.effort)
+  )
+}
+
+function assertActionPolicyReceipt(action, receipt, profile) {
+  if (!policyReceiptMatchesProfile(receipt, profile)) {
+    throw new NativeAdapterError(
+      'agent_policy_receipt_mismatch',
+      `native receipt policy evidence differs from ${action.actor_id}/${profile.step}`,
+    )
+  }
+}
+
+function journalPolicyReceiptsMatch(journal, policyBinding) {
+  return journal.entries.every(entry => {
+    if (entry.kind === 'interrupt') return true
+    const expected = entry.policy_profile
+    const bound = policyBinding.resolved_profiles.some(profile => (
+      canonicalJson(profile) === canonicalJson(expected)
+    ))
+    return Boolean(bound && policyReceiptMatchesProfile(entry.receipt, expected))
+  })
 }
 
 function strictProductionSchema(schema) {
@@ -448,6 +496,7 @@ function makeWorkflowReceipt({
       policy_digest: policyBinding.policy_digest,
       resolved_profiles: policyBinding.resolved_profiles,
     })
+    || !journalPolicyReceiptsMatch(journal, policyBinding)
   ) {
     throw new NativeAdapterError(
       'workflow_receipt_invalid',
@@ -502,6 +551,9 @@ function makeWorkflowReceipt({
       host_thread_id: entry.binding?.host_thread_id || null,
       host_turn_id: entry.binding?.host_turn_id || null,
       receipt_schema: entry.receipt?.schema || null,
+      policy_profile_digest: entry.receipt?.policy_profile_digest || null,
+      resolved_profile: structuredClone(entry.receipt?.resolved_profile || null),
+      effective_profile: structuredClone(entry.receipt?.effective_profile || null),
       receipt_digest: entry.receipt?.receipt_digest || null,
       result_status: entry.result?.status || null,
       applied_state_revision: entry.applied_state_revision,
@@ -737,12 +789,16 @@ async function executeBrainstorm(request, {
 
       for (const action of state.pending.actions) {
         const current = await runtimeStore.read(input.run_id)
+        const policyProfile = action.kind === 'interrupt'
+          ? null
+          : policyProfileForAction(policyBinding, action)
         dispatchStarted = true
         await runtimeStore.recordRequestSent({
           run_id: current.run_id,
           expected_state_revision: current.state_revision,
           expected_state_digest: current.state_digest,
           action_id: action.action_id,
+          policy_profile: policyProfile,
         })
       }
 
@@ -793,6 +849,11 @@ async function executeBrainstorm(request, {
 
       const received = await mapBounded(prepared, concurrency, async item => {
         const receipt = await terminalReceipt(adapter, capability, item.turn)
+        assertActionPolicyReceipt(
+          item.action,
+          receipt,
+          policyProfileForAction(policyBinding, item.action),
+        )
         activeTurns.delete(item.action.action_id)
         return { action: item.action, receipt }
       })

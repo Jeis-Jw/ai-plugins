@@ -28,6 +28,13 @@ def board_state(ws: Path) -> dict:
     return json.loads(JSON_BLOCK.search((ws / "board.md").read_text()).group(1))
 
 
+def write_board_state(ws: Path, state: dict) -> None:
+    (ws / "board.md").write_text(
+        "# board\n\n```json\n" + json.dumps(state, ensure_ascii=False, indent=2) + "\n```\n",
+        encoding="utf-8",
+    )
+
+
 def sha(char: str) -> str:
     return "sha256:" + char * 64
 
@@ -368,9 +375,19 @@ def main() -> None:
         assert "mission_state" not in board_state(ws), board_state(ws)
 
         # 6e) budget reserve/dispatch/settle is fenced and idempotent
-        r = run(["budget", "reserve", "res-1", "--lease-id", "lease-1", "--tokens", "40"], tmp)
+        run([
+            "budget", "--mission-id", "mission-basic",
+            "--set-total", "100", "--set-per-run", "40",
+        ], tmp)
+        r = run([
+            "budget", "reserve", "res-1", "--lease-id", "lease-1", "--tokens", "40",
+            "--mission-id", "mission-basic",
+        ], tmp)
         assert r["changed"] and r["reservation"]["status"] == "reserved", r
-        r = run(["budget", "reserve", "res-1", "--lease-id", "lease-1", "--tokens", "40"], tmp)
+        r = run([
+            "budget", "reserve", "res-1", "--lease-id", "lease-1", "--tokens", "40",
+            "--mission-id", "mission-basic",
+        ], tmp)
         assert not r["changed"], r
         run(["budget", "dispatch", "res-1", "--lease-id", "stale"], tmp, expect=6)
         r = run(["budget", "dispatch", "res-1", "--lease-id", "lease-1"], tmp)
@@ -424,66 +441,14 @@ def main() -> None:
         assert state["budget"]["spent_tokens"] == 30, state
         assert state["budget"]["missions"]["mission-a"]["spent_tokens"] == 30, state
 
-        # Existing unscoped reservations bind only through an exact reserve replay.
+        # New unscoped reservations are forbidden once the mission ledger exists.
         run([
-            "budget", "reserve", "legacy-active",
-            "--lease-id", "legacy-active-lease", "--tokens", "25",
-        ], mission_root)
-        run([
-            "budget", "dispatch", "legacy-active",
-            "--lease-id", "legacy-active-lease", "--mission-id", "mission-a",
+            "budget", "reserve", "unscoped-after-mission",
+            "--lease-id", "unscoped-after-mission-lease", "--tokens", "1",
         ], mission_root, expect=6)
-        r = run([
-            "budget", "reserve", "legacy-active",
-            "--lease-id", "legacy-active-lease", "--tokens", "25",
-            "--mission-id", "mission-a",
-        ], mission_root)
-        assert r["changed"] and r["reservation"]["mission_id"] == "mission-a", r
-        r = run([
-            "budget", "reserve", "legacy-active",
-            "--lease-id", "legacy-active-lease", "--tokens", "25",
-            "--mission-id", "mission-a",
-        ], mission_root)
-        assert not r["changed"], r
-        run([
-            "budget", "dispatch", "legacy-active",
-            "--lease-id", "legacy-active-lease",
-        ], mission_root)
-        r = run([
-            "budget", "settle", "legacy-active",
-            "--lease-id", "legacy-active-lease", "--tokens", "20",
-        ], mission_root)
-        assert r["mission_spent_tokens"] == 50, r
-
-        # A known settled legacy reservation contributes to mission spend exactly once.
-        run([
-            "budget", "reserve", "legacy-settled",
-            "--lease-id", "legacy-settled-lease", "--tokens", "15",
-        ], mission_root)
-        run([
-            "budget", "dispatch", "legacy-settled",
-            "--lease-id", "legacy-settled-lease",
-        ], mission_root)
-        run([
-            "budget", "settle", "legacy-settled",
-            "--lease-id", "legacy-settled-lease", "--tokens", "12",
-        ], mission_root)
-        r = run([
-            "budget", "reserve", "legacy-settled",
-            "--lease-id", "legacy-settled-lease", "--tokens", "15",
-            "--mission-id", "mission-a",
-        ], mission_root)
-        assert r["changed"] and r["mission_spent_tokens"] == 62, r
-        r = run([
-            "budget", "reserve", "legacy-settled",
-            "--lease-id", "legacy-settled-lease", "--tokens", "15",
-            "--mission-id", "mission-a",
-        ], mission_root)
-        assert not r["changed"], r
-        assert board_state(mission_ws)["budget"]["missions"]["mission-a"]["spent_tokens"] == 62
 
         # Both caps apply; mission reservations do not consume another mission's cap.
-        run(["budget", "--mission-id", "mission-a", "--set-total", "70"], mission_root)
+        run(["budget", "--mission-id", "mission-a", "--set-total", "38"], mission_root)
         run([
             "budget", "reserve", "mission-a-over",
             "--lease-id", "mission-a-over-lease", "--tokens", "9",
@@ -503,15 +468,15 @@ def main() -> None:
             "budget", "release", "mission-b-ok",
             "--lease-id", "mission-b-ok-lease", "--mission-id", "mission-b",
         ], mission_root)
-        run(["budget", "--set-total", "62"], mission_root)
+        run(["budget", "--set-workspace-total", "30"], mission_root)
         run([
             "budget", "reserve", "workspace-over",
             "--lease-id", "workspace-over-lease", "--tokens", "1",
             "--mission-id", "mission-b",
         ], mission_root, expect=6)
-        run(["budget", "--set-total", "1000"], mission_root)
+        run(["budget", "--set-workspace-total", "1000"], mission_root)
 
-        # run record charges both ledgers and preserves the binding on legacy replay.
+        # run record atomically settles one reservation and stays idempotent.
         run([
             "budget", "--mission-id", "mission-run",
             "--set-total", "10", "--set-per-run", "10",
@@ -521,21 +486,63 @@ def main() -> None:
             "run_id": "RUN-mission-budget",
             "cost": {"tokens": 7, "rounds": 2},
         }
+        run([
+            "budget", "reserve", "mission-run-res",
+            "--lease-id", "mission-run-lease", "--tokens", "10",
+            "--mission-id", "mission-run",
+        ], mission_root)
+        run([
+            "budget", "dispatch", "mission-run-res",
+            "--lease-id", "mission-run-lease", "--mission-id", "mission-run",
+        ], mission_root)
         r = run([
             "run", "record", "--json", "-", "--mission-id", "mission-run",
+            "--reservation-id", "mission-run-res",
         ], mission_root, stdin=json.dumps(mission_run))
         assert r["mission_spent_tokens"] == 7 and not r["mission_budget_exceeded"], r
-        r = run(["run", "record", "--json", "-"], mission_root, stdin=json.dumps(mission_run))
+        r = run([
+            "run", "record", "--json", "-", "--mission-id", "mission-run",
+            "--reservation-id", "mission-run-res",
+        ], mission_root, stdin=json.dumps(mission_run))
         assert r["mission_id"] == "mission-run" and r["mission_spent_tokens"] == 7, r
         mission_run["cost"] = {"tokens": 9, "rounds": 2}
-        r = run(["run", "record", "--json", "-"], mission_root, stdin=json.dumps(mission_run))
-        assert r["mission_spent_tokens"] == 9, r
+        run([
+            "run", "record", "--json", "-", "--mission-id", "mission-run",
+            "--reservation-id", "mission-run-res",
+        ], mission_root, expect=6, stdin=json.dumps(mission_run))
         run([
             "run", "record", "--json", "-", "--mission-id", "mission-b",
+            "--reservation-id", "mission-run-res",
         ], mission_root, expect=6, stdin=json.dumps(mission_run))
         state = board_state(mission_ws)
         stored_run = next(item for item in state["runs"] if item["run_id"] == "RUN-mission-budget")
         assert stored_run["mission_id"] == "mission-run", stored_run
+        assert stored_run["budget_reservation_id"] == "mission-run-res", stored_run
+
+        # A historical flat ledger does not pause a new mission merely because
+        # cumulative workspace spend is above that mission's cap.
+        pcms_root = tmp / "pcms-budget-regression"
+        pcms_root.mkdir()
+        run(["init"], pcms_root)
+        pcms_ws = pcms_root / ".studio"
+        pcms_state = board_state(pcms_ws)
+        pcms_state["budget"]["total_tokens"] = 1_900_000
+        pcms_state["budget"]["spent_tokens"] = 1_837_025
+        assert pcms_state["budget"]["workspace_total_tokens"] is None
+        write_board_state(pcms_ws, pcms_state)
+        run([
+            "budget", "--mission-id", "pcms-control-plane-context-lineage-v1",
+            "--set-total", "240000", "--set-per-run", "60000",
+        ], pcms_root)
+        r = run([
+            "budget", "reserve", "pcms-control-plane-context-lineage-v1",
+            "--lease-id", "pcms-control-plane-context-lineage-v1", "--tokens", "60000",
+            "--mission-id", "pcms-control-plane-context-lineage-v1",
+        ], pcms_root)
+        assert r["changed"] and r["reservation"]["status"] == "reserved", r
+        pcms_state = board_state(pcms_ws)
+        assert pcms_state["budget"]["spent_tokens"] == 1_837_025, pcms_state
+        assert pcms_state["budget"]["workspace_total_tokens"] is None, pcms_state
 
         # 6g) malformed run outputs hit the exit-code contract, not a crash
         run(["run", "record", "--json", "-"], tmp, expect=4,
@@ -682,7 +689,26 @@ def main() -> None:
         assert board_state(legacy)["schema"] == 1  # read-only projection does not rewrite
         run(["--workspace", str(legacy), "budget", "--set-total", "60"], tmp)
         assert board_state(legacy)["schema"] == 2
-        assert board_state(legacy)["budget"]["missions"] == {}
+        assert "missions" not in board_state(legacy)["budget"]
+        assert board_state(legacy)["budget"]["workspace_total_tokens"] is None
+        run([
+            "--workspace", str(legacy), "budget", "reserve", "legacy-res",
+            "--lease-id", "legacy-lease", "--tokens", "20",
+        ], tmp)
+        run([
+            "--workspace", str(legacy), "budget", "--mission-id", "legacy-mission",
+            "--set-total", "20", "--set-per-run", "20",
+        ], tmp)
+        run([
+            "--workspace", str(legacy), "budget", "dispatch", "legacy-res",
+            "--lease-id", "legacy-lease",
+        ], tmp, expect=6)
+        r = run([
+            "--workspace", str(legacy), "budget", "reserve", "legacy-res",
+            "--lease-id", "legacy-lease", "--tokens", "20",
+            "--mission-id", "legacy-mission",
+        ], tmp)
+        assert r["reservation"]["mission_id"] == "legacy-mission", r
 
         # 8b) QualityPlan: evidence/floors gate before utility; unknown telemetry stays incomplete
         quality_plan = {
@@ -750,14 +776,17 @@ def main() -> None:
         run(["context", "outbox", "--json", json.dumps({**candidate, "id": "promotion-no-gate", "owner_gate": False})], tmp, expect=6)
 
         # 8d) one active executor lease per track, fenced by lease_id and reservation
-        run(["budget", "reserve", "res-lease-1", "--lease-id", "lease-a", "--tokens", "20"], tmp)
+        run(["budget", "--mission-id", "mission-lease", "--set-total", "60", "--set-per-run", "20"], tmp)
+        run(["budget", "reserve", "res-lease-1", "--lease-id", "lease-a", "--tokens", "20",
+             "--mission-id", "mission-lease"], tmp)
         r = run(["lease", "claim", "track-a", "--lease-id", "lease-a", "--executor", "external",
                  "--reservation-id", "res-lease-1"], tmp)
         assert r["lease"]["state"] == "claimed", r
         r = run(["lease", "claim", "track-a", "--lease-id", "lease-a", "--executor", "external",
                  "--reservation-id", "res-lease-1"], tmp)
         assert not r["changed"], r
-        run(["budget", "reserve", "res-lease-2", "--lease-id", "lease-b", "--tokens", "20"], tmp)
+        run(["budget", "reserve", "res-lease-2", "--lease-id", "lease-b", "--tokens", "20",
+             "--mission-id", "mission-lease"], tmp)
         run(["lease", "claim", "track-a", "--lease-id", "lease-b", "--executor", "native",
              "--reservation-id", "res-lease-2"], tmp, expect=6)
         run(["lease", "transition", "track-a", "--lease-id", "stale", "--state", "running"], tmp, expect=6)
@@ -819,6 +848,45 @@ def main() -> None:
             "doctor": {"mode": "read-only", "status": "pass"},
             "preflight": {"mode": "read-only", "status": "pass"},
         }
+        # A reservation created on a legacy unscoped ledger cannot enter a
+        # mission-aware workflow until exact reserve replay binds it.
+        run([
+            "--workspace", str(legacy), "context", "put", "item", "--json",
+            json.dumps({"id": "legacy-item", "kind": "fact", "content": "bound",
+                        "source_ref": "test:legacy"}),
+        ], tmp)
+        legacy_bundle = run([
+            "--workspace", str(legacy), "context", "compact",
+            "--bundle-id", "legacy-bundle", "--item-id", "legacy-item",
+        ], tmp)["context"]
+        legacy_packet = {
+            **packet_v2,
+            "track_id": "track-legacy-bind",
+            "context_ref": "legacy-bundle",
+            "digest": legacy_bundle["digest"],
+            "budget_reservation_id": "legacy-res",
+            "mission_id": "legacy-mission",
+            "executor": "native",
+        }
+        r = run([
+            "--workspace", str(legacy), "workflow", "dispatch",
+            "--packet", json.dumps({key: value for key, value in legacy_packet.items()
+                                    if key != "mission_id"}),
+            "--plan", json.dumps(quality_plan), "--lease-id", "legacy-lease",
+        ], tmp, expect=6)
+        assert r["error_code"] == "mission_binding_required", r
+        r = run([
+            "--workspace", str(legacy), "workflow", "dispatch",
+            "--packet", json.dumps({**legacy_packet, "mission_id": "wrong-mission"}),
+            "--plan", json.dumps(quality_plan), "--lease-id", "legacy-lease",
+        ], tmp, expect=6)
+        assert r["error_code"] == "reservation_mismatch", r
+        r = run([
+            "--workspace", str(legacy), "workflow", "dispatch",
+            "--packet", json.dumps(legacy_packet), "--plan", json.dumps(quality_plan),
+            "--lease-id", "legacy-lease",
+        ], tmp)
+        assert r["selected_executor"] == "native", r
         run(["workflow", "validate-packet", "--json", json.dumps(packet)], tmp)
         unsafe_context = {**packet, "track_id": "track-unsafe-context", "context_ref": "../escape"}
         r = run(["workflow", "validate-packet", "--json", json.dumps(unsafe_context)], tmp, expect=6)
@@ -856,7 +924,8 @@ def main() -> None:
             "budget", "reserve", "res-wf-ext", "--lease-id", "lease-wf-ext",
             "--tokens", "120", "--mission-id", "mission-workflow",
         ], tmp)
-        r = run(["workflow", "dispatch", "--packet", json.dumps(packet),
+        mission_packet = {**packet_v2, "mission_id": "mission-workflow"}
+        r = run(["workflow", "dispatch", "--packet", json.dumps(mission_packet),
                  "--plan", json.dumps(quality_plan),
                  "--capabilities", json.dumps(capabilities), "--lease-id", "lease-wf-ext"], tmp)
         assert r["selected_executor"] == "external" and not r["fallback"], r
@@ -876,25 +945,53 @@ def main() -> None:
                 {**quality_plan["criteria"][1], "floor": 0.1},
             ],
         }
-        r = run(["workflow", "result", "--packet", json.dumps(packet), "--plan", json.dumps(weakened_plan),
+        r = run(["workflow", "result", "--packet", json.dumps(mission_packet), "--plan", json.dumps(weakened_plan),
                  "--json", json.dumps(success), "--lease-id", "lease-wf-ext"], tmp, expect=6)
         assert r["error_code"] == "quality_plan_binding_mismatch", r
-        r = run(["workflow", "result", "--packet", json.dumps(packet), "--plan", json.dumps(quality_plan),
+        r = run(["workflow", "result", "--packet", json.dumps(mission_packet), "--plan", json.dumps(quality_plan),
                  "--json", json.dumps(success), "--lease-id", "lease-wf-ext"], tmp)
         assert r["readyForIntegration"] and r["lease"]["state"] == "succeeded", r
         assert r["lease"]["external_ref"] == "issue:54" and r["lease"]["coarse_status"] == "succeeded", r
         assert not ({"issue", "branch", "pr", "raw_transcript"} & set(r["lease"])), r
         assert board_state(ws)["budget"]["missions"]["mission-workflow"]["spent_tokens"] == 100
-        r = run(["workflow", "result", "--packet", json.dumps(packet), "--plan", json.dumps(quality_plan),
+        r = run(["workflow", "result", "--packet", json.dumps(mission_packet), "--plan", json.dumps(quality_plan),
                  "--json", json.dumps(success), "--lease-id", "lease-wf-ext"], tmp)
         assert not r["changed"], r
+        # Recording the already-settled workflow receipt links the run without
+        # charging the workspace or mission a second time.
+        workflow_run = {
+            **run_out,
+            "run_id": "RUN-workflow-reservation",
+            "cost": {"tokens": 100, "token_coverage": "exact", "rounds": 2},
+        }
+        before_workflow_record = board_state(ws)["budget"]
+        r = run([
+            "run", "record", "--json", "-", "--mission-id", "mission-workflow",
+            "--reservation-id", "res-wf-ext",
+        ], tmp, stdin=json.dumps(workflow_run))
+        after_workflow_record = board_state(ws)["budget"]
+        assert after_workflow_record["spent_tokens"] == before_workflow_record["spent_tokens"], r
+        assert (
+            after_workflow_record["missions"]["mission-workflow"]["spent_tokens"]
+            == before_workflow_record["missions"]["mission-workflow"]["spent_tokens"]
+        ), r
+        r = run([
+            "run", "record", "--json", "-", "--mission-id", "mission-workflow",
+            "--reservation-id", "res-wf-ext",
+        ], tmp, stdin=json.dumps(workflow_run))
+        assert board_state(ws)["budget"]["spent_tokens"] == after_workflow_record["spent_tokens"], r
+        assert (
+            board_state(ws)["budget"]["reservations"]["res-wf-ext"]["run_id"]
+            == "RUN-workflow-reservation"
+        )
 
         # Unknown token telemetry does not block delivery, fabricate spend, or
         # make an efficiency claim.
         unknown_packet = {
-            **packet,
+            **packet_v2,
             "track_id": "track-unknown-tokens",
             "budget_reservation_id": "res-unknown-tokens",
+            "mission_id": "mission-unknown-tokens",
         }
         run([
             "budget", "--mission-id", "mission-unknown-tokens",
@@ -950,27 +1047,37 @@ def main() -> None:
                 )
             )
         )
-        run(["budget", "--set-total", str(committed_exposure)], tmp)
+        run(["budget", "--set-workspace-total", str(committed_exposure)], tmp)
         run(["budget", "reserve", "res-after-unknown", "--lease-id", "lease-after-unknown",
-             "--tokens", "1"], tmp, expect=6)
-        run(["budget", "--set-total", str(committed_exposure + 1)], tmp)
+             "--tokens", "1", "--mission-id", "mission-workflow"], tmp, expect=6)
+        run(["budget", "--set-workspace-total", str(committed_exposure + 1)], tmp)
         r = run(["budget", "reserve", "res-after-unknown", "--lease-id", "lease-after-unknown",
-                 "--tokens", "1"], tmp)
+                 "--tokens", "1", "--mission-id", "mission-workflow"], tmp)
         assert r["changed"], r
         run(["budget", "release", "res-after-unknown", "--lease-id", "lease-after-unknown"], tmp)
-        run(["budget", "--set-total", "1000"], tmp)
+        run(["budget", "--set-workspace-total", "1000"], tmp)
 
         # pre-dispatch unavailable/unknown falls back to native before any external start
-        fallback_packet = {**packet, "track_id": "track-fallback", "budget_reservation_id": "res-fallback"}
-        run(["budget", "reserve", "res-fallback", "--lease-id", "lease-fallback", "--tokens", "30"], tmp)
+        run(["budget", "--mission-id", "mission-fallback", "--set-total", "30", "--set-per-run", "30"], tmp)
+        fallback_packet = {
+            **packet_v2, "track_id": "track-fallback", "budget_reservation_id": "res-fallback",
+            "mission_id": "mission-fallback",
+        }
+        run(["budget", "reserve", "res-fallback", "--lease-id", "lease-fallback", "--tokens", "30",
+             "--mission-id", "mission-fallback"], tmp)
         r = run(["workflow", "dispatch", "--packet", json.dumps(fallback_packet),
                  "--plan", json.dumps(quality_plan),
                  "--lease-id", "lease-fallback"], tmp)
         assert r["selected_executor"] == "native" and r["fallback"] and r["worker_handoff"] is None, r
 
         # after external dispatch, failure requires resume or cancel-confirm+release before fallback
-        failed_packet = {**packet, "track_id": "track-failed", "budget_reservation_id": "res-failed"}
-        run(["budget", "reserve", "res-failed", "--lease-id", "lease-failed", "--tokens", "40"], tmp)
+        run(["budget", "--mission-id", "mission-failed", "--set-total", "60", "--set-per-run", "40"], tmp)
+        failed_packet = {
+            **packet_v2, "track_id": "track-failed", "budget_reservation_id": "res-failed",
+            "mission_id": "mission-failed",
+        }
+        run(["budget", "reserve", "res-failed", "--lease-id", "lease-failed", "--tokens", "40",
+             "--mission-id", "mission-failed"], tmp)
         run(["workflow", "dispatch", "--packet", json.dumps(failed_packet),
              "--plan", json.dumps(quality_plan),
              "--capabilities", json.dumps(capabilities), "--lease-id", "lease-failed"], tmp)
@@ -990,7 +1097,8 @@ def main() -> None:
                  "--lease-id", "lease-failed"], tmp, expect=6)
         assert r["error_code"] == "recovery_required", r
         premature = {**failed_packet, "budget_reservation_id": "res-premature", "executor": "native"}
-        run(["budget", "reserve", "res-premature", "--lease-id", "lease-premature", "--tokens", "10"], tmp)
+        run(["budget", "reserve", "res-premature", "--lease-id", "lease-premature", "--tokens", "10",
+             "--mission-id", "mission-failed"], tmp)
         r = run(["workflow", "dispatch", "--packet", json.dumps(premature),
                  "--plan", json.dumps(quality_plan), "--lease-id", "lease-premature"], tmp, expect=6)
         assert r["error_code"] == "active_lease_exists", r
@@ -1001,7 +1109,8 @@ def main() -> None:
         r = run(["workflow", "recover", "track-failed", "--lease-id", "lease-failed", "--action", "cancel-release"], tmp)
         assert r["native_fallback_allowed"] and r["lease"]["cancel_confirmed"], r
         native_packet = {**failed_packet, "budget_reservation_id": "res-native", "executor": "native"}
-        run(["budget", "reserve", "res-native", "--lease-id", "lease-native", "--tokens", "10"], tmp)
+        run(["budget", "reserve", "res-native", "--lease-id", "lease-native", "--tokens", "10",
+             "--mission-id", "mission-failed"], tmp)
         r = run(["workflow", "dispatch", "--packet", json.dumps(native_packet),
                  "--plan", json.dumps(quality_plan), "--lease-id", "lease-native"], tmp)
         assert r["selected_executor"] == "native" and not r["fallback"], r
@@ -1691,11 +1800,18 @@ def main() -> None:
 
         # 9e) task-worker is a first-class packet executor; canonical RoutingPlan is pinned.
         worker_packet = {
-            **packet, "track_id": "track-worker-route", "budget_reservation_id": "res-worker-route",
-            "executor": "task-worker", "constraints": {"review_lease": worker_owned},
+            **packet_v2, "track_id": "track-worker-route", "budget_reservation_id": "res-worker-route",
+            "mission_id": "mission-worker-owned", "executor": "task-worker",
+            "constraints": {
+                **packet_v2["constraints"],
+                "review_lease": worker_owned,
+            },
         }
         run(["workflow", "validate-packet", "--json", json.dumps(worker_packet)], tmp)
-        run(["budget", "reserve", "res-worker-route", "--lease-id", "lease-worker-route", "--tokens", "20"], tmp)
+        run(["budget", "--mission-id", "mission-worker-owned",
+             "--set-total", "20", "--set-per-run", "20"], tmp)
+        run(["budget", "reserve", "res-worker-route", "--lease-id", "lease-worker-route", "--tokens", "20",
+             "--mission-id", "mission-worker-owned"], tmp)
         r = run([
             "workflow", "dispatch", "--packet", json.dumps(worker_packet), "--plan", json.dumps(quality_plan),
             "--routing-plan", json.dumps(worker_owned_route), "--lease-id", "lease-worker-route",
@@ -1916,8 +2032,8 @@ def main() -> None:
             "studio 규약은 Codex/Claude의 일반",
             "`apply_patch`, `git apply`, 직접 파일 수정",
             "track 변경을 main에 직접 반영",
-            "Workflow가 callable tool로 없으면 `multi_agent_v1`",
-            "producer의 역할은 **spawn / wait / record / report**뿐",
+            "Callable Workflow가 없는 solo/pairing Runner",
+            "brainstorm Production admission 실패는 항상 STOP",
             "QA pass. track 변경을 main에 반영할까요?",
             "integrator worker",
             "`readyForIntegration:false`이면",

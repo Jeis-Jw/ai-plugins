@@ -125,6 +125,7 @@ function actionEntry(action) {
     prompt_schema_digest: action.prompt_schema_digest,
     dispatch_state_revision: action.state_revision,
     dispatch_state_digest: action.state_digest,
+    policy_profile: null,
     stage: 'scheduled',
     binding: null,
     receipt: null,
@@ -206,6 +207,16 @@ function validateJournal(journal, runId) {
       || !/^sha256:[0-9a-f]{64}$/.test(entry.prompt_schema_digest || '')
       || !Number.isInteger(entry.dispatch_state_revision)
       || !/^sha256:[0-9a-f]{64}$/.test(entry.dispatch_state_digest || '')
+      || (
+        entry.kind !== 'interrupt'
+        && (
+          (stage === 0 && entry.policy_profile !== null)
+          || (stage > 0 && !resolvedPolicyProfileValid(
+            entry.policy_profile,
+            digest(entry.policy_profile),
+          ))
+        )
+      )
     ) {
       journalTampered('dispatch journal entry identity or stage is invalid')
     }
@@ -366,6 +377,11 @@ function receiptProjection(receipt) {
     host_thread_id: receipt.host_thread_id,
     host_turn_id: receipt.host_turn_id,
     terminal_status: receipt.terminal_status,
+    ...(receipt.policy_profile_digest ? {
+      policy_profile_digest: receipt.policy_profile_digest,
+      resolved_profile: structuredClone(receipt.resolved_profile),
+      effective_profile: structuredClone(receipt.effective_profile),
+    } : {}),
     receipt_digest: receipt.receipt_digest || digest(receipt),
     ...(receipt.error_code ? { error_code: receipt.error_code } : {}),
   }
@@ -413,8 +429,58 @@ const TERMINAL_VALIDATION_FAILURES = new Set([
   'structured_output_missing',
 ])
 
+const RESOLVED_PROFILE_FIELDS = new Set([
+  'schema',
+  'actor_id',
+  'phase',
+  'step',
+  'role_id',
+  'agent_id',
+  'model',
+  'effort',
+  'policy_digest',
+])
+
+function resolvedPolicyProfileValid(resolved, expectedDigest) {
+  return Boolean(
+    resolved
+    && typeof resolved === 'object'
+    && !Array.isArray(resolved)
+    && Object.keys(resolved).length === RESOLVED_PROFILE_FIELDS.size
+    && Object.keys(resolved).every(field => RESOLVED_PROFILE_FIELDS.has(field))
+    && resolved.schema === 'studio-native-resolved-agent-profile/v1'
+    && /^sha256:[0-9a-f]{64}$/.test(resolved.policy_digest || '')
+    && expectedDigest === digest(resolved)
+  )
+}
+
+function validateReceiptPolicyEvidence(receipt) {
+  const resolved = receipt.resolved_profile
+  const effective = receipt.effective_profile
+  if (
+    !resolvedPolicyProfileValid(resolved, receipt.policy_profile_digest)
+    || !effective
+    || typeof effective !== 'object'
+    || Array.isArray(effective)
+    || Object.keys(effective).length !== 2
+    || !Object.hasOwn(effective, 'model')
+    || !Object.hasOwn(effective, 'effort')
+    || [effective.model, effective.effort].some(value => (
+      value !== null && (typeof value !== 'string' || !value.trim())
+    ))
+    || (resolved.model !== null && effective.model !== resolved.model)
+    || (resolved.effort !== null && effective.effort !== resolved.effort)
+  ) {
+    throw new PersistentBrokerError(
+      'native_receipt_invalid',
+      'native terminal receipt does not preserve its exact resolved policy evidence',
+    )
+  }
+}
+
 export function validateNativeTerminalReceipt(action, receipt) {
   if (receipt.schema === 'studio-native-action-receipt/v1') {
+    validateReceiptPolicyEvidence(receipt)
     if (
       action.kind === 'interrupt'
       || receipt.terminal_status !== 'completed'
@@ -429,6 +495,7 @@ export function validateNativeTerminalReceipt(action, receipt) {
     return
   }
   if (receipt.schema === 'studio-native-failure-receipt/v1') {
+    validateReceiptPolicyEvidence(receipt)
     const validationFailure = (
       receipt.terminal_status === 'completed'
       && TERMINAL_VALIDATION_FAILURES.has(receipt.error_code)
@@ -638,6 +705,7 @@ export class PersistentBrainstormStore {
     expected_state_revision: revision,
     expected_state_digest: stateDigest,
     action_id: actionId,
+    policy_profile: policyProfile,
   }) {
     return this.#withLock(runId, async () => {
       let state = await this.read(runId)
@@ -646,13 +714,22 @@ export class PersistentBrainstormStore {
         throw new PersistentBrokerError('production_dispatch_required', 'dispatch journal is Production-only')
       }
       const journal = await this.readDispatch(runId)
-      const { entry } = this.#entryForPending(state, journal, actionId)
+      const { action, entry } = this.#entryForPending(state, journal, actionId)
       if (entry.stage !== 'scheduled') {
         throw new PersistentBrokerError('dispatch_stage_invalid', 'request_sent requires scheduled')
       }
       if (!state.native_started) {
         state = markPersistentNativeStarted(state)
         await this.commit(runId, state)
+      }
+      if (action.kind !== 'interrupt') {
+        if (!resolvedPolicyProfileValid(policyProfile, digest(policyProfile))) {
+          throw new PersistentBrokerError(
+            'agent_policy_invalid',
+            'request_sent requires the exact resolved policy profile',
+          )
+        }
+        entry.policy_profile = structuredClone(policyProfile)
       }
       entry.stage = 'request_sent'
       journal.dispatch_started = true
@@ -802,6 +879,8 @@ export class PersistentBrainstormStore {
         || receipt.environment_digest !== entry.binding?.environment_digest
         || receipt.binary_digest !== state.capability.binary_digest
         || receipt.schema_digest !== state.capability.schema_digest
+        || canonicalValue(receipt.resolved_profile) !== canonicalValue(entry.policy_profile)
+        || receipt.policy_profile_digest !== digest(entry.policy_profile)
       ) {
         throw new PersistentBrokerError('native_receipt_invalid', 'receipt differs from the admitted turn binding')
       }
