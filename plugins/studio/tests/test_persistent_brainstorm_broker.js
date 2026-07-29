@@ -290,6 +290,51 @@ test('critic IDs and participant anchors are exact-schema checked', () => {
   assert.equal(anchorState.pending.actions[0].repair_attempt, 1)
 })
 
+test('participant turn deltas are normalized-deduplicated and public output omits critic join metadata', () => {
+  let state = createPersistentBrainstorm(input({
+    run_id: 'RUN-delta-dedupe',
+    maxRounds: 1,
+  }))
+  state = apply(state, [
+    { utterance: 'a', deltas: [] },
+    { utterance: 'b', deltas: [] },
+  ])
+  state = apply(state, [{
+    utterance: 'one outcome twice',
+    deltas: [
+      { changed_what: 'bounded parser', anchor: 'artifact', evidence: 'scope.md' },
+      { changed_what: ' bounded parser\r\n', anchor: 'artifact', evidence: ' scope.md ' },
+    ],
+  }])
+  assert.deepEqual(state.round_submitted.map(item => item.id), [0])
+  state = apply(state, [{ utterance: 'b', deltas: [] }])
+  assert.match(state.pending.actions[0].prompt, /"id":0/)
+  assert.doesNotMatch(state.pending.actions[0].prompt, /"id":1/)
+  state = apply(state, [{
+    verified: [{
+      id: 0,
+      valid: true,
+      outcome_linked: true,
+      reason: 'one bounded artifact outcome',
+    }],
+  }])
+  state = apply(state, [{
+    synthesis: 'bounded parser',
+    minority: 'none',
+    proposals: [],
+  }])
+  state = apply(state, [{ alive: true, reason: 'one verified outcome' }])
+  assert.equal(state.output.receipt.counters.valid_deltas, 1)
+  assert.deepEqual(state.output.delta_log, [{
+    round: 1,
+    changed_what: 'bounded parser',
+    anchor: 'artifact',
+    evidence: 'scope.md',
+  }])
+  assert.equal(Object.hasOwn(state.output.delta_log[0], 'id'), false)
+  assert.equal(Object.hasOwn(state.output.delta_log[0], 'by'), false)
+})
+
 test('summarizer and final verdict malformed output use one bounded same-handle repair', () => {
   let state = createPersistentBrainstorm(input({ run_id: 'RUN-terminal-repair' }))
   state = apply(state, [

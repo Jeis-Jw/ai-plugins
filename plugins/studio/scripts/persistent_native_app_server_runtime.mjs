@@ -16,8 +16,13 @@ export const APP_SERVER_PROTOCOL = 'codex-app-server-stdio/v2'
 export const APP_SERVER_CONTRACT_STABILITY = 'pinned-experimental-v2'
 export const BUNDLED_CODEX_BINARY = '/Applications/ChatGPT.app/Contents/Resources/codex'
 export const PINNED_CODEX_VERSION = 'codex-cli 0.146.0-alpha.3.1'
-export const PINNED_BINARY_DIGEST = 'sha256:6d8be49e49751554df16572369e636cbe02c84b208cad3dc35528c846eeca223'
+export const LEGACY_PINNED_BINARY_DIGEST = 'sha256:6d8be49e49751554df16572369e636cbe02c84b208cad3dc35528c846eeca223'
+export const PINNED_BINARY_DIGEST = 'sha256:fb2b6b35789e59c885cf4d2aee12475809dd67b2c10df580e638122fd6b3438e'
 export const PINNED_SCHEMA_DIGEST = 'sha256:a911a642ce504968155a282435e8f2a3300c7815fc1c6e1633e7c55c5f924293'
+export const SUPPORTED_BINARY_DIGESTS = Object.freeze([
+  LEGACY_PINNED_BINARY_DIGEST,
+  PINNED_BINARY_DIGEST,
+])
 
 const MAX_PROTOCOL_BYTES = 1024 * 1024
 const TOOL_CAPTURE_PROVIDER = 'studio_tool_capture'
@@ -450,15 +455,26 @@ export async function fingerprintAppServer({
     }
     const schemaDigest = sha256(canonicalJson(schema))
     const binaryDigest = sha256(await readFile(canonicalBinary))
-    if (
-      !allowedVersions.includes(version)
-      || !allowedBinaryDigests.includes(binaryDigest)
-      || !allowedSchemaDigests.includes(schemaDigest)
-    ) {
+    const allowlistDiagnostics = {
+      version: {
+        expected: [...allowedVersions],
+        actual: version,
+        matched: allowedVersions.includes(version),
+      },
+      binary_digest: {
+        expected: [...allowedBinaryDigests],
+        actual: binaryDigest,
+        matched: allowedBinaryDigests.includes(binaryDigest),
+      },
+      schema_digest: {
+        expected: [...allowedSchemaDigests],
+        actual: schemaDigest,
+        matched: allowedSchemaDigests.includes(schemaDigest),
+      },
+    }
+    if (Object.values(allowlistDiagnostics).some(field => !field.matched)) {
       throw new NativeAdapterError('capability_allowlist_mismatch', 'binary/version/schema is outside the fresh allowlist', {
-        version,
-        binary_digest: binaryDigest,
-        schema_digest: schemaDigest,
+        allowlist_diagnostics: allowlistDiagnostics,
       })
     }
     const verifiedAt = new Date(now).toISOString()
@@ -2938,7 +2954,7 @@ export function createPersistentNativeAppServer(options) {
     sourceCodexHome: join(homedir(), '.codex'),
     env: process.env,
     allowedVersions: [PINNED_CODEX_VERSION],
-    allowedBinaryDigests: [PINNED_BINARY_DIGEST],
+    allowedBinaryDigests: [...SUPPORTED_BINARY_DIGESTS],
     allowedSchemaDigests: [PINNED_SCHEMA_DIGEST],
     freshnessMs: 5 * 60_000,
     requestTimeoutMs: 15_000,

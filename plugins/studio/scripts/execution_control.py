@@ -71,8 +71,8 @@ def persistent_ritual_route(ritual: str, item_scale: str) -> dict[str, Any]:
             "execution_path": "persistent-native-app-server",
             "controller": "scripts/persistent_brainstorm_controller.mjs",
             "runtime_capability_required": True,
-            "fallback_path": "isolated-runner",
-            "fallback_allowed_until": "request_sent",
+            "fallback_path": None,
+            "fallback_allowed_until": None,
         }
     return {
         "schema": RITUAL_EXECUTION_ROUTE_SCHEMA,

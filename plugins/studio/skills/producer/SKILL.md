@@ -287,12 +287,14 @@ mutable ledger와 current-task summary로만 갱신한다.
 
 runtime/state root는 다른 실행과 공유하지 않는 canonical absolute directory로 만들고 mode
 `0700`을 유지한다. 민감한 ContextPack·credential·사용자 데이터는 이 context-only
-brainstorm request에 넣지 않는다. capability가 pre-dispatch admission에서 실패한 경우에만
-`status:"fallback_required"`, `fallback_allowed:true`,
-`execution_path:"isolated-runner"`가 모두 일치할 때만 isolated Runner를 사용할 수 있다.
-첫 durable `request_sent` 뒤에는 CLI Runner를 포함한 중간 fallback, replacement spawn,
-alias 변경을 금지한다. malformed output은 original handle에서 한 번만 repair하며 불완전한
-cancel/cleanup은 `recovery_required`다.
+brainstorm request에 넣지 않는다. capability가 pre-dispatch admission에서 실패하면
+`status:"admission_failed"`, `execution_path:"persistent-native-app-server"`,
+`fallback_allowed:false`로 STOP한다. `admission_diagnostics`의 version,
+binary digest, schema digest별 expected/actual/matched 값으로 pin drift를 진단하되
+isolated Runner나 `codex exec --ephemeral`로 대체하지 않는다. 첫 durable
+`request_sent` 뒤에도 중간 fallback, replacement spawn, alias 변경을 금지한다.
+malformed output은 original handle에서 한 번만 repair하며 불완전한 cancel/cleanup은
+`recovery_required`다.
 
 Brainstorm persistence는 배정된 회의 작업 단위 안에서만 유지한다. 단순한 round·turn·run
 종료가 아니라 담당 완료조건과 outstanding interaction 0을 확인한 뒤에만 role thread와
@@ -313,28 +315,6 @@ node "$STUDIO_ROOT/scripts/persistent_brainstorm_controller.mjs" \
 `workflow_receipt.schema:"studio-persistent-production-workflow-receipt/v1"`인 경우뿐이다.
 `aborted`, `failed`, `error`, `recovery_required`, 불완전/비 JSON 출력은 모두 STOP한다.
 `tokens:null`, `token_coverage:"unavailable"`은 0/exact로 바꾸지 않는다.
-
-명시적인 pre-dispatch 결과에서 `status:"fallback_required"`,
-`fallback_allowed:true`, `execution_path:"isolated-runner"`가 모두 일치할 때만 아래
-Workflow/isolated CLI 경로를 사용한다. 이 경로는 호환용 **non-persistent fallback
-profile**이며 persistent handle을 주장하지 않는다.
-
-```
-1. 페르소나 로드: .studio/crew/planner-a.md, planner-b.md (frontmatter + 본문)
-2. rubric 로드: $CLAUDE_PLUGIN_ROOT/critic/rubric.md
-3. Workflow 호출 (백그라운드):
-     scriptPath = "$CLAUDE_PLUGIN_ROOT/broker/brainstorm.workflow.js"
-     args = {
-       agenda: "<이 run의 안건>",
-       personas: [{name, agentId, roleId, role, prior, body}, ...], // roleId/name=정책 key, role=표시용
-       criticRubric: "<rubric.md 내용>",
-       agentPolicy: <config get의 config>,     // model/effort 정책
-       agentRuntime: "claude|codex",          // verified capability와 일치할 때만
-       runtimeCapability: <RoutingPlan.runtime_capability>,
-       overrides: {},                                 // 선택: 이 run만 강제 (예: {effort:"low"})
-       productionProfile: "standard", // 기본 2 rounds·dryStop 1; major만 full(4/2)
-     }
-```
 
 ### 작업형 (pairing) — 코드+테스트, track 워크트리 격리
 

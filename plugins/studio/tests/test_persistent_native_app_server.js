@@ -251,13 +251,30 @@ test('version and schema drift fail admission before a role can start', async t 
   })
   await assert.rejects(
     version.adapter.admit(),
-    error => error instanceof NativeAdapterError && error.code === 'capability_allowlist_mismatch',
+    error => {
+      assert.ok(error instanceof NativeAdapterError)
+      assert.equal(error.code, 'capability_allowlist_mismatch')
+      assert.deepEqual(error.details.allowlist_diagnostics.version, {
+        expected: ['codex-cli impossible'],
+        actual: VERSION,
+        matched: false,
+      })
+      assert.equal(error.details.allowlist_diagnostics.binary_digest.matched, true)
+      assert.equal(error.details.allowlist_diagnostics.schema_digest.matched, true)
+      return true
+    },
   )
 
   const schema = await harness(t, { scenario: 'schema-drift' })
   await assert.rejects(
     schema.adapter.admit(),
-    error => error instanceof NativeAdapterError && error.code === 'capability_allowlist_mismatch',
+    error => (
+      error instanceof NativeAdapterError
+      && error.code === 'capability_allowlist_mismatch'
+      && error.details.allowlist_diagnostics.version.matched === true
+      && error.details.allowlist_diagnostics.binary_digest.matched === true
+      && error.details.allowlist_diagnostics.schema_digest.matched === false
+    ),
   )
 })
 

@@ -287,14 +287,15 @@ function actorIds(request) {
   return [...participants, 'critic:critic', 'summarizer:summarizer']
 }
 
-function fallbackResult(error) {
+function admissionFailureResult(error) {
   return {
     schema: CONTROLLER_SCHEMA,
     ok: false,
-    status: 'fallback_required',
-    execution_path: 'isolated-runner',
-    fallback_allowed: true,
+    status: 'admission_failed',
+    execution_path: 'persistent-native-app-server',
+    fallback_allowed: false,
     reason: error.code || 'native_admission_unavailable',
+    admission_diagnostics: error.details?.allowlist_diagnostics || null,
   }
 }
 
@@ -361,7 +362,6 @@ async function executeBrainstorm(request, {
 }, {
   adapterFactory,
   store,
-  fallbackHandler = null,
   authority,
 }) {
   const input = validateRequest(request)
@@ -392,9 +392,7 @@ async function executeBrainstorm(request, {
       capability = await adapter.admit()
     } catch (error) {
       if (error instanceof NativeAdapterError) {
-        const result = fallbackResult(error)
-        if (fallbackHandler) await fallbackHandler(result)
-        return brandResult(result, authority)
+        return brandResult(admissionFailureResult(error), authority)
       }
       throw error
     }
@@ -613,7 +611,6 @@ export async function executeProductionBrainstorm(request, options = {}) {
 export function createPersistentBrainstormControllerForTest({
   adapterFactory,
   store,
-  fallbackHandler = null,
 }) {
   if (!process.env.NODE_TEST_CONTEXT) {
     throw new PersistentBrokerError(
@@ -630,7 +627,6 @@ export function createPersistentBrainstormControllerForTest({
   return (request, options) => executeBrainstorm(request, options, {
     adapterFactory,
     store,
-    fallbackHandler,
     authority: 'test',
   })
 }

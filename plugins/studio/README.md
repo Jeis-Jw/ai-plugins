@@ -255,10 +255,12 @@ node plugins/studio/scripts/persistent_brainstorm_controller.mjs \
 
 성공은 `ok:true`, root/envelope `status:"completed"`,
 `execution_path:"persistent-native-app-server"`, `fallback_allowed:false`, exact Production
-workflow receipt가 모두 일치할 때뿐이다. pre-dispatch admission이 명시적으로
-`status:"fallback_required"`, `fallback_allowed:true`,
-`execution_path:"isolated-runner"`를 모두 반환한 경우만 아래 isolated Runner를 사용한다.
-`aborted|failed|error|recovery_required`와 불완전 출력은 STOP한다. 민감한
+workflow receipt가 모두 일치할 때뿐이다. pre-dispatch admission 실패는
+`status:"admission_failed"`, `execution_path:"persistent-native-app-server"`,
+`fallback_allowed:false`로 STOP한다. `admission_diagnostics`의 version,
+binary digest, schema digest별 expected/actual/matched 값으로 pin drift를 진단하되
+isolated Runner나 `codex exec --ephemeral`로 대체하지 않는다.
+`aborted|failed|error|recovery_required`와 불완전 출력도 STOP한다. 민감한
 ContextPack·credential·사용자 데이터는 context-only brainstorm request에서 제외한다.
 회의 workflow가 배정된 작업 단위라면 그 완료조건과 outstanding interaction이 모두
 해소된 뒤에만 role thread와 rollout을 delete한다. 회의·round·turn·run의 종료 자체는
@@ -292,21 +294,14 @@ owner 요구를 재정의하거나 범위를 확대하지 못하게 한다.
 execution-control을 그대로 사용하며, 외부 executor나 continuation handle을 제공하지 않는
 호환 경로에는 persistence를 주장하지 않는다.
 
-```bash
-node plugins/studio/scripts/codex_workflow_runner.mjs \
-  --broker brainstorm \
-  --args-file /absolute/path/to/sealed-args.json \
-  --timeout-ms 120000
-```
-
 - CLI 해석: absolute `STUDIO_CODEX_CLI` override → `PATH`의 `codex` → macOS bundled CLI.
 - 실행: `shell:false`, prompt stdin, `--ephemeral`, `approval_policy="never"`,
   `--output-schema`, `--output-last-message`; bypass·`--add-dir`는 사용하지 않는다.
 - schema: optional property는 required nullable로 정규화한다. `oneOf`는 root type이
   배타적일 때만 `anyOf`로 낮추고, overlap/판정 불가는 dispatch 전에
   `schema_unsupported`로 거부한다.
-- 경계: schema/output은 1 MiB 제한과 임시 디렉터리 cleanup을 적용한다. brainstorm은
-  전부 read-only다. fallback pairing은 검증된 secondary worktree의 dev만
+- 경계: schema/output은 1 MiB 제한과 임시 디렉터리 cleanup을 적용한다. verified
+  non-persistent pairing은 검증된 secondary worktree의 dev만
   workspace-write이며 target과 Runner cwd의 git common-dir가 같아야 한다.
   qa/critic은 read-only다.
 - 종료: timeout은 process group에 TERM 후 KILL을 적용하고 recursion을 거부한다.

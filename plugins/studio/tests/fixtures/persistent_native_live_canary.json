@@ -31,7 +31,7 @@
     "contract_stability": "pinned-experimental-v2",
     "experimental_api": true,
     "version": "codex-cli 0.146.0-alpha.3.1",
-    "binary_digest": "sha256:6d8be49e49751554df16572369e636cbe02c84b208cad3dc35528c846eeca223",
+    "binary_digest": "sha256:fb2b6b35789e59c885cf4d2aee12475809dd67b2c10df580e638122fd6b3438e",
     "schema_digest": "sha256:a911a642ce504968155a282435e8f2a3300c7815fc1c6e1633e7c55c5f924293",
     "config_digest": "sha256:ce6f99d22b9f2dea6178b070cf62e07278043b4ffd1193782828a2f1fb94d8e7"
   },

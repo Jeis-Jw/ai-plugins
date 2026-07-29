@@ -1539,8 +1539,8 @@ def main() -> None:
             "execution_path": "persistent-native-app-server",
             "controller": "scripts/persistent_brainstorm_controller.mjs",
             "runtime_capability_required": True,
-            "fallback_path": "isolated-runner",
-            "fallback_allowed_until": "request_sent",
+            "fallback_path": None,
+            "fallback_allowed_until": None,
         }, r
         assert r["crew"] == ["planner-a", "planner-b", "researcher", "critic"], r
         assert r["participants"] == ["planner-a", "planner-b", "researcher"], r

@@ -121,6 +121,16 @@ function personaTurnPrompt(transcript, persona, instruction) {
   ].join('\n')
 }
 
+function normalizedDeltaDigest(delta) {
+  const text = value => String(value ?? '').replace(/\r\n?/g, '\n').trim()
+  return JSON.stringify([
+    text(delta.changed_what),
+    text(delta.anchor),
+    text(delta.evidence),
+    text(delta.rejected_alternative),
+  ])
+}
+
 const TURN_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -217,7 +227,13 @@ for (let round = 1; round <= MAX_ROUNDS; round++) {
     transcript += `\n\n[r${round}] ${p.name}: ${turn.utterance}`
     // stable id = position in roundSubmitted; the critic echoes it back so
     // verdicts join by identity, never by array position.
-    for (const d of turn.deltas || []) roundSubmitted.push({ id: roundSubmitted.length, round, by: p.name, ...d })
+    const seenTurnDeltas = new Set()
+    for (const d of turn.deltas || []) {
+      const deltaDigest = normalizedDeltaDigest(d)
+      if (seenTurnDeltas.has(deltaDigest)) continue
+      seenTurnDeltas.add(deltaDigest)
+      roundSubmitted.push({ id: roundSubmitted.length, round, by: p.name, ...d })
+    }
   }
 
   const critique = await modelCall(criticPrompt(roundSubmitted),

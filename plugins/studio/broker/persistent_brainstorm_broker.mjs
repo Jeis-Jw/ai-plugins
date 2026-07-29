@@ -40,6 +40,16 @@ function canonicalJson(value) {
   return JSON.stringify(value)
 }
 
+function normalizedDeltaDigest(delta) {
+  const text = value => String(value ?? '').replace(/\r\n?/g, '\n').trim()
+  return canonicalJson([
+    text(delta.changed_what),
+    text(delta.anchor),
+    text(delta.evidence),
+    text(delta.rejected_alternative),
+  ])
+}
+
 function digest(value) {
   return `sha256:${createHash('sha256').update(canonicalJson(value), 'utf8').digest('hex')}`
 }
@@ -986,7 +996,11 @@ function scheduleCancel(state, failure) {
 function processParticipantOutput(state, actor, output, stage) {
   state.transcript += `${state.transcript ? '\n\n' : ''}[${stage}] ${actor.crew}: ${output.utterance}`
   if (stage.startsWith('r')) {
+    const seenTurnDeltas = new Set()
     for (const delta of output.deltas) {
+      const deltaDigest = normalizedDeltaDigest(delta)
+      if (seenTurnDeltas.has(deltaDigest)) continue
+      seenTurnDeltas.add(deltaDigest)
       state.round_submitted.push({
         id: state.round_submitted.length,
         round: state.round,
@@ -1066,6 +1080,19 @@ function finish(state, verdict) {
       token_savings_claim_eligible: exact,
     },
   }
+  const publicDelta = delta => {
+    const projected = {
+      round: delta.round,
+      changed_what: delta.changed_what,
+      anchor: delta.anchor,
+    }
+    if (delta.evidence !== undefined) projected.evidence = delta.evidence
+    if (delta.rejected_alternative !== undefined) {
+      projected.rejected_alternative = delta.rejected_alternative
+    }
+    if (delta.dry === true) projected.dry = true
+    return projected
+  }
   state.output = {
     run_id: state.run_id,
     ritual: 'brainstorm',
@@ -1074,7 +1101,7 @@ function finish(state, verdict) {
     synthesis: state.converge_synthesis.synthesis,
     minority: state.converge_synthesis.minority,
     proposals: state.converge_synthesis.proposals,
-    delta_log: [...state.delta_log, ...state.dry_log],
+    delta_log: [...state.delta_log, ...state.dry_log].map(publicDelta),
     verdict,
     cost: {
       tokens,

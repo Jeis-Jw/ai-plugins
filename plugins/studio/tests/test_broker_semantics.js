@@ -49,13 +49,18 @@ const brainstorm = await execute(
     if (label.startsWith('diverge:')) return { utterance: `seed ${label}`, deltas: [] }
     if (label === 'debate:r1:a') return {
       utterance: 'drop implicit config',
-      deltas: [{ changed_what: 'config removed from v1', anchor: 'rejected-alternative', evidence: 'scope.md#v1' }],
+      deltas: [
+        { changed_what: 'config removed from v1', anchor: 'rejected-alternative', evidence: 'scope.md#v1' },
+        { changed_what: ' config removed from v1\r\n', anchor: 'rejected-alternative', evidence: ' scope.md#v1 ' },
+      ],
     }
     if (label === 'debate:r1:b') return {
       utterance: 'agreement only',
       deltas: [{ changed_what: 'we agree', anchor: 'artifact', evidence: 'no artifact' }],
     }
     if (label === 'critic:r1') {
+      const submitted = JSON.parse(prompt.split('--- submitted deltas this round (each has an id) ---\n')[1])
+      assert.deepEqual(submitted.map(item => item.id), [0, 1])
       // Deliberately reverse verdict order: the broker must join by id.
       return { verified: [{ id: 1, valid: false, outcome_linked: false, reason: 'agreement' }, { id: 0, valid: true, outcome_linked: true, reason: 'anchored' }] }
     }

@@ -296,11 +296,10 @@ function twoActionFenceStore() {
   return { store, calls }
 }
 
-function testController(store, adapter, fallbackHandler = null) {
+function testController(store, adapter) {
   return createPersistentBrainstormControllerForTest({
     store,
     adapterFactory: () => adapter,
-    fallbackHandler,
   })
 }
 
@@ -431,34 +430,40 @@ test('pending spawn creates only its actor after the durable request_sent fence'
   assert.equal(result.cleanup_receipts.length, 1)
 })
 
-test('native admission failure permits only an isolated Runner fallback', async () => {
-  const fallbacks = []
+test('native admission failure stops the persistent Production route with safe diagnostics', async () => {
+  const diagnostics = {
+    version: { expected: ['codex-cli pinned'], actual: 'codex-cli drifted', matched: false },
+    binary_digest: { expected: [`sha256:${'1'.repeat(64)}`], actual: `sha256:${'2'.repeat(64)}`, matched: false },
+    schema_digest: { expected: [`sha256:${'3'.repeat(64)}`], actual: `sha256:${'3'.repeat(64)}`, matched: true },
+  }
   const execute = testController(
     oneBarrierStore().store,
     fakeAdapter({
       admit: async () => {
-        throw new NativeAdapterError('binary_unavailable', 'missing')
+        throw new NativeAdapterError(
+          'capability_allowlist_mismatch',
+          'drifted',
+          { allowlist_diagnostics: diagnostics },
+        )
       },
     }),
-    result => { fallbacks.push(result) },
   )
   const result = await execute(REQUEST, CONFIG)
   assert.deepEqual(result, {
     schema: 'studio-persistent-brainstorm-controller/v1',
     ok: false,
-    status: 'fallback_required',
-    execution_path: 'isolated-runner',
-    fallback_allowed: true,
-    reason: 'binary_unavailable',
+    status: 'admission_failed',
+    execution_path: 'persistent-native-app-server',
+    fallback_allowed: false,
+    reason: 'capability_allowlist_mismatch',
+    admission_diagnostics: diagnostics,
   })
-  assert.equal(fallbacks.length, 1)
   assert.equal(isProductionBrainstormResult(result), false)
 })
 
 test('partial role-start failure drains siblings, cleans created roles, and forbids fallback', async () => {
   const { store, calls } = twoActionFenceStore()
   const events = []
-  const fallbacks = []
   const adapter = fakeAdapter({
     startRole: async (_, { actorId }) => {
       events.push(`start:${actorId}`)
@@ -481,10 +486,9 @@ test('partial role-start failure drains siblings, cleans created roles, and forb
       }
     },
   })
-  const result = await testController(store, adapter, value => fallbacks.push(value))(REQUEST, CONFIG)
+  const result = await testController(store, adapter)(REQUEST, CONFIG)
   assert.equal(result.status, 'recovery_required')
   assert.equal(result.fallback_allowed, false)
-  assert.equal(fallbacks.length, 0)
   assert.deepEqual(calls.slice(0, 2).map(call => call[0]), ['request_sent', 'request_sent'])
   assert.ok(events.includes('interrupt:turn:RUN-controller:a0001'))
   assert.ok(events.includes('cleanup:role:participant:a'))
@@ -546,7 +550,6 @@ test('parallel begin and wait failures drain settled siblings before role cleanu
 
 test('store create failure never preallocates native roles or mints fallback', async () => {
   const events = []
-  const fallbacks = []
   const store = {
     create: async () => { throw new Error('injected store create failure') },
   }
@@ -561,16 +564,14 @@ test('store create failure never preallocates native roles or mints fallback', a
     },
   })
   await assert.rejects(
-    testController(store, adapter, value => fallbacks.push(value))(REQUEST, CONFIG),
+    testController(store, adapter)(REQUEST, CONFIG),
     /injected store create failure/,
   )
   assert.deepEqual(events, [])
-  assert.deepEqual(fallbacks, [])
 })
 
 test('once beginTurn is accepted, injected terminal failure cannot invoke Runner fallback', async () => {
   const { store, calls } = oneBarrierStore()
-  const fallbacks = []
   const execute = testController(
     store,
     fakeAdapter({
@@ -578,7 +579,6 @@ test('once beginTurn is accepted, injected terminal failure cannot invoke Runner
         throw new NativeAdapterError('terminal_event_missing', 'injected after accepted turn')
       },
     }),
-    result => { fallbacks.push(result) },
   )
   const result = await execute(REQUEST, CONFIG)
   assert.equal(result.ok, false)
@@ -590,7 +590,6 @@ test('once beginTurn is accepted, injected terminal failure cannot invoke Runner
     'response_received',
     'recovery',
   ])
-  assert.equal(fallbacks.length, 0)
 })
 
 test('cleanup failure refreshes projection and returns recovery-required', async () => {
