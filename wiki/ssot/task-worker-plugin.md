@@ -3,7 +3,7 @@ title: task-worker 플러그인
 created_at: 2026-07-14
 summary: provider-neutral 작업 정의·분해·병렬 실행·검증·evidence 재사용을 소유하고 외부 provider가 상태와 delivery를 투영하는 범용 작업 엔진 설계 정본
 tags: [task-worker, workflow, orchestration, execution, evidence]
-verified_at: 2026-07-16
+verified_at: 2026-07-31
 affects_paths: [plugins/task-worker/**, plugins/task-github/**]
 ---
 
@@ -487,6 +487,8 @@ event에는 idempotency key, node/run/lease id, state digest, evidence refs를 �
 - owner intervention과 external mutation
 
 telemetry 누락은 선택적 추가 실행을 제한할 수 있지만 필수 품질·안전 gate를 제거하는 근거가 될 수 없다.
+
+token value 관측은 `scripts/token_probe.py`가 담당한다(관측 전용, 게이트 아님). Claude Code 세션 JSONL의 `message.usage`를 message uuid de-dup으로 합산하는 `probe`와 기존 `workflow-receipt/v1` 스토어의 coverage를 요약하는 `aggregate`를 제공하며, 대상 파일이 하나라도 결손이면 부분합 없이 `null/unavailable`로 퇴각한다. receipt 스키마는 기존 `tokens`/`token_coverage` 필드를 재사용하고 소비처에는 optional resolver로만 연결된다. 상세 계약은 `plugins/task-worker/DESIGN.md`와 `plugins/task-worker/rules/workflow.md`가 정본이다.
 
 ### 14. Conformance fixture
 
