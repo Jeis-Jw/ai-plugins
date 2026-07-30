@@ -26,6 +26,7 @@ subagent에게 맡긴다.
 
 - 별도 Codex/Claude process, CLI, app-server 실행
 - 자체 agent runtime, state store, broker, sandbox, auth, socket 구현
+  (mission receipt 재개 인덱스는 유일한 예외 — DEC-2026-07-30-235418, 아래 "미션 receipt" 절)
 - tool inventory capture나 별도 capability preflight
 - host agent id를 감싼 Studio session id나 lease 생성
 - task-worker, session-review, task-github, wiki의 상태 복제
@@ -125,6 +126,38 @@ dependency 선언이 아니다.
   생성은 금지한다.
 - delivery는 operator가 `enabled:true`로 켠 경우에만 사용하며 work orchestration을 대체하지
   않는다.
+
+## 미션 receipt — 쓰기 시점
+
+미션 재개 앵커는 consumer workspace의 `.studio/receipt/<mission_id>.json` 하나에만
+영속화한다(스키마 `studio.mission-receipt/v1`, 워크스페이스 로컬 — `.gitignore` 유지).
+receipt는 재개 인덱스일 뿐 결정 권한을 갖는 상태 저장소가 아니다. crew 중간 추론,
+산출물 본문, 메시지 로그는 어떤 필드에도 넣지 않는다 — 유계면(mission/lane/agent id)만
+기록하고 무계면(추론 컨텍스트)은 재개 시 재유도한다. 근거: DEC-2026-07-30-235418.
+
+```bash
+python3 "${STUDIO_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/mission_receipt.py" <subcommand> …
+```
+
+쓰기는 다음 5종 이벤트에서만 수행한다. 그 외 시점(중계, 결과 수신, 진행 확인)에는 쓰지 않는다.
+
+| 이벤트 | 시점 | 명령 |
+|---|---|---|
+| 미션 착수 | objective·완료 조건·초기 lane 확정 직후 | `init <mission_id> --objective … [--done-when …]… [--lane LANE_ID=ROLE]…` |
+| lane 상태 전이 | agent 생성(dispatched)·결과 회수(returned)·리뷰 판정(reviewed)·완료(done)·실패(failed) 직후 | `lane <mission_id> <lane_id> --state <state> [--work-ref task-worker:<node_id>] [--agent-id <host_agent_id>] [--ready-next …]` |
+| owner gate 설정·해제 | owner 결정 대기가 생기거나 풀린 직후 | `gate <mission_id> --reason …` / `gate <mission_id> --clear` |
+| pause | 세션을 넘기며 미션을 일시중지할 때 | `pause <mission_id> [--done …] [--remaining …] [--blocker …] [--next-step …]` |
+| 완료 | 최종 보고 직후 | `close <mission_id>` |
+
+- `pause`는 wiki `snapshot save`(SNAP)를 재사용해 고정 필드(완료/잔여/blocker/다음 한
+  걸음)를 남기고 `snapshot_ref`를 기록한다. wiki CLI가 해소되지 않으면
+  `snapshot_ref:null`로 생략한다 — hard dependency가 아니다.
+- SNAP은 transient다. paused 미션에 lane 전이가 오면 재개(status:active)로 간주해
+  폐기하고, `close`에서도 폐기한다. `snapshot_ref`는 null로 돌아간다.
+- 세션 재개는 `show <mission_id>`로 receipt를 읽고 ready_next와 lane의 host agent id에서
+  이어간다. 추론 맥락은 receipt가 아니라 재유도로 복원한다.
+- fail-closed: 스키마 밖 필드·state는 exit 2로 거부되고 파일은 변경되지 않는다.
+  `close` 이후의 모든 쓰기도 거부된다.
 
 ## 소집
 
