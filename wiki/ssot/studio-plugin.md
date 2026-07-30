@@ -3,7 +3,7 @@ title: Studio 플러그인
 created_at: 2026-07-14
 summary: Codex와 Claude Code가 제공하는 subagent 기능으로 역할 기반 crew를 운용하는 무상태 orchestration skill
 tags: [studio, orchestration, crew, codex, claude-code]
-verified_at: 2026-07-29
+verified_at: 2026-07-31
 affects_paths: [plugins/studio/**]
 ---
 
@@ -90,12 +90,13 @@ mission 정리
 ## 구성
 
 - `skills/producer/SKILL.md`: host-native orchestration 규약
+- `skills/cockpit/SKILL.md` + `scripts/cockpit.py`: 고정 4소스(task-worker/session-review/task-github/studio) read-only 상태 집계 (`studio.cockpit/v1`, 상태 변경 없음)
 - `crew/*.md`: host-independent role prompt
 - `rules/casting.md`: 최소 cast 기본값
 - `templates/mission.md`: 선택적 mission 양식
 
-`studio:init`, `studio:doctor`, daemon, CLI는 없다. 설치 후 Producer가 현재 host 기능을
-직접 사용한다.
+`studio:init`, `studio:doctor`, daemon, 상태를 변경하는 CLI는 없다. 설치 후 Producer가
+현재 host 기능을 직접 사용한다.
 
 ## 마이그레이션
 
