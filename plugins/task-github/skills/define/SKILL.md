@@ -7,6 +7,14 @@ description: provider-neutral DefinitionArtifact로 업무를 정의하고, 선�
 
 작업을 provider-neutral immutable `DefinitionArtifact` revision으로 구조화한다. 기록을 선택하면 root/descendant/dependency 전체를 GitHub로 투영하고, 기록하지 않으면 같은 revision을 로컬 lifecycle에서 소비한다. **위키가 있으면 업무 단위로 task 노드를 연결**한다. **정의 확정과 원격 기록 전 반드시 사령관 확인.**
 
+## 쓰지 않는 경우 (negative triggers)
+
+define은 기본 경로가 아니다 — 분해·추적·검증 이득이 있을 때만 진입한다.
+
+- 단일 파일·단일 세션·리뷰 불요 작업은 플러그인 진입 없이 직접 수행한다.
+- 대화 안에서 완결 가능한 질문·조사는 define 대상이 아니다.
+- 리프 고정비(worker spawn + 세리머니, ~20분+)를 넘는 payoff가 없으면 진입하지 않는다.
+
 ## DefinitionArtifact와 GitHub binding 경계 (우선 적용)
 
 아래 기존 Issue 생성 절차는 **GitHub 기록을 선택한 투영 또는 legacy Issue-first 호환 경로에서만** 실행한다. local-only 선택에서는 `gh issue create/edit/comment`를 호출하지 않는다. 기록 선택과 delivery는 독립이다:
