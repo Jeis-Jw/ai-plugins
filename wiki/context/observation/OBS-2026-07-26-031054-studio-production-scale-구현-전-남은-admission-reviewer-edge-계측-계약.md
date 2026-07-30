@@ -3,7 +3,7 @@ title: Studio production scale 구현 전 남은 admission·reviewer edge·계�
 created_at: 2026-07-26
 summary: production scale 구현 전에 solo admission 비용 조건, independent reviewer 실행 edge, studio.py 변경 표면, mixed-scale track 계약과 token telemetry를 닫아야 한다.
 tags: [studio, production-scale, implementation-gap, telemetry, review]
-verified_at: 2026-07-29
+verified_at: 2026-07-31
 search_terms: [solo admission, reviewer edge, mixed-scale track, token telemetry, studio evidence]
 affects_paths: [plugins/studio/**]
 relations:
