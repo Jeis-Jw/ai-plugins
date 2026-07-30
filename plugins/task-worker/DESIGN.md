@@ -30,6 +30,16 @@ started → running → verified → done → closed
 
 각 전이는 idempotent하다. `verify` event에는 구조화된 evidence를 붙인다. `ready`는 같은 artifact digest에 pin된 closed blocker만 완료로 인정하며, active run이 중복되면 fail-closed한다. provider snapshot에서는 unknown blocker를 미해결로 유지하고 dependency cycle이면 부분 ready set도 반환하지 않는다.
 
+## token telemetry (관측 전용)
+
+`scripts/token_probe.py`가 플러그인 기계장치의 토큰 비용을 관측한다. 게이트가 아니라 손익분기선 도출 재료다.
+
+- `probe --session-id S [--agent-id A ...] --json` → `{tokens:<int>|null, token_coverage:"exact"|"unavailable", source, breakdown{input,output,cache_creation,cache_read}|null, agents[]}`. tokens는 4개 필드의 합. `--agent-id`는 기대 subagent 집합이며, 그중 하나라도 결손이면 전체가 unavailable로 퇴각한다.
+- de-dup 계약: 세션 JSONL에서 동일 usage 블록이 연속 라인·iterations[]로 중복 출현한다(실측). message uuid 기준 중복 제거를 계약으로 고정한다.
+- `aggregate --receipts DIR --json` → `{runs, measured_runs, coverage_ratio, tokens_total:<int>|null, by_workflow{}}`. 기존 receipt 스토어를 읽기만 한다.
+- receipt 스키마 무변경: `workflow-receipt/v1`의 `tokens`/`token_coverage`를 재사용하며 `breakdown`/`agents[]`는 stdout 전용이다. 소비처(`definition_artifact.py receipt --tokens`, `session_review.py emit-receipt --tokens`)에는 optional resolver로만 연결되고 hard dependency가 없다.
+- 기각 대안: OTEL(인프라 과대), SubagentStop 훅(usage 미제공), 별도 ledger(기존 receipt와 중복).
+
 ## 0.8.0 generic external review owner
 
 `workflow-review-lease/v1`의 owner/provider는 path-safe opaque identifier다.
