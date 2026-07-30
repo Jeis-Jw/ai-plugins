@@ -15,7 +15,7 @@
       "name": "task-github",
       "source": "./plugins/task-github",
       "description": "task-worker 의존 GitHub adapter — Issue Tree·PR transport와 externally-owned review closeout gate",
-      "version": "0.27.0"
+      "version": "0.27.1"
     },
     {
       "name": "session-review",
@@ -27,13 +27,13 @@
       "name": "studio",
       "source": "./plugins/studio",
       "description": "optional 실행 command와 role별 model/effort로 메인 Producer가 native crew를 지휘하는 오케스트레이터",
-      "version": "0.13.0"
+      "version": "0.14.0"
     },
     {
       "name": "task-worker",
       "source": "./plugins/task-worker",
       "description": "Provider-neutral WorkGraph, 병렬 ready-set, 통합 gate와 opaque external review owner permit 플러그인",
-      "version": "0.8.0"
+      "version": "0.9.0"
     }
   ]
 }

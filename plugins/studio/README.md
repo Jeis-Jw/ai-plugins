@@ -158,10 +158,12 @@ Claude Code 밖에서는 `STUDIO_ROOT`를 설치된 Studio plugin의 절대 경�
 | `rules/casting.md` | 최소 cast 기본값 |
 | `templates/mission.md` | 선택적으로 쓰는 mission 양식 |
 | `scripts/studio_config.py` | model/effort 설정 scaffold·검증·해석 |
+| `scripts/mission_receipt.py` | mission 재개 인덱스 CLI — `.studio/receipt/<mission_id>.json` |
 | `config.example.yml` | 선택적인 spawn policy 예시 |
 
-runtime용 `init`, `doctor`, daemon은 없다. 설치 후 Producer skill이 host 기능을 바로
-사용하며, CLI는 spawn policy를 읽는 결정적 config helper만 제공한다.
+runtime, daemon, `studio:doctor`는 없다. 설치 후 Producer skill이 host 기능을 바로
+사용하며, CLI는 spawn policy config helper와 mission receipt(재개 인덱스) helper
+두 개만 제공한다.
 
 ## 다른 플러그인과의 경계
 
@@ -180,10 +182,13 @@ Studio manifest는 이 플러그인들을 dependency로 선언하지 않는다. 
 
 0.13.0은 runtime을 복원하지 않고 `.studio.yml`의 model/effort spawn policy만 복원한다.
 
-- 기존 `.studio/` 상태는 읽지 않는다.
+- 0.11.x runtime state(`.studio/`의 board/context/review/lease)는 읽지 않는다.
+- `.studio/receipt/`는 mission receipt(세션 간 재개 인덱스)의 신규 네임스페이스다.
+  과거 runtime 상태와 무관하며 `scripts/mission_receipt.py`만 읽고 쓴다
+  (워크스페이스 로컬 — `.gitignore` 유지). 근거: DEC-2026-07-30-235418.
 - `.studio.yml`에서는 `execute` route와 `defaults`, `roles`, `providers`의 model/effort만
   읽는다. 과거 `agents`, `rituals`, broker, runtime capability 설정은 지원하지 않는다.
-- 진행 중 작업은 host가 보유한 agent id가 있을 때 해당 host 기능으로 직접 재개한다.
+- 진행 중 작업은 receipt lane의 host agent id가 있을 때 해당 host 기능으로 직접 재개한다.
 - agent id가 없으면 필요한 작업만 새 agent에게 다시 배정한다.
 
 ## 버전

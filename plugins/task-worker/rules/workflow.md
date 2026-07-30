@@ -28,6 +28,22 @@ review가 필요한 edge만 exact `workflow-review-lease/v1`을 binding의 `revi
 
 동일 physical command를 줄이기 위해 논리 node를 합치거나 integration gate를 생략하지 않는다.
 
+## token telemetry
+
+관측 전용이다 — 게이트가 아니며 수치 때문에 non-zero exit하지 않는다.
+
+- capture 지점: Claude Code 세션 JSONL `~/.claude/projects/<slug>/<session_id>.jsonl` + `<session_id>/subagents/agent-*.jsonl`의 `message.usage`. 테스트는 `--projects-root`로 주입한다.
+- de-dup: 동일 usage 블록이 연속 라인·iterations[]로 중복 출현하므로 message uuid 기준으로 1회만 합산한다. 단순 줄 합산 금지.
+- null-not-0: 대상 파일이 하나라도 결손이거나 파싱에 실패하면 부분합을 내지 않는다 → `tokens:null` + `token_coverage:"unavailable"`. Codex 호스트나 경로 부재도 동일하게 퇴각한다.
+- 기록 시점: receipt 방출 직전 1회(closeout). 루프 중 기록 없음.
+- 저장: 기존 `workflow-receipt/v1`의 `tokens`/`token_coverage` 필드만 재사용한다. 필드 추가 금지, 신규 ledger 없음. `breakdown`/`agents[]`는 probe stdout 전용이다.
+- 소비: `definition_artifact.py receipt --tokens`, `session_review.py emit-receipt --tokens`에 probe 결과를 전달한다. optional resolver — hard dependency가 아니다.
+
+```bash
+python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/token_probe.py" probe --session-id "$SID" --json
+python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/token_probe.py" aggregate --receipts .task-worker/local/receipts --json
+```
+
 ## portable script path
 
 ```bash

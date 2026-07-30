@@ -1,9 +1,9 @@
 ---
 title: Studio 플러그인
 created_at: 2026-07-14
-summary: Codex와 Claude Code가 제공하는 subagent 기능으로 역할 기반 crew를 운용하는 무상태 orchestration skill
+summary: Codex와 Claude Code가 제공하는 subagent 기능으로 역할 기반 crew를 운용하는 orchestration skill. 영속 상태는 mission receipt 재개 인덱스 하나뿐이다.
 tags: [studio, orchestration, crew, codex, claude-code]
-verified_at: 2026-07-29
+verified_at: 2026-07-31
 affects_paths: [plugins/studio/**]
 ---
 
@@ -11,7 +11,10 @@ affects_paths: [plugins/studio/**]
 
 Studio 0.12.0은 owner의 미션을 역할별 작업으로 나누고, 현재 host가 제공하는 subagent를
 소집해 배정·중계·결과 회수·review/rework를 관리한다. Studio는 별도 agent runtime,
-상태 저장소, control plane service를 두지 않는다.
+결정 권한을 갖는 상태 저장소, control plane service를 두지 않는다. 유일한 영속 상태는
+재개 인덱스인 mission receipt(`.studio/receipt/<mission_id>.json`,
+`studio.mission-receipt/v1`) 하나다
+([[DEC-2026-07-30-235418-studio-mission-receipt를-상태-저장소-금지의-예외-재개-인덱스로-둔다]]).
 
 ```text
 owner
@@ -45,9 +48,14 @@ Host가 제공하지 않는 기능을 Studio가 흉내 내지 않는다. 실제 
 - owner·crew·reviewer 사이 메시지 relay
 - 같은 host agent id를 사용한 feedback과 rework routing
 - 결과 회수와 최종 보고
+- 미션 재개 앵커: `.studio/receipt/<mission_id>.json` — 고정 스키마
+  `studio.mission-receipt/v1`, 쓰기 이벤트 5종(착수/lane 전이/gate/pause/완료) 한정,
+  fail-closed. pause는 wiki SNAP handoff를 재사용한다(soft dep).
 
-이 정보는 현재 작업의 대화 맥락으로 관리한다. 별도 `.studio/` state, board, database,
-broker를 정본으로 만들지 않는다.
+이 정보는 현재 작업의 대화 맥락으로 관리하고, 재개 앵커(유계면: mission/lane/agent id,
+status, ready_next, owner_gate, snapshot_ref)만 mission receipt에 영속화한다. crew 중간
+추론 컨텍스트·산출물 본문·메시지 로그는 영속화하지 않는다(무계면 재유도). 별도 board,
+database, broker를 정본으로 만들지 않는다.
 
 ## Studio가 소유하지 않는 것
 
@@ -86,21 +94,28 @@ mission 정리
 5. 외부 변경·비용·배포처럼 실제 owner 결정이 필요한 지점만 owner gate로 둔다.
 6. host 기능 부재를 custom runtime이나 fallback process로 보충하지 않는다.
 7. 역할별 prompt는 특정 host tool 이름이나 model에 의존하지 않는다.
+8. mission receipt는 재개 인덱스다. 결정 권한을 갖는 저장소로 승격하거나 crew 추론
+   컨텍스트를 필드에 넣지 않는다.
 
 ## 구성
 
-- `skills/producer/SKILL.md`: host-native orchestration 규약
+- `skills/producer/SKILL.md`: host-native orchestration 규약 (mission receipt 쓰기 시점 포함)
+- `skills/cockpit/SKILL.md` + `scripts/cockpit.py`: 고정 4소스(task-worker/session-review/task-github/studio) read-only 상태 집계 (`studio.cockpit/v1`, 상태 변경 없음)
 - `crew/*.md`: host-independent role prompt
 - `rules/casting.md`: 최소 cast 기본값
 - `templates/mission.md`: 선택적 mission 양식
+- `scripts/mission_receipt.py`: 재개 인덱스 CLI (init/lane/gate/pause/close/show)
 
-`studio:init`, `studio:doctor`, daemon, CLI는 없다. 설치 후 Producer가 현재 host 기능을
-직접 사용한다.
+`studio:init`, `studio:doctor`, daemon은 없다. 설치 후 Producer가 현재 host 기능을
+직접 사용하며, CLI는 결정적 helper(config 해석, cockpit read-only 상태 집계,
+mission receipt)만 제공한다.
 
 ## 마이그레이션
 
-0.11.x까지의 `.studio/` board/context/review/lease와 persistent runtime 파일은 0.12.0이
-읽거나 변환하지 않는다. 진행 중 작업은 host agent id가 있으면 host 기능으로 직접
-재개하고, id가 없으면 필요한 작업만 새로 배정한다.
+0.11.x runtime state(`.studio/`의 board/context/review/lease)는 읽거나 변환하지 않는다.
+`.studio/receipt/`는 mission receipt(재개 인덱스)의 신규 네임스페이스로 과거 runtime
+상태와 무관하다. 진행 중 작업은 receipt lane의 host agent id가 있으면 host 기능으로
+직접 재개하고, id가 없으면 필요한 작업만 새로 배정한다.
 
-관련 결정: [[DEC-2026-07-29-233844-studio는-호스트-에이전트만-오케스트레이션한다]]
+관련 결정: [[DEC-2026-07-29-233844-studio는-호스트-에이전트만-오케스트레이션한다]],
+[[DEC-2026-07-30-235418-studio-mission-receipt를-상태-저장소-금지의-예외-재개-인덱스로-둔다]]

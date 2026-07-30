@@ -7,6 +7,14 @@ description: provider-neutral DefinitionArtifact로 작업을 정의하거나 re
 
 요구사항을 immutable `DefinitionArtifact`로 만든다. GitHub Issue나 Studio track은 생성하지 않는다.
 
+## 쓰지 않는 경우 (negative triggers)
+
+define은 기본 경로가 아니다 — 분해·추적·검증 이득이 있을 때만 진입한다.
+
+- 단일 파일·단일 세션·리뷰 불요 작업은 플러그인 진입 없이 직접 수행한다.
+- 대화 안에서 완결 가능한 질문·조사는 define 대상이 아니다.
+- 리프 고정비(worker spawn + 세리머니, ~20분+)를 넘는 payoff가 없으면 진입하지 않는다.
+
 ## 분해 기준
 
 - 독립 책임·write-set·rollback·검증 경계 또는 병렬 해금이 있을 때만 child를 만든다.
