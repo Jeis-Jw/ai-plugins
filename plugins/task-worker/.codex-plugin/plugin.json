@@ -1,6 +1,6 @@
 {
   "name": "task-worker",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Provider-neutral work graphs with parallel ready sets, integration gates, and opaque external review ownership.",
   "author": {
     "name": "Jinwuk-Lee",

@@ -1,6 +1,6 @@
 {
   "name": "studio",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "description": "Root Producer orchestrator with optional execution commands and role-specific model/effort policy.",
   "author": {
     "name": "Jinwuk-Lee",
