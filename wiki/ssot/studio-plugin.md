@@ -100,13 +100,15 @@ mission 정리
 ## 구성
 
 - `skills/producer/SKILL.md`: host-native orchestration 규약 (mission receipt 쓰기 시점 포함)
+- `skills/cockpit/SKILL.md` + `scripts/cockpit.py`: 고정 4소스(task-worker/session-review/task-github/studio) read-only 상태 집계 (`studio.cockpit/v1`, 상태 변경 없음)
 - `crew/*.md`: host-independent role prompt
 - `rules/casting.md`: 최소 cast 기본값
 - `templates/mission.md`: 선택적 mission 양식
 - `scripts/mission_receipt.py`: 재개 인덱스 CLI (init/lane/gate/pause/close/show)
 
 `studio:init`, `studio:doctor`, daemon은 없다. 설치 후 Producer가 현재 host 기능을
-직접 사용하며, CLI는 결정적 helper(config 해석, mission receipt)만 제공한다.
+직접 사용하며, CLI는 결정적 helper(config 해석, cockpit read-only 상태 집계,
+mission receipt)만 제공한다.
 
 ## 마이그레이션
 
