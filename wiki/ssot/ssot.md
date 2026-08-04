@@ -23,3 +23,4 @@ audience: [human, agent]
 - [[studio-plugin]] — Codex와 Claude Code가 제공하는 subagent 기능으로 역할 기반 crew를 운용하는 orchestration skill. 영속 상태는 mission receipt 재개 인덱스 하나뿐이다.
 - [[task-github-plugin]] — remote-free provider init 뒤 task-worker를 실행 엔진으로 사용하고 GitHub Issue tree·dependency·PR·merge·closeout을 projection/delivery adapter로 소유하는 설계 정본
 - [[task-worker-plugin]] — provider-neutral 작업 정의·분해·병렬 실행·검증·evidence 재사용을 소유하고 외부 provider가 상태와 delivery를 투영하는 범용 작업 엔진 설계 정본
+- [[wiki-markdown-plugin]] — AI-native 위키 메커니즘 정본 — 버전·진화·소유범위·구성의 단일 진입점. 그래프 타입 체계, 경로 기반 lifecycle(retire/discard), 3-stage recall+pack, refresh tiering, cross-plugin proactive capture 계약을 소유하며 세부 계약은 plugin-definition 6종 sub-ssot가 정본이다.

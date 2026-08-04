@@ -7,6 +7,9 @@ search_terms: [studio scale, producer manager-only, solo ritual, production cast
 relations:
   intents: [INT-2026-07-08-164552-studio-살아있는-에이전트-팀]
   ssot: [studio-plugin]
+retired_at: 2026-08-04
+retired_type: superseded
+superseded_by: DEC-2026-08-04-221624-studio-production-scale의-취지는-host-native-모델로-계승-메커니즘은-runtime과-함께-폐기
 ---
 
 ## 결정
