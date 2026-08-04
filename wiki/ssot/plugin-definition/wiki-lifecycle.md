@@ -1,9 +1,9 @@
 ---
 title: 위키 라이프사이클
 created_at: 2026-05-29
-summary: Record와 Living의 라이프사이클 정본: 경로 기반 active/retired, deprecated/superseded 2값 retire 모델, supersede pair 양방향 저장, task 이진 상태(활성/done) + snapshot 루트 전용 휘발 staging. plugin-definition 영역의 sub-ssot.
+summary: Record와 Living의 라이프사이클 정본: 경로 기반 active/retired, deprecated/superseded 2값 retire 모델과 완전삭제 discard(mistake-undo), supersede pair 양방향 저장, task 이진 상태(활성/done) + snapshot 루트 전용 휘발 staging. plugin-definition 영역의 sub-ssot.
 tags: [wiki, lifecycle, ssot]
-verified_at: 2026-06-12
+verified_at: 2026-08-04
 ---
 
 ## 현재 상태
@@ -26,6 +26,17 @@ verified_at: 2026-06-12
 
 → [[DEC-2026-05-29-105234-retire-two-value-model]]
 
+### Discard (완전 삭제, mistake-undo)
+
+- `discard`는 retire의 반대다 — retire는 파일을 남기고 상태만 표시하지만, discard는 노드를 **영구 삭제**한다(git이 이력 보존).
+- 잘못 만들어진 노드(오기·중복 capture 등)를 되돌릴 때 쓴다. 당시 유효했다가 나중에 다른 record로 대체되는 `superseded`와는 다른 상황이다.
+- exact basename만 받는다(fuzzy/fragment 해석 금지) — 파괴적 연산이라 안전장치를 우선한다.
+- 다른 문서가 `relations.*` 백링크 또는 supersede 엣지(`supersedes`/`superseded_by`)로 참조 중이면 기본 거부하고, `--force`로만 override한다.
+- `--dry-run`이 first-class다 — backlinks/would_block을 보여주고 삭제하지 않는다.
+- wiki-markdown 0.14.0(2026-06-25)부터 존재하는 명령이며 task 이진 상태·`complete`/`reopen`과는 별개다.
+
+→ [[DEC-2026-06-25-182926-wiki-markdown-개선-agent-facing-표면-재설계-우선-unit-a-b-c-closeout]]
+
 ### Supersede 알고리즘
 
 새 record가 기존 record를 대체할 때:
@@ -40,7 +51,7 @@ verified_at: 2026-06-12
 
 - 현실이 바뀌면 **제자리 수정** (정본은 현재 상태 하나)
 - "왜 바뀌었나"는 그 변경을 일으킨 context/ decision/observation/trial_error가 보유 (백링크로 추적)
-- 주제 자체가 **소멸**할 때만 삭제 — 옛 내용은 git이 보존
+- 주제 자체가 **소멸**할 때만 `discard`로 삭제 — 옛 내용은 git이 보존
 - Living은 어떤 경우에도 `relations` 키 자체를 갖지 않음 (불변식)
 
 ### Observation 라이프사이클
@@ -81,6 +92,7 @@ verified_at: 2026-06-12
 이 영역에 응집된 결정 anchor:
 
 - [[DEC-2026-05-29-105234-retire-two-value-model]] — 2값 retire 모델
+- [[DEC-2026-06-25-182926-wiki-markdown-개선-agent-facing-표면-재설계-우선-unit-a-b-c-closeout]] — agent-facing 표면 재설계 결정(discard=Unit B)
 - [[DEC-2026-05-29-181259-task-binary-state-github-sot]] — task 이진 상태 + 정본 위임
 
 반려 대안: [[REJ-2026-05-29-105500-obs-classified-retired-type]] (분류 완료 상태를 별도 retired_type으로 만들자는 안) / [[REJ-2026-05-29-181259-wiki-holds-task-detailed-phase]] (위키가 상세 단계 보유).

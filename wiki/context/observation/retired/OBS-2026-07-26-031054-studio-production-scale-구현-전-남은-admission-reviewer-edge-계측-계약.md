@@ -9,6 +9,9 @@ affects_paths: [plugins/studio/**]
 relations:
   ssot: [studio-plugin]
   decisions: [DEC-2026-07-26-031028-studio-production-scale과-producer-manager-only-운영-모델]
+retired_at: 2026-08-04
+retired_type: superseded
+superseded_by: DEC-2026-07-29-233844-studio는-호스트-에이전트만-오케스트레이션한다
 ---
 
 ## 관찰

@@ -3,7 +3,7 @@ title: task-worker 플러그인
 created_at: 2026-07-14
 summary: provider-neutral 작업 정의·분해·병렬 실행·검증·evidence 재사용을 소유하고 외부 provider가 상태와 delivery를 투영하는 범용 작업 엔진 설계 정본
 tags: [task-worker, workflow, orchestration, execution, evidence]
-verified_at: 2026-07-31
+verified_at: 2026-08-04
 affects_paths: [plugins/task-worker/**, plugins/task-github/**]
 ---
 
@@ -11,9 +11,9 @@ affects_paths: [plugins/task-worker/**, plugins/task-github/**]
 
 ### 설계 및 구현 상태
 
-이 문서는 `task-worker` 플러그인의 **아키텍처와 구현 상태 정본**이다. 2026-07-14에 0.1.0으로 독립 플러그인을 만들었고, 0.2.0에서 task-github 위임 전환, 0.3.0에서 설정·binding·resume·evidence 실행 계약, 0.4.0에서 단일 review owner permit, 0.5.0에서 canonical execution control, 0.6.0에서 안전한 workspace init·doctor, 0.7.0에서 merged-clean local cleanup receipt까지 완료했다.
+이 문서는 `task-worker` 플러그인의 **아키텍처와 구현 상태 정본**이다. 2026-07-14에 0.1.0으로 독립 플러그인을 만들었고, 0.2.0에서 task-github 위임 전환, 0.3.0에서 설정·binding·resume·evidence 실행 계약, 0.4.0에서 단일 review owner permit, 0.5.0에서 canonical execution control, 0.6.0에서 안전한 workspace init·doctor, 0.7.0에서 merged-clean local cleanup receipt, 0.8.0에서 review owner permit을 `owner=task-worker`만 local이고 나머지는 opaque external owner인 generic 계약으로 일반화, 0.9.0에서 token telemetry probe/aggregate까지 완료했다.
 
-0.7.0이 독립적으로 소유하는 범위는 다음과 같다.
+0.9.0이 독립적으로 소유하는 범위는 다음과 같다.
 
 - `task-worker.definition/v1` immutable DefinitionArtifact와 stable node id
 - dependency·parent cycle fail-closed 검증
@@ -30,16 +30,17 @@ affects_paths: [plugins/task-worker/**, plugins/task-github/**]
 - TASK ID, GitHub root ref, definition id 기반 세션 간 `resume`
 - definition/node/HEAD/command/environment/tool version fingerprint 기반 성공 evidence 재사용
 - provider closeout event의 idempotent receipt 기록
-- exact `workflow-review-lease/v1` binding, digest/conflict validation, `task-worker.review-permit/v1`
+- exact `workflow-review-lease/v1` binding(`owner=task-worker`만 local이고 나머지는 opaque external owner), digest/conflict validation, `task-worker.review-permit/v1`
 - 기존 `task-github.definition/v1`, `task-github.local-run/v1` 입력 호환
 - define/plan/start/run/verify/done/status/orchestrate public skill
 - exact schema/command를 공개하는 `capabilities` contract
 - provider 비탐색 `task-worker:init`과 config/state/policy 준비 상태를 읽기 전용 진단하는 `task-worker:doctor`
+- `scripts/token_probe.py`의 관측 전용(게이트 아님) token telemetry `probe`/`aggregate`
 - `local|manual|quality|minimal` preset과 제품별 명령을 추측하지 않는 TODO/fail-closed policy skeleton
 
 새 canonical artifact는 provider-specific `record`를 허용하지 않으며 external delivery는 generic `external`로 표현한다. task-worker runtime에는 GitHub 또는 Studio 실행 dependency가 없다.
 
-task-github 0.26.0은 `task_worker_bridge.py`를 통해 이 JSON CLI contract, review permit, execution-control handshake와 cleanup receipt를 소비한다. task-github의 구 `definition_artifact.py`는 CLI forwarder만 남았고 DefinitionArtifact 생성, local lifecycle, generic ready planner의 중복 구현은 제거됐다. 기존 GitHub Issue Tree도 import하면 WorkGraphSnapshot·context·provider binding으로 고정해 `manual|worker` 두 dispatch에서 재사용한다.
+task-github 0.27.1은 `task_worker_bridge.py`를 통해 이 JSON CLI contract, review permit, execution-control handshake와 cleanup receipt를 소비한다. task-github의 구 `definition_artifact.py`는 CLI forwarder만 남았고 DefinitionArtifact 생성, local lifecycle, generic ready planner의 중복 구현은 제거됐다. 기존 GitHub Issue Tree도 import하면 WorkGraphSnapshot·context·provider binding으로 고정해 `manual|worker` 두 dispatch에서 재사용한다.
 
 canonical execution-control contract는 task-worker가 단독으로 소유한다. 하위 호환을 위해
 schema id `studio-verification-contract-set/v1`, 환경변수 `STUDIO_VERIFICATION_CONTRACT`,
@@ -99,7 +100,7 @@ task-worker 동작 확인은 `plugins/task-worker/DESIGN.md`, 소스와 테스�
 | no extra hop | plugin delegation 자체를 이유로 fresh agent/session을 추가하지 않는다. |
 | provider neutrality | Issue·PR·label·Studio track·wiki node 같은 외부 식별자를 core schema에 넣지 않는다. |
 | fail closed | graph 불완전, dependency cycle, stale lease, evidence ambiguity에서는 부분 ready set을 실행하지 않는다. |
-| review owner fencing | Studio-owned edge에서는 reviewer dispatch만 externally-owned handoff로 전환하고 run/verify/done/integration gate를 유지한다. |
+| review owner fencing | `owner=task-worker`가 아닌 opaque external-owned edge에서는 reviewer dispatch만 externally-owned handoff로 전환하고 run/verify/done/integration gate를 유지한다. |
 | owner gate | 결제·배포·외부 mutation 등 명시된 owner gate는 executor가 우회하지 않는다. |
 
 ### 범위

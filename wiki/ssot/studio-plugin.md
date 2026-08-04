@@ -3,16 +3,20 @@ title: Studio 플러그인
 created_at: 2026-07-14
 summary: Codex와 Claude Code가 제공하는 subagent 기능으로 역할 기반 crew를 운용하는 orchestration skill. 영속 상태는 mission receipt 재개 인덱스 하나뿐이다.
 tags: [studio, orchestration, crew, codex, claude-code]
-verified_at: 2026-07-31
+verified_at: 2026-08-04
 affects_paths: [plugins/studio/**]
 ---
 
 ## 현재 상태
 
-Studio 0.12.0은 owner의 미션을 역할별 작업으로 나누고, 현재 host가 제공하는 subagent를
-소집해 배정·중계·결과 회수·review/rework를 관리한다. Studio는 별도 agent runtime,
-결정 권한을 갖는 상태 저장소, control plane service를 두지 않는다. 유일한 영속 상태는
-재개 인덱스인 mission receipt(`.studio/receipt/<mission_id>.json`,
+Studio 0.14.0은 owner의 미션을 역할별 작업으로 나누고, 현재 host가 제공하는 subagent를
+소집해 배정·중계·결과 회수·review/rework를 관리한다. 0.12.0에서 자체 runtime(broker,
+`scripts/studio.py`, `pairing.workflow.js` 등 Codex Workflow Runner 서브시스템 포함)을
+전량 제거하고 host subagent orchestration만 남겼고, 0.13.0에서 `.studio.yml` 기반
+optional work/review/delivery command 해석과 root Producer 전용 독립 실행 경로
+(`$execute`)를 추가했으며, 0.14.0에서 mission receipt·cockpit을 추가했다. Studio는
+별도 agent runtime, 결정 권한을 갖는 상태 저장소, control plane service를 두지 않는다.
+유일한 영속 상태는 재개 인덱스인 mission receipt(`.studio/receipt/<mission_id>.json`,
 `studio.mission-receipt/v1`) 하나다
 ([[DEC-2026-07-30-235418-studio-mission-receipt를-상태-저장소-금지의-예외-재개-인덱스로-둔다]]).
 
@@ -40,11 +44,36 @@ Codex와 Claude Code의 도구 이름은 다르지만 Studio가 요구하는 의
 Host가 제공하지 않는 기능을 Studio가 흉내 내지 않는다. 실제 host 오류를 보고하고 해당
 작업을 중단하거나 host가 지원하는 범위로 cast를 줄인다.
 
+## Execute 기반 독립 오케스트레이션 (0.13.0)
+
+`studio:execute`는 root Producer 세션 전용 진입점이다. leaf crew로 호출되면 재분해하지
+않고 원래 Producer에게 반환한다. `.studio.yml`의 `execute.work|review|delivery`를
+`scripts/studio_config.py route`로 해석해 command를 결정하며, Studio는 여전히 command
+runtime이나 상태 저장소를 만들지 않는다.
+
+- `decision:native|skip` / `invoke-command` / `producer-decision` 세 갈래로 discovery
+  여부를 정하고, 실행 override(기본 `activation:always`, `fallback:stop`)가 config보다
+  우선한다.
+- work는 `activation:auto`에서 독립 work unit 복수, worktree/ready-set/재개 필요,
+  integration gate, evidence pin 중 하나라도 실질적이면 configured command(예:
+  `task-worker`)를 선택하고, 그렇지 않으면 native로 Producer가 직접 crew를 소집한다.
+  configured 경로에서는 command가 분해·ready planning을 소유하고 Producer는 미션
+  경계·완료 조건만 보존하며, leaf crew는 자기 lane(`start→run→verify→done`)만 수행하고
+  재분해·orchestration·nested subagent 생성을 하지 않는다.
+- review는 독립성 요구·major blast radius·보안/데이터/배포 gate가 있을 때만 configured
+  review command를 선택한다. external handoff는 review 완료로 간주하지 않으며 approved
+  verdict와 요구 evidence 확인 전에는 closeout하지 않는다.
+- delivery는 `enabled:true`일 때만 configured command를 사용한다. Producer가 자동
+  활성화하지 않으며, 꺼져 있으면 command를 조회하지 않고 local 결과로 끝낸다.
+
+command는 shell 문자열이 아니라 opaque skill/plugin identifier다.
+
 ## Studio가 소유하는 것
 
 - mission의 objective, 완료 조건, 제약, owner gate
 - 역할·persona와 작업의 대응
 - host subagent 호출
+- optional work/review/delivery command 선택(라우팅)과 root orchestration
 - owner·crew·reviewer 사이 메시지 relay
 - 같은 host agent id를 사용한 feedback과 rework routing
 - 결과 회수와 최종 보고
@@ -100,6 +129,9 @@ mission 정리
 ## 구성
 
 - `skills/producer/SKILL.md`: host-native orchestration 규약 (mission receipt 쓰기 시점 포함)
+- `skills/execute/SKILL.md` + `scripts/studio_config.py`: optional work/review/delivery
+  command 해석(`route`)과 provider×role model/effort spawn policy 해석(`resolve`/
+  `validate`/`scaffold`) — 읽기 전용 결정 helper, 상태를 갖지 않음
 - `skills/cockpit/SKILL.md` + `scripts/cockpit.py`: 고정 4소스(task-worker/session-review/task-github/studio) read-only 상태 집계 (`studio.cockpit/v1`, 상태 변경 없음)
 - `crew/*.md`: host-independent role prompt
 - `rules/casting.md`: 최소 cast 기본값

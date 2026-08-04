@@ -3,7 +3,7 @@ title: task-github 플러그인
 created_at: 2026-07-14
 summary: remote-free provider init 뒤 task-worker를 실행 엔진으로 사용하고 GitHub Issue tree·dependency·PR·merge·closeout을 projection/delivery adapter로 소유하는 설계 정본
 tags: [task-github, github, workflow, adapter, orchestration]
-verified_at: 2026-07-16
+verified_at: 2026-08-04
 affects_paths: [plugins/task-github/**]
 ---
 
@@ -11,7 +11,7 @@ affects_paths: [plugins/task-github/**]
 
 ### 설계 및 구현 상태
 
-이 문서는 task-worker 분리 이후 `task-github` 플러그인의 **아키텍처와 구현 상태 정본**이다. task-github 0.26.0은 task-worker 0.7.0을 실행 엔진으로 사용하며 다음 두 역할을 가진다.
+이 문서는 task-worker 분리 이후 `task-github` 플러그인의 **아키텍처와 구현 상태 정본**이다. task-github 0.27.1은 task-worker 0.9.0을 실행 엔진으로 사용하며 다음 두 역할을 가진다. 0.27.0에서 review lease owner 개념을 `owner=studio` 전용에서 `owner=task-worker`가 아니면 모두 external인 opaque owner로 일반화했다(execute 기반 독립 오케스트레이션에 맞춘 provider-neutral화이며 task-worker 0.8.0과 짝을 이룬다). 0.27.1은 define SKILL 문서 보강만 한 patch다.
 
 1. **GitHub provider adapter**: Issue tree·dependency·label·assignee·PR·CI·reviewDecision·merge·Issue close를 소유한다.
 2. **호환 facade**: 기존 `task-github:*` 사용자 명령을 유지하면서 내부 실행을 task-worker에 위임한다.
@@ -30,7 +30,7 @@ task-github를 단순 기록기나 Issue comment writer로 축소하지 않는�
 - `scripts/issue_tree_import.py`: 기존 Issue Tree를 immutable definition, normalized graph, compact context, persistent binding으로 가져오고 `manual|worker` dispatch를 선택
 - `scripts/task_config.py`: `.task-github.yml` provider config를 검증하고 `.task-worker.yml` execution config로 위임, legacy combined config는 warning fallback
 - task-worker 누락·contract mismatch·dependency cycle은 부분 실행 없이 fail-closed
-- Studio-owned review lease는 edge별 immutable expected lease를 tick/review/closeout 전에 ledger에 먼저 pin한다. missing/mismatch permit은 reviewer 호출 없이 STOP하고, PR/CI/base-head transport를 유지한 externally-owned handoff로 전환한다. public closeout/merge/resume은 handoff 순서와 무관하게 같은 lease의 approved verdict와 required evidence를 요구한다.
+- opaque external-owned review lease(`owner=task-worker`가 아닌 임의 owner)는 edge별 immutable expected lease를 tick/review/closeout 전에 ledger에 먼저 pin한다. missing/mismatch permit은 reviewer 호출 없이 STOP하고, PR/CI/base-head transport를 유지한 externally-owned handoff로 전환한다. public closeout/merge/resume은 handoff 순서와 무관하게 같은 lease의 approved verdict와 required evidence를 요구한다.
 
 ### 현재 정본
 
@@ -62,7 +62,7 @@ duplicate/run-cap, token policy, evidence applicability를 재구현하지 않�
 | graceful read-only | task-worker가 없어도 init/setup/open/doctor와 안전한 read-only status는 가능하게 한다. |
 | execution dependency | run/verify/orchestrate 같은 execution 기능은 task-worker capability가 없으면 명시적으로 STOP한다. |
 | dispatch separation | `manual`도 동일 Issue Tree/dependency/ready 계산을 유지하되 local worker run을 만들지 않는다. |
-| review transport 보존 | `owner=studio`에서도 PR·CI·review_waiting·base/head·closeout lane을 유지하고 reviewer dispatch만 억제한다. |
+| review transport 보존 | `owner=task-worker`가 아닌 opaque external owner에서도 PR·CI·review_waiting·base/head·closeout lane을 유지하고 reviewer dispatch만 억제한다. |
 
 ### 범위
 
