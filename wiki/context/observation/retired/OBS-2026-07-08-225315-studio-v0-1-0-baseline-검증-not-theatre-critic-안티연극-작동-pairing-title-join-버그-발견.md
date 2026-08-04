@@ -3,6 +3,9 @@ title: studio v0.1.0 baseline 검증 — not theatre, critic 안티연극 작동
 created_at: 2026-07-08
 summary: notes-cli 미션으로 솔로 1 vs 팀 2run(brainstorm+pairing) 실행. theatre=false(팀 valid delta 45), critic이 pairing 모순 증거를 alive=false로 Kill. pairing 브로커 defended↔open title-string 조인 버그 발견(brainstorm index-join과 동종).
 tags: [studio, multi-agent, baseline, dogfood]
+retired_at: 2026-08-04
+retired_type: superseded
+superseded_by: TRI-2026-07-09-000640-브로커-턴-조인은-에이전트-산출의-문자열-위치가-아니라-브로커-부여-id로-한다
 ---
 
 ## 관찰

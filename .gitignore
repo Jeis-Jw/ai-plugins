@@ -9,6 +9,7 @@ __pycache__/
 .claude/
 .agent/
 *.local.*
+.obsidian/
 
 # 워크스페이스 로컬 config (setup/scaffold이 생성, 커밋 안 함 — 환경별)
 /.studio/

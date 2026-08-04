@@ -3,7 +3,8 @@ title: 위키 데이터 모델
 created_at: 2026-05-29
 summary: 위키 그래프의 정적 구조 정본: 5종 record + 2종 living + 1종 task(작업지시서형 제3 범주) 타입 체계, graph 밖 snapshot staging layer, basename 정본 ID, YAML 관계 모델(비대칭 작성). plugin-definition 영역의 sub-ssot.
 tags: [wiki, data-model, ssot]
-verified_at: 2026-06-12
+verified_at: 2026-08-04
+affects_paths: [plugins/wiki-markdown/**]
 ---
 
 ## 현재 상태

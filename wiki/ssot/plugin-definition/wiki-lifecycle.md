@@ -4,6 +4,7 @@ created_at: 2026-05-29
 summary: Record와 Living의 라이프사이클 정본: 경로 기반 active/retired, deprecated/superseded 2값 retire 모델과 완전삭제 discard(mistake-undo), supersede pair 양방향 저장, task 이진 상태(활성/done) + snapshot 루트 전용 휘발 staging. plugin-definition 영역의 sub-ssot.
 tags: [wiki, lifecycle, ssot]
 verified_at: 2026-08-04
+affects_paths: [plugins/wiki-markdown/**]
 ---
 
 ## 현재 상태

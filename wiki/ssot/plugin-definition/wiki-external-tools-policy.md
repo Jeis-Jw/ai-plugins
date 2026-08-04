@@ -3,7 +3,8 @@ title: 위키 외부 도구 정책
 created_at: 2026-05-29
 summary: 외부 도구(Obsidian 등)와의 경계 정본: AI 검색 정본은 filesystem 단일(ripgrep+YAML), wikilink는 사람용 장식, .obsidian/ gitignore. plugin-definition 영역의 sub-ssot.
 tags: [wiki, external-tools, ssot]
-verified_at: 2026-05-29
+verified_at: 2026-08-04
+affects_paths: [plugins/wiki-markdown/**]
 ---
 
 ## 현재 상태

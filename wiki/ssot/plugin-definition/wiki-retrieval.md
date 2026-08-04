@@ -3,7 +3,8 @@ title: 위키 인덱스와 조회
 created_at: 2026-05-29
 summary: 인덱스 파생과 조회 표면 정본: 폴더 단위 독립 인덱스, 3-stage recall + batch read, snapshot list/search/load, search_terms recognized optional, affects_paths + changed-path-stale, refresh --fix 화이트리스트. plugin-definition 영역의 sub-ssot.
 tags: [wiki, retrieval, ssot]
-verified_at: 2026-06-12
+verified_at: 2026-08-04
+affects_paths: [plugins/wiki-markdown/**]
 ---
 
 ## 현재 상태
@@ -36,9 +37,33 @@ verified_at: 2026-06-12
 | 3 | 전문 Read | — |
 
 추가:
+- `--pack` — Stage 1 매칭을 authority/freshness/use_as/warnings 라벨과 함께 결정적으로 투영하는 단일 호출 context pack(~4KB 예산). proactive recall의 기본 호출 형태.
 - `--read a,b,c` batch — 입력 순서 보존
 - `--backlinks-of <basename>` — YAML relations에 대상 basename을 가진 record grep (본문 wikilink 무시)
 - Snapshot은 `recall` 대상이 아니다. 대화 맥락 체크포인트 조회는 `snapshot list/search/load`가 담당한다.
+
+### Proactive Recall과 승인형 Capture 계약 (0.21.0)
+
+recall/capture는 사용자의 명시 요청만 기다리지 않는다. agent·작업 플러그인·review 플러그인·대화
+UI 등 모든 caller가 지키는 cross-plugin 계약이며, caller의 실행 분류나 delivery 비용은 recall·제안
+여부를 바꾸지 않는다.
+
+1. **Scoped recall 1회**: 과거 intent/decision/lesson 또는 현재 SSOT가 판단을 바꿀 수 있는
+   substantive 진입점에서 결정 전에 `recall --pack`을 1회 수행하고, scope·근거·anchor가 바뀌기
+   전까지 재사용한다.
+2. **Ephemeral candidate**: durable 후보는 세션 컨텍스트 안에서만 모으고, 후보 보관만을 위해
+   snapshot·ledger·wiki node를 만들지 않는다.
+3. **Semantic milestone 감사**: 의미 있는 결정 시점 또는 종료 전에 claim+anchor 기준 중복을
+   제거하고 `recorded`(승인 후 기록 id) / `proposed`(묶은 승인 요청) / `none`(후보 없음 + 이유)
+   중 하나로 끝낸다.
+4. **승인 전 write 0**: observation과 living 갱신을 포함한 모든 write는 workspace가 더 좁은
+   auto-write class를 명시 opt-in하지 않는 한 사용자 승인이 먼저다. 특정 항목을 "기록해"라는
+   요청 자체가 그 항목의 승인이다. 거절·보류 후보는 새 근거 없이 재제안하지 않는다.
+5. **Knowledge value 독립성**: 판정 기준은 미래 재사용성·재방문/되돌리기 비용·현재 상태 영향이며
+   작업 크기·실행/review 비용·호출 플러그인은 대리변수가 아니다.
+
+mechanism 정본은 `rules/knowledge-protocol.md` §12·`skills/wiki/SKILL.md`이며, 어느 workspace가
+auto-write class를 여는지는 그 프로젝트의 자동로드 policy statement(CLAUDE.md/AGENTS.md) 영역이다.
 
 ### Search 보조
 
@@ -52,6 +77,11 @@ verified_at: 2026-06-12
 ### Refresh 무결성 점검 (13 검사)
 
 `stale` / `supersede` / `broken-rel` / `task-ref` / `orphan` / `index` / `retired-in-index` / `active-ref-retired` / `tags` / `changed-path-stale` / `duplicate-basename` / `empty-lesson` / `schema`.
+
+각 검사는 **integrity**(그래프/데이터 정합성 — 반드시 막음) 또는 **hygiene**(파생 가능·문체 —
+권고만) tier를 갖는다. `--level integrity --strict`는 integrity tier 이슈가 있을 때만 exit 6
+(merge/verify 하드 게이트), `--level hygiene`는 orphan/stale/tags 등을 non-blocking 권고로만
+보여준다. 기본 `--level all`은 두 tier를 함께 돈다.
 
 #### Changed-path-stale 검사
 

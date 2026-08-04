@@ -3,7 +3,8 @@ title: 위키 4계층 분리
 created_at: 2026-05-29
 summary: mechanism/policy statement/policy rationale/knowledge 4계층 분리 정본: plugin은 agent-neutral mechanism, 작업환경 policy statement는 CLAUDE.md/AGENTS.md 자동로드 표면, policy rationale은 프로젝트가 정한 이력 위치, wiki vault는 knowledge 저장소. plugin-definition 영역의 sub-ssot.
 tags: [wiki, layering, ssot]
-verified_at: 2026-06-03
+verified_at: 2026-08-04
+affects_paths: [plugins/wiki-markdown/**]
 ---
 
 ## 현재 상태
@@ -12,8 +13,8 @@ verified_at: 2026-06-03
 
 | 계층 | 위치 | 담는 것 | 이동 단위 |
 |------|------|---------|-----------|
-| **mechanism** | `plugins/wiki-markdown/` + [[plugin-definition]] + sub-ssot들 | 타입집합·ID포맷·frontmatter 스키마·경로기반 active·파생 인덱스·관계 작성 규칙·조회 단계·생명주기 | 플러그인과 함께 |
-| **policy statement** | `CLAUDE.md` / `AGENTS.md` operating policy block, 필요 시 `.claude/` | 에이전트 역할, 동시성/worktree 규약, 캡처 권한, leaf issue 규약, 운영 promotion triggers | 프로젝트마다 자동로드 |
+| **mechanism** | `plugins/wiki-markdown/` + [[plugin-definition]] + sub-ssot들 | 타입집합·ID포맷·frontmatter 스키마·경로기반 active·파생 인덱스·관계 작성 규칙·조회 단계·생명주기·cross-plugin proactive recall/승인형 capture 계약 | 플러그인과 함께 |
+| **policy statement** | `CLAUDE.md` / `AGENTS.md` operating policy block, 필요 시 `.claude/` | 에이전트 역할, 동시성/worktree 규약, 캡처 권한, 민감정보·auto-write opt-in, runtime evidence 우선순위, leaf issue 규약, 운영 promotion triggers | 프로젝트마다 자동로드 |
 | **policy rationale** | 프로젝트가 정한 운영 이력 위치. 이 플러그인 개발 repo는 `wiki/context/decision/` | 왜 이 정책을 택했는가, 무엇을 대체했는가 | 프로젝트마다 선택 |
 | **knowledge** | `wiki/*` | 제품·서비스·시스템 지식과 작업이 낳은 record/ssot/runbook/task | 프로젝트 귀속 |
 

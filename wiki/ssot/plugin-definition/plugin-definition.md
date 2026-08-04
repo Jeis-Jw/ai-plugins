@@ -5,6 +5,7 @@ summary: AI-Native 위키 메커니즘 정본 영역 — 데이터 모델/라이
 tags: [wiki, plugin, meta]
 verified_at: 2026-08-04
 audience: [human, agent]
+affects_paths: [plugins/wiki-markdown/**]
 ---
 
 # 위키 플러그인 정의
