@@ -110,6 +110,12 @@ def render_policy(profile: str, tracker: str, concurrency: str) -> str:
             "not proposed again without new evidence."
         ),
         (
+            "- Verified_at hygiene: a commit that stamps `verified_at` without any "
+            "other body change must name the comparison method in its message (e.g. "
+            "`schema --json` full-field diff); this is what makes a genuine "
+            "reverification distinguishable from a stale stamp in the diff alone."
+        ),
+        (
             "- Knowledge value: evaluate candidates by future reuse, revisit/reversal "
             "cost, and impact on current state — not task size, execution/review cost, "
             "or the calling plugin. Small work may produce durable knowledge; large "
