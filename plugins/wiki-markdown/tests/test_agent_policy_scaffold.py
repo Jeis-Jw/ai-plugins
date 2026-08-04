@@ -57,6 +57,8 @@ class AgentPolicyScaffoldTests(unittest.TestCase):
                 self.assertIn("dispatch: manual", text)
                 self.assertIn("ready-set parallelism", text)
                 self.assertIn("Rationale commits", text)
+                self.assertIn("Verified_at hygiene", text)
+                self.assertIn("name the comparison method", text)
 
     def test_scaffold_includes_proactive_context_contract_without_capture_gear_budget(self):
         with tempfile.TemporaryDirectory() as tmp:

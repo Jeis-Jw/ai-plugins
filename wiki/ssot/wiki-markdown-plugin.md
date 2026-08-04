@@ -17,6 +17,7 @@ wiki-markdown 0.21.0은 이 워크스페이스의 AI-native 위키 메커니즘 
 - 0.10.0(33b5708) — 운용 효율 개선 5건: orphan 검사·snapshot·capture·lite·policy.
 - 0.12.0(fb516d7) — ceremony를 파급력(gear)에 비례시키는 모델 도입.
 - 0.13.0~0.19.x(60615ae~9dec940, Unit A/B/C 웨이브, PR #21–27) — agent-facing 표면 재설계: capture 1-call payload, discard 완전삭제(0.14.0), recall --pack 결정적 투영(0.15.0), snapshot load 권위 라벨(0.16.0), schema/capture --dry-run 머신 판별성(0.17.0), @file/@-(STDIN) body 입력(0.18.0), complete/reopen closeout payload(0.19.0).
+- 0.20.0(2ad3cd6) — task-worker/task-github 분리 완료에 맞춰 tracker policy 문구 정비 + "런타임 버그는 코드부터, wiki는 설계 모호성에" 프롬프트 추가.
 - 0.21.0(f41a6d6, 오늘) — 실행 규모와 분리한 proactive durable-context 계약 복원: recall 1회 → semantic milestone 감사 → 승인형 capture. 상세는 [[wiki-retrieval]] 참조.
 
 소유 범위:
