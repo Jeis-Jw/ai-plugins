@@ -5,6 +5,9 @@ summary: [[DEC-2026-07-07-204311-분해-판정에-don-t-split-프로브와-재�
 tags: [task-github, define, decomposition, siblings-maybe-phases, adversarial-review]
 verified_at: 2026-07-10
 affects_paths: [plugins/task-github/skills/define/scripts/create_issue_tree.py]
+retired_at: 2026-08-04
+retired_type: superseded
+superseded_by: DEC-2026-07-07-204311-분해-판정에-don-t-split-프로브와-재합침-우선-원리-도입
 ---
 
 ## 관찰
