@@ -18,6 +18,20 @@ class PluginDistributionTests(unittest.TestCase):
         self.assertTrue((skills_root / "wiki" / "SKILL.md").exists())
         self.assertTrue((skills_root / "agent-policy" / "SKILL.md").exists())
 
+    def test_wiki_markdown_distribution_advertises_proactive_context_contract(self):
+        plugin = REPO / "plugins" / "wiki-markdown"
+        manifest = read_json(plugin / ".codex-plugin" / "plugin.json")
+        skill = (plugin / "skills" / "wiki" / "SKILL.md").read_text()
+        protocol = (plugin / "rules" / "knowledge-protocol.md").read_text()
+        prompts = "\n".join(manifest["interface"]["defaultPrompt"])
+
+        self.assertIn("Use proactively", skill)
+        self.assertIn("Proactive durable-context contract", skill)
+        self.assertIn("Cross-plugin durable-context 계약", protocol)
+        self.assertIn("semantic milestone", prompts)
+        self.assertNotIn("Scale capture to the gear", skill + protocol + prompts)
+        self.assertNotIn("gear:micro", skill + protocol + prompts)
+
     def test_task_github_has_codex_manifest_for_skill_discovery(self):
         manifest = read_json(REPO / "plugins" / "task-github" / ".codex-plugin" / "plugin.json")
 

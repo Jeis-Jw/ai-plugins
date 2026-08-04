@@ -58,15 +58,21 @@ class AgentPolicyScaffoldTests(unittest.TestCase):
                 self.assertIn("ready-set parallelism", text)
                 self.assertIn("Rationale commits", text)
 
-    def test_scaffold_includes_capture_threshold_and_gear_budget(self):
+    def test_scaffold_includes_proactive_context_contract_without_capture_gear_budget(self):
         with tempfile.TemporaryDirectory() as tmp:
             result = run_policy("--target", "claude", "--json", cwd=tmp)
             self.assertEqual(result.returncode, 0, result.stderr)
             text = (Path(tmp) / "CLAUDE.md").read_text()
-            self.assertIn("Capture threshold", text)
+            self.assertIn("Durable context lifecycle", text)
+            self.assertIn("one scoped wiki recall", text)
+            self.assertIn("semantic milestone or closeout", text)
+            self.assertIn("propose one grouped capture", text)
+            self.assertIn("all wiki writes", text)
+            self.assertIn("Knowledge value", text)
+            self.assertIn("not task size", text)
             self.assertIn("refresh once", text)
-            self.assertIn("gear:micro", text)
-            self.assertIn("gear:major", text)
+            self.assertNotIn("Scale capture to the gear", text)
+            self.assertNotIn("audit none by default", text)
 
     def test_scaffold_includes_ceremony_scaling(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -76,6 +82,17 @@ class AgentPolicyScaffoldTests(unittest.TestCase):
             self.assertIn("Ceremony scales to blast radius", text)
             self.assertIn("bundle for shipping", text)
             self.assertIn("rollback unit", text)
+
+    def test_proactive_context_contract_does_not_require_external_tracker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = run_policy(
+                "--target", "codex", "--tracker", "none", "--json", cwd=tmp
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            text = (Path(tmp) / "AGENTS.md").read_text()
+            self.assertIn("No external task tracker is bound", text)
+            self.assertIn("one scoped wiki recall", text)
+            self.assertIn("propose one grouped capture", text)
 
     def test_scaffold_is_idempotent_and_preserves_existing_content(self):
         with tempfile.TemporaryDirectory() as tmp:

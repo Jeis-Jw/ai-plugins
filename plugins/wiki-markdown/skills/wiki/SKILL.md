@@ -1,6 +1,6 @@
 ---
 name: wiki
-description: Manage an AI-native project wiki — capture intents, decisions, rejected alternatives, trial-error lessons, observations, current state (SSOT) and operating runbooks as a decision graph; query it; refresh integrity. Use whenever the user wants to record what was decided / why, retrieve related context before a decision, ask what was recently decided / built / changed or the project's current state / history (recall the graph — don't answer from git log or memory alone), file an observation for later classification, retire or supersede a record, or run a wiki integrity check. Filesystem-primary, deterministic CLI — minimal tokens to stay consistent.
+description: Manage an AI-native project wiki as a durable-context provider for agents and other plugins. Use proactively when substantive work or discussion could depend on prior intent, decisions, lessons, or current state: recall the relevant graph once before deciding, then at semantic milestones deduplicate and propose durable capture. Also use for explicit record/history/state requests, observations, SSOT/runbooks, task bridge nodes, lifecycle changes, and integrity checks. Filesystem-primary, deterministic CLI — minimal tokens to stay consistent.
 ---
 
 # Wiki
@@ -15,10 +15,37 @@ python3 "${WIKI_MARKDOWN_ROOT:-$CLAUDE_PLUGIN_ROOT}/skills/wiki/scripts/wiki_cli
 
 > **This page is the runtime cheat-sheet.** The exhaustive contract — every field, all 13 refresh checks, the full exit-code matrix, YAML subset, NFC rules — lives in [`references/wiki-protocol.md`](references/wiki-protocol.md). Load it only when you need a detail not here.
 
-Core loop: **`recall` before deciding, `capture` after deciding** (mechanism in `rules/knowledge-protocol.md`).
+Core loop: **`recall` before deciding, propose at a semantic milestone, `capture` after approval** (mechanism in `rules/knowledge-protocol.md`).
+
+## Proactive durable-context contract
+
+This is the stable cross-plugin contract. A caller may provide scope, evidence, task references,
+and lifecycle milestones, but caller-specific execution classifications never decide whether
+knowledge is worth recalling or proposing.
+
+1. **Enter substantive context** — when prior intent, decisions, lessons, or current state could
+   change the judgment, run one narrow `recall --pack` before deciding.
+2. **Reuse the result** — do not recall the same scope again unless the scope changes, current
+   code/runtime evidence conflicts, an anchor changes, or the user asks for a refresh.
+3. **Keep candidates ephemeral** — during the work, collect possible durable knowledge in session
+   context only. Do not create a snapshot, ledger, or wiki file merely to hold a candidate.
+4. **Audit at a semantic milestone** — deduplicate candidates by claim and anchors, then choose one:
+   - approved items were written → report `recorded` with ids;
+   - approval is needed → make one grouped proposal and report `proposed`;
+   - the audit-triggering work produced no durable candidate → report `none` with a short reason.
+5. **Write only with authority** — all wiki writes, including observations and living-document
+   updates, require explicit user confirmation unless the workspace has explicitly opted into a
+   narrower auto-write class. An explicit request to record a specific item counts as confirmation.
+
+Judge durability by future reuse, revisit/reversal cost, and impact on current state — never by task
+size, execution/review cost, or which plugin called the wiki. Do not repeat a rejected or deferred
+proposal without new evidence.
 
 ## When to use
 
+- **Proactive context**: substantive design, product, system, operating, or planning work where
+  prior intent/decisions/current state could affect the answer → one scoped `recall --pack`, even
+  when the user did not explicitly ask for the wiki.
 - **Record durable knowledge**: "log this decision / intent / why we rejected X / this trap"; "found something, can't classify yet" → `observation`.
 - **Document state/procedure**: current architecture → `ssot`; deploy/run procedure → `runbook`.
 - **Retrieve before acting**: "what did we decide about X?", "related intents?", "tried before?", "who superseded this?".
@@ -36,6 +63,10 @@ The wiki is a **durable context/decision layer, not a runtime-debug companion**.
 - The change is a **small single-file edit** and the active task/decisions are already in this session's context — don't re-`recall`.
 - This session **already recalled** the active task + decisions — reuse that, don't widen recall again unless code/DB evidence conflicts or the user asks.
 - The user asks for **speed** ("just find it", "don't explain, fix it") — runtime evidence outranks wiki lookup.
+
+These negative triggers suppress unnecessary lookup, not durable-candidate review. If a reusable
+decision, rejected alternative, lesson, or state change emerges, handle it at the next semantic
+milestone under the proactive contract.
 
 `snapshot`/`observation` are **non-authoritative** (may be stale vs the newest `decision`); never treat a loaded snapshot as current truth without checking it against decisions.
 
@@ -168,7 +199,12 @@ Common: `--vault <path>` (default `./wiki`), `--json`. Success `{"ok": true, ...
 
 ## Four-layer separation
 
-This plugin is the **mechanism** layer — agent-neutral. Working-environment operating policy (who captures what, worktree rules, GitHub-Issue flow, **when to prefer code over wiki**) belongs in auto-loaded entry files (`CLAUDE.md`/`AGENTS.md`); the `agent-policy` skill scaffolds them. Product/system knowledge lives in `wiki/`.
+This plugin owns the agent-neutral **durable-context mechanism and cross-plugin lifecycle
+contract**. Workspace policy may configure write authority, sensitive-data rules, or when runtime
+evidence takes precedence, but a caller must not redefine knowledge value from its own execution
+classification. Those workspace-specific rules belong in auto-loaded entry files
+(`CLAUDE.md`/`AGENTS.md`); the `agent-policy` skill scaffolds them. Product/system knowledge lives
+in `wiki/`.
 
 ## References
 

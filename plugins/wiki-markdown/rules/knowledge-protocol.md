@@ -1,6 +1,6 @@
 # 지식관리 프로토콜 (메커니즘 계층)
 
-이 문서는 wiki 플러그인이 **함께 이동시키는 규약**이다(§15: mechanism / policy statement / policy rationale / knowledge 4계층 중 **mechanism**). 작업환경 운영 정책(언제·누가·무엇을 capture할지, 동시 작업을 어떻게 격리할지)은 `CLAUDE.md` / `AGENTS.md` / `.claude/` 같은 자동로드 agent-entry 표면에 둔다. 실제 축적 내용은 vault(`wiki/`)가 담는다. 본 문서는 wiki 메커니즘의 정본 — 본 플러그인을 다른 프로젝트로 옮기면 본 문서도 함께 따라간다.
+이 문서는 wiki 플러그인이 **함께 이동시키는 규약**이다(§15: mechanism / policy statement / policy rationale / knowledge 4계층 중 **mechanism**). 타입·CLI뿐 아니라 다른 에이전트/플러그인이 동일하게 따라야 하는 durable-context lifecycle(recall → 후보 감사 → 승인형 capture)도 이 플러그인의 안정 계약이다. 작업환경 운영 정책 중 쓰기 권한·민감정보·runtime evidence 우선순위·동시 작업 격리는 `CLAUDE.md` / `AGENTS.md` / `.claude/` 같은 자동로드 agent-entry 표면에 둔다. 실제 축적 내용은 vault(`wiki/`)가 담는다. 본 문서는 wiki 메커니즘의 정본 — 본 플러그인을 다른 프로젝트로 옮기면 본 문서도 함께 따라간다.
 
 본 메커니즘의 설계 배경은 이 플러그인 개발 repo의 `wiki/ssot/plugin-definition/`에 dogfood되어 있다. 본 문서는 배포되는 메커니즘 규약을 압축한다.
 
@@ -182,22 +182,43 @@ search_terms: [...]          # 선택 (recognized optional). recall Stage 1 매�
 | `recall` | 토큰 효율(3-stage + 가드 + search_terms 매칭), retired 기본 제외(done task는 백링크에 기본 포함), basename 정확 매칭, `--read a,b,c` 배치 read |
 | `refresh` | 무결성 점검 13종 (`stale` · `supersede` · `broken-rel` · `task-ref` · `orphan` · `index` · `retired-in-index` · `active-ref-retired` · `tags` · `changed-path-stale` · `duplicate-basename` · `empty-lesson` · `schema`) + explicit opt-in 품질 flag 2종(`decision-quality` · `task-quality`). `task-ref`는 human-edited quoted ref를 정규화해 검사. 품질 flag는 `severity: flag`이며 `all`/`strict` 기본 묶음에는 포함하지 않는다. **자동 수정은 화이트리스트만** (`--fix index,retired-in-index`). bare `--fix` 또는 그 외 인자는 거부 — 의미 판단이 필요한 수정은 사람·에이전트가 capture·Edit으로 명시 처리 |
 
-## 12. 수집 트리거 (권장)
+## 12. Cross-plugin durable-context 계약
 
-- 결정 직후 → `capture decision`. 결정에 묶인 함정 → `capture trial_error --decisions <DEC-...>`
-- 대안 검토 후 거부 → `capture rejected_decision --intents <INT-...>` (진 취지)
-- 새 설계 결정으로 시스템 상태가 바뀜 → 영향받은 `ssot` 갱신 (capture 아니라 Edit)
-- 분류·결정 어디로 갈지 아직 불명확한 발견 → `capture observation` (후속 TRI/DEC로 승격 + 원본 supersede)
-- 대화 맥락을 나중에 재개하고 싶지만 아직 지식 record로 정리하지 않을 때 → `snapshot save` (후속 세션은 `snapshot list/search/load`)
-- 운영 절차 정립 → `capture runbook`
-- 주기적(예: 주 1회 또는 큰 PR 직후) → `refresh --strict` 점검. CI에서 `refresh --check changed-path-stale`로 코드 drift 감지. 결정/정의 품질 점검은 필요 시 `refresh --check decision-quality,task-quality`로 별도 실행한다.
+호출자가 agent, 작업 플러그인, review 플러그인, 대화 UI 중 무엇이든 같은 lifecycle을 사용한다.
+호출자는 scope·근거·외부 task reference·semantic milestone을 제공할 수 있지만, 자기 실행 분류나
+delivery 비용으로 wiki의 recall/후보/capture 여부를 바꾸지 않는다.
+
+1. **Scoped recall 1회**: 설계·제품·시스템·운영·계획처럼 과거 intent/decision/lesson 또는 현재
+   SSOT가 판단을 바꿀 수 있는 substantive context에 진입하면 결정 전에 `recall --pack`을 한 번
+   수행한다. 같은 scope는 재사용하고, scope 변경·현재 근거 충돌·anchor 변경·사용자 refresh 요청
+   때만 다시 읽는다.
+2. **Ephemeral candidate**: 작업·대화 중 durable 후보는 세션 안에서만 모은다. 후보 보관만을 위해
+   snapshot·ledger·wiki node를 만들지 않는다.
+3. **Semantic milestone 감사**: 의미 있는 결정 시점 또는 종료 전에 claim+anchor 기준으로 중복을
+   제거하고 `recorded`(승인 후 기록한 id), `proposed`(한 번에 묶은 승인 요청), `none`(감사 대상
+   작업에 durable 후보 없음 + 짧은 이유) 중 하나로 끝낸다. 일반 문답에는 형식적 감사를 붙이지 않는다.
+4. **승인 전 write 0**: observation과 living ssot/runbook 갱신을 포함한 모든 write는 workspace가
+   더 좁은 auto-write class를 명시적으로 opt-in하지 않는 한 사용자 승인을 먼저 받는다. 특정 항목을
+   “기록해”라고 한 요청은 그 항목의 승인이다. 거절·보류 후보는 새 근거 없이 재제안하지 않는다.
+5. **Knowledge value 독립성**: 미래 재사용성, 재방문/되돌리기 비용, 현재 상태에 미치는 영향으로
+   판정한다. 작업 크기, 실행/review 비용, 호출 플러그인은 지식가치의 대리변수가 아니다.
+
+타입별 후속 동작은 다음과 같다.
+
+- 결정 승인 → `capture decision`. 결정에 묶인 함정 승인 → `capture trial_error --decisions <DEC-...>`
+- 대안 검토 후 반려 기록 승인 → `capture rejected_decision --intents <INT-...>` (진 취지)
+- 새 설계 결정으로 시스템 상태가 바뀜 → 승인 후 영향받은 `ssot` 갱신 (capture 아니라 Edit)
+- 분류·결정 어디로 갈지 아직 불명확한 발견 → 승인 후 `capture observation` (후속 TRI/DEC로 승격 + 원본 supersede)
+- 대화 맥락을 나중에 재개하고 싶지만 아직 지식 record로 정리하지 않을 때 → 명시 요청/승인 후 `snapshot save`
+- 운영 절차 정립 → 승인 후 `capture runbook`
+- 주기적(예: 주 1회 또는 큰 변경 직후) → `refresh --strict` 점검. CI에서 `refresh --check changed-path-stale`로 코드 drift 감지. 결정/정의 품질 점검은 필요 시 `refresh --check decision-quality,task-quality`로 별도 실행한다.
 
 ## 13. 4계층 분리 (§15)
 
 | 계층 | 위치 | 담는 것 |
 |------|------|---------|
-| **mechanism** | 플러그인 (`rules/`, `skills/wiki/`, `wiki_cli.py`) | 타입집합·ID포맷·frontmatter 스키마·관계 작성·생명주기·조회 단계 |
-| **policy statement** | 프로젝트 루트 `CLAUDE.md` / `AGENTS.md`, 필요 시 `.claude/` | agent 역할, 동시성 규약, leaf issue 규약, promotion triggers, agent별 capture 권한 |
+| **mechanism** | 플러그인 (`rules/`, `skills/wiki/`, `wiki_cli.py`) | 타입집합·ID포맷·frontmatter 스키마·관계 작성·생명주기·조회 단계 + cross-plugin recall/후보 감사/승인형 capture 계약 |
+| **policy statement** | 프로젝트 루트 `CLAUDE.md` / `AGENTS.md`, 필요 시 `.claude/` | agent 역할, 동시성 규약, 민감정보·auto-write opt-in, runtime evidence 우선순위, agent별 capture 권한 |
 | **policy rationale** | 프로젝트가 정한 운영 이력 위치. 이 플러그인 개발 repo는 `wiki/context/decision/`에 dogfood 기록 | 정책을 왜 채택했는가. 소비 프로젝트 wiki에 자동 생성하지 않음 |
 | **knowledge** | `wiki/*` | 제품·서비스·시스템 지식과 작업이 낳은 context/task 기록 |
 

@@ -79,14 +79,22 @@ def render_policy(profile: str, tracker: str, concurrency: str) -> str:
             "consumer project's wiki vault."
         ),
         (
-            "- Wiki vs runtime evidence: the wiki is a durable context/decision "
-            "layer, not a runtime-debug companion. For a concrete runtime bug (a "
-            "customer id, an API path, a wrong on-screen value), inspect "
-            "code/API/DB/render evidence first; consult the wiki only on a real "
-            "design ambiguity or policy conflict. Recall once at task bootstrap and "
-            "reuse it — don't re-recall settled context for a small single-file edit "
-            "or when speed is asked. Treat snapshot/observation as non-authoritative "
-            "versus the newest decision."
+            "- Durable context lifecycle: for substantive work or conversation where "
+            "prior intent, decisions, lessons, or current state could affect judgment, "
+            "run one scoped wiki recall before deciding and reuse it until scope, "
+            "evidence, or anchors change. Keep new durable knowledge as ephemeral "
+            "candidates; at a semantic milestone or closeout, deduplicate and either "
+            "record approved items, propose one grouped capture, or report `none` with "
+            "a short reason."
+        ),
+        (
+            "- Wiki vs runtime evidence: the wiki is a durable context/decision layer, "
+            "not a runtime-debug companion. For a concrete runtime bug (a customer id, "
+            "an API path, a wrong on-screen value), inspect code/API/DB/render evidence "
+            "first; consult the wiki on a real design ambiguity, policy conflict, or "
+            "durable lesson. Do not re-recall settled context for a small single-file "
+            "edit or when speed is asked. Treat snapshot/observation as "
+            "non-authoritative versus the newest decision."
         ),
         (
             "- Design altitude: brainstorming defines decomposition and thin unit "
@@ -95,17 +103,18 @@ def render_policy(profile: str, tracker: str, concurrency: str) -> str:
             "Do not create wiki task nodes for leaf issues."
         ),
         (
-            "- Capture authority: observations may be recorded when low-risk; "
-            "decisions, rejected alternatives, trial-error records, and promotions "
-            "need explicit user confirmation."
+            "- Capture authority: all wiki writes, including observations and living "
+            "SSOT/runbook updates, need explicit user confirmation unless local policy "
+            "explicitly opts into a narrower auto-write class. A request to record a "
+            "specific item counts as confirmation; rejected or deferred candidates are "
+            "not proposed again without new evidence."
         ),
         (
-            "- Capture threshold: small or one-off findings are observations or "
-            "commit messages, not decisions; reserve a DEC for choices with real "
-            "revisit/reversal cost. Run refresh once at the end of a batch, not per "
-            "node. Scale capture to the gear: gear:micro skips the wiki task node "
-            "(audit none by default); gear:normal captures only when a candidate "
-            "exists; gear:major keeps task plus DEC/SSOT."
+            "- Knowledge value: evaluate candidates by future reuse, revisit/reversal "
+            "cost, and impact on current state — not task size, execution/review cost, "
+            "or the calling plugin. Small work may produce durable knowledge; large "
+            "work may produce none. Run refresh once at the end of a batch, not per "
+            "node."
         ),
         (
             "- Ceremony scales to blast radius, not design-unit count: decompose "

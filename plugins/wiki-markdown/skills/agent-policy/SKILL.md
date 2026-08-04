@@ -1,6 +1,6 @@
 ---
 name: agent-policy
-description: Scaffold or update auto-loaded agent operating policy files for Claude and Codex. Use when a project needs working-environment policy such as concurrency/worktree rules, capture authority, task-github usage, or promotion triggers. Writes CLAUDE.md and/or AGENTS.md, and deliberately keeps operating policy out of the consumer project's wiki vault.
+description: Scaffold or update auto-loaded agent operating policy files for Claude and Codex. Use when a project needs working-environment policy such as concurrency/worktree rules, proactive durable-context recall, capture authority, tracker usage, or promotion triggers. Writes CLAUDE.md and/or AGENTS.md, and deliberately keeps operating policy out of the consumer project's wiki vault.
 ---
 
 # Agent Policy
@@ -13,7 +13,7 @@ Use it when a project using `wiki-markdown` or `task-github` needs rules for:
 - concurrent task isolation
 - task tracker binding (`task-github` or none)
 - design altitude: decomposition in brainstorm, unit-internal detail in the issue/run
-- capture authority and promotion trigger defaults
+- proactive scoped recall, semantic-milestone proposal, capture authority, and promotion defaults
 
 The policy statement belongs in auto-loaded entry files, not in the consumer project's wiki vault. The wiki can store product/system knowledge; it should not be the place an agent must recall before it can know how to operate.
 
@@ -42,6 +42,8 @@ python3 <skill-dir>/scripts/scaffold_agent_policy.py \
 
 - Do not write `wiki/ssot/agent-operating-model.md` in a consumer project.
 - Do not replace entire `CLAUDE.md` or `AGENTS.md`.
+- Preserve wiki-markdown's cross-plugin knowledge-value contract: caller-specific execution
+  classifications may change work/review ceremony, never recall or capture-candidate value.
 - Keep the managed block short. Long rationale belongs in this plugin project's design records, not in every downstream prompt.
 - If an existing project already has a long policy in wiki, migrate the operative rules into the entry files and leave the wiki document untouched unless the user asks to retire or rewrite it.
 
