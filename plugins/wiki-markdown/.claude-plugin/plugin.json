@@ -1,5 +1,19 @@
 {
   "name": "wiki-markdown",
-  "version": "0.21.1",
-  "description": "Markdown-backed AI-native durable-context provider — proactive scoped recall, approval-gated capture proposals, decision graph lifecycle, integrity checks, and auto-loaded agent policy scaffolding."
+  "version": "0.22.0",
+  "description": "Markdown-backed AI-native durable-context provider — proactive scoped recall, approval-gated capture proposals, gated stop-hook capture checkpoint, decision graph lifecycle, integrity checks, and auto-loaded agent policy scaffolding.",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/capture_checkpoint.py\"",
+            "timeout": 10,
+            "statusMessage": "Checking durable-capture candidates..."
+          }
+        ]
+      }
+    ]
+  }
 }
