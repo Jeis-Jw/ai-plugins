@@ -3,7 +3,7 @@ title: 위키 인덱스와 조회
 created_at: 2026-05-29
 summary: 인덱스 파생과 조회 표면 정본: 폴더 단위 독립 인덱스, 3-stage recall + batch read, snapshot list/search/load, search_terms recognized optional, affects_paths + changed-path-stale, refresh --fix 화이트리스트. plugin-definition 영역의 sub-ssot.
 tags: [wiki, retrieval, ssot]
-verified_at: 2026-08-04
+verified_at: 2026-08-06
 affects_paths: [plugins/wiki-markdown/**]
 ---
 
@@ -61,6 +61,12 @@ UI 등 모든 caller가 지키는 cross-plugin 계약이며, caller의 실행 �
    요청 자체가 그 항목의 승인이다. 거절·보류 후보는 새 근거 없이 재제안하지 않는다.
 5. **Knowledge value 독립성**: 판정 기준은 미래 재사용성·재방문/되돌리기 비용·현재 상태 영향이며
    작업 크기·실행/review 비용·호출 플러그인은 대리변수가 아니다.
+
+**집행(0.22.0)**: 3번 milestone 감사는 Claude Code에서 Stop hook `hooks/capture_checkpoint.py`가
+집행한다 — 5중 게이트(kill-switch/`stop_hook_active`/vault 존재/linked worktree 제외/산출물 임계
+Edit·Write ≥3 또는 `git commit` ≥1) 전부 통과 시에만 리마인더 1회를 주입하고, 세션 state로 배치당
+1회만 재발화한다. 미발화 시 출력 0바이트. Codex는 hook 표면이 없어 계약 준수가 모델 재량으로 남는다.
+근거 [[DEC-2026-08-06-024741-capture-checkpoint를-stop-hook-5중-게이트-배치당-1회로-도입]].
 
 mechanism 정본은 `rules/knowledge-protocol.md` §12·`skills/wiki/SKILL.md`이며, 어느 workspace가
 auto-write class를 여는지는 그 프로젝트의 자동로드 policy statement(CLAUDE.md/AGENTS.md) 영역이다.
