@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stop-hook: gated capture-checkpoint reminder (knowledge-protocol §12.3).
+"""Gated capture-checkpoint reminder (knowledge-protocol §12.3).
 
 Fires a single short "audit durable candidates" reminder at turn end, and only
 when the session actually produced work outputs. Silent (0 bytes, 0 tokens) in
@@ -13,8 +13,11 @@ every other case. Gates, in order:
 5. work threshold         >= MIN_EDITS file-edit tool uses, or >= 1 Bash
                           `git commit`, counted after the previous firing
 
-Once fired, the transcript line count is stored per session so the hook only
-re-fires after a NEW batch of work — "audit once per batch", not per turn.
+Claude Code counts work from its transcript at Stop. Codex records stable
+PostToolUse events first because its transcript format is explicitly unstable,
+then consumes those events at Stop. Once fired, a per-session cursor ensures the
+hook only re-fires after a NEW batch of work — "audit once per batch", not per
+turn.
 """
 
 import json
@@ -36,6 +39,7 @@ REMINDER = (
 EDIT_RE = re.compile(r'"name"\s*:\s*"(?:Edit|MultiEdit|Write|NotebookEdit)"')
 BASH_RE = re.compile(r'"name"\s*:\s*"Bash"')
 DEFAULT_MIN_EDITS = 3
+CODEX_EDIT_TOOLS = {"apply_patch", "Edit", "Write", "NotebookEdit"}
 
 
 def state_path(session_id: str) -> str:
@@ -45,18 +49,63 @@ def state_path(session_id: str) -> str:
     )
 
 
-def load_fired_at_line(path: str) -> int:
+def event_path(session_id: str) -> str:
+    path = state_path(session_id)
+    return path[:-5] + ".events"
+
+
+def load_state(path: str) -> dict:
     try:
         with open(path, encoding="utf-8") as f:
-            return int(json.load(f).get("fired_at_line", 0))
+            state = json.load(f)
+            return state if isinstance(state, dict) else {}
     except Exception:
+        return {}
+
+
+def save_state(path: str, state: dict) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(state, f)
+    os.replace(tmp, path)
+
+
+def state_int(state: dict, key: str) -> int:
+    try:
+        return max(0, int(state.get(key, 0)))
+    except (TypeError, ValueError):
         return 0
 
 
-def save_fired_at_line(path: str, line: int) -> None:
+def append_codex_event(path: str, kind: str) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump({"fired_at_line": line}, f)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        os.write(fd, (kind + "\n").encode("utf-8"))
+    finally:
+        os.close(fd)
+
+
+def read_codex_events(path: str) -> list:
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return [line.strip() for line in f if line.strip() in {"edit", "commit"}]
+    except OSError:
+        return []
+
+
+def codex_work_kind(payload: dict):
+    tool_name = payload.get("tool_name")
+    if tool_name in CODEX_EDIT_TOOLS:
+        return "edit"
+    if tool_name != "Bash":
+        return None
+    tool_input = payload.get("tool_input")
+    command = tool_input.get("command", "") if isinstance(tool_input, dict) else ""
+    if not isinstance(command, str):
+        command = json.dumps(command, ensure_ascii=False)
+    return "commit" if "git commit" in command else None
 
 
 def in_linked_worktree(cwd: str) -> bool:
@@ -90,12 +139,47 @@ def main() -> int:
         return 0
     if in_linked_worktree(cwd):
         return 0
-    transcript = payload.get("transcript_path")
-    if not transcript or not os.path.isfile(transcript):
+
+    session_id = payload.get("session_id", "")
+    spath = state_path(session_id)
+    if payload.get("hook_event_name") == "PostToolUse":
+        kind = codex_work_kind(payload)
+        if not kind:
+            return 0
+        try:
+            append_codex_event(event_path(session_id), kind)
+        except OSError:
+            pass
         return 0
 
-    spath = state_path(payload.get("session_id", ""))
-    start = load_fired_at_line(spath)
+    state = load_state(spath)
+    is_codex = bool(payload.get("turn_id"))
+    edits = commits = total = 0
+
+    if is_codex:
+        events = read_codex_events(event_path(session_id))
+        start = state_int(state, "codex_fired_at_event")
+        batch = events[start:]
+        edits = batch.count("edit")
+        commits = batch.count("commit")
+        total = len(events)
+    else:
+        transcript = payload.get("transcript_path")
+        if not transcript or not os.path.isfile(transcript):
+            return 0
+        start = state_int(state, "fired_at_line")
+        try:
+            with open(transcript, encoding="utf-8", errors="replace") as f:
+                for i, line in enumerate(f):
+                    total = i + 1
+                    if i < start:
+                        continue
+                    if EDIT_RE.search(line):
+                        edits += 1
+                    elif BASH_RE.search(line) and "git commit" in line:
+                        commits += 1
+        except OSError:
+            return 0
     try:
         min_edits = int(os.environ.get("WIKI_MARKDOWN_CHECKPOINT_MIN_EDITS", ""))
     except ValueError:
@@ -103,25 +187,15 @@ def main() -> int:
     if min_edits <= 0:
         min_edits = DEFAULT_MIN_EDITS
 
-    edits = commits = total = 0
-    try:
-        with open(transcript, encoding="utf-8", errors="replace") as f:
-            for i, line in enumerate(f):
-                total = i + 1
-                if i < start:
-                    continue
-                if EDIT_RE.search(line):
-                    edits += 1
-                elif BASH_RE.search(line) and "git commit" in line:
-                    commits += 1
-    except OSError:
-        return 0
-
     if edits < min_edits and commits < 1:
         return 0
 
     try:
-        save_fired_at_line(spath, total)
+        if is_codex:
+            state["codex_fired_at_event"] = total
+        else:
+            state["fired_at_line"] = total
+        save_state(spath, state)
     except OSError:
         return 0  # can't record the firing -> stay silent rather than risk a nag loop
     print(json.dumps({"decision": "block", "reason": REMINDER}))

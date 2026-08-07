@@ -41,6 +41,11 @@ Judge durability by future reuse, revisit/reversal cost, and impact on current s
 size, execution/review cost, or which plugin called the wiki. Do not repeat a rejected or deferred
 proposal without new evidence.
 
+The plugin reinforces this contract with a gated Stop-hook capture checkpoint on Claude Code and
+Codex. It stays silent unless a vault exists and a real output batch crosses the edit/commit
+threshold, then requests one `proposed`/`none` closeout pass. Codex users must review and trust the
+plugin hook after install or update before it can run.
+
 ## When to use
 
 - **Proactive context**: substantive design, product, system, operating, or planning work where

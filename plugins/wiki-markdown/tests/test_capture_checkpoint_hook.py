@@ -49,6 +49,7 @@ class CaptureCheckpointHookTests(unittest.TestCase):
         env = dict(os.environ)
         env.pop("WIKI_MARKDOWN_CHECKPOINT", None)
         env.pop("WIKI_MARKDOWN_CHECKPOINT_MIN_EDITS", None)
+        env.pop("PLUGIN_ROOT", None)
         env["TMPDIR"] = str(self.state_tmp)  # isolate per-session firing state
         env.update(env_overrides or {})
         return subprocess.run(
@@ -59,6 +60,15 @@ class CaptureCheckpointHookTests(unittest.TestCase):
             env=env,
             timeout=30,
         )
+
+    def run_codex_hook(self, event, tool_name=None, tool_input=None, payload_overrides=None):
+        payload = {"hook_event_name": event, "turn_id": "turn-test"}
+        if tool_name:
+            payload["tool_name"] = tool_name
+        if tool_input is not None:
+            payload["tool_input"] = tool_input
+        payload.update(payload_overrides or {})
+        return self.run_hook(payload, {"PLUGIN_ROOT": str(HOOK.parent.parent)})
 
     def write_transcript(self, lines):
         self.transcript.write_text("\n".join(lines) + "\n")
@@ -118,6 +128,34 @@ class CaptureCheckpointHookTests(unittest.TestCase):
                 f.write(EDIT_LINE + "\n")
         self.assert_fired(self.run_hook())
 
+    def test_codex_records_post_tool_edits_and_fires_at_stop(self):
+        for _ in range(2):
+            self.assert_silent(self.run_codex_hook("PostToolUse", "apply_patch", {}))
+        self.assert_silent(self.run_codex_hook("Stop"))
+        self.assert_silent(self.run_codex_hook("PostToolUse", "apply_patch", {}))
+        self.assert_fired(self.run_codex_hook("Stop"))
+        self.assert_silent(self.run_codex_hook("Stop"))
+
+        for _ in range(3):
+            self.assert_silent(self.run_codex_hook("PostToolUse", "apply_patch", {}))
+        self.assert_fired(self.run_codex_hook("Stop"))
+
+    def test_codex_single_commit_fires_and_unrelated_bash_does_not(self):
+        self.assert_silent(
+            self.run_codex_hook("PostToolUse", "Bash", {"command": "git status --short"})
+        )
+        self.assert_silent(self.run_codex_hook("Stop"))
+        self.assert_silent(
+            self.run_codex_hook("PostToolUse", "Bash", {"command": "git commit -m parity"})
+        )
+        self.assert_fired(self.run_codex_hook("Stop"))
+
+    def test_codex_stop_loop_guard_does_not_consume_pending_batch(self):
+        for _ in range(3):
+            self.assert_silent(self.run_codex_hook("PostToolUse", "apply_patch", {}))
+        self.assert_silent(self.run_codex_hook("Stop", payload_overrides={"stop_hook_active": True}))
+        self.assert_fired(self.run_codex_hook("Stop"))
+
     @unittest.skipUnless(shutil.which("git"), "git not available")
     def test_silent_in_linked_worktree(self):
         repo = self.tmp / "repo"
@@ -136,13 +174,24 @@ class CaptureCheckpointHookTests(unittest.TestCase):
         (repo / "wiki").mkdir()
         self.assert_fired(self.run_hook({"cwd": str(repo)}))
 
-    def test_plugin_manifest_declares_stop_hook(self):
-        manifest = json.loads(
+    def test_plugin_manifests_declare_host_hooks(self):
+        claude = json.loads(
             (REPO / "plugins" / "wiki-markdown" / ".claude-plugin" / "plugin.json").read_text()
         )
-        stop = manifest["hooks"]["Stop"][0]["hooks"][0]
+        stop = claude["hooks"]["Stop"][0]["hooks"][0]
         self.assertEqual(stop["type"], "command")
         self.assertIn("${CLAUDE_PLUGIN_ROOT}/hooks/capture_checkpoint.py", stop["command"])
+
+        codex = json.loads(
+            (REPO / "plugins" / "wiki-markdown" / ".codex-plugin" / "plugin.json").read_text()
+        )
+        self.assertEqual(codex["hooks"], "./hooks/codex-hooks.json")
+        codex_hooks_path = REPO / "plugins" / "wiki-markdown" / "hooks" / "codex-hooks.json"
+        codex_hooks = json.loads(codex_hooks_path.read_text())["hooks"]
+        self.assertEqual(codex_hooks["PostToolUse"][0]["matcher"], "^(Bash|apply_patch)$")
+        for event in ("PostToolUse", "Stop"):
+            command = codex_hooks[event][0]["hooks"][0]["command"]
+            self.assertIn("${PLUGIN_ROOT}/hooks/capture_checkpoint.py", command)
         self.assertTrue(HOOK.exists())
 
 

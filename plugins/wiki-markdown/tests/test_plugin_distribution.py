@@ -17,6 +17,8 @@ class PluginDistributionTests(unittest.TestCase):
 
         self.assertTrue((skills_root / "wiki" / "SKILL.md").exists())
         self.assertTrue((skills_root / "agent-policy" / "SKILL.md").exists())
+        self.assertEqual(manifest["hooks"], "./hooks/codex-hooks.json")
+        self.assertTrue((REPO / "plugins" / "wiki-markdown" / "hooks" / "codex-hooks.json").exists())
 
     def test_wiki_markdown_distribution_advertises_proactive_context_contract(self):
         plugin = REPO / "plugins" / "wiki-markdown"

@@ -1,0 +1,29 @@
+{
+  "description": "Gated durable-capture checkpoint for Codex sessions.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "^(Bash|apply_patch)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT}/hooks/capture_checkpoint.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT}/hooks/capture_checkpoint.py\"",
+            "timeout": 10,
+            "statusMessage": "Checking durable-capture candidates..."
+          }
+        ]
+      }
+    ]
+  }
+}

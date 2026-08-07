@@ -213,23 +213,25 @@ delivery 비용으로 wiki의 recall/후보/capture 여부를 바꾸지 않는�
 - 운영 절차 정립 → 승인 후 `capture runbook`
 - 주기적(예: 주 1회 또는 큰 변경 직후) → `refresh --strict` 점검. CI에서 `refresh --check changed-path-stale`로 코드 drift 감지. 결정/정의 품질 점검은 필요 시 `refresh --check decision-quality,task-quality`로 별도 실행한다.
 
-### Capture checkpoint hook (Claude Code)
+### Capture checkpoint hook (Claude Code + Codex)
 
-위 3번(semantic milestone 감사)은 모델 재량만으로는 누락되기 쉬워, Claude Code에서는 Stop hook
-`hooks/capture_checkpoint.py`가 턴 종료 시점에 감사 리마인더 1회를 강제 주입한다. 토큰 비용을
-막기 위해 게이트를 전부 통과할 때만 발화하고 그 외에는 완전 침묵한다:
+위 3번(semantic milestone 감사)은 모델 재량만으로는 누락되기 쉬워, Claude Code와 Codex에서
+Stop hook `hooks/capture_checkpoint.py`가 턴 종료 시점에 감사 리마인더 1회를 강제 주입한다.
+토큰 비용을 막기 위해 게이트를 전부 통과할 때만 발화하고 그 외에는 완전 침묵한다:
 
 1. env kill-switch — `WIKI_MARKDOWN_CHECKPOINT=off`(또는 `0`/`false`)면 항상 침묵
 2. `stop_hook_active` 루프 가드 — hook이 유발한 continuation은 다시 막지 않음
 3. vault 존재 — `<cwd>/wiki`가 없으면 침묵 (`wiki_cli`와 같은 해석)
 4. linked git worktree면 침묵 — 병렬 worker lane은 감사 대상이 아니고, capture는 메인
    세션/closeout 몫
-5. 산출물 임계 — 직전 발화 이후 transcript에 파일 편집 tool use ≥ `WIKI_MARKDOWN_CHECKPOINT_MIN_EDITS`
-   (기본 3) 또는 Bash `git commit` ≥ 1일 때만 발화
+5. 산출물 임계 — 직전 발화 이후 파일 편집 tool use ≥ `WIKI_MARKDOWN_CHECKPOINT_MIN_EDITS`
+   (기본 3) 또는 Bash `git commit` ≥ 1일 때만 발화. Claude Code는 Stop 시 transcript를 세고,
+   Codex는 `PostToolUse`의 `apply_patch`/`Bash` event를 휘발성 session ledger에 먼저 누적한다.
 
-발화하면 세션별 state에 transcript 라인 수를 기록해 **배치당 1회**만 리마인드한다(새 작업
-배치가 쌓여야 재발화). 리마인더는 "새 recall/탐색 없이 기존 컨텍스트에서 제안 또는 none 한 줄"을
-지시해 후속 비용도 짧게 캡한다. Codex에는 대응 hook 표면이 없어 이 절은 Claude Code 한정이다.
+발화하면 세션별 cursor를 기록해 **배치당 1회**만 리마인드한다(새 작업 배치가 쌓여야 재발화).
+리마인더는 "새 recall/탐색 없이 기존 컨텍스트에서 제안 또는 none 한 줄"을 지시해 후속 비용도
+짧게 캡한다. Codex 배포는 `.codex-plugin/plugin.json` → `hooks/codex-hooks.json`으로 연결되며,
+설치·업데이트 후 사용자가 현재 hook 정의를 review/trust해야 실제로 실행된다.
 
 ## 13. 4계층 분리 (§15)
 
