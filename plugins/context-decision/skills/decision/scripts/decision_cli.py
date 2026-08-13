@@ -296,6 +296,64 @@ DECISION_KEY_ORDER = (
     "search_terms", "claim_fingerprint", "scope", "decision_key", "revisit_when", "revisit_on", "relations",
     "supersedes", "superseded_by", "retired_at", "retired_reason", "retirement_note",
 )
+OBSERVATION_KEY_ORDER = (
+    "schema", "id", "title", "summary", "created_at", "updated_at", "captured_from", "source_refs", "tags",
+    "search_terms", "claim_fingerprint", "kind_hint", "source_claim_fingerprint", "verified_at", "affects_paths",
+    "relations", "supersedes", "superseded_by", "retired_at", "retired_reason", "retirement_note",
+)
+
+
+def parse_observation_document(text: str) -> tuple[dict[str, Any], dict[str, str]]:
+    if text.startswith("\ufeff") or "\r" in text.replace("\r\n", ""):
+        raise DecisionError("frontmatter_unsupported", "observation bytes are unsupported")
+    lines = text.replace("\r\n", "\n").split("\n")
+    if not lines or lines[0] != "---":
+        raise DecisionError("frontmatter_unsupported", "observation frontmatter is missing")
+    try:
+        closing = lines.index("---", 1)
+    except ValueError as error:
+        raise DecisionError("frontmatter_unsupported", "observation frontmatter delimiter is missing") from error
+    frontmatter: dict[str, Any] = {}
+    for line in lines[1:closing]:
+        if not line or ": " not in line:
+            raise DecisionError("frontmatter_unsupported", "observation frontmatter is invalid")
+        key, raw = line.split(": ", 1)
+        if not FIELD_RE.fullmatch(key) or key in frontmatter:
+            raise DecisionError("frontmatter_unsupported", "observation frontmatter key is invalid")
+        try:
+            frontmatter[key] = json.loads(raw)
+        except json.JSONDecodeError as error:
+            raise DecisionError("frontmatter_unsupported", "observation frontmatter value is invalid") from error
+    sections: dict[str, str] = {}
+    current: str | None = None
+    buffer: list[str] = []
+    for line in lines[closing + 2 :]:
+        heading = re.fullmatch(r"## (.+)", line)
+        if heading:
+            if current is not None:
+                sections[current] = "\n".join(buffer).strip()
+            current = heading.group(1)
+            buffer = []
+        elif current is not None:
+            buffer.append(line)
+        elif line.strip():
+            raise DecisionError("section_schema_error", "observation content before sections is invalid")
+    if current is not None:
+        sections[current] = "\n".join(buffer).strip()
+    if frontmatter.get("schema") != "context-observation/v1" or not all(frontmatter.get(key) for key in ("id", "title", "summary", "created_at", "captured_from", "claim_fingerprint")) or not all(sections.get(key) for key in ("관찰", "근거")):
+        raise DecisionError("schema_invalid", "fallback observation is incomplete", exit_code=EXIT_CONFLICT)
+    require_context_id(frontmatter["id"])
+    return frontmatter, sections
+
+
+def render_observation_document(frontmatter: dict[str, Any], sections: dict[str, str]) -> str:
+    ordered = [key for key in OBSERVATION_KEY_ORDER if key in frontmatter]
+    ordered.extend(sorted(set(frontmatter) - set(ordered)))
+    lines = ["---"] + [f"{key}: {json.dumps(frontmatter[key], ensure_ascii=False, separators=(',', ':'))}" for key in ordered] + ["---", ""]
+    for name in ("관찰", "근거", "영향", "현재 처리", "후속 조건"):
+        if name in sections:
+            lines.extend([f"## {name}", "", sections[name].strip(), ""])
+    return "\n".join(lines).rstrip("\n") + "\n"
 
 
 def validate_decision_document(frontmatter: dict[str, Any], sections: dict[str, str]) -> None:
@@ -699,6 +757,20 @@ def validate_owner_result(result: dict[str, Any]) -> None:
     elif result["result_type"] == "mutation":
         if "mutation_request" not in inputs or "mutation_request" in attestations or "decision" in result or "candidate_id" in result:
             raise DecisionError("owner_result_invalid", "mutation result is not bound to an unattested mutation request", exit_code=EXIT_CONFLICT)
+        expected_inputs = {
+            "decision_supersede": {"claim", "mutation_request"},
+            "decision_fallback_import": {"claim", "same_claim", "mutation_request"},
+            "decision_withdraw": {"mutation_request"},
+            "decision_annotate": {"mutation_request"},
+        }.get(result.get("transition"))
+        expected_attestations = {
+            "decision_supersede": {"claim"},
+            "decision_fallback_import": {"claim", "same_claim"},
+            "decision_withdraw": set(),
+            "decision_annotate": set(),
+        }.get(result.get("transition"))
+        if expected_inputs is None or set(inputs) != expected_inputs or set(attestations) != expected_attestations:
+            raise DecisionError("owner_result_invalid", "mutation semantic evidence set is incomplete or hidden", exit_code=EXIT_CONFLICT)
     else:
         raise DecisionError("owner_result_invalid", "unsupported owner result type", exit_code=EXIT_CONFLICT)
     plan = result.get("proposed_plan")
@@ -716,16 +788,20 @@ def validate_owner_result(result: dict[str, Any]) -> None:
     if {item["effect_id"] for item in effects} != {item["effect_id"] for item in operations}:
         raise DecisionError("plan_preview_mismatch", "effects and owner operations are not 1:1", exit_code=EXIT_CONFLICT)
     draft_by_id: dict[str, tuple[dict[str, Any], dict[str, str], dict[str, Any]]] = {}
+    observation_drafts: dict[str, tuple[dict[str, Any], dict[str, str], dict[str, Any]]] = {}
     for draft in drafts:
-        frontmatter, sections = parse_document(draft.get("content", ""))
+        is_observation = draft.get("path", "").startswith("context/observation/")
+        frontmatter, sections = parse_observation_document(draft.get("content", "")) if is_observation else parse_document(draft.get("content", ""))
         projection = draft.get("semantic_projection")
-        if not isinstance(projection, dict) or projection.get("kind") != "decision" or projection.get("primary_claim") != sections["결정"] or projection.get("claim_fingerprint") != frontmatter["claim_fingerprint"]:
+        expected_kind = "observation" if is_observation else "decision"
+        primary_section = "관찰" if is_observation else "결정"
+        if not isinstance(projection, dict) or projection.get("kind") != expected_kind or projection.get("primary_claim") != sections[primary_section] or projection.get("claim_fingerprint") != frontmatter["claim_fingerprint"]:
             raise DecisionError("plan_preview_mismatch", "draft semantic projection is invalid", exit_code=EXIT_CONFLICT)
-        draft_by_id[draft["effect_id"]] = (frontmatter, sections, draft)
+        (observation_drafts if is_observation else draft_by_id)[draft["effect_id"]] = (frontmatter, sections, draft)
     for operation in operations:
         if operation.get("op") not in {"create", "replace", "move", "delete"}:
             raise DecisionError("plan_preview_mismatch", "owner operation is unsupported", exit_code=EXIT_CONFLICT)
-        if operation["op"] != "delete" and operation["effect_id"] not in draft_by_id:
+        if operation["op"] != "delete" and operation["effect_id"] not in draft_by_id and operation["effect_id"] not in observation_drafts:
             raise DecisionError("plan_preview_mismatch", "non-delete operation lacks a destination draft", exit_code=EXIT_CONFLICT)
     transition = result["transition"]
     if transition == "capture" and (len(drafts) != 1 or len(effects) != 1 or effects[0].get("action") != "create"):
@@ -745,6 +821,20 @@ def validate_owner_result(result: dict[str, Any]) -> None:
         old, _, draft = next(iter(draft_by_id.values()))
         if "/retired/" not in draft["path"] or old.get("retired_reason") != "withdrawn" or "superseded_by" in old:
             raise DecisionError("lifecycle_invalid", "withdraw must retire without successor", exit_code=EXIT_CONFLICT)
+    if transition == "decision_fallback_import":
+        if len(draft_by_id) != 1 or len(observation_drafts) != 1:
+            raise DecisionError("lifecycle_invalid", "fallback import requires one DEC current and one OBS history draft", exit_code=EXIT_CONFLICT)
+        dec, _, _ = next(iter(draft_by_id.values()))
+        obs, _, obs_draft = next(iter(observation_drafts.values()))
+        if (
+            "/retired/" not in obs_draft["path"]
+            or obs.get("kind_hint") != "decision"
+            or obs.get("source_claim_fingerprint") != dec.get("claim_fingerprint")
+            or obs.get("retired_reason") != "superseded"
+            or obs.get("superseded_by") != dec.get("id")
+            or obs.get("id") not in dec.get("supersedes", [])
+        ):
+            raise DecisionError("lifecycle_invalid", "fallback import fingerprint or reciprocal lifecycle is invalid", exit_code=EXIT_CONFLICT)
 
 
 def _extract_generated_block(text: str, block: str) -> list[str]:
@@ -886,6 +976,8 @@ def _effects_and_drafts(owner_result: dict[str, Any]) -> tuple[list[dict[str, An
 def _overlay_owner_result(state: dict[str, dict[str, Any]], owner_result: dict[str, Any]) -> None:
     effects, drafts = _effects_and_drafts(owner_result)
     for effect in effects:
+        if effect.get("area") != "decision":
+            continue
         draft = drafts.get(effect["effect_id"])
         action = effect.get("action")
         identifier = effect.get("id")
@@ -926,6 +1018,8 @@ def _primary_draft(result: dict[str, Any]) -> tuple[dict[str, Any], dict[str, st
     current: list[tuple[dict[str, Any], dict[str, str], dict[str, Any]]] = []
     history: list[tuple[dict[str, Any], dict[str, str], dict[str, Any]]] = []
     for draft in result["artifact_drafts"]:
+        if draft.get("path", "").startswith("context/observation/"):
+            continue
         frontmatter, sections = parse_document(draft["content"])
         (history if "/retired/" in draft["path"] else current).append((frontmatter, sections, draft))
     if current:
@@ -970,21 +1064,21 @@ def validate_batch(repo: pathlib.Path, owner_result: dict[str, Any], prior_bundl
         predecessor = state.get(predecessor_id)
         if predecessor is None:
             raise DecisionError("predecessor_not_current", "decision mutation predecessor is not current in virtual state", {"id": predecessor_id}, EXIT_CONFLICT)
-    if transition == "capture":
+    if transition in {"capture", "decision_fallback_import"}:
         same_slot = [record for record in state.values() if (record["frontmatter"]["scope"], record["frontmatter"]["decision_key"]) == (frontmatter["scope"], frontmatter["decision_key"])]
         if same_slot:
             raise DecisionError("decision_slot_conflict", "slot already has a current DEC", {"current": [item["id"] for item in same_slot]}, EXIT_CONFLICT)
     if transition == "decision_supersede" and predecessor and (frontmatter["scope"], frontmatter["decision_key"]) != (predecessor["frontmatter"]["scope"], predecessor["frontmatter"]["decision_key"]):
         raise DecisionError("successor_slot_mismatch", "successor must use the exact predecessor slot", exit_code=EXIT_CONFLICT)
     duplicates = [record for record in state.values() if record["id"] not in target_ids and record["frontmatter"]["claim_fingerprint"] == frontmatter["claim_fingerprint"]]
-    if transition in {"capture", "decision_supersede"} and duplicates:
+    if transition in {"capture", "decision_supersede", "decision_fallback_import"} and duplicates:
         raise DecisionError("duplicate_claim", "current DEC has the same claim fingerprint", {"current": [item["id"] for item in duplicates]}, EXIT_CONFLICT)
     overlaps = [
         record for record in state.values()
         if record["id"] not in target_ids
         and record["frontmatter"]["decision_key"] == frontmatter["decision_key"]
         and scopes_overlap(record["frontmatter"]["scope"], frontmatter["scope"])
-    ] if transition in {"capture", "decision_supersede"} else []
+    ] if transition in {"capture", "decision_supersede", "decision_fallback_import"} else []
     acknowledged, preconditions = _acknowledgements(owner_result)
     expected_ack = sorted(record["id"] for record in overlaps)
     if acknowledged != expected_ack:
@@ -1101,6 +1195,139 @@ def build_supersede_result(
             "operations": [
                 {"op": "move", "effect_id": old_effect, "area": "decision", "id": predecessor_id, "from_path": predecessor["path"], "to_path": old_history},
                 {"op": "create", "effect_id": new_effect, "area": "decision", "path": new_path},
+            ],
+        },
+    }
+    validate_owner_result(result)
+    return result
+
+
+def build_fallback_import_result(
+    repo: pathlib.Path,
+    predecessor_id: str,
+    successor_result: dict[str, Any],
+    lifecycle_input: dict[str, Any],
+    lifecycle_attestation: dict[str, Any],
+    *,
+    retired_at: str | None = None,
+    acknowledged_conflicts: Sequence[str] = (),
+) -> dict[str, Any]:
+    """Plan an OBS-to-DEC import; context-core remains the only physical writer."""
+    validate_owner_result(successor_result)
+    if (
+        successor_result.get("result_type") != "claim"
+        or successor_result.get("transition") != "capture"
+        or successor_result.get("owner") != "context-decision"
+    ):
+        raise DecisionError("successor_result_invalid", "fallback successor must be one complete DEC claim result", exit_code=EXIT_CONFLICT)
+    validate_attestation(
+        lifecycle_attestation,
+        lifecycle_input,
+        "same_claim",
+        decision_capability()["lifecycle_operations"]["same_claim"]["assertions"],
+    )
+    claim_input = _input_map(successor_result).get("claim")
+    if claim_input is None or lifecycle_input.get("source_candidate_digest") != claim_input["input_digest"]:
+        raise DecisionError("lifecycle_input_mismatch", "lifecycle input is not bound to the successor claim", exit_code=EXIT_CONFLICT)
+    predecessor = lifecycle_input.get("predecessor", {})
+    successor = lifecycle_input.get("successor", {})
+    if (
+        lifecycle_input.get("schema") != "context-lifecycle-semantic-input/v1"
+        or lifecycle_input.get("operation") != "same_claim"
+        or lifecycle_input.get("transition") != "decision_fallback_import"
+        or lifecycle_input.get("owner") != "context-decision"
+        or predecessor.get("id") != predecessor_id
+        or predecessor.get("kind") != "observation"
+        or successor.get("kind") != "decision"
+        or set(lifecycle_input) != {"schema", "operation", "transition", "owner", "predecessor", "successor", "source_candidate_digest"}
+        or set(predecessor) != {"id", "kind", "path", "primary_claim", "claim_fingerprint", "supporting_context"}
+        or set(successor) != {"id", "kind", "path", "primary_claim", "claim_fingerprint", "supporting_context"}
+    ):
+        raise DecisionError("lifecycle_input_mismatch", "fallback lifecycle envelope is invalid", exit_code=EXIT_CONFLICT)
+    predecessor_path = pathlib.PurePosixPath(str(predecessor.get("path", "")))
+    if (
+        predecessor_path.is_absolute()
+        or ".." in predecessor_path.parts
+        or len(predecessor_path.parts) < 3
+        or predecessor_path.parts[:2] != ("context", "observation")
+        or "retired" in predecessor_path.parts
+    ):
+        raise DecisionError("lifecycle_input_mismatch", "fallback predecessor path is not a current OBS path", exit_code=EXIT_CONFLICT)
+    source_path = repo / predecessor_path
+    try:
+        source_bytes = source_path.read_bytes()
+        source_text = source_bytes.decode("utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        raise DecisionError("predecessor_not_current", "fallback OBS predecessor is unavailable", exit_code=EXIT_CONFLICT) from error
+    obs_fm, obs_sections = parse_observation_document(source_text)
+    dec_fm, dec_sections, dec_draft = _primary_draft(successor_result)
+    if predecessor_id != obs_fm["id"] or successor.get("id") != dec_fm["id"] or successor.get("path") != dec_draft["path"]:
+        raise DecisionError("lifecycle_input_mismatch", "lifecycle ids or paths differ from artifact drafts", exit_code=EXIT_CONFLICT)
+    if (
+        predecessor.get("primary_claim") != obs_sections["관찰"]
+        or predecessor.get("claim_fingerprint") != obs_fm["claim_fingerprint"]
+        or successor.get("primary_claim") != dec_sections["결정"]
+        or successor.get("claim_fingerprint") != dec_fm["claim_fingerprint"]
+        or obs_fm.get("kind_hint") != "decision"
+        or obs_fm.get("source_claim_fingerprint") != dec_fm["claim_fingerprint"]
+        or not isinstance(predecessor.get("supporting_context"), list)
+        or not isinstance(successor.get("supporting_context"), list)
+        or len(predecessor["supporting_context"]) > 4
+        or len(successor["supporting_context"]) > 4
+        or predecessor["supporting_context"] != [line[2:].strip() for line in obs_sections["근거"].splitlines() if line.startswith("- ")][:4]
+        or successor["supporting_context"] != [dec_sections["취지"]]
+    ):
+        raise DecisionError("fallback_fingerprint_mismatch", "fallback exact claim fingerprint or semantic projection differs", exit_code=EXIT_CONFLICT)
+    if predecessor_id in dec_fm.get("relations", {}).get("informed_by", []):
+        raise DecisionError("fallback_relation_conflict", "fallback import must use lifecycle edges, not informed_by", exit_code=EXIT_CONFLICT)
+    timestamp = _validate_timestamp(retired_at or now_rfc3339(), "retired_at")
+    dec_fm = dict(dec_fm)
+    dec_fm["supersedes"] = [predecessor_id]
+    dec_content = render_document(dec_fm, dec_sections)
+    obs_fm = dict(obs_fm)
+    obs_fm.update({"retired_at": timestamp, "retired_reason": "superseded", "superseded_by": dec_fm["id"]})
+    obs_content = render_observation_document(obs_fm, obs_sections)
+    obs_effect = "effect_retire_fallback_observation"
+    dec_effect = "effect_create_imported_decision"
+    obs_history = _history_path(predecessor_path.as_posix(), predecessor_id)
+    target = {"id": predecessor_id, "path": predecessor_path.as_posix(), "sha256": bytes_digest(source_bytes)}
+    acknowledgements = sorted(set(acknowledged_conflicts))
+    claim_effect = next(effect for effect in successor_result["effects"] if effect["id"] == dec_fm["id"])
+    successor_acknowledgements = sorted(set(claim_effect.get("acknowledged_conflicts", [])))
+    if not acknowledgements:
+        acknowledgements = successor_acknowledgements
+    if acknowledgements != successor_acknowledgements:
+        raise DecisionError("conflict_ack_invalid", "fallback import acknowledgements must equal the successor claim", exit_code=EXIT_CONFLICT)
+    request = _mutation_request(
+        "decision_fallback_import",
+        {"predecessor": predecessor_id, "successor": dec_fm["id"], "acknowledged_conflicts": acknowledgements},
+        [target],
+        canonical_digest(successor_result),
+    )
+    result = {
+        "schema": "context-owner-result/v1",
+        "result_type": "mutation",
+        "transition": "decision_fallback_import",
+        "owner": "context-decision",
+        "target_kind": "decision",
+        "capability_digest": canonical_digest(decision_capability()),
+        "semantic_inputs": successor_result["semantic_inputs"] + [_semantic_input("same_claim", lifecycle_input), _semantic_input("mutation_request", request)],
+        "semantic_attestations": successor_result["semantic_attestations"] + [lifecycle_attestation],
+        "artifact_drafts": [
+            {"effect_id": obs_effect, "path": obs_history, "content": obs_content, "semantic_projection": {"kind": "observation", "primary_claim": obs_sections["관찰"], "claim_fingerprint": obs_fm["claim_fingerprint"], "supporting_context": [obs_sections["근거"]]}},
+            {"effect_id": dec_effect, "path": dec_draft["path"], "content": dec_content, "semantic_projection": {"kind": "decision", "primary_claim": dec_sections["결정"], "claim_fingerprint": dec_fm["claim_fingerprint"], "supporting_context": [dec_sections["취지"]]}},
+        ],
+        "effects": [
+            {"effect_id": obs_effect, "action": "retire", "area": "observation", "id": predecessor_id, "state": "history", "reason": "superseded", "successor": dec_fm["id"]},
+            {"effect_id": dec_effect, "action": "create", "area": "decision", "id": dec_fm["id"], "state": "current", "acknowledged_conflicts": acknowledgements},
+        ],
+        "proposed_plan": {
+            "schema": "context-owner-plan/v1",
+            "transition": "decision_fallback_import",
+            "read_preconditions": [target] + _read_preconditions_for_ack(repo, acknowledgements),
+            "operations": [
+                {"op": "move", "effect_id": obs_effect, "area": "observation", "id": predecessor_id, "from_path": predecessor_path.as_posix(), "to_path": obs_history},
+                {"op": "create", "effect_id": dec_effect, "area": "decision", "path": dec_draft["path"]},
             ],
         },
     }
@@ -1328,7 +1555,8 @@ def validate_plan_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
     plan = bundle["approval_material"]["plan"]
     if plan.get("owner_descriptor", {}).get("kind") != "decision" or plan.get("capability_digest") != canonical_digest(decision_capability()):
         raise DecisionError("plan_invalid", "final plan owner descriptor/capability is invalid", exit_code=EXIT_CONFLICT)
-    if any(operation.get("role") == "artifact" and operation.get("area") != "decision" for operation in plan.get("operations", [])):
+    allowed_areas = {"decision", "observation"} if owner_result["transition"] == "decision_fallback_import" else {"decision"}
+    if any(operation.get("role") == "artifact" and operation.get("area") not in allowed_areas for operation in plan.get("operations", [])):
         raise DecisionError("plan_invalid", "decision owner plan escapes its area", exit_code=EXIT_CONFLICT)
     validation = plan.get("owner_validation")
     if not isinstance(validation, dict) or validation.get("owner_result_digest") != canonical_digest(owner_result):
@@ -1442,6 +1670,13 @@ def build_parser() -> argparse.ArgumentParser:
     supersede.add_argument("--attestation", required=True)
     supersede.add_argument("--ack-conflicts", action="append", default=[])
     supersede.add_argument("--json", action="store_true")
+    fallback = sub.add_parser("import-fallback")
+    fallback.add_argument("--id", required=True)
+    fallback.add_argument("--successor-result", required=True)
+    fallback.add_argument("--lifecycle-input", required=True)
+    fallback.add_argument("--attestation", required=True)
+    fallback.add_argument("--ack-conflicts", action="append", default=[])
+    fallback.add_argument("--json", action="store_true")
     withdraw = sub.add_parser("withdraw")
     withdraw.add_argument("--id", required=True)
     withdraw.add_argument("--reason", required=True)
@@ -1502,6 +1737,15 @@ def dispatch(args: argparse.Namespace) -> dict[str, Any]:
         return conflict_candidates(repo, args.scope, args.decision_key, candidate_fingerprint=fingerprint)
     if args.command == "supersede":
         return build_supersede_result(repo, args.id, _load_json_argument(args.successor_candidate, allow_stdin=True), _load_json_argument(args.attestation), acknowledged_conflicts=args.ack_conflicts)
+    if args.command == "import-fallback":
+        return build_fallback_import_result(
+            repo,
+            args.id,
+            _load_json_argument(args.successor_result, allow_stdin=True),
+            _load_json_argument(args.lifecycle_input),
+            _load_json_argument(args.attestation),
+            acknowledged_conflicts=args.ack_conflicts,
+        )
     if args.command == "withdraw":
         return build_withdraw_result(repo, args.id, args.reason)
     if args.command == "annotate":

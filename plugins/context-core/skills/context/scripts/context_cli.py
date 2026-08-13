@@ -29,6 +29,8 @@ PROTOCOL = "context-common/v1"
 MAX_STAGE1_BYTES = 4 * 1024
 MAX_USER_BYTES = 32 * 1024
 MAX_CANDIDATE_BYTES = 16 * 1024
+MAX_OWNER_INPUT_BYTES = 2 * 1024
+MAX_APPROVAL_PREVIEW_BYTES = 32 * 1024
 ROOT_INDEX = "context/context.index.md"
 BUILTIN_AREAS = ("snapshot", "observation")
 RESERVED_INDEX_PATHS = {
@@ -69,6 +71,17 @@ LOCAL_ID = re.compile(r"^[a-z][a-z0-9_]{0,79}$")
 AREA_NAME = re.compile(r"^[a-z][a-z0-9_-]{0,79}$")
 ROOT_ROW = re.compile(r"^.*<!-- context-area (\{.*\}) -->$")
 ENTRY_ROW = re.compile(r"^.*<!-- context-entry (\{.*\}) -->$")
+POLICY_BEGIN = "<!-- BEGIN context-core-policy (managed by context-core) -->"
+POLICY_END = "<!-- END context-core-policy (managed by context-core) -->"
+POLICY_BODY = """<!-- BEGIN context-core-policy (managed by context-core) -->
+## Shared context policy
+
+- Substantive work에서 이전 결정·관찰·handoff가 판단을 바꿀 수 있으면 scoped index-first recall을 한 번 수행한다.
+- Primary 요청과 답변을 먼저 끝낸다. semantic milestone 또는 closeout당 durable candidate audit은 최대 한 번만 수행한다.
+- Candidate가 있을 때만 complete artifact preview를 한 grouped proposal로 보여준다. 승인 전에는 context artifact나 index를 쓰지 않는다.
+- Current DEC는 authoritative, OBS는 non-authoritative evidence, SNAP은 resume staging으로 취급한다.
+<!-- END context-core-policy (managed by context-core) -->"""
+POLICY_TARGETS = {"AGENTS.md", "CLAUDE.md"}
 
 
 class ContextError(Exception):
@@ -884,6 +897,213 @@ def capabilities_result() -> dict[str, Any]:
     return {"schema": "context-owner-capabilities/v1", "owners": [builtin_capability("snapshot"), builtin_capability("observation")]}
 
 
+def _capability_list(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, dict) and value.get("schema") == "context-owner-capabilities/v1":
+        owners = value.get("owners")
+    elif isinstance(value, list):
+        owners = value
+    else:
+        raise ContextError("capability_invalid", "capabilities must use context-owner-capabilities/v1", exit_code=EXIT_CONFLICT)
+    if not isinstance(owners, list):
+        raise ContextError("capability_invalid", "capability owners must be an array", exit_code=EXIT_CONFLICT)
+    output: list[dict[str, Any]] = []
+    identities: set[tuple[str, str]] = set()
+    for capability in owners:
+        if not isinstance(capability, dict) or capability.get("schema") != "context-owner-capability/v1":
+            raise ContextError("capability_invalid", "owner capability envelope is invalid", exit_code=EXIT_CONFLICT)
+        owner = capability.get("owner")
+        kind = capability.get("kind")
+        surface = capability.get("claim_surface")
+        if (
+            not isinstance(owner, str)
+            or not isinstance(kind, str)
+            or not isinstance(capability.get("artifact_schema"), str)
+            or capability.get("authority") not in {"staging", "evidence", "authoritative"}
+            or not isinstance(surface, dict)
+            or surface.get("type") != "agent_skill"
+            or surface.get("operation") != "claim"
+            or not isinstance(surface.get("name"), str)
+        ):
+            raise ContextError("capability_invalid", "owner capability identity or host surface is invalid", exit_code=EXIT_CONFLICT)
+        identity = (owner, kind)
+        if identity in identities or any(item["kind"] == kind for item in output):
+            raise ContextError("owner_conflict", "more than one capability claims a kind", {"kind": kind}, EXIT_CONFLICT)
+        identities.add(identity)
+        output.append(capability)
+    return output
+
+
+def validate_candidate_batch(batch: Any, capabilities: Any) -> list[dict[str, Any]]:
+    if isinstance(batch, dict) and batch.get("schema") == "context-capture-batch/v1":
+        candidates = batch.get("candidates")
+        if batch.get("audit_count", 1) != 1:
+            raise ContextError("audit_repeated", "a semantic milestone may be audited at most once", exit_code=EXIT_CONFLICT)
+    else:
+        candidates = batch
+    if not isinstance(candidates, list):
+        raise ContextError("candidate_invalid", "candidate batch must be an array")
+    if len(candidates) > 8:
+        raise ContextError("candidate_batch_too_large", "candidate batch exceeds the v1 count budget", {"maximum": 8}, EXIT_CONFLICT)
+    if len(canonical_json(candidates).encode("utf-8")) > MAX_CANDIDATE_BYTES:
+        raise ContextError("candidate_batch_too_large", "candidate batch exceeds 16 KiB", exit_code=EXIT_CONFLICT)
+    capability_by_kind = {item["kind"]: item for item in _capability_list(capabilities)}
+    required = {
+        "schema", "candidate_id", "claim_key", "title", "claim", "summary", "captured_from", "requested_kind",
+        "specialized_kinds", "fallback_kind", "owner_inputs",
+    }
+    candidate_ids: set[str] = set()
+    claim_keys: set[str] = set()
+    semantic_claims: set[str] = set()
+    for candidate in candidates:
+        if not isinstance(candidate, dict) or candidate.get("schema") != "context-capture-candidate/v1" or required - set(candidate):
+            raise ContextError("candidate_invalid", "candidate envelope is incomplete", exit_code=EXIT_CONFLICT)
+        identifier = candidate.get("candidate_id")
+        claim_key = candidate.get("claim_key")
+        if not isinstance(identifier, str) or not re.fullmatch(r"cand_[0-9a-f]{32}", identifier):
+            raise ContextError("candidate_invalid", "candidate_id is invalid")
+        if not isinstance(claim_key, str) or not LOCAL_ID.fullmatch(claim_key):
+            raise ContextError("candidate_invalid", "claim_key is invalid")
+        if identifier in candidate_ids:
+            raise ContextError("candidate_invalid", "candidate_id is duplicated", {"candidate_id": identifier}, EXIT_CONFLICT)
+        normalized_claim = normalized_key(candidate.get("claim", "").strip())
+        if claim_key in claim_keys or normalized_claim in semantic_claims:
+            raise ContextError("duplicate_claim", "one semantic claim may appear only once in an audit batch", {"claim_key": claim_key}, EXIT_CONFLICT)
+        candidate_ids.add(identifier)
+        claim_keys.add(claim_key)
+        semantic_claims.add(normalized_claim)
+        if not _substantive(candidate.get("title")) or len(candidate["title"]) > 120 or "\n" in candidate["title"]:
+            raise ContextError("candidate_invalid", "candidate title is invalid")
+        if not _substantive(candidate.get("claim")) or len(candidate["claim"]) > 320:
+            raise ContextError("candidate_invalid", "candidate claim is invalid")
+        if not _substantive(candidate.get("summary")) or len(candidate["summary"]) > 280 or "\n" in candidate["summary"]:
+            raise ContextError("candidate_invalid", "candidate summary is invalid")
+        if candidate.get("captured_from") not in {"conversation", "workspace", "manual", "import"}:
+            raise ContextError("candidate_invalid", "candidate provenance is invalid")
+        requested = candidate.get("requested_kind")
+        specialized = candidate.get("specialized_kinds")
+        fallback = candidate.get("fallback_kind")
+        if requested is not None and not isinstance(requested, str):
+            raise ContextError("candidate_invalid", "requested_kind must be a string or null")
+        if not isinstance(specialized, list) or len(specialized) > 2 or len(specialized) != len(set(specialized)) or not all(isinstance(item, str) for item in specialized):
+            raise ContextError("candidate_invalid", "specialized_kinds is invalid")
+        if fallback not in {None, "observation", "snapshot"}:
+            raise ContextError("candidate_invalid", "fallback_kind is invalid")
+        evidence = candidate.get("evidence", [])
+        if not isinstance(evidence, list) or len(evidence) > 2 or any(not _substantive(item) or len(item) > 240 for item in evidence):
+            raise ContextError("candidate_invalid", "candidate evidence is invalid")
+        owner_inputs = candidate.get("owner_inputs")
+        if not isinstance(owner_inputs, dict):
+            raise ContextError("candidate_invalid", "owner_inputs must be an object")
+        relevant = set(specialized) | ({requested} if requested else set()) | ({fallback} if fallback else set())
+        if set(owner_inputs) - relevant:
+            raise ContextError("candidate_invalid", "owner_inputs contains an unrouted kind", {"kinds": sorted(set(owner_inputs) - relevant)})
+        for kind, owner_input in owner_inputs.items():
+            if len(canonical_json(owner_input).encode("utf-8")) > MAX_OWNER_INPUT_BYTES:
+                raise ContextError("candidate_too_large", "owner input exceeds 2 KiB", {"kind": kind}, EXIT_CONFLICT)
+            capability = capability_by_kind.get(kind)
+            if capability is not None and capability["owner"] == "context-core":
+                _validate_owner_inputs(kind, owner_input)
+    return candidates
+
+
+def _claim_result_map(results: Any) -> dict[tuple[str, str], dict[str, Any]]:
+    if isinstance(results, dict) and results.get("schema") == "context-owner-results/v1":
+        values = results.get("results")
+    else:
+        values = results
+    if not isinstance(values, list):
+        raise ContextError("owner_result_invalid", "claim results must be an array", exit_code=EXIT_CONFLICT)
+    output: dict[tuple[str, str], dict[str, Any]] = {}
+    for result in values:
+        if not isinstance(result, dict):
+            raise ContextError("owner_result_invalid", "claim result is not an object", exit_code=EXIT_CONFLICT)
+        key = (result.get("candidate_id"), result.get("target_kind"))
+        if not all(isinstance(item, str) for item in key) or key in output:
+            raise ContextError("owner_conflict", "claim result is duplicated for candidate/kind", exit_code=EXIT_CONFLICT)
+        output[key] = result
+    return output
+
+
+def route_candidates(batch: Any, capabilities: Any, claim_results: Any) -> dict[str, Any]:
+    candidates = validate_candidate_batch(batch, capabilities)
+    capability_by_kind = {item["kind"]: item for item in _capability_list(capabilities)}
+    results = _claim_result_map(claim_results)
+    routes: list[dict[str, Any]] = []
+    for candidate in candidates:
+        requested = candidate["requested_kind"]
+        ordered = [requested] if requested else list(candidate["specialized_kinds"])
+        available = [kind for kind in ordered if kind in capability_by_kind]
+        if requested and not available:
+            routes.append({"candidate_id": candidate["candidate_id"], "claim_key": candidate["claim_key"], "status": "owner_unavailable", "reason": "requested_owner_unavailable"})
+            continue
+        evaluated: list[tuple[str, dict[str, Any]]] = []
+        for kind in available:
+            result = results.get((candidate["candidate_id"], kind))
+            if result is None:
+                continue
+            capability = capability_by_kind[kind]
+            embedded = next((item for item in result.get("semantic_inputs", []) if item.get("operation") == "claim"), None)
+            if (
+                result.get("schema") != "context-owner-result/v1"
+                or result.get("result_type") != "claim"
+                or result.get("owner") != capability["owner"]
+                or result.get("capability_digest") != canonical_digest(capability)
+                or embedded is None
+                or embedded.get("value") != candidate
+                or embedded.get("input_digest") != canonical_digest(candidate)
+            ):
+                raise ContextError("claim_result_mismatch", "host-collected owner result differs from candidate/capability", exit_code=EXIT_CONFLICT)
+            validate_owner_result(result, capability)
+            evaluated.append((kind, result))
+        clarifications = [(kind, result) for kind, result in evaluated if result.get("decision") == "needs_clarification"]
+        claims = [(kind, result) for kind, result in evaluated if result.get("decision") == "claim"]
+        if clarifications:
+            kind, result = clarifications[0]
+            routes.append({"candidate_id": candidate["candidate_id"], "claim_key": candidate["claim_key"], "status": "needs_clarification", "owner": result["owner"], "target_kind": kind, "reason": result["reason"]})
+            continue
+        if len(claims) > 1:
+            routes.append({"candidate_id": candidate["candidate_id"], "claim_key": candidate["claim_key"], "status": "owner_conflict", "reason": "multiple_specialized_owners_claimed"})
+            continue
+        if len(claims) == 1:
+            kind, result = claims[0]
+            reason = "requested_owner" if requested else ("fallback_owner" if kind == candidate.get("fallback_kind") else "specialized_owner")
+            routes.append({
+                "candidate_id": candidate["candidate_id"], "claim_key": candidate["claim_key"], "status": "proposed",
+                "owner": result["owner"], "target_kind": kind, "authority": capability_by_kind[kind]["authority"],
+                "reason": reason, "owner_result_digest": canonical_digest(result),
+            })
+            continue
+        if requested:
+            declined = next((result for _, result in evaluated if result.get("decision") == "decline"), None)
+            routes.append({"candidate_id": candidate["candidate_id"], "claim_key": candidate["claim_key"], "status": "skipped", "reason": "owner_decline" if declined else "owner_unavailable"})
+            continue
+        if available and len(evaluated) != len(available):
+            routes.append({"candidate_id": candidate["candidate_id"], "claim_key": candidate["claim_key"], "status": "owner_unavailable", "reason": "specialized_owner_result_missing"})
+            continue
+        fallback = candidate.get("fallback_kind")
+        fallback_result = results.get((candidate["candidate_id"], fallback)) if fallback else None
+        if fallback and fallback in capability_by_kind and fallback_result is not None:
+            capability = capability_by_kind[fallback]
+            embedded = next((item for item in fallback_result.get("semantic_inputs", []) if item.get("operation") == "claim"), None)
+            if fallback_result.get("owner") != capability["owner"] or fallback_result.get("capability_digest") != canonical_digest(capability) or embedded is None or embedded.get("value") != candidate:
+                raise ContextError("claim_result_mismatch", "fallback result differs from candidate/capability", exit_code=EXIT_CONFLICT)
+            validate_owner_result(fallback_result, capability)
+            if fallback_result.get("decision") == "claim":
+                routes.append({
+                    "candidate_id": candidate["candidate_id"], "claim_key": candidate["claim_key"], "status": "proposed",
+                    "owner": fallback_result["owner"], "target_kind": fallback, "authority": capability["authority"],
+                    "reason": "fallback_owner", "owner_result_digest": canonical_digest(fallback_result),
+                })
+                continue
+        routes.append({"candidate_id": candidate["candidate_id"], "claim_key": candidate["claim_key"], "status": "skipped", "reason": "no_owner_claim"})
+    return {
+        "schema": "context-route-result/v1", "routes": routes,
+        "conflicts": [item for item in routes if item["status"] in {"owner_conflict", "duplicate_claim"}],
+        "skipped": [item for item in routes if item["status"] == "skipped"],
+        "router_owner_process_invocations": 0, "cache_probe_count": 0, "alternate_runtime_count": 0,
+    }
+
+
 def _validate_owner_inputs(kind: str, value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ContextError("candidate_invalid", "owner input must be an object")
@@ -1031,7 +1251,7 @@ def _validate_claim_draft(kind: str, candidate: dict[str, Any], draft: dict[str,
             raise ContextError("claim_result_mismatch", "observation fingerprint differs from embedded candidate", exit_code=EXIT_CONFLICT)
         if frontmatter.get("kind_hint") != candidate.get("kind_hint"):
             raise ContextError("claim_result_mismatch", "observation kind_hint differs from embedded candidate", exit_code=EXIT_CONFLICT)
-        expected_source = claim_fingerprint("decision", "", primary) if candidate.get("kind_hint") == "decision" else None
+        expected_source = claim_fingerprint("decision", candidate.get("scope_hint", ""), candidate["claim"]) if candidate.get("kind_hint") == "decision" else None
         if frontmatter.get("source_claim_fingerprint") != expected_source:
             raise ContextError("claim_result_mismatch", "observation source fingerprint differs from embedded candidate", exit_code=EXIT_CONFLICT)
     for field, section in optional:
@@ -1094,7 +1314,7 @@ def draft_owner_result(
         frontmatter["claim_fingerprint"] = claim_fingerprint("observation", "", primary_claim)
         if candidate.get("kind_hint") == "decision":
             frontmatter["kind_hint"] = "decision"
-            frontmatter["source_claim_fingerprint"] = claim_fingerprint("decision", "", primary_claim)
+            frontmatter["source_claim_fingerprint"] = claim_fingerprint("decision", candidate.get("scope_hint", ""), candidate["claim"])
         sections = {"관찰": primary_claim, "근거": _list_section(owner_inputs["evidence"])}
         optional_sections = (("impact", "영향"), ("current_handling", "현재 처리"), ("followup_conditions", "후속 조건"))
     for field, section in optional_sections:
@@ -1148,7 +1368,7 @@ def _json_pointer(value: Any, pointer: str) -> Any:
     return current
 
 
-def validate_owner_result(result: dict[str, Any]) -> None:
+def validate_owner_result(result: dict[str, Any], capability: dict[str, Any] | None = None) -> None:
     if result.get("schema") != "context-owner-result/v1" or not isinstance(result.get("owner"), str):
         raise ContextError("owner_result_invalid", "owner result envelope is invalid", exit_code=EXIT_CONFLICT)
     missing = {"result_type", "transition", "target_kind", "capability_digest", "semantic_inputs", "semantic_attestations", "artifact_drafts", "effects", "proposed_plan"} - set(result)
@@ -1157,8 +1377,11 @@ def validate_owner_result(result: dict[str, Any]) -> None:
     kind = result["target_kind"]
     if result["owner"] == "context-core":
         capability = builtin_capability(kind)
-        if result["capability_digest"] != canonical_digest(capability):
+    if capability is not None:
+        if result.get("owner") != capability.get("owner") or kind != capability.get("kind") or result["capability_digest"] != canonical_digest(capability):
             raise ContextError("capability_digest_mismatch", "owner result capability digest is stale", exit_code=EXIT_CONFLICT)
+    elif not isinstance(result.get("capability_digest"), str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", result["capability_digest"]):
+        raise ContextError("capability_digest_mismatch", "owner result capability digest is invalid", exit_code=EXIT_CONFLICT)
     inputs: dict[str, dict[str, Any]] = {}
     for item in result["semantic_inputs"]:
         operation = item.get("operation")
@@ -1181,13 +1404,25 @@ def validate_owner_result(result: dict[str, Any]) -> None:
             for pointer in pointers:
                 _json_pointer(semantic_input["value"], pointer)
         attestations[operation] = attestation
+    if result["result_type"] == "claim" and result.get("decision") in {"decline", "needs_clarification"}:
+        if (
+            result.get("transition") != "capture"
+            or set(inputs) != {"claim"}
+            or attestations
+            or result.get("artifact_drafts")
+            or result.get("effects")
+            or result.get("proposed_plan") is not None
+            or result.get("candidate_id") != inputs["claim"]["value"].get("candidate_id")
+        ):
+            raise ContextError("owner_result_invalid", "decline/clarification must contain only the exact claim input", exit_code=EXIT_CONFLICT)
+        return
     if result["result_type"] == "claim":
         if result.get("decision") != "claim" or result.get("transition") != "capture" or "claim" not in inputs or "claim" not in attestations:
             raise ContextError("owner_result_invalid", "claim result lacks complete claim evidence", exit_code=EXIT_CONFLICT)
         if result.get("candidate_id") != inputs["claim"]["value"].get("candidate_id"):
             raise ContextError("claim_result_mismatch", "claim result candidate does not match embedded input", exit_code=EXIT_CONFLICT)
-        if result["owner"] == "context-core":
-            expected = set(builtin_capability(kind)["claim_assertions"])
+        if capability is not None:
+            expected = set(capability["claim_assertions"])
             actual = {assertion["name"] for assertion in attestations["claim"]["assertions"]}
             if expected != actual:
                 raise ContextError("semantic_attestation_invalid", "claim assertions do not match capability", exit_code=EXIT_CONFLICT)
@@ -1203,6 +1438,7 @@ def validate_owner_result(result: dict[str, Any]) -> None:
             "discard": {"mutation_request"},
             "rename": {"mutation_request"},
             "observation_supersede": {"claim", "same_claim", "mutation_request"},
+            "decision_fallback_import": {"claim", "same_claim", "mutation_request"},
         }.get(result["transition"])
         if required_inputs is not None and set(inputs) != required_inputs:
             raise ContextError("owner_result_invalid", "mutation semantic input set is incomplete", {"expected": sorted(required_inputs)}, EXIT_CONFLICT)
@@ -1211,6 +1447,8 @@ def validate_owner_result(result: dict[str, Any]) -> None:
                 raise ContextError("semantic_attestation_invalid", "observation supersede requires claim and same_claim attestations", exit_code=EXIT_CONFLICT)
             _validate_attestation(attestations["claim"], "claim", inputs["claim"]["value"], set(builtin_capability("observation")["claim_assertions"]))
             _validate_attestation(attestations["same_claim"], "same_claim", inputs["same_claim"]["value"], {"same_semantic_claim"})
+        if result["transition"] == "decision_fallback_import" and set(attestations) != {"claim", "same_claim"}:
+            raise ContextError("semantic_attestation_invalid", "fallback import requires claim and same_claim attestations", exit_code=EXIT_CONFLICT)
     else:
         raise ContextError("owner_result_invalid", "result_type is unsupported", exit_code=EXIT_CONFLICT)
     if "claim" in inputs and result["owner"] == "context-core":
@@ -1239,9 +1477,21 @@ def validate_owner_result(result: dict[str, Any]) -> None:
         projection = draft.get("semantic_projection")
         if not isinstance(projection, dict) or set(projection) != {"kind", "primary_claim", "claim_fingerprint", "supporting_context"}:
             raise ContextError("owner_result_invalid", "draft semantic projection is invalid", exit_code=EXIT_CONFLICT)
-        primary_name = "현재 맥락" if kind == "snapshot" else "관찰"
+        draft_kind = {
+            "context-snapshot/v1": "snapshot",
+            "context-observation/v1": "observation",
+            "context-decision/v1": "decision",
+        }.get(document.frontmatter.get("schema"))
+        if draft_kind != kind and not (
+            result["transition"] == "decision_fallback_import"
+            and kind == "decision"
+            and draft_kind == "observation"
+        ):
+            raise ContextError("owner_result_invalid", "draft kind escapes the owner transition", exit_code=EXIT_CONFLICT)
+        primary_name = {"snapshot": "현재 맥락", "observation": "관찰", "decision": "결정"}.get(draft_kind)
         if (
-            projection["kind"] != kind
+            primary_name is None
+            or projection["kind"] != draft_kind
             or projection["primary_claim"] != document.sections[primary_name]
             or projection["claim_fingerprint"] != document.frontmatter.get("claim_fingerprint")
             or not isinstance(projection["supporting_context"], list)
@@ -1260,6 +1510,8 @@ def _material(material_id: str, path: str | None, content: str) -> dict[str, Any
 
 
 def _bundle_result(preview: dict[str, Any], plan: dict[str, Any], materials: list[dict[str, Any]]) -> dict[str, Any]:
+    if len(canonical_json(preview).encode("utf-8")) > MAX_APPROVAL_PREVIEW_BYTES:
+        raise ContextError("approval_preview_too_large", "grouped approval preview exceeds 32 KiB; split the candidates", exit_code=EXIT_CONFLICT)
     approval_material = {"preview": preview, "plan": plan}
     digest = canonical_digest(approval_material)
     bundle = {"schema": "context-mutation-bundle/v1", "approval_material": approval_material, "approval_digest": digest, "materials": materials}
@@ -1626,6 +1878,61 @@ def build_area_register_bundle(repo: pathlib.Path, descriptor: dict[str, Any], i
     return _bundle_result(preview, plan, materials)
 
 
+def build_policy_bundle(repo: pathlib.Path, target: str) -> dict[str, Any]:
+    if target not in POLICY_TARGETS or pathlib.PurePosixPath(target).name != target:
+        raise ContextError("policy_target_invalid", "policy target must be exact repository-root AGENTS.md or CLAUDE.md", {"target": target}, EXIT_CONFLICT)
+    path = _ensure_contained(repo, target)
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        raise ContextError("policy_file_unsupported", "policy target must be a regular root file", {"target": target}, EXIT_CONFLICT)
+    before_bytes: bytes | None = path.read_bytes() if path.exists() else None
+    before = before_bytes.decode("utf-8") if before_bytes is not None else ""
+    if "\r\n" in before and before.replace("\r\n", "").find("\n") >= 0:
+        raise ContextError("policy_file_unsupported", "mixed newlines are not supported", {"target": target}, EXIT_CONFLICT)
+    if before.count(POLICY_BEGIN) != before.count(POLICY_END) or before.count(POLICY_BEGIN) > 1:
+        raise ContextError("policy_marker_invalid", "policy marker must be absent or one balanced pair", {"target": target}, EXIT_CONFLICT)
+    newline = "\r\n" if "\r\n" in before else "\n"
+    policy_body = POLICY_BODY.replace("\n", newline)
+    if POLICY_BEGIN in before:
+        start = before.index(POLICY_BEGIN)
+        end = before.index(POLICY_END, start) + len(POLICY_END)
+        after = before[:start] + policy_body + before[end:]
+    elif before:
+        separator = "" if before.endswith(newline + newline) else (newline if before.endswith(newline) else newline + newline)
+        after = before + separator + policy_body + newline
+    else:
+        after = policy_body + newline
+    if after == before:
+        return {"noop": True, "applied": False, "changed_paths": []}
+    effect_id = "effect_install_policy"
+    material_id = "material_policy"
+    before_digest = sha256_bytes(before_bytes) if before_bytes is not None else None
+    after_digest = sha256_bytes(after.encode("utf-8"))
+    operation = {
+        "op": "file_replace" if before_bytes is not None else "file_create",
+        "effect_id": effect_id,
+        "role": "policy",
+        "path": target,
+        "before_sha256": before_digest,
+        "after_sha256": after_digest,
+        "material": material_id,
+    }
+    plan = {
+        "schema": "context-mutation-plan/v1", "plan_id": new_plan_id(), "owner": "context-core", "source_type": "core_control",
+        "transition": "policy_install", "owner_descriptor": {"owner": "context-core", "kind": "policy", "artifact_schema": "context-policy/v1"},
+        "control_input": {
+            "schema": "context-core-control/v1", "transition": "policy_install", "target": target,
+            "before_sha256": before_digest, "outside_bytes_sha256": sha256_bytes((before[:before.find(POLICY_BEGIN)] + before[before.find(POLICY_END) + len(POLICY_END):]).encode("utf-8")) if POLICY_BEGIN in before else sha256_bytes(before.encode("utf-8")),
+        },
+        "prior_bundle_digests": [], "read_preconditions": [], "operations": [operation],
+    }
+    preview = {
+        "schema": "context-approval-preview/v1", "owner": "context-core", "candidate_id": None,
+        "artifacts": [{"effect_id": effect_id, "path": target, "content": after}],
+        "effects": [{"effect_id": effect_id, "action": "install_policy", "path": target}],
+    }
+    return _bundle_result(preview, plan, [_material(material_id, target, after)])
+
+
 def _area_for_owner(repo: pathlib.Path, area: str, owner: str) -> tuple[dict[str, Any], AreaIndex]:
     _, rows = _root_catalog(repo)
     matches = [row for row in rows if row["area"] == area]
@@ -1684,12 +1991,84 @@ def _virtual_area_index(index: AreaIndex, effects: Sequence[dict[str, Any]], dra
     return text
 
 
+def _bundle_owner_result(bundle: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    if bundle.get("schema") != "context-mutation-bundle/v1" or bundle.get("approval_digest") != canonical_digest(bundle.get("approval_material")):
+        raise ContextError("prior_bundle_invalid", "prior bundle digest is invalid", exit_code=EXIT_CONFLICT)
+    plan = bundle["approval_material"].get("plan", {})
+    material = next((item for item in bundle.get("materials", []) if item.get("material_id") == plan.get("owner_result_material")), None)
+    if plan.get("source_type") != "owner_result" or material is None or material.get("path") is not None:
+        raise ContextError("prior_bundle_invalid", "prior bundle lacks owner result material", exit_code=EXIT_CONFLICT)
+    try:
+        result = json.loads(material["content"])
+    except json.JSONDecodeError as error:
+        raise ContextError("prior_bundle_invalid", "prior owner result is not JSON", exit_code=EXIT_CONFLICT) from error
+    if canonical_json(result) != material["content"] or sha256_bytes(material["content"].encode("utf-8")) != plan.get("owner_result_digest"):
+        raise ContextError("prior_bundle_invalid", "prior owner result material changed", exit_code=EXIT_CONFLICT)
+    validate_owner_result(result)
+    return plan, result
+
+
+def _validate_owner_validation(
+    owner_result: dict[str, Any],
+    validation: dict[str, Any] | None,
+    area_index: AreaIndex,
+    same_area_prior_digests: Sequence[str],
+) -> None:
+    requires = owner_result["owner"] != "context-core"
+    if not requires and validation is None:
+        return
+    if not isinstance(validation, dict):
+        raise ContextError("owner_validation_required", "addon owner result requires a batch validation receipt", exit_code=EXIT_CONFLICT)
+    expected = dict(validation)
+    receipt_digest = expected.pop("receipt_digest", None)
+    if (
+        validation.get("schema") != "context-owner-validation-receipt/v1"
+        or validation.get("owner") != owner_result["owner"]
+        or validation.get("kind") != owner_result["target_kind"]
+        or validation.get("owner_result_digest") != canonical_digest(owner_result)
+        or validation.get("base_area_index_sha256") != sha256_bytes(area_index.text.encode("utf-8"))
+        or validation.get("prior_same_area_bundle_digests") != list(same_area_prior_digests)
+        or validation.get("status") != "valid"
+        or receipt_digest != canonical_digest(expected)
+    ):
+        raise ContextError("owner_validation_invalid", "owner validation receipt is stale or malformed", exit_code=EXIT_CONFLICT)
+
+
 def finalize_owner_result(repo: pathlib.Path, owner_result: dict[str, Any], owner_validation: dict[str, Any] | None = None, prior_bundles: Sequence[dict[str, Any]] = ()) -> dict[str, Any]:
-    del prior_bundles
     validate_owner_result(owner_result)
     owner = owner_result["owner"]
-    area = owner_result["target_kind"]
-    area_row, area_index = _area_for_owner(repo, area, owner)
+    primary_area = owner_result["target_kind"]
+    area_row, physical_area_index = _area_for_owner(repo, primary_area, owner)
+    prior_digests: list[str] = []
+    same_area_prior_digests: list[str] = []
+    virtual_text = physical_area_index.text
+    for prior in prior_bundles:
+        prior_plan, prior_result = _bundle_owner_result(prior)
+        if prior_plan.get("prior_bundle_digests") != prior_digests:
+            raise ContextError("prior_bundle_order_invalid", "prior bundle chain differs from exact proposal order", exit_code=EXIT_CONFLICT)
+        prior_digest = prior["approval_digest"]
+        prior_digests.append(prior_digest)
+        if primary_area in {effect.get("area") for effect in prior_result.get("effects", [])}:
+            prior_effects = [effect for effect in prior_result["effects"] if effect.get("area") == primary_area]
+            prior_drafts = {draft["effect_id"]: draft for draft in prior_result["artifact_drafts"] if any(effect["effect_id"] == draft["effect_id"] for effect in prior_effects)}
+            virtual_index = AreaIndex(physical_area_index.frontmatter, parse_area_index(virtual_text).current, parse_area_index(virtual_text).history, virtual_text)
+            virtual_text = _virtual_area_index(virtual_index, prior_effects, prior_drafts)
+            same_area_prior_digests.append(prior_digest)
+    _validate_owner_validation(owner_result, owner_validation, physical_area_index, same_area_prior_digests)
+    read_preconditions = owner_result["proposed_plan"].get("read_preconditions", [])
+    if len({item.get("path") for item in read_preconditions}) != len(read_preconditions):
+        raise ContextError("read_precondition_invalid", "owner read preconditions contain duplicate paths", exit_code=EXIT_CONFLICT)
+    for precondition in read_preconditions:
+        if set(precondition) != {"id", "path", "sha256"}:
+            raise ContextError("read_precondition_invalid", "owner read precondition shape is invalid", exit_code=EXIT_CONFLICT)
+        target = _ensure_contained(repo, precondition["path"])
+        if not target.is_file() or sha256_bytes(target.read_bytes()) != precondition["sha256"]:
+            raise ContextError("precondition_changed", "owner read precondition is stale", {"path": precondition["path"]}, EXIT_CONFLICT)
+    area_indexes: dict[str, AreaIndex] = {primary_area: AreaIndex(physical_area_index.frontmatter, parse_area_index(virtual_text).current, parse_area_index(virtual_text).history, virtual_text)}
+    for area in sorted({effect.get("area") for effect in owner_result["effects"] if isinstance(effect.get("area"), str)} - {primary_area}):
+        if owner_result["transition"] != "decision_fallback_import" or area != "observation" or owner != "context-decision":
+            raise ContextError("area_owner_mismatch", "cross-owner area is not allowlisted", {"area": area}, EXIT_CONFLICT)
+        _, area_indexes[area] = _area_for_owner(repo, area, "context-core")
     drafts = {draft["effect_id"]: draft for draft in owner_result["artifact_drafts"]}
     effects = {effect["effect_id"]: effect for effect in owner_result["effects"]}
     operations: list[dict[str, Any]] = []
@@ -1706,8 +2085,11 @@ def finalize_owner_result(repo: pathlib.Path, owner_result: dict[str, Any], owne
     for proposed in owner_result["proposed_plan"]["operations"]:
         effect_id = proposed["effect_id"]
         effect = effects[effect_id]
-        if effect.get("area") != area:
-            raise ContextError("area_owner_mismatch", "owner plan touches another area", exit_code=EXIT_CONFLICT)
+        area = effect.get("area")
+        if area not in area_indexes:
+            raise ContextError("area_owner_mismatch", "owner plan touches an unauthorized area", exit_code=EXIT_CONFLICT)
+        authorized_owner = owner if area == primary_area else "context-core"
+        area_record, _ = _area_for_owner(repo, area, authorized_owner)
         operation = proposed["op"]
         draft = drafts.get(effect_id)
         if operation != "delete":
@@ -1717,7 +2099,7 @@ def finalize_owner_result(repo: pathlib.Path, owner_result: dict[str, Any], owne
                 raise ContextError("path_escape", "draft path is outside the owner area", {"path": relative}, EXIT_CONFLICT)
             _ensure_contained(repo, relative)
             document = parse_document(draft["content"])
-            if document.frontmatter["schema"] != area_row["artifact_schema"] or document.frontmatter["id"] != effect.get("id"):
+            if document.frontmatter["schema"] != area_record["artifact_schema"] or document.frontmatter["id"] != effect.get("id"):
                 raise ContextError("plan_preview_mismatch", "draft schema/id does not match effect", exit_code=EXIT_CONFLICT)
             material_id = f"material_{effect_id}"
             materials.append(_material(material_id, relative, draft["content"]))
@@ -1759,15 +2141,23 @@ def finalize_owner_result(repo: pathlib.Path, owner_result: dict[str, Any], owne
             operations.append({"op": "file_delete", "effect_id": effect_id, "role": "artifact", "area": area, "id": effect["id"], "path": path, "before_sha256": sha256_bytes(target.read_bytes()), "inbound_refs": []})
         else:
             raise ContextError("plan_preview_mismatch", "unsupported owner operation", exit_code=EXIT_CONFLICT)
-    index_after = _virtual_area_index(area_index, list(effects.values()), drafts)
-    index_path = area_row["path"]
-    index_before = sha256_bytes((repo / index_path).read_bytes())
-    operations.append({"op": "index_rebuild", "derived_from": sorted(effects), "areas": [area], "include_root": False, "before_sha256": {index_path: index_before}, "after_sha256": {index_path: sha256_bytes(file_bytes(index_after))}})
+    touched_areas = sorted(area_indexes)
+    index_before: dict[str, str] = {}
+    index_after: dict[str, str] = {}
+    for area in touched_areas:
+        matching_effects = [effect for effect in effects.values() if effect.get("area") == area]
+        matching_drafts = {key: value for key, value in drafts.items() if any(effect["effect_id"] == key for effect in matching_effects)}
+        index = area_indexes[area]
+        path = f"context/{area}/{area}.index.md"
+        index_before[path] = sha256_bytes(index.text.encode("utf-8"))
+        index_after[path] = sha256_bytes(file_bytes(_virtual_area_index(index, matching_effects, matching_drafts)))
+    operations.append({"op": "index_rebuild", "derived_from": sorted(effects), "areas": touched_areas, "include_root": False, "before_sha256": index_before, "after_sha256": index_after})
     plan = {
         "schema": "context-mutation-plan/v1", "plan_id": new_plan_id(), "owner": owner, "source_type": "owner_result",
         "owner_result_digest": owner_digest, "owner_result_material": owner_material_id, "capability_digest": owner_result["capability_digest"],
-        "transition": owner_result["transition"], "owner_descriptor": {"owner": owner, "kind": area, "artifact_schema": area_row["artifact_schema"], "authority": area_row["authority"]},
-        "owner_validation": owner_validation, "prior_bundle_digests": [], "read_preconditions": [], "operations": operations,
+        "transition": owner_result["transition"], "owner_descriptor": {"owner": owner, "kind": primary_area, "artifact_schema": area_row["artifact_schema"], "authority": area_row["authority"]},
+        "owner_validation": owner_validation, "prior_bundle_digests": prior_digests,
+        "read_preconditions": owner_result["proposed_plan"].get("read_preconditions", []), "operations": operations,
     }
     preview = {"schema": "context-approval-preview/v1", "owner": owner, "candidate_id": owner_result.get("candidate_id"), "artifacts": [{"effect_id": draft["effect_id"], "path": draft["path"], "content": draft["content"]} for draft in owner_result["artifact_drafts"]], "effects": owner_result["effects"]}
     return _bundle_result(preview, plan, materials)
@@ -1993,26 +2383,31 @@ def build_observation_invalidate_bundle(repo: pathlib.Path, identifier: str, rea
 
 
 def prepare_lifecycle_input(repo: pathlib.Path, transition: str, predecessor_id: str, successor_result: dict[str, Any]) -> dict[str, Any]:
-    if transition != "observation_supersede":
+    if transition not in {"observation_supersede", "decision_fallback_import"}:
         raise ContextError("lifecycle_transition_invalid", "unsupported lifecycle transition", {"transition": transition}, EXIT_CONFLICT)
     validate_owner_result(successor_result)
+    expected_owner = "context-core" if transition == "observation_supersede" else "context-decision"
+    expected_kind = "observation" if transition == "observation_supersede" else "decision"
     if (
         successor_result.get("result_type") != "claim"
-        or successor_result.get("owner") != "context-core"
-        or successor_result.get("target_kind") != "observation"
+        or successor_result.get("owner") != expected_owner
+        or successor_result.get("target_kind") != expected_kind
         or len(successor_result.get("artifact_drafts", [])) != 1
     ):
-        raise ContextError("successor_result_invalid", "observation successor must be one complete claim result", exit_code=EXIT_CONFLICT)
+        raise ContextError("successor_result_invalid", "lifecycle successor must be one complete claim result from the transition owner", exit_code=EXIT_CONFLICT)
     predecessor_path, predecessor = _artifact_in_area(repo, predecessor_id, "observation", current_only=True)
     successor_draft = successor_result["artifact_drafts"][0]
     successor_document = parse_document(successor_draft["content"])
     projection = successor_draft["semantic_projection"]
     claim_input = next(item for item in successor_result["semantic_inputs"] if item["operation"] == "claim")
+    if transition == "decision_fallback_import":
+        if predecessor.frontmatter.get("kind_hint") != "decision" or predecessor.frontmatter.get("source_claim_fingerprint") != successor_document.frontmatter.get("claim_fingerprint"):
+            raise ContextError("fallback_fingerprint_mismatch", "decision-like OBS source fingerprint must equal the DEC claim fingerprint", exit_code=EXIT_CONFLICT)
     value = {
         "schema": "context-lifecycle-semantic-input/v1",
         "operation": "same_claim",
         "transition": transition,
-        "owner": "context-core",
+        "owner": expected_owner,
         "predecessor": {
             "id": predecessor_id,
             "kind": "observation",
@@ -2023,7 +2418,7 @@ def prepare_lifecycle_input(repo: pathlib.Path, transition: str, predecessor_id:
         },
         "successor": {
             "id": successor_document.frontmatter["id"],
-            "kind": "observation",
+            "kind": expected_kind,
             "path": successor_draft["path"],
             "primary_claim": projection["primary_claim"],
             "claim_fingerprint": projection["claim_fingerprint"],
@@ -2164,15 +2559,40 @@ def _validate_bundle(repo: pathlib.Path, bundle: dict[str, Any], approved_digest
     preview = bundle["approval_material"].get("preview", {})
     if plan.get("schema") != "context-mutation-plan/v1" or preview.get("schema") != "context-approval-preview/v1":
         raise ContextError("bundle_invalid", "approval material is incomplete", exit_code=EXIT_CONFLICT)
-    operations = plan.get("operations", [])
+    plan_operations = plan.get("operations", [])
+    for precondition in plan.get("read_preconditions", []):
+        if set(precondition) != {"id", "path", "sha256"}:
+            raise ContextError("read_precondition_invalid", "final plan read precondition shape is invalid", exit_code=EXIT_CONFLICT)
+        target = _ensure_contained(repo, precondition["path"])
+        completed_move = next(
+            (
+                operation
+                for operation in plan_operations
+                if operation.get("op") == "file_move"
+                and operation.get("id") == precondition["id"]
+                and operation.get("from_path") == precondition["path"]
+                and not target.exists()
+                and _digest_or_none(_ensure_contained(repo, operation["to_path"])) == operation.get("after_sha256")
+            ),
+            None,
+        )
+        if completed_move is None and (not target.is_file() or sha256_bytes(target.read_bytes()) != precondition["sha256"]):
+            raise ContextError("precondition_changed", "final plan read precondition is stale", {"path": precondition["path"]}, EXIT_CONFLICT)
+    operations = plan_operations
     non_index = [operation for operation in operations if operation.get("op") != "index_rebuild"]
     effect_ids = [operation.get("effect_id") for operation in non_index]
     preview_ids = [effect.get("effect_id") for effect in preview.get("effects", [])]
+    preview_artifacts = {artifact.get("effect_id"): artifact for artifact in preview.get("artifacts", [])}
+    if len(preview_artifacts) != len(preview.get("artifacts", [])):
+        raise ContextError("plan_preview_mismatch", "preview artifact effect ids are duplicate", exit_code=EXIT_CONFLICT)
     if len(effect_ids) != len(set(effect_ids)):
         raise ContextError("plan_preview_mismatch", "operations and preview effects are not 1:1", exit_code=EXIT_CONFLICT)
     index_operations = [operation for operation in operations if operation.get("op") == "index_rebuild"]
     derived_ids = index_operations[0].get("derived_from", []) if len(index_operations) == 1 else []
-    if (
+    if plan.get("transition") == "policy_install":
+        if index_operations or len(non_index) != 1 or set(effect_ids) != set(preview_ids):
+            raise ContextError("plan_preview_mismatch", "policy install must contain one visible file operation", exit_code=EXIT_CONFLICT)
+    elif (
         len(index_operations) != 1
         or len(derived_ids) != len(set(derived_ids))
         or set(effect_ids) | set(derived_ids) != set(preview_ids)
@@ -2182,15 +2602,32 @@ def _validate_bundle(repo: pathlib.Path, bundle: dict[str, Any], approved_digest
     for operation in non_index:
         if operation.get("op") not in {"file_create", "file_replace", "file_move", "file_delete"}:
             raise ContextError("plan_preview_mismatch", "physical operation is not allowed", exit_code=EXIT_CONFLICT)
-        if operation.get("role") != "artifact":
+        role = operation.get("role")
+        if role not in {"artifact", "policy"}:
             raise ContextError("plan_preview_mismatch", "file operation role is invalid", exit_code=EXIT_CONFLICT)
+        if role == "policy" and (plan.get("transition") != "policy_install" or operation.get("path") not in POLICY_TARGETS or "area" in operation):
+            raise ContextError("policy_target_invalid", "policy operation escapes the repository-root allowlist", exit_code=EXIT_CONFLICT)
+        if role == "artifact" and not isinstance(operation.get("area"), str):
+            raise ContextError("plan_preview_mismatch", "artifact operation lacks area", exit_code=EXIT_CONFLICT)
         material_id = operation.get("material")
         if operation["op"] != "file_delete" and operation.get("after_sha256") != operation.get("before_sha256") and material_id not in by_id:
             raise ContextError("material_digest_mismatch", "file operation material is missing", exit_code=EXIT_CONFLICT)
         if material_id:
             content = by_id[material_id]["content"]
-            if sha256_bytes(file_bytes(content)) != operation["after_sha256"]:
+            material_bytes = content.encode("utf-8") if role == "policy" else file_bytes(content)
+            if sha256_bytes(material_bytes) != operation["after_sha256"]:
                 raise ContextError("material_digest_mismatch", "material bytes do not match after digest", {"material_id": material_id}, EXIT_CONFLICT)
+        artifact = preview_artifacts.get(operation["effect_id"])
+        if operation["op"] == "file_delete":
+            if artifact is not None:
+                raise ContextError("plan_preview_mismatch", "delete operation must not hide a destination draft", exit_code=EXIT_CONFLICT)
+        else:
+            expected_path = operation.get("to_path", operation.get("path"))
+            if artifact is None or artifact.get("path") != expected_path:
+                raise ContextError("plan_preview_mismatch", "physical destination differs from grouped preview", exit_code=EXIT_CONFLICT)
+            artifact_bytes = artifact.get("content", "").encode("utf-8") if role == "policy" else file_bytes(artifact.get("content", ""))
+            if sha256_bytes(artifact_bytes) != operation.get("after_sha256"):
+                raise ContextError("plan_preview_mismatch", "preview content differs from exact apply bytes", exit_code=EXIT_CONFLICT)
     if plan.get("source_type") == "owner_result":
         owner_material = by_id.get(plan.get("owner_result_material"))
         if owner_material is None or owner_material.get("path") is not None or sha256_bytes(owner_material["content"].encode("utf-8")) != plan.get("owner_result_digest"):
@@ -2209,6 +2646,21 @@ def _validate_bundle(repo: pathlib.Path, bundle: dict[str, Any], approved_digest
         ):
             raise ContextError("plan_preview_mismatch", "final plan is not bound to its owner result", exit_code=EXIT_CONFLICT)
         _area_for_owner(repo, plan["owner_descriptor"]["kind"], plan["owner"])
+        validation = plan.get("owner_validation")
+        if owner_result["owner"] != "context-core":
+            if not isinstance(validation, dict):
+                raise ContextError("owner_validation_required", "addon final plan lacks an owner validation receipt", exit_code=EXIT_CONFLICT)
+            receipt_body = dict(validation)
+            receipt_digest = receipt_body.pop("receipt_digest", None)
+            if (
+                validation.get("schema") != "context-owner-validation-receipt/v1"
+                or validation.get("owner") != owner_result["owner"]
+                or validation.get("kind") != owner_result["target_kind"]
+                or validation.get("owner_result_digest") != canonical_digest(owner_result)
+                or validation.get("status") != "valid"
+                or receipt_digest != canonical_digest(receipt_body)
+            ):
+                raise ContextError("owner_validation_invalid", "addon owner validation receipt is altered", exit_code=EXIT_CONFLICT)
         request_inputs = [item for item in owner_result["semantic_inputs"] if item.get("operation") == "mutation_request"]
         if request_inputs:
             request = request_inputs[0]["value"]
@@ -2253,8 +2705,48 @@ def _validate_bundle(repo: pathlib.Path, bundle: dict[str, Any], approved_digest
                 or predecessor_id not in created.frontmatter.get("supersedes", [])
             ):
                 raise ContextError("lifecycle_input_mismatch", "supersede lifecycle inputs and reciprocal artifact edges differ", exit_code=EXIT_CONFLICT)
+        if owner_result["transition"] == "decision_fallback_import":
+            inputs = {item["operation"]: item["value"] for item in owner_result["semantic_inputs"]}
+            lifecycle = inputs["same_claim"]
+            request = inputs["mutation_request"]
+            drafts = {draft["effect_id"]: draft for draft in owner_result["artifact_drafts"]}
+            dec_effects = [effect for effect in owner_result["effects"] if effect.get("action") == "create" and effect.get("area") == "decision"]
+            obs_effects = [effect for effect in owner_result["effects"] if effect.get("action") == "retire" and effect.get("area") == "observation"]
+            if len(dec_effects) != 1 or len(obs_effects) != 1:
+                raise ContextError("plan_preview_mismatch", "fallback import must create one DEC and retire one OBS", exit_code=EXIT_CONFLICT)
+            created = parse_document(drafts[dec_effects[0]["effect_id"]]["content"])
+            retired = parse_document(drafts[obs_effects[0]["effect_id"]]["content"])
+            target = request["targets"][0] if len(request.get("targets", [])) == 1 else {}
+            if (
+                lifecycle.get("source_candidate_digest") != next(item["input_digest"] for item in owner_result["semantic_inputs"] if item["operation"] == "claim")
+                or lifecycle.get("predecessor", {}).get("kind") != "observation"
+                or lifecycle.get("successor", {}).get("kind") != "decision"
+                or lifecycle.get("predecessor", {}).get("id") != retired.frontmatter["id"]
+                or lifecycle.get("predecessor", {}).get("path") != target.get("path")
+                or lifecycle.get("predecessor", {}).get("primary_claim") != retired.sections["관찰"]
+                or lifecycle.get("successor", {}).get("id") != created.frontmatter["id"]
+                or lifecycle.get("successor", {}).get("path") != drafts[dec_effects[0]["effect_id"]]["path"]
+                or lifecycle.get("successor", {}).get("primary_claim") != created.sections["결정"]
+                or retired.frontmatter.get("kind_hint") != "decision"
+                or retired.frontmatter.get("source_claim_fingerprint") != created.frontmatter.get("claim_fingerprint")
+                or retired.frontmatter.get("superseded_by") != created.frontmatter["id"]
+                or retired.frontmatter["id"] not in created.frontmatter.get("supersedes", [])
+                or retired.frontmatter["id"] in created.frontmatter.get("relations", {}).get("informed_by", [])
+                or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(request.get("successor_owner_result_digest")))
+            ):
+                raise ContextError("lifecycle_input_mismatch", "fallback import lifecycle and exact claim fingerprint differ", exit_code=EXIT_CONFLICT)
     elif plan.get("source_type") != "core_control":
         raise ContextError("bundle_invalid", "source_type is unsupported", exit_code=EXIT_CONFLICT)
+    elif plan.get("transition") == "policy_install":
+        control = plan.get("control_input", {})
+        operation = non_index[0]
+        if (
+            control.get("schema") != "context-core-control/v1"
+            or control.get("transition") != "policy_install"
+            or control.get("target") != operation.get("path")
+            or control.get("before_sha256") != operation.get("before_sha256")
+        ):
+            raise ContextError("plan_preview_mismatch", "policy control input differs from the physical operation", exit_code=EXIT_CONFLICT)
     return plan, by_id
 
 
@@ -2280,12 +2772,16 @@ def _root_lock(repo: pathlib.Path) -> Iterator[None]:
 
 
 def _atomic_write(path: pathlib.Path, content: str) -> None:
+    _atomic_write_bytes(path, file_bytes(content))
+
+
+def _atomic_write_bytes(path: pathlib.Path, content: bytes) -> None:
     path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
     fd, temp_path = tempfile.mkstemp(prefix=".context-", dir=path.parent)
     try:
         os.fchmod(fd, 0o600)
         with os.fdopen(fd, "wb") as handle:
-            handle.write(file_bytes(content))
+            handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp_path, path)
@@ -2313,9 +2809,14 @@ def _apply_file_operation(repo: pathlib.Path, operation: dict[str, Any], materia
             return
         if current != operation["before_sha256"]:
             raise ContextError("precondition_changed", "file precondition changed", {"path": operation["path"]}, EXIT_CONFLICT)
-        if op == "file_replace" and parse_document(path.read_text(encoding="utf-8")).frontmatter["id"] != operation.get("id"):
+        if op == "file_replace" and operation.get("role") == "artifact" and parse_document(path.read_text(encoding="utf-8")).frontmatter["id"] != operation.get("id"):
             raise ContextError("precondition_changed", "replace target id changed", {"path": operation["path"]}, EXIT_CONFLICT)
-        _atomic_write(path, materials[operation["material"]]["content"])
+        content = materials[operation["material"]]["content"]
+        if operation.get("role") == "policy":
+            path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+            _atomic_write_bytes(path, content.encode("utf-8"))
+        else:
+            _atomic_write(path, content)
         changed.append(operation["path"])
     elif op == "file_move":
         source = _ensure_contained(repo, operation["from_path"])
@@ -2393,7 +2894,9 @@ def _apply_index_operation(repo: pathlib.Path, plan: dict[str, Any], operation: 
     return index_paths
 
 
-def apply_bundle(repo: pathlib.Path, bundle: dict[str, Any], approved_digest: str) -> dict[str, Any]:
+def apply_bundle(repo: pathlib.Path, bundle: dict[str, Any], approved_digest: str, *, approval_source: str = "user") -> dict[str, Any]:
+    if approval_source != "user":
+        raise ContextError("approval_required", "autonomous audit or maintenance cannot apply a durable mutation", exit_code=EXIT_CONFLICT)
     plan, materials = _validate_bundle(repo, bundle, approved_digest)
     changed: list[str] = []
     index_paths: list[str] = []
@@ -2609,7 +3112,7 @@ def build_parser() -> argparse.ArgumentParser:
     lifecycle = sub.add_parser("lifecycle")
     lifecycle_sub = lifecycle.add_subparsers(dest="lifecycle_command", required=True)
     prepare = lifecycle_sub.add_parser("prepare")
-    prepare.add_argument("--transition", choices=("observation_supersede",), required=True)
+    prepare.add_argument("--transition", choices=("observation_supersede", "decision_fallback_import"), required=True)
     prepare.add_argument("--predecessor", required=True)
     prepare.add_argument("--successor-result", required=True)
     prepare.add_argument("--json", action="store_true")
@@ -2630,6 +3133,18 @@ def build_parser() -> argparse.ArgumentParser:
     apply.add_argument("--plan-bundle", required=True)
     apply.add_argument("--approved-digest", required=True)
     apply.add_argument("--json", action="store_true")
+    candidate_parser = sub.add_parser("candidate")
+    candidate_sub = candidate_parser.add_subparsers(dest="candidate_command", required=True)
+    route = candidate_sub.add_parser("route")
+    route.add_argument("--batch", required=True)
+    route.add_argument("--capabilities", required=True)
+    route.add_argument("--claim-results", required=True)
+    route.add_argument("--json", action="store_true")
+    policy = sub.add_parser("policy")
+    policy_sub = policy.add_subparsers(dest="policy_command", required=True)
+    policy_preview = policy_sub.add_parser("preview")
+    policy_preview.add_argument("--target", choices=tuple(sorted(POLICY_TARGETS)), required=True)
+    policy_preview.add_argument("--json", action="store_true")
     recall = sub.add_parser("recall")
     recall.add_argument("--query", default="")
     recall.add_argument("--area", action="append", default=[])
@@ -2789,6 +3304,14 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
         return finalize_owner_result(repo, owner_result, validation, priors)
     if args.command == "transaction" and args.transaction_command == "apply":
         return apply_bundle(repo, _load_json_argument(args.plan_bundle), args.approved_digest)
+    if args.command == "candidate" and args.candidate_command == "route":
+        return route_candidates(
+            _load_json_argument(args.batch, allow_stdin=True),
+            _load_json_argument(args.capabilities),
+            _load_json_argument(args.claim_results),
+        )
+    if args.command == "policy" and args.policy_command == "preview":
+        return build_policy_bundle(repo, args.target)
     if args.command == "recall":
         facets = []
         for value in args.facet:

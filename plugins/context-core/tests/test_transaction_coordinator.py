@@ -145,6 +145,23 @@ class TransactionCoordinatorTests(unittest.TestCase):
             self.assertTrue(applied["applied"])
             self.assertTrue((repo / owner_result["artifact_drafts"][0]["path"]).exists())
 
+    def test_acceptance_23_preview(self) -> None:
+        with git_repo() as temp:
+            repo = Path(temp)
+            initialize(repo)
+            owner_result = observation_owner_result()
+            before = tree_digest(repo)
+            preview = context_cli.finalize_owner_result(repo, owner_result)
+            self.assertEqual(before, tree_digest(repo))
+            approval = preview["approval_preview"]
+            self.assertEqual(owner_result["artifact_drafts"][0]["content"], approval["artifacts"][0]["content"])
+            self.assertEqual(owner_result["artifact_drafts"][0]["path"], approval["artifacts"][0]["path"])
+            self.assertEqual(owner_result["effects"], approval["effects"])
+            self.assertEqual(preview["approval_digest"], preview["bundle"]["approval_digest"])
+            frozen = copy.deepcopy(preview["bundle"])
+            context_cli.apply_bundle(repo, frozen, preview["approval_digest"])
+            self.assertEqual(frozen, preview["bundle"], "apply must not regenerate semantic material")
+
     def test_approval_digest_material_and_hidden_operations_fail_closed(self) -> None:
         with git_repo() as temp:
             repo = Path(temp)
@@ -168,6 +185,61 @@ class TransactionCoordinatorTests(unittest.TestCase):
                 context_cli.apply_bundle(repo, hidden, hidden["approval_digest"])
             self.assertEqual("plan_preview_mismatch", hidden_error.exception.code)
             self.assertEqual(before, tree_digest(repo))
+
+    def test_acceptance_24_digest(self) -> None:
+        with git_repo() as temp:
+            repo = Path(temp)
+            initialize(repo)
+            preview = context_cli.finalize_owner_result(repo, observation_owner_result())
+            before = tree_digest(repo)
+            variants = []
+            changed_preview = copy.deepcopy(preview["bundle"])
+            changed_preview["approval_material"]["preview"]["effects"][0]["state"] = "history"
+            variants.append(changed_preview)
+            changed_plan = copy.deepcopy(preview["bundle"])
+            changed_plan["approval_material"]["plan"]["transition"] = "autonomous_maintenance"
+            variants.append(changed_plan)
+            changed_owner = copy.deepcopy(preview["bundle"])
+            owner_material = next(item for item in changed_owner["materials"] if item["path"] is None)
+            owner_material["content"] += " "
+            variants.append(changed_owner)
+            for bundle in variants:
+                with self.subTest(bundle=bundle), self.assertRaises(context_cli.ContextError):
+                    context_cli.apply_bundle(repo, bundle, preview["approval_digest"])
+                self.assertEqual(before, tree_digest(repo))
+            with self.assertRaises(context_cli.ContextError) as caught:
+                context_cli.apply_bundle(repo, preview["bundle"], preview["approval_digest"], approval_source="autonomous")
+            self.assertEqual("approval_required", caught.exception.code)
+            self.assertEqual(before, tree_digest(repo))
+
+    def test_acceptance_38_crash_resume(self) -> None:
+        with git_repo() as temp:
+            repo = Path(temp)
+            initialize(repo)
+            context_cli.apply_bundle(
+                repo,
+                (capture := context_cli.finalize_owner_result(repo, observation_owner_result()))["bundle"],
+                capture["approval_digest"],
+            )
+            preview = context_cli.build_observation_invalidate_bundle(
+                repo,
+                "ctx_550e8400e29b41d4a716446655440000",
+                "재현 전제가 사라짐",
+                now="2026-08-14T09:00:00+09:00",
+            )
+            plan = preview["bundle"]["approval_material"]["plan"]
+            move = next(operation for operation in plan["operations"] if operation["op"] == "file_move")
+            materials = {item["material_id"]: item for item in preview["bundle"]["materials"]}
+            destination = repo / move["to_path"]
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(context_cli.file_bytes(materials[move["material"]]["content"]))
+            self.assertTrue((repo / move["from_path"]).exists())
+            result = context_cli.apply_bundle(repo, preview["bundle"], preview["approval_digest"])
+            self.assertTrue(result["applied"])
+            self.assertFalse((repo / move["from_path"]).exists())
+            self.assertTrue(destination.exists())
+            repeated = context_cli.apply_bundle(repo, preview["bundle"], preview["approval_digest"])
+            self.assertEqual([], repeated["changed_paths"])
 
     def test_owner_area_allowlist_and_seed_requirements_fail_closed(self) -> None:
         with git_repo() as temp:
