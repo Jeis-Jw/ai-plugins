@@ -59,4 +59,7 @@ audience: [human, agent]
 - [[DEC-2026-08-04-221710-본문-무변경-verified-at-스탬프-커밋은-대조-방법을-커밋-메시지에-명시한다]] — verified_at만 옮기고 본문을 바꾸지 않는 커밋은 무엇과 무엇을 대조했는지 커밋 메시지에 한 줄로 명시해야 한다. diff만으로는 TRI-2026-08-04-191805가 경고하는 가짜 재검증과 진짜 재검증을 구분할 수 없다.
 - [[DEC-2026-08-04-221921-wiki-markdown도-단일-plugin-ssot를-갖는다]] — wiki-markdown이 studio/task-github/task-worker/session-review와 같은 단일 진입점 SSOT(wiki-markdown-plugin.md)를 갖는다. 이 문서가 버전·진화·소유범위·구성의 정본이고 plugin-definition 6종 sub-ssot는 세부 계약 정본으로 유지된다.
 - [[DEC-2026-08-13-152825-capture-정책은-초기화-시-auto-loaded-agent-entry에-설치한다]] — runtime hook을 제거하고 agent-facing wiki init이 CLAUDE.md와 AGENTS.md에 best-effort capture 정책을 설치해 primary 답변 우선·후보 있을 때만 제안·승인 전 write 금지를 유지한다.
-- [[DEC-2026-08-13-164257-컨텍스트-플러그인은-단일-capture-audit와-semantic-owner로-결합한다]] — context-core가 SNAP·OBS와 공통 발견·routing·묶음 제안을 소유하고, context-decision 등 addon이 후보를 더 구체적인 의미와 권위로 claim하여 중복 없이 기록한다.
+- [[DEC-2026-08-13-180256-컨텍스트-저장소는-semantic-index와-파일명-독립-id를-사용한다]] — 폴더가 artifact 의미를 정하고 자유로운 문서 파일명과 immutable internal ID를 분리하며 context.index.md와 영역별 semantic index를 문서에서 파생해 실제 1차 검색면으로 사용한다.
+- [[DEC-2026-08-13-180257-snap-obs-dec는-각-의미에-맞는-독립-lifecycle을-갖는다]] — SNAP은 현재 handoff를 제자리 갱신 후 discard하고, OBS와 DEC는 의미 불변 record로서 같은 claim의 대체나 명시적 무효화 때만 retired로 전이한다.
+- [[DEC-2026-08-13-180535-capture-audit는-milestone-단위-단일-판독과-승인형-write를-지킨다]] — semantic milestone 또는 closeout마다 현재 대화를 한 번만 감사하고 축약 candidate를 semantic owner에 전달하며 모든 durable write는 grouped proposal 승인 뒤에만 수행한다.
+- [[DEC-2026-08-13-183612-컨텍스트-플러그인은-milestone-capture-audit와-semantic-owner-draft로-결합한다]] — context-core가 milestone 단위 단일 audit와 승인 UX 및 physical write coordinator를 맡고, semantic owner는 bounded candidate에서 완성된 artifact draft와 mutation plan을 만들어 중복 없이 결합한다.

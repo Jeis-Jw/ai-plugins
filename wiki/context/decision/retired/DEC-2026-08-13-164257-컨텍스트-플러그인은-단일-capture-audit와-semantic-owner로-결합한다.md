@@ -4,6 +4,9 @@ created_at: 2026-08-13
 summary: context-core가 SNAP·OBS와 공통 발견·routing·묶음 제안을 소유하고, context-decision 등 addon이 후보를 더 구체적인 의미와 권위로 claim하여 중복 없이 기록한다.
 tags: [context-core, context-decision, capture, routing, plugin-architecture]
 search_terms: [one auditor many semantic owners, OBS fallback, grouped proposal, capture candidate]
+retired_at: 2026-08-13
+retired_type: superseded
+superseded_by: DEC-2026-08-13-183612-컨텍스트-플러그인은-milestone-capture-audit와-semantic-owner-draft로-결합한다
 ---
 
 ## 결정

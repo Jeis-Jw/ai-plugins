@@ -15,10 +15,13 @@ audience: [human, agent]
 비대화된 영역은 폴더로 분할되어 자체 폴더 인덱스가 overview 역할을 한다 ([[DEC-2026-05-29-105319-nested-ssot-runbook-with-global-unique-basename]] / [[DEC-2026-05-29-105321-folder-independent-index-derivation]]).
 
 - [[plugin-definition]] — 위키 플러그인 메커니즘 정본 영역 (`ssot/plugin-definition/`): wiki-data-model / wiki-lifecycle / wiki-retrieval / wiki-external-tools-policy / wiki-four-layer-separation 5 sub-ssot
+- [[context-plugin-definition]] — context-core/context-decision의 공통 저장·index·lifecycle·capture/recall·v1 구현 계약 영역 (`ssot/context-plugin-definition/`)
 
 ## 노트
 
 - [[agent-operating-model]] — 이전 4계층 설계에서 작업환경 운영정책 정본으로 쓰던 레거시 슬롯. 2026-06-03 이후 운영정책 statement는 CLAUDE.md/AGENTS.md 자동로드 entry 표면이 정본이고, 이 문서는 이관 기록과 구버전 참조 호환만 담당한다.
+- [[context-core-plugin]] — session handoff SNAP, 비권위 evidence OBS, semantic area catalog, index-first recall, 단일 capture audit·routing·grouped approval을 소유하는 가벼운 공통 context runtime의 구현 정본.
+- [[context-decision-plugin]] — 결정·취지·반려대안을 하나의 권위 record로 보존하고 scope·decision key·conflict·supersede·withdraw·revisit와 결정 전용 recall을 소유하는 공개 제품의 구현 정본.
 - [[session-review-plugin]] — read-only doctor로 준비 상태를 확인하고 worker/reviewer가 audit snapshot 또는 fast context와 reviewer lease로 리뷰를 수렴시키는 플러그인 설계 정본
 - [[studio-plugin]] — Codex와 Claude Code가 제공하는 subagent 기능으로 역할 기반 crew를 운용하는 orchestration skill. 영속 상태는 mission receipt 재개 인덱스 하나뿐이다.
 - [[task-github-plugin]] — remote-free provider init 뒤 task-worker를 실행 엔진으로 사용하고 GitHub Issue tree·dependency·PR·merge·closeout을 projection/delivery adapter로 소유하는 설계 정본
