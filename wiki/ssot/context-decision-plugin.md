@@ -13,7 +13,7 @@ affects_paths: [plugins/context-decision/**]
 
 ### 의존성과 소유 범위
 
-`context-decision`은 [[context-core-plugin]]의 `context-common/v1` 저장·ID·index·recall 계약에 논리적으로 hard-depend한다. 초기화되지 않은 core root에서는 `core_missing`으로 실패하고 묵시적으로 다른 저장소를 만들지 않는다.
+`context-decision`은 [[context-core-plugin]]의 `context-common/v1` 저장·ID·index·recall 계약에 manual hard-depend한다. 요구 distribution identity는 `marketplace: jeis-ai-plugins`, `plugin: context-core`, selector `context-core@jeis-ai-plugins`, marketplace source `Jeis-Jw/ai-plugins`다. host-native dependency, 자동 설치·활성화·업데이트와 내장 core는 사용하지 않는다. exact core가 준비되지 않았거나 repository root가 초기화되지 않았으면 fail-closed하고 묵시적으로 다른 저장소를 만들지 않는다.
 
 semantic 소유 범위:
 
@@ -67,6 +67,41 @@ decision CLI는 filesystem을 직접 쓰지 않는다. 자기 area와 허용된 
 | `context-decision:decision` | candidate claim, capture, search/brief, conflict, supersede/withdraw/revisit |
 
 직접 decision skill을 호출할 수 있지만, 일반 대화 closeout audit에서는 context-core가 만든 candidate만 받아 원문을 재판독하지 않는다.
+
+### Manual dependency preflight
+
+정적이고 filesystem-independent한 `schema`와 `capabilities`만 core 없이 호출할 수 있다. `context-decision:init`, `context-decision:decision` 및 repository/artifact에 접근하는 모든 operation은 작업 시작 전에 다음 순서의 read-only preflight를 통과해야 한다.
+
+1. host의 plugin inventory에서 exact `marketplace=jeis-ai-plugins`, `plugin=context-core`를 찾는다. plugin cache path를 직접 탐색하거나 동명 plugin을 marketplace 구분 없이 수락하지 않는다.
+2. exact plugin이 현재 scope에서 enabled/available인지 확인한다.
+3. host가 노출한 core capability와 `context_cli.py doctor --json` receipt에서 `context-common/v1` 호환성을 확인한다.
+4. repository state가 `ready`인지 확인한다. `absent`면 core 설치 문제가 아니라 project initialization 문제다.
+
+preflight 실패는 repository filesystem과 host configuration 모두 write 0이다. context-decision은 install, enable, update, marketplace add 또는 `context-core:init`을 대신 실행하지 않는다.
+
+| code | 조건 | 안내 후 동작 |
+|---|---|---|
+| `core_missing` | exact `context-core@jeis-ai-plugins` 미설치 | provider marketplace `jeis-ai-plugins`의 plugin `context-core`를 사용자가 직접 설치 |
+| `core_source_mismatch` | 다른 marketplace의 동명 core만 존재 | source `Jeis-Jw/ai-plugins`의 exact marketplace/plugin 좌표를 표시하고 중단 |
+| `core_disabled` | exact core가 설치됐지만 현재 scope에서 비활성 | 사용자가 직접 올바른 scope에서 활성화 |
+| `core_incompatible` | exact core가 `context-common/v1`을 제공하지 않음 | 사용자가 exact core를 호환 버전으로 직접 업데이트 |
+| `core_uninitialized` | plugin은 준비됐지만 repository state가 `absent` | 사용자가 `context-core:init`을 실행한 뒤 재시도 |
+| `partial_core_init` | repository state가 `partial` 또는 invalid | core doctor/repair 안내 후 중단; decision이 덮어쓰지 않음 |
+
+모든 오류는 structured `required_plugin`을 포함한다.
+
+```json
+{
+  "marketplace": "jeis-ai-plugins",
+  "plugin": "context-core",
+  "selector": "context-core@jeis-ai-plugins",
+  "source": "Jeis-Jw/ai-plugins",
+  "provider": "Jinwuk-Lee (Jeis-Jw)",
+  "required_protocol": "context-common/v1"
+}
+```
+
+사람용 안내는 현재 host에 맞는 수동 설치·활성화 방법, reload 또는 새 session, 마지막 `context-decision:init` 재실행 순서를 보여준다. scope는 사용자가 선택하며 command를 자동 실행 가능한 confirmation으로 제안하지 않는다.
 
 ### CLI surface
 
@@ -295,14 +330,11 @@ core-only fallback OBS를 DEC로 import하려면 `kind_hint: decision`, OBS `sou
 
 ### Init·packaging gate
 
-`init`은 core doctor/protocol version을 확인한 뒤 owner descriptor와 complete `decision.index.md` seed를 생성한다. context-decision skill이 core의 `area register --index-seed` preview를 호출하고, seed bytes와 root/area diff digest가 승인된 뒤에만 core coordinator가 `context/decision/`, `retired/`, decision index와 root area entry를 함께 등록한다. 동일 descriptor/index가 이미 valid면 noop이고, 일부만 존재하거나 다른 owner가 decision kind를 claim하면 fail-closed한다.
+`init`은 위 manual dependency preflight를 먼저 수행한다. 실패하면 owner descriptor나 index seed도 만들지 않고 structured error와 수동 next action만 반환한다. exact core가 ready일 때만 owner descriptor와 complete `decision.index.md` seed를 생성한다. context-decision skill이 core의 `area register --index-seed` preview를 호출하고, seed bytes와 root/area diff digest가 승인된 뒤에만 core coordinator가 `context/decision/`, `retired/`, decision index와 root area entry를 함께 등록한다. 동일 descriptor/index가 이미 valid면 noop이고, 일부만 존재하거나 다른 owner가 decision kind를 claim하면 fail-closed한다.
 
-source 의존성은 확정했지만 marketplace의 plugin dependency 설치 지원은 host별로 현재 검증이 필요하다. v1 release 전 다음 중 하나를 실측해 하나만 선택한다.
+두 host의 `.claude-plugin/plugin.json`과 `.codex-plugin/plugin.json`에는 plugin dependency metadata를 넣지 않는다. marketplace entry도 context-decision 설치를 이유로 context-core를 `INSTALLED_BY_DEFAULT` 처리하지 않는다. README와 init error는 provider marketplace `jeis-ai-plugins`, plugin `context-core`, source `Jeis-Jw/ai-plugins`를 정확히 표시하되 marketplace 추가·plugin 설치·활성화·업데이트를 실행하지 않는다. host별 command/GUI 안내는 distribution adapter가 현재 host surface에 맞춰 render하며 scope 선택은 사용자에게 남긴다.
 
-1. host-native dependency metadata가 있으면 `context-core`를 자동 설치한다.
-2. 없으면 installer가 core 부재를 명확히 보고하고 한 번의 설치 안내를 제공한다.
-
-plugin cache path 추측이나 두 개의 독립 core 구현을 만들지 않는다. 이 packaging gate는 내부 구현을 막지 않지만 공개 release를 막는다.
+plugin cache path 추측이나 두 개의 독립 core 구현을 만들지 않는다. manual preflight와 양 host 안내의 검증이 공개 release gate다.
 
 ### v1 acceptance
 
@@ -319,6 +351,9 @@ plugin cache path 추측이나 두 개의 독립 core 구현을 만들지 않는
 - decision CLI physical write 0; init과 모든 mutation이 core coordinator를 통해서만 적용
 - Stage 1에서 DEC 전문 read 0, brief에서 선택된 DEC만 read
 - decision plugin 제거 후 기존 area는 core recall로 읽히되 새 DEC write owner로 간주되지 않음
+- 양 host manifest와 marketplace entry의 dependency/implicit-install metadata 0
+- exact core missing/source mismatch/disabled/incompatible이면 repository·host config write 0, 정확한 provider marketplace/plugin/source와 reload·재실행 안내
+- core repository absent이면 `core_missing`이 아니라 `core_uninitialized`, context-core init 자동 실행 0
 
 ## 취지
 
@@ -331,3 +366,4 @@ AI agent의 client-local memory와 달리 DEC는 repository에 남아 사람과 
 - [[context-artifact-lifecycle]] — DEC 상태 전이와 OBS import
 - [[context-capture-routing]] — candidate claim과 approval
 - [[context-v1-implementation]] — 구현 및 release gate
+- [[DEC-2026-08-13-233319-context-decision은-context-core를-사용자가-직접-설치한-뒤에만-동작한다]] — manual hard dependency와 정확한 distribution identity

@@ -37,6 +37,13 @@ affects_paths: [plugins/context-core/**, plugins/context-decision/**]
 9. core는 addon의 schema·lifecycle·domain recall 의미를 알지 않는다. 공통 envelope와 owner가 선언한 plan precondition만 검증한다.
 10. 기본 검색은 semantic index에서 후보를 좁힌 뒤 선택한 문서 또는 section만 읽는다.
 11. Obsidian은 호환되는 view일 뿐 runtime dependency가 아니다.
+12. semantic addon의 core 의존성은 manual hard dependency다. 두 host 모두 native dependency·자동 설치·자동 활성화를 사용하지 않으며, exact provider marketplace/plugin identity와 protocol preflight 실패 시 host configuration과 repository를 변경하지 않는다.
+
+### Distribution dependency boundary
+
+v1의 exact core distribution identity는 `marketplace: jeis-ai-plugins`, `plugin: context-core`, selector `context-core@jeis-ai-plugins`, source `Jeis-Jw/ai-plugins`다. `context-decision`을 비롯한 addon은 이 좌표의 core가 현재 scope에서 enabled이고 `context-common/v1` compatible인지 확인한 뒤에만 동작한다. 다른 marketplace의 동명 plugin은 충족으로 간주하지 않는다.
+
+Plugin install/enable/update와 marketplace add는 사용자 환경 mutation이고 repository init은 project mutation이므로 분리한다. addon은 어느 것도 자동 수행하지 않는다. exact core 부재·source mismatch·disabled·incompatible이면 정확한 provider marketplace와 수동 next action을 보여주고 중단한다. core plugin은 준비됐지만 project root가 없으면 `context-core:init`을 사용자가 먼저 실행하도록 안내한다. 정적 `schema`/`capabilities` discovery만 core 없이 허용한다.
 
 ## 런타임 지도
 
@@ -77,6 +84,7 @@ context-core storage coordinator
 - [[DEC-2026-08-13-180256-컨텍스트-저장소는-semantic-index와-파일명-독립-id를-사용한다]]
 - [[DEC-2026-08-13-180257-snap-obs-dec는-각-의미에-맞는-독립-lifecycle을-갖는다]]
 - [[DEC-2026-08-13-180535-capture-audit는-milestone-단위-단일-판독과-승인형-write를-지킨다]]
+- [[DEC-2026-08-13-233319-context-decision은-context-core를-사용자가-직접-설치한-뒤에만-동작한다]]
 
 ## 비목표
 

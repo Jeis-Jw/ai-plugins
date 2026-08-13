@@ -44,12 +44,12 @@ affects_paths: [plugins/context-core/**, plugins/context-decision/**]
 목표는 product invariant를 바꾸지 않고 host·filesystem mechanism을 검증하는 것이다.
 
 1. Codex와 Claude Code에서 설치된 semantic owner skill을 식별하거나 caller descriptor를 전달하고 host가 owner semantic attestation+draft 결과를 수집하는 경로를 확인한다.
-2. plugin dependency/install 지원 여부를 확인한다. 지원되지 않으면 `context-decision:init`이 `core_missing`과 설치 안내를 반환하는 방식을 채택한다.
+2. 양 host의 plugin inventory가 `marketplace=jeis-ai-plugins`, `plugin=context-core`, enabled 상태를 구분하는 경로와 core doctor/protocol handshake를 확인한다. 설치 정책은 이미 manual hard dependency로 확정됐으며 native dependency·자동 install/enable/update는 검토 대상이 아니다.
 3. `*.index.md` generated row parser/serializer와 Obsidian graph link를 fixture repo에서 확인한다.
 4. Unicode filename·NFC/NFD, 파일명 공백, rename과 path collision을 macOS/Linux fixture에서 확인한다.
 5. `fcntl` advisory lock, exact byte digest precondition, same-directory temp+replace와 changed-move의 destination-prepare/source-unlink resume를 parallel capture/강제 crash fixture로 검증한다.
 
-Phase 0가 막혀도 semantic index 이름, immutable ID, lifecycle, approval gate를 바꾸지 않는다. packaging과 capability discovery 구현만 조정한다.
+Phase 0가 막혀도 semantic index 이름, immutable ID, lifecycle, approval gate와 manual dependency 정책을 바꾸지 않는다. host inventory/capability probe와 안내 renderer 구현만 조정한다.
 
 #### Phase 1 — context-common storage/index
 
@@ -138,6 +138,9 @@ agent skill과 deterministic router를 연결한다.
 #### Phase 5 — agent policy·distribution·public proof
 
 - 두 host용 manifest와 skill path portability test
+- 두 manifest의 plugin dependency metadata 부재와 marketplace implicit-install 부재 검사
+- exact `context-core@jeis-ai-plugins` missing/source-mismatch/disabled/incompatible 및 repository-uninitialized preflight demo
+- provider marketplace source `Jeis-Jw/ai-plugins`, 수동 scope 선택, reload/new-session과 init 재시도 안내 검증; install/enable/update 실행 0
 - context-core standalone demo
 - context-decision 설치 조합 demo
 - README에서 decision continuity를 전면 가치로 설명
@@ -156,6 +159,7 @@ agent skill과 deterministic router를 연결한다.
 - frontmatter JSON-compatible YAML subset valid/invalid corpus와 canonical rewrite
 - preview/apply transaction result와 error envelope
 - exit code table
+- manual dependency requirement/error envelope과 host inventory fixture
 - UTF-8 byte budget/truncation
 
 하나의 host-independent fixture directory를 source of truth로 두고 두 plugin test가 같은 fixture를 실행한다. 두 개의 독립적인 protocol 해석을 만들지 않는다. 실제 packaging에서 shared source를 import할 수 없는 경우 generated vendoring을 허용하되 build가 source digest parity를 검증해야 한다.
@@ -165,7 +169,7 @@ agent skill과 deterministic router를 연결한다.
 | # | fixture | expected |
 |---:|---|---|
 | 1 | init 두 번 | 두 번째 diff 0, 사람 작성 설명 보존 |
-| 2 | decision plugin이 먼저 init | core 부재를 명확히 보고하고 묵시 storage fork 0 |
+| 2 | decision plugin이 먼저 init | `core_missing`, exact provider marketplace/plugin/source와 수동 next action, repository·host config write 0 |
 | 3 | 자연 filename capture | prefix/timestamp 0, valid immutable ID |
 | 4 | path collision | overwrite/suffix 없이 `path_exists` |
 | 5 | rename | ID·relations 유지, index path만 변경 |
@@ -204,6 +208,9 @@ agent skill과 deterministic router를 연결한다.
 | 38 | crash between writes | changed move start/prepared/final 각 지점에서 exact bundle resume, doc 정본 보존, index_stale와 repair 성공 |
 | 39 | strict refresh | out-of-band 신규/rename/frontmatter drift 전수 검출 |
 | 40 | Obsidian graph | repository root vault에서 context.index→area index→artifact hub 구분 |
+| 41 | wrong-source/disabled/incompatible core | 각각 `core_source_mismatch|core_disabled|core_incompatible`, install/enable/update 자동 실행과 repository·host config write 0 |
+| 42 | exact core, repository absent | `core_uninitialized`, `context-core:init` 수동 안내, decision seed/descriptor와 filesystem write 0 |
+| 43 | distribution manifests | Claude/Codex manifest dependency field 0, context-decision 때문에 core를 implicit/default install하는 marketplace policy 0 |
 
 ### Integrity release gate
 
@@ -268,7 +275,7 @@ README/demo는 generic context framework보다 이 흐름을 먼저 보여준다
 
 ## 취지
 
-구현을 storage framework부터 크게 만드는 대신, 사용자 가치가 보이는 core+decision vertical slice와 측정 가능한 token/I-O gate를 먼저 완성한다. 각 phase가 independently testable하므로 host packaging 같은 불확실성이 전체 설계를 막지 않는다.
+구현을 storage framework부터 크게 만드는 대신, 사용자 가치가 보이는 core+decision vertical slice와 측정 가능한 token/I-O gate를 먼저 완성한다. 설치 정책은 양 host 공통 manual hard dependency로 고정하고, host별로 남은 차이는 exact inventory probe와 안내 표현만 Phase 0에서 검증한다.
 
 ## 구성요소
 

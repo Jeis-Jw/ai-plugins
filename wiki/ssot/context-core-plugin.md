@@ -167,6 +167,7 @@ CLI 표기의 `[--flag VALUE]...`는 repeatable option이다. `@file`은 UTF-8 f
 JSON success envelope은 `{"ok":true,"result":{...}}`다.
 
 - `capabilities`: `context-owner-capabilities/v1` envelope 안의 SNAP·OBS `context-owner-capability/v1` 두 개
+- `doctor`: read-only `context-core-doctor/v1`; supported protocol, repository state와 blocking issue를 반환하고 filesystem을 변경하지 않음
 - `draft`: owner skill의 attestation을 구조 검증하고 matching candidate와 input을 embedded해 render한 claim variant `context-owner-result/v1`; semantic claim/decline은 CLI가 수행하지 않음
 - `list/search/recall`: `items`, `returned`, `omitted`, `truncated`, `index_fallback`, `warnings`
 - `load/read`: exact `artifact` metadata, 요청한 `sections`, authority/freshness와 `truncated`
@@ -188,6 +189,21 @@ text mode는 사람이 읽는 projection일 뿐 host orchestration과 test는 JS
 | 6 | integrity/index failure |
 
 error JSON은 `{"ok":false,"error":{"code":"...","message":"...","details":{...}}}` 형태다.
+
+`doctor`의 fixed result는 다음과 같다.
+
+```json
+{
+  "schema": "context-core-doctor/v1",
+  "owner": "context-core",
+  "supported_protocols": ["context-common/v1"],
+  "repository_state": "ready",
+  "root": "context/",
+  "issues": []
+}
+```
+
+`repository_state` enum은 `absent|ready|partial|invalid`다. `absent`는 `context/` 또는 root index가 없는 상태이며 storage error `context_root_missing`에 대응한다. `ready`만 addon operational preflight를 통과한다. `partial|invalid`는 issue code와 path를 포함하고 자동 repair하지 않는다. Plugin의 marketplace/source/enabled 여부는 filesystem CLI가 주장하지 않고 host plugin inventory가 검증한다.
 
 ### SNAP schema
 

@@ -211,7 +211,7 @@ normal read path는 다음 상태만 즉시 stale index로 판정한다.
 - root index는 존재하지만 area index 누락 또는 schema/marker/JSON parse 실패
 - 선택된 index entry가 가리키는 파일 누락
 
-healthy-index Stage 1은 root index와 area index 외에 directory listing, artifact stat/open을 수행하지 않는다. area index 자체가 파손됐거나 선택된 entry load에서 누락이 확인되면 그때만 해당 area directory를 frontmatter scan해 fallback하고 `index_fallback: true`와 원인을 반환한다. root index 자체가 없으면 초기화되지 않은 저장소이므로 `core_missing`이며 임의 folder scan으로 root catalog를 추측하지 않는다. read operation은 index를 자동 수정하지 않는다. `--strict-index`는 fallback 없이 exit 6으로 실패한다. out-of-band 신규·rename·frontmatter 변경과 전체 path-set 불일치는 healthy normal recall이 완전 감지한다고 주장하지 않으며 `refresh --strict`가 전수 검증한다.
+healthy-index Stage 1은 root index와 area index 외에 directory listing, artifact stat/open을 수행하지 않는다. area index 자체가 파손됐거나 선택된 entry load에서 누락이 확인되면 그때만 해당 area directory를 frontmatter scan해 fallback하고 `index_fallback: true`와 원인을 반환한다. root index 자체가 없으면 초기화되지 않은 저장소이므로 storage-level `context_root_missing`이며 임의 folder scan으로 root catalog를 추측하지 않는다. read operation은 index를 자동 수정하지 않는다. `--strict-index`는 fallback 없이 exit 6으로 실패한다. out-of-band 신규·rename·frontmatter 변경과 전체 path-set 불일치는 healthy normal recall이 완전 감지한다고 주장하지 않으며 `refresh --strict`가 전수 검증한다. addon user-facing preflight는 exact core plugin이 준비된 상태에서 이 오류를 `core_uninitialized`로 projection하며 plugin 미설치 오류 `core_missing`과 혼용하지 않는다.
 
 `refresh --fix index`가 만든 bundle을 승인 digest와 함께 `transaction apply`하거나, 승인된 capture/mutation transaction만 index를 다시 쓸 수 있다. index는 정본이 아니므로 drift가 생겨도 문서를 버리거나 문서 내용을 index로 덮어쓰지 않는다.
 

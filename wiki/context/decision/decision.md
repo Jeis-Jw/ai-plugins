@@ -63,3 +63,4 @@ audience: [human, agent]
 - [[DEC-2026-08-13-180257-snap-obs-dec는-각-의미에-맞는-독립-lifecycle을-갖는다]] — SNAP은 현재 handoff를 제자리 갱신 후 discard하고, OBS와 DEC는 의미 불변 record로서 같은 claim의 대체나 명시적 무효화 때만 retired로 전이한다.
 - [[DEC-2026-08-13-180535-capture-audit는-milestone-단위-단일-판독과-승인형-write를-지킨다]] — semantic milestone 또는 closeout마다 현재 대화를 한 번만 감사하고 축약 candidate를 semantic owner에 전달하며 모든 durable write는 grouped proposal 승인 뒤에만 수행한다.
 - [[DEC-2026-08-13-183612-컨텍스트-플러그인은-milestone-capture-audit와-semantic-owner-draft로-결합한다]] — context-core가 milestone 단위 단일 audit와 승인 UX 및 physical write coordinator를 맡고, semantic owner는 bounded candidate에서 완성된 artifact draft와 mutation plan을 만들어 중복 없이 결합한다.
+- [[DEC-2026-08-13-233319-context-decision은-context-core를-사용자가-직접-설치한-뒤에만-동작한다]] — Claude Code와 Codex 모두 native dependency와 자동 설치를 사용하지 않고, provider marketplace jeis-ai-plugins의 context-core가 준비되지 않으면 무변경으로 중단한다.
