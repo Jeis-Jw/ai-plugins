@@ -59,3 +59,4 @@ audience: [human, agent]
 - [[DEC-2026-08-04-221710-본문-무변경-verified-at-스탬프-커밋은-대조-방법을-커밋-메시지에-명시한다]] — verified_at만 옮기고 본문을 바꾸지 않는 커밋은 무엇과 무엇을 대조했는지 커밋 메시지에 한 줄로 명시해야 한다. diff만으로는 TRI-2026-08-04-191805가 경고하는 가짜 재검증과 진짜 재검증을 구분할 수 없다.
 - [[DEC-2026-08-04-221921-wiki-markdown도-단일-plugin-ssot를-갖는다]] — wiki-markdown이 studio/task-github/task-worker/session-review와 같은 단일 진입점 SSOT(wiki-markdown-plugin.md)를 갖는다. 이 문서가 버전·진화·소유범위·구성의 정본이고 plugin-definition 6종 sub-ssot는 세부 계약 정본으로 유지된다.
 - [[DEC-2026-08-13-152825-capture-정책은-초기화-시-auto-loaded-agent-entry에-설치한다]] — runtime hook을 제거하고 agent-facing wiki init이 CLAUDE.md와 AGENTS.md에 best-effort capture 정책을 설치해 primary 답변 우선·후보 있을 때만 제안·승인 전 write 금지를 유지한다.
+- [[DEC-2026-08-13-164257-컨텍스트-플러그인은-단일-capture-audit와-semantic-owner로-결합한다]] — context-core가 SNAP·OBS와 공통 발견·routing·묶음 제안을 소유하고, context-decision 등 addon이 후보를 더 구체적인 의미와 권위로 claim하여 중복 없이 기록한다.
