@@ -42,7 +42,7 @@ affects_paths: [plugins/wiki-markdown/**]
 - `--backlinks-of <basename>` — YAML relations에 대상 basename을 가진 record grep (본문 wikilink 무시)
 - Snapshot은 `recall` 대상이 아니다. 대화 맥락 체크포인트 조회는 `snapshot list/search/load`가 담당한다.
 
-### Proactive Recall과 승인형 Capture 계약 (0.24.0 current)
+### Proactive Recall과 승인형 Capture 계약 (0.24.1 current)
 
 recall/capture는 사용자의 명시 요청만 기다리지 않는다. agent·작업 플러그인·review 플러그인·대화
 UI 등 모든 caller가 지키는 cross-plugin 계약이며, caller의 실행 분류나 delivery 비용은 recall·제안
@@ -63,8 +63,8 @@ UI 등 모든 caller가 지키는 cross-plugin 계약이며, caller의 실행 �
 5. **Knowledge value 독립성**: 판정 기준은 미래 재사용성·재방문/되돌리기 비용·현재 상태 영향이며
    작업 크기·실행/review 비용·호출 플러그인은 대리변수가 아니다.
 
-**집행(0.24.0)**: raw `wiki_cli.py init`은 vault-only API로 유지한다. 사용자가 호출하는 agent-facing
-`$wiki init`은 raw init 뒤 `agent-policy` workflow를 실행해 auto-loaded `CLAUDE.md`와 `AGENTS.md`의
+**집행(0.24.1)**: raw `wiki_cli.py init`은 vault-only API로 유지한다. 사용자가 호출하는 독립
+`$wiki-markdown:init` skill은 raw init 뒤 `agent-policy` workflow를 실행해 auto-loaded `CLAUDE.md`와 `AGENTS.md`의
 관리 블록에 위 계약을 멱등 설치한다. 본문 밖 기존 내용은 보존한다. runtime Stop/UserPromptSubmit/
 PostToolUse hook, activity/commit heuristic, transcript/session ledger, user-visible continuation은 두지
 않는다. 이는 hard guarantee가 아니라 긴 작업 시작 시 한 번 로드되는 best-effort policy다. 근거
@@ -72,7 +72,8 @@ PostToolUse hook, activity/commit heuristic, transcript/session ledger, user-vis
 
 mechanism 정본은 `rules/knowledge-protocol.md` §12·`skills/wiki/SKILL.md`이며, 어느 workspace가
 auto-write class를 여는지는 그 프로젝트의 자동로드 policy statement(CLAUDE.md/AGENTS.md) 영역이다.
-`skills/agent-policy/SKILL.md`와 그 scaffold script가 설치 메커니즘을 소유한다.
+`skills/init/SKILL.md`가 호출 표면을, `skills/agent-policy/SKILL.md`와 그 scaffold script가 정책 설치
+메커니즘을 소유한다.
 
 ### Search 보조
 

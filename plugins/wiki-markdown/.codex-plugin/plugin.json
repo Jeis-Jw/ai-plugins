@@ -1,7 +1,7 @@
 {
   "name": "wiki-markdown",
-  "version": "0.24.0",
-  "description": "Markdown-backed AI-native durable-context provider with proactive recall, approval-gated capture proposals, and initialization-time agent policy scaffolding.",
+  "version": "0.24.1",
+  "description": "Markdown-backed AI-native durable-context provider with proactive recall, approval-gated capture proposals, and a dedicated initialization skill for agent policy scaffolding.",
   "author": {
     "name": "Jinwuk-Lee",
     "url": "https://github.com/Jeis-Jw"
@@ -15,13 +15,13 @@
     "category": "Productivity",
     "capabilities": ["Read", "Write", "Validation", "Scaffold"],
     "defaultPrompt": [
-      "Use $wiki proactively when substantive work or discussion could depend on prior intent, decisions, lessons, or current state; recall the relevant scope once and reuse it.",
+      "Use $wiki-markdown:wiki proactively when substantive work or discussion could depend on prior intent, decisions, lessons, or current state; recall the relevant scope once and reuse it.",
       "At a semantic milestone or closeout, finish the primary answer first, audit existing context internally, and append one optional grouped capture question at the bottom of the same final answer only when durable candidates exist; otherwise stay silent. Write only after configured authority is satisfied.",
       "For a concrete runtime defect, inspect code and runtime evidence first instead of repeatedly recalling the wiki.",
-      "When initializing a project with $wiki init, initialize the vault and then use $agent-policy to install the auto-loaded policy block; preserve all content outside its managed markers.",
-      "Use $wiki to capture this decision and refresh indexes.",
-      "Use $wiki to validate wiki consistency.",
-      "Use $agent-policy to scaffold Claude/Codex operating policy files."
+      "Use $wiki-markdown:init to initialize the vault and install the auto-loaded policy block while preserving all content outside its managed markers.",
+      "Use $wiki-markdown:wiki to capture this decision and refresh indexes.",
+      "Use $wiki-markdown:wiki to validate wiki consistency.",
+      "Use $wiki-markdown:agent-policy to scaffold Claude/Codex operating policy files directly."
     ]
   }
 }

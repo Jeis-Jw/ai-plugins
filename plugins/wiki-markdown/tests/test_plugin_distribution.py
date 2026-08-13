@@ -18,6 +18,8 @@ class PluginDistributionTests(unittest.TestCase):
         skills_root = REPO / "plugins" / "wiki-markdown" / manifest["skills"]
 
         self.assertTrue((skills_root / "wiki" / "SKILL.md").exists())
+        self.assertTrue((skills_root / "init" / "SKILL.md").exists())
+        self.assertTrue((skills_root / "init" / "agents" / "openai.yaml").exists())
         self.assertTrue((skills_root / "agent-policy" / "SKILL.md").exists())
         self.assertNotIn("hooks", manifest)
         self.assertNotIn("hooks", claude)
@@ -49,17 +51,20 @@ class PluginDistributionTests(unittest.TestCase):
         plugin = REPO / "plugins" / "wiki-markdown"
         manifest = read_json(plugin / ".codex-plugin" / "plugin.json")
         wiki_skill = (plugin / "skills" / "wiki" / "SKILL.md").read_text()
+        init_skill = (plugin / "skills" / "init" / "SKILL.md").read_text()
+        init_ui = (plugin / "skills" / "init" / "agents" / "openai.yaml").read_text()
         policy_skill = (plugin / "skills" / "agent-policy" / "SKILL.md").read_text()
         protocol = (plugin / "rules" / "knowledge-protocol.md").read_text()
         prompts = "\n".join(manifest["interface"]["defaultPrompt"])
 
-        self.assertIn("When the user asks to initialize the wiki or invokes `$wiki init`", wiki_skill)
-        self.assertIn("Run raw `wiki_cli.py init`", wiki_skill)
-        self.assertIn("Follow the `agent-policy` workflow", wiki_skill)
-        self.assertIn("raw `wiki_cli.py init` command remains a vault-only", wiki_skill)
-        self.assertIn("second phase of agent-facing `$wiki init`", policy_skill)
-        self.assertIn("agent-facing `$wiki init` workflow", protocol)
-        self.assertIn("When initializing a project with $wiki init", prompts)
+        self.assertIn("Use the dedicated `$wiki-markdown:init` skill", wiki_skill)
+        self.assertIn("name: init", init_skill)
+        self.assertIn("wiki_cli.py\" init --json", init_skill)
+        self.assertIn("../agent-policy/SKILL.md", init_skill)
+        self.assertIn("scaffold_agent_policy.py", init_skill)
+        self.assertIn("raw `wiki_cli.py init` vault-only", init_skill)
+        self.assertIn("$wiki-markdown:init", init_ui + policy_skill + protocol + prompts)
+        self.assertNotIn("$wiki init", wiki_skill + policy_skill + protocol + prompts)
 
     def test_task_github_has_codex_manifest_for_skill_discovery(self):
         manifest = read_json(REPO / "plugins" / "task-github" / ".codex-plugin" / "plugin.json")

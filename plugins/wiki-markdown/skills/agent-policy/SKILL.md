@@ -7,7 +7,7 @@ description: Scaffold or update auto-loaded agent operating policy files for Cla
 
 This skill installs concise, auto-loaded operating policy into a project.
 
-It is also the second phase of agent-facing `$wiki init`: raw `wiki_cli.py init` owns only the
+It is also the second phase of `$wiki-markdown:init`: raw `wiki_cli.py init` owns only the
 vault, while this skill installs or updates the policy that agents load once when a run starts.
 
 Use it when a project using `wiki-markdown` or `task-github` needs rules for:
@@ -23,7 +23,7 @@ The policy statement belongs in auto-loaded entry files, not in the consumer pro
 ## Workflow
 
 1. Inspect existing `CLAUDE.md`, `AGENTS.md`, and relevant project configuration. When called from
-   `$wiki init`, do this after or alongside the raw vault initialization.
+   `$wiki-markdown:init`, do this after or alongside the raw vault initialization.
 2. Elicit only missing choices:
    - target: `all`, `claude`, or `codex`
    - profile: `solo` or `team`

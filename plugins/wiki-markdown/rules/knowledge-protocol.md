@@ -230,7 +230,7 @@ guarantee로 만들 runtime hook, activity/commit heuristic, transcript/session 
 | **policy rationale** | 프로젝트가 정한 운영 이력 위치. 이 플러그인 개발 repo는 `wiki/context/decision/`에 dogfood 기록 | 정책을 왜 채택했는가. 소비 프로젝트 wiki에 자동 생성하지 않음 |
 | **knowledge** | `wiki/*` | 제품·서비스·시스템 지식과 작업이 낳은 context/task 기록 |
 
-플러그인은 기본적으로 **mechanism**만 제공한다 — agent-neutral. 다만 소비 프로젝트가 자동로드 정책을 쉽게 설치하도록 `skills/agent-policy/` 스캐폴드를 함께 제공한다. 이 스캐폴드는 `CLAUDE.md`/`AGENTS.md`의 관리 블록만 병합하며, 소비 프로젝트의 `wiki/ssot/agent-operating-model.md`를 만들거나 덮어쓰지 않는다. raw `wiki_cli.py init`은 vault 구조만 만드는 결정적 API로 유지한다. 사용자가 호출하는 agent-facing `$wiki init` workflow는 raw init 뒤에 기존 파일·설정을 확인하고 `agent-policy` 스캐폴드를 실행해 capture 정책을 auto-loaded entry에 설치한다.
+플러그인은 기본적으로 **mechanism**만 제공한다 — agent-neutral. 다만 소비 프로젝트가 자동로드 정책을 쉽게 설치하도록 `skills/init/`과 `skills/agent-policy/` 스캐폴드를 함께 제공한다. `agent-policy`는 `CLAUDE.md`/`AGENTS.md`의 관리 블록만 병합하며, 소비 프로젝트의 `wiki/ssot/agent-operating-model.md`를 만들거나 덮어쓰지 않는다. raw `wiki_cli.py init`은 vault 구조만 만드는 결정적 API로 유지한다. 사용자가 호출하는 `$wiki-markdown:init`은 raw init 뒤에 기존 파일·설정을 확인하고 `agent-policy` 스캐폴드를 실행해 capture 정책을 auto-loaded entry에 설치한다.
 
 ---
 

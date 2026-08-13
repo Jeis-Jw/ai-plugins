@@ -1,0 +1,4 @@
+interface:
+  display_name: "Initialize Wiki"
+  short_description: "Initialize the wiki vault and agent policy"
+  default_prompt: "Use $wiki-markdown:init to initialize this project wiki and install its agent policy."
