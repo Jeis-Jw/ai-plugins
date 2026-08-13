@@ -27,6 +27,8 @@ EXIT_CONFLICT = 5
 EXIT_INTEGRITY = 6
 PROTOCOL = "context-common/v1"
 MAX_STAGE1_BYTES = 4 * 1024
+MAX_SECTION_ITEM_BYTES = 2 * 1024
+MAX_RECALL_BATCH_BYTES = 8 * 1024
 MAX_USER_BYTES = 32 * 1024
 MAX_CANDIDATE_BYTES = 16 * 1024
 MAX_OWNER_INPUT_BYTES = 2 * 1024
@@ -113,9 +115,12 @@ class AreaIndex:
 @dataclasses.dataclass
 class IOMetrics:
     index_opens: int = 0
+    index_read_bytes: int = 0
     artifact_opens: int = 0
+    artifact_read_bytes: int = 0
     artifact_directory_lists: int = 0
     artifact_stats: int = 0
+    output_bytes: int = 0
 
 
 def nfc(value: str) -> str:
@@ -558,8 +563,23 @@ def _terms(frontmatter: dict[str, Any]) -> list[str]:
     return [selected[key] for key in sorted(selected)]
 
 
-def _entry_from_document(repo: pathlib.Path, path: pathlib.Path, metadata: dict[str, Any], state: str) -> dict[str, Any]:
-    document = parse_document(path.read_text(encoding="utf-8"))
+def _read_artifact_text(path: pathlib.Path, metrics: IOMetrics | None = None) -> str:
+    if metrics:
+        metrics.artifact_opens += 1
+    raw = path.read_bytes()
+    if metrics:
+        metrics.artifact_read_bytes += len(raw)
+    return raw.decode("utf-8")
+
+
+def _entry_from_document(
+    repo: pathlib.Path,
+    path: pathlib.Path,
+    metadata: dict[str, Any],
+    state: str,
+    metrics: IOMetrics | None = None,
+) -> dict[str, Any]:
+    document = parse_document(_read_artifact_text(path, metrics))
     fm = document.frontmatter
     expected_schema = metadata["artifact_schema"]
     if fm["schema"] != expected_schema:
@@ -687,9 +707,12 @@ def _read_index(path: pathlib.Path, metrics: IOMetrics | None) -> str:
     if metrics:
         metrics.index_opens += 1
     try:
-        return path.read_text(encoding="utf-8")
+        raw = path.read_bytes()
     except FileNotFoundError as error:
         raise ContextError("index_stale", "index path is missing", {"path": path.as_posix()}, EXIT_INTEGRITY) from error
+    if metrics:
+        metrics.index_read_bytes += len(raw)
+    return raw.decode("utf-8")
 
 
 def _query_tokens(query: str) -> list[str]:
@@ -733,10 +756,65 @@ def _fallback_entries(repo: pathlib.Path, area_row: dict[str, Any], metrics: IOM
     }
     entries = []
     for path, state in _scan_area_paths(repo, area_row["area"], metrics):
-        if metrics:
-            metrics.artifact_opens += 1
-        entries.append(_entry_from_document(repo, path, metadata, state))
+        entries.append(_entry_from_document(repo, path, metadata, state, metrics))
     return entries
+
+
+def _recall_result(items: list[dict[str, Any]], total_matches: int, fallback: bool, warnings: Sequence[str]) -> dict[str, Any]:
+    omitted = max(0, total_matches - len(items))
+    return {
+        "items": items,
+        "returned": len(items),
+        "omitted": omitted,
+        "truncated": omitted > 0,
+        "index_fallback": fallback,
+        "warnings": sorted(set(warnings)),
+    }
+
+
+def _expanded_item(
+    item: dict[str, Any],
+    document: Document,
+    selected_sections: Sequence[str],
+    max_bytes: int,
+) -> dict[str, Any]:
+    available = {name: document.sections[name] for name in selected_sections if name in document.sections}
+    complete = {**item, "sections": available}
+    if len(canonical_json(complete).encode("utf-8")) <= max_bytes:
+        return complete
+
+    hint = f"context recall --read {item['id']}"
+    truncated: dict[str, Any] = {
+        **item,
+        "sections": {},
+        "section_truncated": True,
+        "full_read_hint": hint,
+    }
+    if len(canonical_json(truncated).encode("utf-8")) > max_bytes:
+        return truncated
+    for name, value in available.items():
+        proposed_sections = {**truncated["sections"], name: value}
+        proposed = {**truncated, "sections": proposed_sections}
+        if len(canonical_json(proposed).encode("utf-8")) <= max_bytes:
+            truncated["sections"] = proposed_sections
+            continue
+        low = 0
+        high = len(value)
+        fitted = ""
+        while low <= high:
+            middle = (low + high) // 2
+            prefix = value[:middle].rstrip()
+            candidate = (prefix + "…") if prefix else "…"
+            proposal = {**truncated, "sections": {**truncated["sections"], name: candidate}}
+            if len(canonical_json(proposal).encode("utf-8")) <= max_bytes:
+                fitted = candidate
+                low = middle + 1
+            else:
+                high = middle - 1
+        if fitted:
+            truncated["sections"] = {**truncated["sections"], name: fitted}
+        break
+    return truncated
 
 
 def recall_repository(
@@ -751,11 +829,21 @@ def recall_repository(
     sections: Sequence[str] = (),
     read_ids: Sequence[str] = (),
     strict_index: bool = False,
-    max_bytes: int = MAX_STAGE1_BYTES,
+    max_bytes: int | None = None,
     metrics: IOMetrics | None = None,
 ) -> dict[str, Any]:
-    if not 1 <= limit <= 20 or not 1 <= max_bytes <= MAX_USER_BYTES:
+    if not 1 <= limit <= 20 or (max_bytes is not None and not 1 <= max_bytes <= MAX_USER_BYTES):
         raise ContextError("usage_invalid", "limit or max-bytes is outside the v1 range")
+    expanded = bool(pack or sections or read_ids)
+    effective_max_bytes = (
+        min(max_bytes, MAX_RECALL_BATCH_BYTES)
+        if expanded and max_bytes is not None
+        else MAX_RECALL_BATCH_BYTES
+        if expanded
+        else max_bytes
+        if max_bytes is not None
+        else MAX_STAGE1_BYTES
+    )
     root_path = repo / ROOT_INDEX
     if not root_path.is_file():
         raise ContextError("context_root_missing", "context root index is missing", {"path": ROOT_INDEX}, EXIT_NOT_FOUND)
@@ -790,6 +878,8 @@ def recall_repository(
         wanted = set(read_ids)
         missing_selected = []
         for row, area_row in list(all_entries):
+            if metrics:
+                metrics.artifact_stats += 1
             if row["id"] in wanted and not (repo / row["path"]).is_file():
                 missing_selected.append(area_row)
         for area_row in missing_selected:
@@ -817,7 +907,7 @@ def recall_repository(
     filtered.sort(key=lambda item: item[0]["created_at"], reverse=True)
     filtered.sort(key=lambda item: item[2], reverse=True)
     candidates = filtered[:limit]
-    output: list[dict[str, Any]] = []
+    stage1_items: list[dict[str, Any]] = []
     for row, area_row, score in candidates:
         item = {
             "id": row["id"], "kind": area_row["area"], "state": row["state"], "title": row["title"],
@@ -826,26 +916,40 @@ def recall_repository(
         for projection in area_indexes.get(area_row["area"], AreaIndex({}, [], [], "")).frontmatter.get("projection_fields", []):
             if projection in row:
                 item[projection] = row[projection]
-        proposed = output + [item]
-        if len(canonical_json(proposed).encode("utf-8")) > max_bytes:
-            break
-        output.append(item)
-    if pack or sections or read_ids:
-        for item in output:
+        stage1_items.append(item)
+    total_matches = len(filtered)
+    output: list[dict[str, Any]] = []
+    if expanded:
+        for item in stage1_items:
+            minimum = {
+                **item,
+                "sections": {},
+                "section_truncated": True,
+                "full_read_hint": f"context recall --read {item['id']}",
+            }
+            if len(canonical_json(_recall_result(output + [minimum], total_matches, fallback, warnings)).encode("utf-8")) > effective_max_bytes:
+                break
             path = repo / item["path"]
             try:
-                if metrics:
-                    metrics.artifact_opens += 1
-                document = parse_document(path.read_text(encoding="utf-8"))
+                document = parse_document(_read_artifact_text(path, metrics))
             except FileNotFoundError:
                 continue
             selected_sections = sections or tuple(document.sections)
-            item["sections"] = {name: document.sections[name] for name in selected_sections if name in document.sections}
-    omitted = len(candidates) - len(output) + max(0, len(filtered) - limit)
-    return {
-        "items": output, "returned": len(output), "omitted": omitted, "truncated": omitted > 0,
-        "index_fallback": fallback, "warnings": sorted(set(warnings)),
-    }
+            result_with_placeholder = _recall_result(output + [{}], total_matches, fallback, warnings)
+            result_overhead = len(canonical_json(result_with_placeholder).encode("utf-8")) - len(canonical_json({}).encode("utf-8"))
+            item_budget = min(MAX_SECTION_ITEM_BYTES, effective_max_bytes - result_overhead)
+            expanded_item = _expanded_item(item, document, selected_sections, item_budget)
+            if len(canonical_json(_recall_result(output + [expanded_item], total_matches, fallback, warnings)).encode("utf-8")) > effective_max_bytes:
+                raise ContextError("recall_budget_internal", "expanded recall item did not fit its calculated byte budget", exit_code=EXIT_INTEGRITY)
+            output.append(expanded_item)
+    else:
+        output = stage1_items
+        while output and len(canonical_json(_recall_result(output, total_matches, fallback, warnings)).encode("utf-8")) > effective_max_bytes:
+            output.pop()
+    result = _recall_result(output, total_matches, fallback, warnings)
+    if metrics:
+        metrics.output_bytes += len(canonical_json(result).encode("utf-8"))
+    return result
 
 
 def builtin_capability(kind: str) -> dict[str, Any]:
@@ -3156,7 +3260,7 @@ def build_parser() -> argparse.ArgumentParser:
     recall.add_argument("--section", action="append", default=[])
     recall.add_argument("--read", action="append", default=[])
     recall.add_argument("--strict-index", action="store_true")
-    recall.add_argument("--max-bytes", type=int, default=MAX_STAGE1_BYTES)
+    recall.add_argument("--max-bytes", type=int)
     recall.add_argument("--json", action="store_true")
     rename = sub.add_parser("rename")
     rename.add_argument("--id", required=True)
