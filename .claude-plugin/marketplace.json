@@ -34,6 +34,18 @@
       "source": "./plugins/task-worker",
       "description": "Provider-neutral WorkGraph, 병렬 ready-set, 통합 gate와 opaque external review owner permit 플러그인",
       "version": "0.9.0"
+    },
+    {
+      "name": "context-core",
+      "source": "./plugins/context-core",
+      "description": "승인된 handoff와 evidence, index-first recall, 단일 physical write coordinator를 제공하는 shared-context runtime",
+      "version": "0.1.0"
+    },
+    {
+      "name": "context-decision",
+      "source": "./plugins/context-decision",
+      "description": "결정·취지·반려대안과 superseded history를 함께 보존하는 decision continuity plugin",
+      "version": "0.1.0"
     }
   ]
 }

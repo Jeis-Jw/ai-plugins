@@ -1,0 +1,20 @@
+# context-core
+
+`context-core`는 다음 agent나 session이 작업을 이어갈 수 있도록 승인된 handoff와 재사용 가능한 근거를 Markdown으로 보존하는 가벼운 runtime입니다. SNAP은 재개용 staging, OBS는 비권위 evidence이며, `context.index.md`와 area index로 필요한 문서만 읽습니다.
+
+## 시작하기
+
+1. provider marketplace `jeis-ai-plugins`(source `Jeis-Jw/ai-plugins`)에서 `context-core@jeis-ai-plugins`를 원하는 scope에 직접 설치·활성화합니다.
+2. host를 reload하거나 새 session을 엽니다.
+3. `$context-core:init`으로 storage와 선택한 repository-root policy를 preview합니다.
+4. complete preview와 exact digest를 승인한 뒤에만 apply합니다.
+
+`schema`와 `capabilities`는 repository root 없이 확인할 수 있습니다. `doctor`는 read-only이며 `context-common/v1`과 `repository_state`를 보고합니다. 저장소가 아직 초기화되지 않은 read operation은 dependency 오류가 아닌 `context_root_missing`으로 실패합니다.
+
+## 제품 흐름
+
+- Standalone: 명시적 handoff는 SNAP, 재사용 가능한 발견·근거는 OBS로 제안합니다.
+- Integrated: semantic owner가 complete draft와 plan을 만들고, `context-core`가 grouped preview를 봉인한 뒤 유일한 physical coordinator로 적용합니다.
+- Audit, route, claim, draft, preview와 denied apply는 repository와 host configuration을 변경하지 않습니다.
+
+기존 `wiki/`를 자동 migration하지 않습니다. Obsidian은 repository root를 vault로 열 때의 선택적 view일 뿐 runtime dependency가 아닙니다. PCMS는 조직 권한·승인 queue·cross-project search·정책·감사 같은 control-plane 범위를 담당하며, 이 local plugin은 그 기능을 제한해 판매하는 제품이 아닙니다.

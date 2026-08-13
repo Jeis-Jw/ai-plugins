@@ -49,6 +49,22 @@
         "authentication": "ON_INSTALL"
       },
       "category": "Productivity"
+    },
+    {
+      "name": "context-core",
+      "source": { "source": "local", "path": "./plugins/context-core" },
+      "version": "0.1.0",
+      "description": "Approved handoffs, evidence observations, index-first recall, and single-coordinator context writes.",
+      "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
+      "category": "Productivity"
+    },
+    {
+      "name": "context-decision",
+      "source": { "source": "local", "path": "./plugins/context-decision" },
+      "version": "0.1.0",
+      "description": "Decision continuity with rationale, rejected alternatives, and superseded history.",
+      "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
+      "category": "Productivity"
     }
   ]
 }

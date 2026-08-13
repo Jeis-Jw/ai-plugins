@@ -1,0 +1,23 @@
+{
+  "name": "context-core",
+  "version": "0.1.0",
+  "description": "Lightweight shared-context runtime for approved handoffs, evidence, recall, and coordinated writes.",
+  "author": {
+    "name": "Jinwuk-Lee",
+    "url": "https://github.com/Jeis-Jw"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Context Core",
+    "shortDescription": "Resume work and preserve reusable evidence safely.",
+    "longDescription": "Stores approved session handoffs and non-authoritative observations as Markdown, narrows recall through deterministic semantic indexes, and acts as the only physical writer for context-common/v1 artifact owners.",
+    "developerName": "Jinwuk-Lee",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write", "Validation"],
+    "defaultPrompt": [
+      "Use $context-core:context for one scoped index-first recall when prior handoff, evidence, or decisions may change the work.",
+      "Use $context-core:init only when the user asks to initialize the repository context root or its auto-loaded policy block.",
+      "Finish the primary task first, audit at most once per semantic milestone, and write only an exact approved final bundle through the context-core coordinator."
+    ]
+  }
+}

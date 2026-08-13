@@ -1,0 +1,5 @@
+{
+  "name": "context-core",
+  "version": "0.1.0",
+  "description": "Lightweight shared-context runtime for approved handoff snapshots, evidence observations, index-first recall, and single-coordinator writes."
+}

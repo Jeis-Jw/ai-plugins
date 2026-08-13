@@ -1,0 +1,23 @@
+{
+  "name": "context-decision",
+  "version": "0.1.0",
+  "description": "Decision continuity with rationale, rejected alternatives, conflict checks, and superseded history.",
+  "author": {
+    "name": "Jinwuk-Lee",
+    "url": "https://github.com/Jeis-Jw"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Context Decision",
+    "shortDescription": "Remember what was decided, why, and what not to follow.",
+    "longDescription": "Preserves an accepted decision, its rationale, and rejected alternatives as one authoritative record; recalls the current choice and marks superseded history do_not_follow. Requires the user to prepare the exact context-core distribution manually.",
+    "developerName": "Jinwuk-Lee",
+    "category": "Productivity",
+    "capabilities": ["Read", "Validation"],
+    "defaultPrompt": [
+      "Before any repository operation, require the exact enabled context-core@jeis-ai-plugins source, context-common/v1 protocol, and doctor repository_state=ready.",
+      "Use $context-decision:decision only for an explicit accepted choice with scope and commitment; keep the decision, rationale, and rejected alternatives together.",
+      "Never install, enable, update, initialize, or physically write on the user's behalf; final approved writes belong to the context-core coordinator."
+    ]
+  }
+}
