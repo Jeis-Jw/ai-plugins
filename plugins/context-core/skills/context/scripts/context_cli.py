@@ -41,6 +41,13 @@ RESERVED_INDEX_PATHS = {
     "context/observation/observation.index.md",
     "context/decision/decision.index.md",
 }
+INDEX_FIXABLE_CODES = {
+    "index_content_drift",
+    "index_duplicate_entry",
+    "index_ghost_entry",
+    "index_missing_entry",
+    "index_wrong_state",
+}
 OWNER_RESULT_FIELDS = {
     "schema", "result_type", "transition", "owner", "target_kind", "candidate_id", "decision", "reason",
     "capability_digest", "semantic_inputs", "semantic_attestations", "artifact_drafts", "effects", "proposed_plan",
@@ -129,6 +136,41 @@ def nfc(value: str) -> str:
 
 def normalized_key(value: str) -> str:
     return unicodedata.normalize("NFKC", value).casefold()
+
+
+def _canonical_slot_part(value: str, *, maximum: int) -> str:
+    folded = normalized_key(value.strip())
+    output: list[str] = []
+    separator = False
+    for char in folded:
+        if char.isalnum():
+            output.append(char)
+            separator = False
+        elif not separator:
+            output.append("-")
+            separator = True
+    result = "".join(output).strip("-")
+    return result if result and len(result) <= maximum else ""
+
+
+def _canonical_decision_scope(value: str) -> str:
+    if not isinstance(value, str):
+        return ""
+    stripped = normalized_key(value.strip()).strip("/")
+    if not stripped or "//" in stripped:
+        return ""
+    parts = stripped.split("/")
+    if len(parts) > 8:
+        return ""
+    canonical = [_canonical_slot_part(part, maximum=40) for part in parts]
+    result = "/".join(canonical)
+    return result if all(canonical) and len(result) <= 160 else ""
+
+
+def _canonical_decision_key(value: str) -> str:
+    if not isinstance(value, str) or "/" in value:
+        return ""
+    return _canonical_slot_part(value, maximum=80)
 
 
 def _canonical_value(value: Any) -> Any:
@@ -403,8 +445,27 @@ def _validate_common_document(frontmatter: dict[str, Any]) -> None:
             raise ContextError("lifecycle_invalid", "observation retired_reason is invalid")
         if frontmatter.get("retired_reason") == "invalidated" and not _substantive(frontmatter.get("retirement_note")):
             raise ContextError("lifecycle_invalid", "invalidated observation requires retirement_note")
+        if frontmatter.get("retired_reason") == "invalidated" and "superseded_by" in frontmatter:
+            raise ContextError("lifecycle_invalid", "invalidated observation cannot name a successor")
         if frontmatter.get("retired_reason") == "superseded":
             _require_context_id(frontmatter.get("superseded_by"), "superseded_by")
+        if frontmatter.get("retired_reason") is None and any(key in frontmatter for key in ("superseded_by", "retirement_note")):
+            raise ContextError("lifecycle_invalid", "observation lifecycle fields require retired_reason")
+        if "supersedes" in frontmatter:
+            for identifier in _string_list(frontmatter["supersedes"], "supersedes", maximum=12, item_maximum=36):
+                _require_context_id(identifier, "supersedes")
+    if schema == "context-decision/v1":
+        for field in ("scope", "decision_key"):
+            if not _substantive(frontmatter.get(field)) or "\n" in frontmatter[field]:
+                raise ContextError("schema_invalid", f"decision {field} is invalid")
+        if (
+            frontmatter["scope"] != _canonical_decision_scope(frontmatter["scope"])
+            or frontmatter["decision_key"] != _canonical_decision_key(frontmatter["decision_key"])
+        ):
+            raise ContextError("schema_invalid", "decision slot fields must already be canonical")
+        fingerprint = frontmatter.get("claim_fingerprint")
+        if not isinstance(fingerprint, str) or not re.fullmatch(r"sha256:[0-9a-f]{24}", fingerprint):
+            raise ContextError("schema_invalid", "decision claim_fingerprint is invalid")
         if "supersedes" in frontmatter:
             for identifier in _string_list(frontmatter["supersedes"], "supersedes", maximum=12, item_maximum=36):
                 _require_context_id(identifier, "supersedes")
@@ -484,7 +545,7 @@ def _extract_block(text: str, name: str) -> list[str]:
     begin = f"<!-- BEGIN CONTEXT GENERATED:{name} -->"
     end = f"<!-- END CONTEXT GENERATED:{name} -->"
     if text.count(begin) != 1 or text.count(end) != 1 or text.index(begin) > text.index(end):
-        raise ContextError("index_stale", "generated index marker is invalid", {"block": name}, EXIT_INTEGRITY)
+        raise ContextError("index_marker_invalid", "generated index marker is invalid", {"block": name}, EXIT_INTEGRITY)
     inside = text.split(begin, 1)[1].split(end, 1)[0]
     return [line for line in inside.strip("\n").split("\n") if line]
 
@@ -508,40 +569,111 @@ def parse_root_index(text: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     for line in _extract_block(text, "areas"):
         match = ROOT_ROW.fullmatch(line)
         if not match:
-            raise ContextError("index_stale", "root area row is malformed", exit_code=EXIT_INTEGRITY)
+            raise ContextError("index_noncanonical", "root area row is malformed", exit_code=EXIT_INTEGRITY)
         try:
             row = json.loads(match.group(1))
         except json.JSONDecodeError as error:
-            raise ContextError("index_stale", "root area row JSON is malformed", exit_code=EXIT_INTEGRITY) from error
+            raise ContextError("index_noncanonical", "root area row JSON is malformed", exit_code=EXIT_INTEGRITY) from error
         expected = ["area", "path", "owner", "claims", "artifact_schema", "authority"]
-        if list(row) != expected or row.get("claims") != [row.get("area")]:
-            raise ContextError("index_stale", "root area row fields are not canonical", exit_code=EXIT_INTEGRITY)
+        if list(row) != expected or compact_json(row) != match.group(1) or row.get("claims") != [row.get("area")]:
+            raise ContextError("index_noncanonical", "root area row fields are not canonical", exit_code=EXIT_INTEGRITY)
+        area = row.get("area")
+        path = row.get("path")
+        if not isinstance(area, str) or not AREA_NAME.fullmatch(area) or not isinstance(path, str):
+            raise ContextError("path_escape", "root area path is not canonical", {"path": path}, EXIT_INTEGRITY)
+        pure = pathlib.PurePosixPath(path)
+        if pure.is_absolute() or any(part in {"", ".", ".."} for part in pure.parts):
+            raise ContextError("path_escape", "root area path escapes its canonical location", {"path": path}, EXIT_INTEGRITY)
+        if path == ROOT_INDEX or area == "context":
+            raise ContextError("index_self_entry", "root index cannot catalog itself", {"path": path}, EXIT_INTEGRITY)
+        if path != f"context/{area}/{area}.index.md":
+            raise ContextError("reserved_index_path", "area index path is not canonical", {"path": path}, EXIT_INTEGRITY)
+        if any(not isinstance(row.get(key), str) or not row[key] for key in ("owner", "artifact_schema", "authority")):
+            raise ContextError("index_noncanonical", "root area descriptor is incomplete", exit_code=EXIT_INTEGRITY)
         areas.append(row)
     if areas != sorted(areas, key=lambda row: row["area"]):
         raise ContextError("index_stale", "root area rows are not sorted", exit_code=EXIT_INTEGRITY)
     return frontmatter, areas
 
 
-def parse_area_index(text: str) -> AreaIndex:
+def _parse_area_index_metadata(text: str) -> dict[str, Any]:
     frontmatter = _parse_index_frontmatter(text, "context-area-index/v1")
     required = ("area", "owner", "artifact_schema", "authority", "summary")
     if any(not isinstance(frontmatter.get(key), str) or not frontmatter[key] for key in required):
         raise ContextError("index_stale", "area index metadata is incomplete", exit_code=EXIT_INTEGRITY)
+    if not AREA_NAME.fullmatch(frontmatter["area"]):
+        raise ContextError("index_stale", "area index name is invalid", exit_code=EXIT_INTEGRITY)
+    projection_fields = frontmatter.get("projection_fields", [])
+    if (
+        not isinstance(projection_fields, list)
+        or len(projection_fields) > 4
+        or any(not isinstance(field, str) or not FIELD_KEY.fullmatch(field) for field in projection_fields)
+        or len(projection_fields) != len(set(projection_fields))
+        or set(projection_fields) & {"id", "path", "title", "summary", "state", "created_at", "updated_at", "terms", "retired_at", "retired_reason", "superseded_by"}
+    ):
+        raise ContextError("index_noncanonical", "projection_fields are invalid", exit_code=EXIT_INTEGRITY)
+    return frontmatter
+
+
+def parse_area_index(text: str) -> AreaIndex:
+    frontmatter = _parse_area_index_metadata(text)
+    projection_fields = frontmatter.get("projection_fields", [])
     history_required = frontmatter["area"] != "snapshot"
+    if not history_required and ("CONTEXT GENERATED:history" in text):
+        raise ContextError("index_noncanonical", "snapshot index cannot contain history", exit_code=EXIT_INTEGRITY)
     blocks = (("current", "current"),) + (("history", "history"),) if history_required else (("current", "current"),)
     parsed: dict[str, list[dict[str, Any]]] = {"current": [], "history": []}
+    seen: set[str] = set()
     for block, expected_state in blocks:
         for line in _extract_block(text, block):
             match = ENTRY_ROW.fullmatch(line)
             if not match:
-                raise ContextError("index_stale", "area entry row is malformed", {"block": block}, EXIT_INTEGRITY)
+                raise ContextError("index_noncanonical", "area entry row is malformed", {"block": block}, EXIT_INTEGRITY)
             try:
                 row = json.loads(match.group(1))
             except json.JSONDecodeError as error:
-                raise ContextError("index_stale", "area entry JSON is malformed", exit_code=EXIT_INTEGRITY) from error
-            if row.get("state") != expected_state or not is_context_id(row.get("id")):
-                raise ContextError("index_stale", "area entry state or id is invalid", exit_code=EXIT_INTEGRITY)
+                raise ContextError("index_noncanonical", "area entry JSON is malformed", exit_code=EXIT_INTEGRITY) from error
+            if row.get("state") != expected_state:
+                raise ContextError("index_wrong_state", "area entry is in the wrong generated block", {"id": row.get("id")}, EXIT_INTEGRITY)
+            if not is_context_id(row.get("id")):
+                raise ContextError("index_noncanonical", "area entry id is invalid", exit_code=EXIT_INTEGRITY)
+            if row["id"] in seen:
+                raise ContextError("index_duplicate_entry", "area index contains a duplicate id", {"id": row["id"]}, EXIT_INTEGRITY)
+            seen.add(row["id"])
+            base = ["id", "path", "title", "summary", "state", "created_at"]
+            if "updated_at" in row:
+                base.append("updated_at")
+            base.append("terms")
+            if expected_state == "history":
+                base.extend(("retired_at", "retired_reason"))
+                if "superseded_by" in row:
+                    base.append("superseded_by")
+            base.extend(field for field in projection_fields if field in row)
+            if list(row) != base or compact_json(row) != match.group(1):
+                raise ContextError("index_noncanonical", "area entry fields or JSON bytes are not canonical", {"id": row["id"]}, EXIT_INTEGRITY)
+            if (
+                any(not isinstance(row.get(field), str) or not row[field] for field in ("path", "title", "summary", "created_at"))
+                or not isinstance(row.get("terms"), list)
+                or any(not isinstance(term, str) for term in row["terms"])
+            ):
+                raise ContextError("index_noncanonical", "area entry fields are invalid", {"id": row["id"]}, EXIT_INTEGRITY)
+            path = row["path"]
+            pure = pathlib.PurePosixPath(path)
+            if pure.is_absolute() or any(part in {"", ".", ".."} for part in pure.parts):
+                raise ContextError("path_escape", "area entry path is not canonical", {"path": path}, EXIT_INTEGRITY)
+            if path in RESERVED_INDEX_PATHS or path.endswith(".index.md"):
+                raise ContextError("index_self_entry", "reserved index cannot be an artifact row", {"path": path}, EXIT_INTEGRITY)
+            prefix = f"context/{frontmatter['area']}/"
+            expected_history = path.startswith(prefix + "retired/")
+            if not path.startswith(prefix) or not path.endswith(".md"):
+                raise ContextError("path_escape", "area entry path escapes its area", {"path": path}, EXIT_INTEGRITY)
+            if expected_history != (expected_state == "history"):
+                raise ContextError("index_wrong_state", "area entry path and state disagree", {"path": path}, EXIT_INTEGRITY)
+            if _entry_row(row) != line:
+                raise ContextError("index_noncanonical", "area entry visible row is not canonical", {"id": row["id"]}, EXIT_INTEGRITY)
             parsed[block].append(row)
+        if parsed[block] != sorted(parsed[block], key=lambda row: (row["created_at"], row["id"])):
+            raise ContextError("index_noncanonical", "area entry rows are not sorted", {"block": block}, EXIT_INTEGRITY)
     return AreaIndex(frontmatter=frontmatter, current=parsed["current"], history=parsed["history"], text=text)
 
 
@@ -606,6 +738,32 @@ def _entry_from_document(
         if key in fm:
             row[key] = fm[key]
     return row
+
+
+def _validate_strict_lifecycle(frontmatter: dict[str, Any], state: str, path: str) -> None:
+    reason = frontmatter.get("retired_reason")
+    lifecycle_fields = {"retired_at", "retired_reason", "retirement_note", "superseded_by"}
+    if state == "current" and lifecycle_fields & set(frontmatter):
+        raise ContextError("lifecycle_invalid", "current artifact cannot carry lifecycle metadata", {"path": path}, EXIT_INTEGRITY)
+    if state != "history":
+        return
+    if "retired_at" not in frontmatter or reason is None:
+        raise ContextError("lifecycle_invalid", "history artifact lacks retirement metadata", {"path": path}, EXIT_INTEGRITY)
+    allowed = {
+        "context-observation/v1": {"invalidated", "superseded"},
+        "context-decision/v1": {"withdrawn", "superseded"},
+    }.get(frontmatter.get("schema"), set())
+    if reason not in allowed:
+        raise ContextError("lifecycle_invalid", "retired_reason is invalid for the artifact kind", {"path": path}, EXIT_INTEGRITY)
+    if reason in {"invalidated", "withdrawn"}:
+        note = frontmatter.get("retirement_note")
+        if not isinstance(note, str) or not _substantive(note) or "\n" in note or len(note) > 500 or "superseded_by" in frontmatter:
+            raise ContextError("lifecycle_invalid", "terminal retirement requires a note and cannot name a successor", {"path": path}, EXIT_INTEGRITY)
+    if reason == "superseded":
+        try:
+            _require_context_id(frontmatter.get("superseded_by"), "superseded_by")
+        except ContextError as error:
+            raise ContextError("lifecycle_invalid", "superseded artifact requires a successor", {"path": path}, EXIT_INTEGRITY) from error
 
 
 def _entry_row(row: dict[str, Any]) -> str:
@@ -676,25 +834,40 @@ def _scan_area_paths(repo: pathlib.Path, area: str, metrics: IOMetrics | None = 
     with os.scandir(root) as entries:
         for entry in entries:
             if entry.name == "retired":
+                retired = _ensure_contained(repo, f"context/{area}/retired")
+                if not retired.is_dir():
+                    raise ContextError("path_invalid", "retired path must be a directory", {"path": f"context/{area}/retired"}, EXIT_INTEGRITY)
                 if metrics:
                     metrics.artifact_directory_lists += 1
-                with os.scandir(root / "retired") as historical_entries:
+                with os.scandir(retired) as historical_entries:
                     for historical in historical_entries:
                         if historical.name.endswith(".md") and not historical.name.endswith(".index.md"):
+                            if historical.is_symlink():
+                                raise ContextError("symlink_path", "artifact path cannot be a symlink", {"path": f"context/{area}/retired/{historical.name}"}, EXIT_INTEGRITY)
                             yield pathlib.Path(historical.path), "history"
             elif entry.name.endswith(".md") and not entry.name.endswith(".index.md"):
+                if entry.is_symlink():
+                    raise ContextError("symlink_path", "artifact path cannot be a symlink", {"path": f"context/{area}/{entry.name}"}, EXIT_INTEGRITY)
                 yield pathlib.Path(entry.path), "current"
 
 
-def render_area_index_from_repository(repo: pathlib.Path, area: str) -> str:
+def render_area_index_from_repository(repo: pathlib.Path, area: str, *, repair_rows: bool = False) -> str:
     index_path = _ensure_contained(repo, f"context/{area}/{area}.index.md")
     if not index_path.is_file():
         raise ContextError("index_seed_required", "area index is missing", {"area": area}, EXIT_INTEGRITY)
     existing = index_path.read_text(encoding="utf-8")
-    parsed = parse_area_index(existing)
+    if repair_rows:
+        metadata = _parse_area_index_metadata(existing)
+        _extract_block(existing, "current")
+        if area != "snapshot":
+            _extract_block(existing, "history")
+    else:
+        metadata = parse_area_index(existing).frontmatter
+    if metadata["area"] != area:
+        raise ContextError("area_index_mismatch", "area index metadata differs from its canonical path", {"area": area}, EXIT_INTEGRITY)
     rows: dict[str, list[dict[str, Any]]] = {"current": [], "history": []}
     for path, state in _scan_area_paths(repo, area):
-        rows[state].append(_entry_from_document(repo, path, parsed.frontmatter, state))
+        rows[state].append(_entry_from_document(repo, path, metadata, state))
     for state in rows:
         rows[state].sort(key=lambda row: (row["created_at"], row["id"]))
     rendered = _replace_block(existing, "current", [_entry_row(row) for row in rows["current"]])
@@ -2622,7 +2795,7 @@ def build_index_fix_bundle(repo: pathlib.Path) -> dict[str, Any]:
     integrity = refresh_repository(repo, strict=True)
     if integrity["ok"]:
         return {"noop": True, "applied": False, "changed_paths": []}
-    non_index = [issue for issue in integrity["issues"] if not issue["code"].startswith("index_")]
+    non_index = [issue for issue in integrity["issues"] if issue["code"] not in INDEX_FIXABLE_CODES]
     if non_index:
         raise ContextError("integrity_not_fixable", "only derived index drift can be fixed automatically", {"issues": non_index}, EXIT_INTEGRITY)
     _, catalog = _root_catalog(repo)
@@ -2637,7 +2810,7 @@ def build_index_fix_bundle(repo: pathlib.Path) -> dict[str, Any]:
         relative = f"context/{area}/{area}.index.md"
         path = repo / relative
         before[relative] = _digest_or_none(path)
-        rendered = render_area_index_from_repository(repo, area)
+        rendered = render_area_index_from_repository(repo, area, repair_rows=True)
         after[relative] = sha256_bytes(file_bytes(rendered))
     plan = {
         "schema": "context-mutation-plan/v1", "plan_id": new_plan_id(), "owner": "context-core", "source_type": "core_control",
@@ -2991,7 +3164,7 @@ def _apply_index_operation(repo: pathlib.Path, plan: dict[str, Any], operation: 
                 continue
             if current != expected_before:
                 raise ContextError("precondition_changed", "area index precondition changed", {"path": relative}, EXIT_CONFLICT)
-            rendered = render_area_index_from_repository(repo, area)
+            rendered = render_area_index_from_repository(repo, area, repair_rows=True)
             if sha256_bytes(file_bytes(rendered)) != operation["after_sha256"][relative]:
                 raise ContextError("plan_preview_mismatch", "deterministic index output differs from preview", {"path": relative}, EXIT_INTEGRITY)
             _atomic_write(path, rendered)
@@ -3017,40 +3190,102 @@ def apply_bundle(repo: pathlib.Path, bundle: dict[str, Any], approved_digest: st
 
 def refresh_repository(repo: pathlib.Path, *, strict: bool = False) -> dict[str, Any]:
     del strict
-    root_text, areas = _root_catalog(repo)
     issues: list[dict[str, Any]] = []
+    root_text = ""
+    root_valid = False
+    try:
+        root_path = _ensure_contained(repo, ROOT_INDEX)
+        root_text = root_path.read_text(encoding="utf-8")
+        _, areas = parse_root_index(root_text)
+        root_valid = True
+    except FileNotFoundError:
+        issues.append({"code": "index_missing", "path": ROOT_INDEX})
+        areas = []
+    except (OSError, UnicodeError) as error:
+        issues.append({"code": "index_invalid", "path": ROOT_INDEX, "message": str(error)})
+        areas = []
+    except ContextError as error:
+        issues.append({"code": error.code, "path": error.details.get("path", ROOT_INDEX), "message": error.message})
+        areas = []
+    if not root_valid:
+        return {
+            "schema": "context-integrity-result/v1",
+            "ok": not issues,
+            "issues": sorted(issues, key=canonical_json),
+            "warnings": [],
+            "root_digest": sha256_bytes(root_text.encode("utf-8")),
+        }
     area_names = [area["area"] for area in areas]
     claims = [claim for area in areas for claim in area["claims"]]
-    if len(area_names) != len(set(area_names)) or len(claims) != len(set(claims)):
+    for area in sorted(set(BUILTIN_AREAS) - set(area_names)):
+        issues.append({"code": "reserved_index_missing", "path": f"context/{area}/{area}.index.md", "area": area})
+    if len(area_names) != len(set(area_names)):
         issues.append({"code": "duplicate_area_owner", "path": ROOT_INDEX})
+    if len(claims) != len(set(claims)):
+        issues.append({"code": "duplicate_claim_owner", "path": ROOT_INDEX})
     seen_ids: dict[str, str] = {}
     documents: dict[str, tuple[str, dict[str, Any]]] = {}
+    root_specs: list[tuple[dict[str, Any], str, str]] = []
     for area in areas:
-        path = repo / area["path"]
+        index_valid = True
+        index_text: str | None = None
         try:
-            index = parse_area_index(path.read_text(encoding="utf-8"))
-        except (FileNotFoundError, ContextError) as error:
+            path = _ensure_contained(repo, area["path"])
+            index_text = path.read_text(encoding="utf-8")
+            index = parse_area_index(index_text)
+        except FileNotFoundError:
+            issues.append({"code": "index_missing", "path": area["path"]})
+            continue
+        except (OSError, UnicodeError) as error:
             issues.append({"code": "index_invalid", "path": area["path"], "message": str(error)})
             continue
-        actual: dict[str, dict[str, Any]] = {}
-        for artifact_path, state in _scan_area_paths(repo, area["area"]):
-            relative = artifact_path.relative_to(repo).as_posix()
-            if artifact_path.is_symlink():
-                issues.append({"code": "symlink_path", "path": relative})
+        except ContextError as error:
+            issues.append({"code": error.code, "path": error.details.get("path", area["path"]), "message": error.message})
+            if index_text is None:
                 continue
             try:
-                row = _entry_from_document(repo, artifact_path, index.frontmatter, state)
-            except ContextError as error:
-                issues.append({"code": error.code, "path": relative})
+                metadata = _parse_area_index_metadata(index_text)
+            except ContextError:
                 continue
-            if row["id"] in seen_ids:
-                issues.append({"code": "duplicate_id", "path": relative, "other": seen_ids[row["id"]]})
-            seen_ids[row["id"]] = relative
-            documents[row["id"]] = (relative, parse_document(artifact_path.read_text(encoding="utf-8")).frontmatter)
-            if state == "current" and any(key in documents[row["id"]][1] for key in ("retired_at", "retired_reason", "retirement_note")):
-                issues.append({"code": "lifecycle_invalid", "path": relative})
-            actual[row["id"]] = row
-        projected = {row["id"]: row for row in index.current + index.history}
+            index = AreaIndex(frontmatter=metadata, current=[], history=[], text=index_text)
+            index_valid = False
+        metadata = index.frontmatter
+        root_specs.append((area, _area_label(area["area"]), metadata["summary"]))
+        if (
+            metadata["area"],
+            metadata["owner"],
+            metadata["artifact_schema"],
+            metadata["authority"],
+        ) != (
+            area["area"],
+            area["owner"],
+            area["artifact_schema"],
+            area["authority"],
+        ):
+            issues.append({"code": "area_index_mismatch", "path": area["path"]})
+        actual: dict[str, dict[str, Any]] = {}
+        try:
+            for artifact_path, state in _scan_area_paths(repo, area["area"]):
+                relative = artifact_path.relative_to(repo).as_posix()
+                try:
+                    row = _entry_from_document(repo, artifact_path, metadata, state)
+                    document = parse_document(artifact_path.read_text(encoding="utf-8"))
+                    _validate_strict_lifecycle(document.frontmatter, state, relative)
+                except (OSError, UnicodeError) as error:
+                    issues.append({"code": "artifact_invalid", "path": relative, "message": str(error)})
+                    continue
+                except ContextError as error:
+                    issues.append({"code": error.code, "path": relative})
+                    continue
+                if row["id"] in seen_ids:
+                    issues.append({"code": "duplicate_id", "path": relative, "other": seen_ids[row["id"]]})
+                else:
+                    seen_ids[row["id"]] = relative
+                    documents[row["id"]] = (relative, document.frontmatter)
+                actual[row["id"]] = row
+        except ContextError as error:
+            issues.append({"code": error.code, "path": error.details.get("path", f"context/{area['area']}")})
+        projected = {row["id"]: row for row in index.current + index.history} if index_valid else {}
         for identifier in sorted(set(projected) - set(actual)):
             issues.append({"code": "index_ghost_entry", "path": projected[identifier]["path"], "id": identifier})
         for identifier in sorted(set(actual) - set(projected)):
@@ -3063,9 +3298,20 @@ def refresh_repository(repo: pathlib.Path, *, strict: bool = False) -> dict[str,
                     issues.append({"code": "index_missing_entry", "path": actual[identifier]["path"], "id": identifier})
         try:
             regenerated = render_area_index_from_repository(repo, area["area"])
-            if file_bytes(regenerated) != path.read_bytes() and not any(issue.get("code") in {"index_ghost_entry", "index_missing_entry", "index_content_drift"} and issue.get("path", "").startswith(f"context/{area['area']}/") for issue in issues):
+            if file_bytes(regenerated) != path.read_bytes() and not any(
+                issue.get("code") in INDEX_FIXABLE_CODES
+                and issue.get("path", "").startswith(f"context/{area['area']}/")
+                for issue in issues
+            ):
                 issues.append({"code": "index_content_drift", "path": area["path"]})
         except ContextError:
+            pass
+    if len(root_specs) == len(areas) and len(area_names) == len(set(area_names)):
+        try:
+            regenerated_root = render_root_index(root_text, root_specs)
+            if file_bytes(regenerated_root) != (repo / ROOT_INDEX).read_bytes():
+                issues.append({"code": "root_index_drift", "path": ROOT_INDEX})
+        except (ContextError, OSError):
             pass
     for identifier, (path, frontmatter) in documents.items():
         refs: list[str] = []
@@ -3094,14 +3340,57 @@ def refresh_repository(repo: pathlib.Path, *, strict: bool = False) -> dict[str,
             predecessor = documents.get(predecessor_id)
             if predecessor is not None and predecessor[1].get("superseded_by") != identifier:
                 issues.append({"code": "supersede_edge_missing", "path": path, "id": identifier, "target": predecessor_id})
+            if predecessor is not None and predecessor[1].get("schema") != frontmatter.get("schema"):
+                allowed_fallback = (
+                    predecessor[1].get("schema") == "context-observation/v1"
+                    and frontmatter.get("schema") == "context-decision/v1"
+                    and predecessor[1].get("kind_hint") == "decision"
+                    and predecessor[1].get("source_claim_fingerprint") == frontmatter.get("claim_fingerprint")
+                )
+                if not allowed_fallback:
+                    issues.append({"code": "illegal_cross_kind_predecessor", "path": path, "id": identifier, "target": predecessor_id})
+    successor_edges = {
+        identifier: frontmatter["superseded_by"]
+        for identifier, (_, frontmatter) in documents.items()
+        if frontmatter.get("retired_reason") == "superseded" and isinstance(frontmatter.get("superseded_by"), str)
+    }
+    states: dict[str, int] = {}
+
+    def visit(identifier: str, trail: list[str]) -> None:
+        state = states.get(identifier, 0)
+        if state == 1:
+            start = trail.index(identifier) if identifier in trail else 0
+            cycle = trail[start:] + [identifier]
+            issues.append({"code": "lifecycle_cycle", "path": documents[identifier][0], "ids": cycle})
+            return
+        if state == 2:
+            return
+        states[identifier] = 1
+        successor = successor_edges.get(identifier)
+        if successor in documents:
+            visit(successor, [*trail, identifier])
+        states[identifier] = 2
+
+    for identifier in sorted(successor_edges):
+        if states.get(identifier, 0) == 0:
+            visit(identifier, [])
     current_slots: dict[tuple[str, str], str] = {}
     for identifier, (path, frontmatter) in documents.items():
         if frontmatter.get("schema") == "context-decision/v1" and "/retired/" not in path:
-            slot = (frontmatter.get("scope", ""), frontmatter.get("decision_key", ""))
+            slot = (
+                _canonical_decision_scope(frontmatter.get("scope", "")),
+                _canonical_decision_key(frontmatter.get("decision_key", "")),
+            )
             if slot in current_slots:
                 issues.append({"code": "duplicate_current_slot", "path": path, "other": current_slots[slot]})
             current_slots[slot] = path
-    return {"schema": "context-integrity-result/v1", "ok": not issues, "issues": issues, "warnings": [], "root_digest": sha256_bytes(root_text.encode("utf-8"))}
+    return {
+        "schema": "context-integrity-result/v1",
+        "ok": not issues,
+        "issues": sorted(issues, key=canonical_json),
+        "warnings": [],
+        "root_digest": sha256_bytes(root_text.encode("utf-8")),
+    }
 
 
 def doctor_repository(repo: pathlib.Path) -> dict[str, Any]:
