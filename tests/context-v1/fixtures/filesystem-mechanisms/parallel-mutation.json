@@ -1,0 +1,10 @@
+{
+  "mechanism": "fcntl root lock plus exact-byte same-directory replace",
+  "claim_limit": "individual file replace is atomic; the fixture does not claim multi-file crash atomicity",
+  "rows": [
+    {"id": "ctx_00000000000040008000000000000001", "path": "context/observation/a.md"},
+    {"id": "ctx_00000000000040008000000000000002", "path": "context/observation/b.md"},
+    {"id": "ctx_00000000000040008000000000000003", "path": "context/observation/c.md"},
+    {"id": "ctx_00000000000040008000000000000004", "path": "context/observation/d.md"}
+  ]
+}

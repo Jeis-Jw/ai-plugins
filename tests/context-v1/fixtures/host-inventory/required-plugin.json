@@ -1,0 +1,8 @@
+{
+  "marketplace": "jeis-ai-plugins",
+  "plugin": "context-core",
+  "selector": "context-core@jeis-ai-plugins",
+  "source": "Jeis-Jw/ai-plugins",
+  "provider": "Jinwuk-Lee (Jeis-Jw)",
+  "required_protocol": "context-common/v1"
+}

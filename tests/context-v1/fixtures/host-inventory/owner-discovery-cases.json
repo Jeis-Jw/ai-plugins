@@ -1,0 +1,70 @@
+{
+  "result_collection_contract": {
+    "semantic_result_source": "host_owner_skill_call",
+    "required_result_schema": "context-owner-result/v1",
+    "router_owner_process_invocations": 0,
+    "cache_probe_count": 0,
+    "alternate_runtime_count": 0
+  },
+  "accepted": [
+    {
+      "id": "installed-skill-inventory",
+      "input": {
+        "source": "installed_skill_inventory",
+        "kind": "decision",
+        "inventory": [
+          {
+            "schema": "context-owner-capability/v1",
+            "owner": "context-decision",
+            "kind": "decision",
+            "artifact_schema": "context-decision/v1",
+            "authority": "authoritative",
+            "claim_surface": {"type": "agent_skill", "name": "context-decision:decision", "operation": "claim"}
+          }
+        ]
+      },
+      "expected_descriptor": {
+        "schema": "context-owner-capability/v1",
+        "owner": "context-decision",
+        "kind": "decision",
+        "artifact_schema": "context-decision/v1",
+        "authority": "authoritative",
+        "claim_surface": {"type": "agent_skill", "name": "context-decision:decision", "operation": "claim"}
+      }
+    },
+    {
+      "id": "caller-descriptor",
+      "input": {
+        "source": "caller_descriptor",
+        "descriptor": {
+          "schema": "context-owner-capability/v1",
+          "owner": "context-core",
+          "kind": "observation",
+          "artifact_schema": "context-observation/v1",
+          "authority": "evidence",
+          "claim_surface": {"type": "agent_skill", "name": "context-core:observation", "operation": "claim"}
+        }
+      },
+      "expected_descriptor": {
+        "schema": "context-owner-capability/v1",
+        "owner": "context-core",
+        "kind": "observation",
+        "artifact_schema": "context-observation/v1",
+        "authority": "evidence",
+        "claim_surface": {"type": "agent_skill", "name": "context-core:observation", "operation": "claim"}
+      }
+    }
+  ],
+  "rejected": [
+    {
+      "id": "cache-probe",
+      "input": {"source": "cache_path_probe", "path": "/host/cache/context-core"},
+      "expected_error": "owner_discovery_surface_forbidden"
+    },
+    {
+      "id": "alternate-runtime",
+      "input": {"source": "alternate_runtime", "command": "claude plugins list"},
+      "expected_error": "owner_discovery_surface_forbidden"
+    }
+  ]
+}

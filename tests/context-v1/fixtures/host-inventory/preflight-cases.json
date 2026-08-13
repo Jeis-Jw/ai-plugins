@@ -1,0 +1,256 @@
+{
+  "cases": [
+    {
+      "id": "codex-core-missing",
+      "host": "codex",
+      "inventory": {"plugins": []},
+      "doctor": {"supported_protocols": [], "repository_state": null, "issues": []},
+      "expected_code": "core_missing",
+      "expected_observed": {
+        "marketplace": null,
+        "plugin": null,
+        "source": null,
+        "enabled": null,
+        "protocol": null,
+        "repository_state": null
+      },
+      "expected_rendered": {
+        "code": "core_missing",
+        "host": "codex",
+        "message": "exact context-core가 현재 host inventory에 없다.",
+        "manual_actions": [
+          "provider marketplace jeis-ai-plugins (source Jeis-Jw/ai-plugins)에서 context-core@jeis-ai-plugins를 사용자가 직접 설치한다.",
+          "설치 scope는 사용자가 직접 선택한다.",
+          "host reload 또는 새 session 뒤 context-decision:init을 다시 실행한다."
+        ]
+      }
+    },
+    {
+      "id": "claude-source-mismatch",
+      "host": "claude-code",
+      "inventory": {
+        "plugins": [
+          {
+            "marketplace": "other-marketplace",
+            "plugin": "context-core",
+            "source": "Other/context-core",
+            "enabled": true,
+            "protocols": ["context-common/v1"]
+          }
+        ]
+      },
+      "doctor": {
+        "supported_protocols": ["context-common/v1"],
+        "repository_state": "ready",
+        "issues": []
+      },
+      "expected_code": "core_source_mismatch",
+      "expected_observed": {
+        "marketplace": "other-marketplace",
+        "plugin": "context-core",
+        "source": "Other/context-core",
+        "enabled": true,
+        "protocol": "context-common/v1",
+        "repository_state": "ready"
+      },
+      "expected_rendered": {
+        "code": "core_source_mismatch",
+        "host": "claude-code",
+        "message": "동명 core의 marketplace 또는 source가 요구 좌표와 다르다.",
+        "manual_actions": [
+          "source Jeis-Jw/ai-plugins의 exact context-core@jeis-ai-plugins 좌표를 사용자가 직접 설치한다.",
+          "다른 marketplace의 동명 plugin은 충족으로 간주하지 않는다.",
+          "host reload 또는 새 session 뒤 context-decision:init을 다시 실행한다."
+        ]
+      }
+    },
+    {
+      "id": "codex-core-disabled",
+      "host": "codex",
+      "inventory": {
+        "plugins": [
+          {
+            "marketplace": "jeis-ai-plugins",
+            "plugin": "context-core",
+            "source": "Jeis-Jw/ai-plugins",
+            "enabled": false,
+            "protocols": ["context-common/v1"]
+          }
+        ]
+      },
+      "doctor": {
+        "supported_protocols": ["context-common/v1"],
+        "repository_state": "ready",
+        "issues": []
+      },
+      "expected_code": "core_disabled",
+      "expected_observed": {
+        "marketplace": "jeis-ai-plugins",
+        "plugin": "context-core",
+        "source": "Jeis-Jw/ai-plugins",
+        "enabled": false,
+        "protocol": "context-common/v1",
+        "repository_state": "ready"
+      },
+      "expected_rendered": {
+        "code": "core_disabled",
+        "host": "codex",
+        "message": "exact context-core가 현재 scope에서 비활성이다.",
+        "manual_actions": [
+          "exact context-core@jeis-ai-plugins를 사용자가 선택한 올바른 scope에서 직접 활성화한다.",
+          "host reload 또는 새 session 뒤 context-decision:init을 다시 실행한다."
+        ]
+      }
+    },
+    {
+      "id": "claude-core-incompatible",
+      "host": "claude-code",
+      "inventory": {
+        "plugins": [
+          {
+            "marketplace": "jeis-ai-plugins",
+            "plugin": "context-core",
+            "source": "Jeis-Jw/ai-plugins",
+            "enabled": true,
+            "protocols": ["context-common/v2"]
+          }
+        ]
+      },
+      "doctor": {
+        "supported_protocols": ["context-common/v2"],
+        "repository_state": "ready",
+        "issues": []
+      },
+      "expected_code": "core_incompatible",
+      "expected_observed": {
+        "marketplace": "jeis-ai-plugins",
+        "plugin": "context-core",
+        "source": "Jeis-Jw/ai-plugins",
+        "enabled": true,
+        "protocol": "context-common/v2",
+        "repository_state": "ready"
+      },
+      "expected_rendered": {
+        "code": "core_incompatible",
+        "host": "claude-code",
+        "message": "exact context-core가 context-common/v1 handshake를 통과하지 못했다.",
+        "manual_actions": [
+          "exact context-core@jeis-ai-plugins를 context-common/v1 호환 버전으로 사용자가 직접 업데이트한다.",
+          "host reload 또는 새 session 뒤 context-decision:init을 다시 실행한다."
+        ]
+      }
+    },
+    {
+      "id": "codex-core-uninitialized",
+      "host": "codex",
+      "inventory": {
+        "plugins": [
+          {
+            "marketplace": "jeis-ai-plugins",
+            "plugin": "context-core",
+            "source": "Jeis-Jw/ai-plugins",
+            "enabled": true,
+            "protocols": ["context-common/v1"]
+          }
+        ]
+      },
+      "doctor": {
+        "supported_protocols": ["context-common/v1"],
+        "repository_state": "absent",
+        "issues": ["context_root_missing"]
+      },
+      "expected_code": "core_uninitialized",
+      "expected_observed": {
+        "marketplace": "jeis-ai-plugins",
+        "plugin": "context-core",
+        "source": "Jeis-Jw/ai-plugins",
+        "enabled": true,
+        "protocol": "context-common/v1",
+        "repository_state": "absent"
+      },
+      "expected_rendered": {
+        "code": "core_uninitialized",
+        "host": "codex",
+        "message": "exact core는 준비됐지만 repository context root가 없다.",
+        "manual_actions": [
+          "사용자가 context-core:init을 실행한다.",
+          "초기화가 완료된 뒤 context-decision:init을 다시 실행한다."
+        ]
+      }
+    },
+    {
+      "id": "claude-partial-core-init",
+      "host": "claude-code",
+      "inventory": {
+        "plugins": [
+          {
+            "marketplace": "jeis-ai-plugins",
+            "plugin": "context-core",
+            "source": "Jeis-Jw/ai-plugins",
+            "enabled": true,
+            "protocols": ["context-common/v1"]
+          }
+        ]
+      },
+      "doctor": {
+        "supported_protocols": ["context-common/v1"],
+        "repository_state": "partial",
+        "issues": ["missing_area_index"]
+      },
+      "expected_code": "partial_core_init",
+      "expected_observed": {
+        "marketplace": "jeis-ai-plugins",
+        "plugin": "context-core",
+        "source": "Jeis-Jw/ai-plugins",
+        "enabled": true,
+        "protocol": "context-common/v1",
+        "repository_state": "partial"
+      },
+      "expected_rendered": {
+        "code": "partial_core_init",
+        "host": "claude-code",
+        "message": "repository context root가 partial 또는 invalid 상태다.",
+        "manual_actions": [
+          "context-core doctor의 issue/path를 확인한다.",
+          "context-core의 승인된 repair 절차로 수동 복구한다.",
+          "repository_state=ready 확인 뒤 context-decision:init을 다시 실행한다."
+        ]
+      }
+    },
+    {
+      "id": "codex-ready",
+      "host": "codex",
+      "inventory": {
+        "plugins": [
+          {
+            "marketplace": "jeis-ai-plugins",
+            "plugin": "context-core",
+            "source": "Jeis-Jw/ai-plugins",
+            "enabled": true,
+            "protocols": ["context-common/v1"]
+          }
+        ]
+      },
+      "doctor": {
+        "supported_protocols": ["context-common/v1"],
+        "repository_state": "ready",
+        "issues": []
+      },
+      "expected_code": "ready",
+      "expected_observed": {
+        "marketplace": "jeis-ai-plugins",
+        "plugin": "context-core",
+        "source": "Jeis-Jw/ai-plugins",
+        "enabled": true,
+        "protocol": "context-common/v1",
+        "repository_state": "ready"
+      },
+      "expected_rendered": {
+        "code": "ready",
+        "host": "codex",
+        "message": "exact context-core와 repository가 준비됐다.",
+        "manual_actions": []
+      }
+    }
+  ]
+}

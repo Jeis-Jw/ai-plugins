@@ -1,0 +1,12 @@
+{
+  "slug_cases": [
+    {"id": "nfc", "title": " Café plan ", "expected": "Café-plan.md"},
+    {"id": "nfd", "title": "Café plan", "expected": "Café-plan.md"},
+    {"id": "whitespace", "title": "설계   문서 v1", "expected": "설계-문서-v1.md"},
+    {"id": "preserved-safe", "title": "A__B..C", "expected": "A__B..C.md"}
+  ],
+  "collision_cases": [
+    {"id": "nfc-nfd", "left": "Café.md", "right": "Café.md"},
+    {"id": "nfkc-casefold", "left": "Ａuth.md", "right": "auth.md"}
+  ]
+}

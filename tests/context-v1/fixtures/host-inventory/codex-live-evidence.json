@@ -1,0 +1,13 @@
+{
+  "schema": "context-host-evidence/v1",
+  "host": "codex",
+  "evidence_kind": "live_current_session",
+  "observed_at": "2026-08-14",
+  "collection_surface": "active_session_inventory",
+  "inventory_scope": "installed plugin capabilities exposed to this Codex session",
+  "target_selector": "context-core@jeis-ai-plugins",
+  "target_available": false,
+  "claim_limit": "This proves only that the exact target is not exposed to the active session; it does not inspect host caches or another runtime.",
+  "alternate_runtime_used": false,
+  "cache_probe_used": false
+}
