@@ -83,9 +83,11 @@ def render_policy(profile: str, tracker: str, concurrency: str) -> str:
             "prior intent, decisions, lessons, or current state could affect judgment, "
             "run one scoped wiki recall before deciding and reuse it until scope, "
             "evidence, or anchors change. Keep new durable knowledge as ephemeral "
-            "candidates; at a semantic milestone or closeout, deduplicate and either "
-            "record approved items, propose one grouped capture, or report `none` with "
-            "a short reason."
+            "candidates. Finish the original task and primary answer first. At a "
+            "semantic milestone or closeout, use existing context for an internal "
+            "candidate audit. Only when genuine durable candidates exist, append one "
+            "natural, optional grouped capture question at the bottom of the same final "
+            "answer; otherwise add no user-facing audit, status, or `none` text."
         ),
         (
             "- Wiki vs runtime evidence: the wiki is a durable context/decision layer, "

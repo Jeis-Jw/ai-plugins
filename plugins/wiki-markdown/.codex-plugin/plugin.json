@@ -1,24 +1,24 @@
 {
   "name": "wiki-markdown",
-  "version": "0.23.0",
-  "description": "Markdown-backed AI-native durable-context provider with proactive recall, approval-gated capture proposals, gated Codex capture checkpoints, and agent policy scaffolding.",
+  "version": "0.24.0",
+  "description": "Markdown-backed AI-native durable-context provider with proactive recall, approval-gated capture proposals, and initialization-time agent policy scaffolding.",
   "author": {
     "name": "Jinwuk-Lee",
     "url": "https://github.com/Jeis-Jw"
   },
   "skills": "./skills/",
-  "hooks": "./hooks/codex-hooks.json",
   "interface": {
     "displayName": "Wiki (Markdown)",
     "shortDescription": "Manage an AI-native project wiki backed by markdown files.",
-    "longDescription": "Provides a cross-plugin durable-context contract over a markdown-backed wiki under wiki/: proactively recalls relevant intent, decisions, lessons, and current state; enforces a gated capture checkpoint at Codex semantic milestones; groups durable capture candidates for approval; and writes only with configured authority. It also initializes, reads, writes, retires, completes/reopens, validates, and scaffolds concise auto-loaded policy blocks into CLAUDE.md and AGENTS.md without writing operating policy into consumer wiki vaults.",
+    "longDescription": "Provides a cross-plugin durable-context contract over a markdown-backed wiki under wiki/: proactively recalls relevant intent, decisions, lessons, and current state; scaffolds a best-effort operating policy that proposes genuine durable candidates without displacing the primary answer; and writes only with configured authority. Agent-facing initialization composes deterministic vault setup with an idempotent auto-loaded policy block in CLAUDE.md and AGENTS.md, while raw CLI init remains vault-only.",
     "developerName": "Jinwuk-Lee",
     "category": "Productivity",
     "capabilities": ["Read", "Write", "Validation", "Scaffold"],
     "defaultPrompt": [
       "Use $wiki proactively when substantive work or discussion could depend on prior intent, decisions, lessons, or current state; recall the relevant scope once and reuse it.",
-      "At a semantic milestone, deduplicate durable candidates and make one grouped capture proposal; write only after configured authority is satisfied.",
+      "At a semantic milestone or closeout, finish the primary answer first, audit existing context internally, and append one optional grouped capture question at the bottom of the same final answer only when durable candidates exist; otherwise stay silent. Write only after configured authority is satisfied.",
       "For a concrete runtime defect, inspect code and runtime evidence first instead of repeatedly recalling the wiki.",
+      "When initializing a project with $wiki init, initialize the vault and then use $agent-policy to install the auto-loaded policy block; preserve all content outside its managed markers.",
       "Use $wiki to capture this decision and refresh indexes.",
       "Use $wiki to validate wiki consistency.",
       "Use $agent-policy to scaffold Claude/Codex operating policy files."

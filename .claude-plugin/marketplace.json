@@ -8,8 +8,8 @@
     {
       "name": "wiki-markdown",
       "source": "./plugins/wiki-markdown",
-      "description": "Markdown-backed AI-native durable-context provider with proactive scoped recall, approval-gated capture proposals, deterministic lifecycle, and agent policy scaffolding.",
-      "version": "0.23.0"
+      "description": "Markdown-backed AI-native durable-context provider with proactive scoped recall, approval-gated capture proposals, deterministic lifecycle, and initialization-time agent policy scaffolding.",
+      "version": "0.24.0"
     },
     {
       "name": "task-github",

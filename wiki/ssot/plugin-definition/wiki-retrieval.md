@@ -1,9 +1,9 @@
 ---
 title: 위키 인덱스와 조회
 created_at: 2026-05-29
-summary: 인덱스 파생과 조회 표면 정본: 폴더 단위 독립 인덱스, 3-stage recall + batch read, snapshot list/search/load, search_terms recognized optional, affects_paths + changed-path-stale, refresh --fix 화이트리스트. plugin-definition 영역의 sub-ssot.
+summary: 인덱스·조회·proactive context 정본: 폴더 단위 독립 인덱스, 3-stage recall, snapshot 조회, changed-path-stale, 승인형 capture와 초기화 시 auto-loaded agent policy 설치 계약.
 tags: [wiki, retrieval, ssot]
-verified_at: 2026-08-06
+verified_at: 2026-08-13
 affects_paths: [plugins/wiki-markdown/**]
 ---
 
@@ -42,7 +42,7 @@ affects_paths: [plugins/wiki-markdown/**]
 - `--backlinks-of <basename>` — YAML relations에 대상 basename을 가진 record grep (본문 wikilink 무시)
 - Snapshot은 `recall` 대상이 아니다. 대화 맥락 체크포인트 조회는 `snapshot list/search/load`가 담당한다.
 
-### Proactive Recall과 승인형 Capture 계약 (0.21.0)
+### Proactive Recall과 승인형 Capture 계약 (0.24.0 current)
 
 recall/capture는 사용자의 명시 요청만 기다리지 않는다. agent·작업 플러그인·review 플러그인·대화
 UI 등 모든 caller가 지키는 cross-plugin 계약이며, caller의 실행 분류나 delivery 비용은 recall·제안
@@ -53,23 +53,26 @@ UI 등 모든 caller가 지키는 cross-plugin 계약이며, caller의 실행 �
    전까지 재사용한다.
 2. **Ephemeral candidate**: durable 후보는 세션 컨텍스트 안에서만 모으고, 후보 보관만을 위해
    snapshot·ledger·wiki node를 만들지 않는다.
-3. **Semantic milestone 감사**: 의미 있는 결정 시점 또는 종료 전에 claim+anchor 기준 중복을
-   제거하고 `recorded`(승인 후 기록 id) / `proposed`(묶은 승인 요청) / `none`(후보 없음 + 이유)
-   중 하나로 끝낸다.
+3. **Semantic milestone 감사**: 본 작업과 primary 답변을 먼저 완료한다. 의미 있는 결정 시점 또는
+   closeout에 이미 가진 context로 claim+anchor 기준 internal audit을 수행한다. genuine durable 후보가
+   있을 때만 같은 final 하단에 자연스러운 optional grouped capture 질문을 붙이고, 없으면 user-facing
+   audit/status/`none` 문구 없이 종료한다.
 4. **승인 전 write 0**: observation과 living 갱신을 포함한 모든 write는 workspace가 더 좁은
    auto-write class를 명시 opt-in하지 않는 한 사용자 승인이 먼저다. 특정 항목을 "기록해"라는
    요청 자체가 그 항목의 승인이다. 거절·보류 후보는 새 근거 없이 재제안하지 않는다.
 5. **Knowledge value 독립성**: 판정 기준은 미래 재사용성·재방문/되돌리기 비용·현재 상태 영향이며
    작업 크기·실행/review 비용·호출 플러그인은 대리변수가 아니다.
 
-**집행(0.22.0)**: 3번 milestone 감사는 Claude Code에서 Stop hook `hooks/capture_checkpoint.py`가
-집행한다 — 5중 게이트(kill-switch/`stop_hook_active`/vault 존재/linked worktree 제외/산출물 임계
-Edit·Write ≥3 또는 `git commit` ≥1) 전부 통과 시에만 리마인더 1회를 주입하고, 세션 state로 배치당
-1회만 재발화한다. 미발화 시 출력 0바이트. Codex는 hook 표면이 없어 계약 준수가 모델 재량으로 남는다.
-근거 [[DEC-2026-08-06-024741-capture-checkpoint를-stop-hook-5중-게이트-배치당-1회로-도입]].
+**집행(0.24.0)**: raw `wiki_cli.py init`은 vault-only API로 유지한다. 사용자가 호출하는 agent-facing
+`$wiki init`은 raw init 뒤 `agent-policy` workflow를 실행해 auto-loaded `CLAUDE.md`와 `AGENTS.md`의
+관리 블록에 위 계약을 멱등 설치한다. 본문 밖 기존 내용은 보존한다. runtime Stop/UserPromptSubmit/
+PostToolUse hook, activity/commit heuristic, transcript/session ledger, user-visible continuation은 두지
+않는다. 이는 hard guarantee가 아니라 긴 작업 시작 시 한 번 로드되는 best-effort policy다. 근거
+[[DEC-2026-08-13-152825-capture-정책은-초기화-시-auto-loaded-agent-entry에-설치한다]].
 
 mechanism 정본은 `rules/knowledge-protocol.md` §12·`skills/wiki/SKILL.md`이며, 어느 workspace가
 auto-write class를 여는지는 그 프로젝트의 자동로드 policy statement(CLAUDE.md/AGENTS.md) 영역이다.
+`skills/agent-policy/SKILL.md`와 그 scaffold script가 설치 메커니즘을 소유한다.
 
 ### Search 보조
 
@@ -118,5 +121,6 @@ auto-write class를 여는지는 그 프로젝트의 자동로드 policy stateme
 - [[DEC-2026-05-29-105323-affects-paths-and-changed-path-stale]] — 코드 변경 drift 감지
 - [[DEC-2026-05-29-105324-search-terms-recognized-optional]] — 검색 escape hatch
 - [[DEC-2026-05-29-105325-refresh-fix-whitelist]] — 안전한 자동수정만
+- [[DEC-2026-08-13-152825-capture-정책은-초기화-시-auto-loaded-agent-entry에-설치한다]] — runtime hook 대신 초기화 시 auto-loaded capture policy 설치
 
 반려 대안: [[REJ-2026-05-29-105502-upper-index-recursive-collection]] (상위 인덱스 재귀 수집).

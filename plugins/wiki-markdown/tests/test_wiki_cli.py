@@ -2043,6 +2043,14 @@ class WikiCliCodexParityTests(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertFalse((Path(tmp) / "wiki").exists())
 
+    def test_raw_init_is_vault_only_and_does_not_write_agent_entry_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = run_cli("init", cwd=tmp)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertTrue((Path(tmp) / "wiki").is_dir())
+            self.assertFalse((Path(tmp) / "CLAUDE.md").exists())
+            self.assertFalse((Path(tmp) / "AGENTS.md").exists())
+
     def test_retire_dry_run_does_not_move_or_update(self):
         with tempfile.TemporaryDirectory() as tmp:
             run_cli("init", cwd=tmp)

@@ -11,14 +11,18 @@ def read_json(path):
 
 
 class PluginDistributionTests(unittest.TestCase):
-    def test_wiki_markdown_exposes_wiki_and_agent_policy_skills_to_codex(self):
-        manifest = read_json(REPO / "plugins" / "wiki-markdown" / ".codex-plugin" / "plugin.json")
+    def test_wiki_markdown_exposes_skills_without_runtime_hooks(self):
+        plugin = REPO / "plugins" / "wiki-markdown"
+        manifest = read_json(plugin / ".codex-plugin" / "plugin.json")
+        claude = read_json(plugin / ".claude-plugin" / "plugin.json")
         skills_root = REPO / "plugins" / "wiki-markdown" / manifest["skills"]
 
         self.assertTrue((skills_root / "wiki" / "SKILL.md").exists())
         self.assertTrue((skills_root / "agent-policy" / "SKILL.md").exists())
-        self.assertEqual(manifest["hooks"], "./hooks/codex-hooks.json")
-        self.assertTrue((REPO / "plugins" / "wiki-markdown" / "hooks" / "codex-hooks.json").exists())
+        self.assertNotIn("hooks", manifest)
+        self.assertNotIn("hooks", claude)
+        for obsolete in ("capture_checkpoint.py", "capture_context.py", "codex-hooks.json"):
+            self.assertFalse((plugin / "hooks" / obsolete).exists())
 
     def test_wiki_markdown_distribution_advertises_proactive_context_contract(self):
         plugin = REPO / "plugins" / "wiki-markdown"
@@ -31,8 +35,31 @@ class PluginDistributionTests(unittest.TestCase):
         self.assertIn("Proactive durable-context contract", skill)
         self.assertIn("Cross-plugin durable-context 계약", protocol)
         self.assertIn("semantic milestone", prompts)
+        self.assertIn("primary answer first", skill + prompts)
+        self.assertIn("existing context", skill + prompts)
+        self.assertIn("only when durable candidates exist", prompts)
+        self.assertIn("otherwise stay silent", prompts)
+        self.assertIn("explicit user confirmation", skill)
+        self.assertNotIn("UserPromptSubmit", skill + protocol + prompts)
+        self.assertNotIn("decision:block", skill + protocol + prompts)
         self.assertNotIn("Scale capture to the gear", skill + protocol + prompts)
         self.assertNotIn("gear:micro", skill + protocol + prompts)
+
+    def test_agent_facing_init_composes_vault_and_auto_loaded_policy(self):
+        plugin = REPO / "plugins" / "wiki-markdown"
+        manifest = read_json(plugin / ".codex-plugin" / "plugin.json")
+        wiki_skill = (plugin / "skills" / "wiki" / "SKILL.md").read_text()
+        policy_skill = (plugin / "skills" / "agent-policy" / "SKILL.md").read_text()
+        protocol = (plugin / "rules" / "knowledge-protocol.md").read_text()
+        prompts = "\n".join(manifest["interface"]["defaultPrompt"])
+
+        self.assertIn("When the user asks to initialize the wiki or invokes `$wiki init`", wiki_skill)
+        self.assertIn("Run raw `wiki_cli.py init`", wiki_skill)
+        self.assertIn("Follow the `agent-policy` workflow", wiki_skill)
+        self.assertIn("raw `wiki_cli.py init` command remains a vault-only", wiki_skill)
+        self.assertIn("second phase of agent-facing `$wiki init`", policy_skill)
+        self.assertIn("agent-facing `$wiki init` workflow", protocol)
+        self.assertIn("When initializing a project with $wiki init", prompts)
 
     def test_task_github_has_codex_manifest_for_skill_discovery(self):
         manifest = read_json(REPO / "plugins" / "task-github" / ".codex-plugin" / "plugin.json")

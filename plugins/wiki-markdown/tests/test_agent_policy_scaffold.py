@@ -68,7 +68,11 @@ class AgentPolicyScaffoldTests(unittest.TestCase):
             self.assertIn("Durable context lifecycle", text)
             self.assertIn("one scoped wiki recall", text)
             self.assertIn("semantic milestone or closeout", text)
-            self.assertIn("propose one grouped capture", text)
+            self.assertIn("Finish the original task and primary answer first", text)
+            self.assertIn("existing context for an internal candidate audit", text)
+            self.assertIn("Only when genuine durable candidates exist", text)
+            self.assertIn("bottom of the same final answer", text)
+            self.assertIn("otherwise add no user-facing audit, status, or `none` text", text)
             self.assertIn("all wiki writes", text)
             self.assertIn("Knowledge value", text)
             self.assertIn("not task size", text)
@@ -94,7 +98,20 @@ class AgentPolicyScaffoldTests(unittest.TestCase):
             text = (Path(tmp) / "AGENTS.md").read_text()
             self.assertIn("No external task tracker is bound", text)
             self.assertIn("one scoped wiki recall", text)
-            self.assertIn("propose one grouped capture", text)
+            self.assertIn("Finish the original task and primary answer first", text)
+            self.assertIn("Only when genuine durable candidates exist", text)
+
+    def test_checked_in_policy_uses_the_scaffolded_capture_contract(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = run_policy("--target", "all", "--json", cwd=tmp)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            generated = (Path(tmp) / "AGENTS.md").read_text()
+            lifecycle = next(
+                line for line in generated.splitlines() if line.startswith("- Durable context lifecycle:")
+            )
+            repo = ROOT.parents[1]
+            for name in ("AGENTS.md", "CLAUDE.md"):
+                self.assertIn(lifecycle, (repo / name).read_text())
 
     def test_scaffold_is_idempotent_and_preserves_existing_content(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -1,11 +1,14 @@
 ---
 name: agent-policy
-description: Scaffold or update auto-loaded agent operating policy files for Claude and Codex. Use when a project needs working-environment policy such as concurrency/worktree rules, proactive durable-context recall, capture authority, tracker usage, or promotion triggers. Writes CLAUDE.md and/or AGENTS.md, and deliberately keeps operating policy out of the consumer project's wiki vault.
+description: Scaffold or update auto-loaded agent operating policy files for Claude and Codex, including the policy phase of agent-facing wiki initialization. Use when a project needs working-environment policy such as concurrency/worktree rules, proactive durable-context recall, capture authority, tracker usage, or promotion triggers. Writes CLAUDE.md and/or AGENTS.md, and deliberately keeps operating policy out of the consumer project's wiki vault.
 ---
 
 # Agent Policy
 
 This skill installs concise, auto-loaded operating policy into a project.
+
+It is also the second phase of agent-facing `$wiki init`: raw `wiki_cli.py init` owns only the
+vault, while this skill installs or updates the policy that agents load once when a run starts.
 
 Use it when a project using `wiki-markdown` or `task-github` needs rules for:
 
@@ -19,7 +22,8 @@ The policy statement belongs in auto-loaded entry files, not in the consumer pro
 
 ## Workflow
 
-1. Inspect existing `CLAUDE.md` and `AGENTS.md`.
+1. Inspect existing `CLAUDE.md`, `AGENTS.md`, and relevant project configuration. When called from
+   `$wiki init`, do this after or alongside the raw vault initialization.
 2. Elicit only missing choices:
    - target: `all`, `claude`, or `codex`
    - profile: `solo` or `team`
@@ -41,6 +45,8 @@ python3 <skill-dir>/scripts/scaffold_agent_policy.py \
 ## Guardrails
 
 - Do not write `wiki/ssot/agent-operating-model.md` in a consumer project.
+- Do not make raw `wiki_cli.py init` write agent entry files; keep that deterministic API
+  vault-only and compose it here at the agent-facing workflow layer.
 - Do not replace entire `CLAUDE.md` or `AGENTS.md`.
 - Preserve wiki-markdown's cross-plugin knowledge-value contract: caller-specific execution
   classifications may change work/review ceremony, never recall or capture-candidate value.

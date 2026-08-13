@@ -1,6 +1,6 @@
 ---
 name: wiki
-description: Manage an AI-native project wiki as a durable-context provider for agents and other plugins. Use proactively when substantive work or discussion could depend on prior intent, decisions, lessons, or current state: recall the relevant graph once before deciding, then at semantic milestones deduplicate and propose durable capture. Also use for explicit record/history/state requests, observations, SSOT/runbooks, task bridge nodes, lifecycle changes, and integrity checks. Filesystem-primary, deterministic CLI — minimal tokens to stay consistent.
+description: Manage and initialize an AI-native project wiki as a durable-context provider for agents and other plugins. Use proactively when substantive work or discussion could depend on prior intent, decisions, lessons, or current state: recall the relevant graph once before deciding, then at semantic milestones deduplicate and propose durable capture. Also use for explicit record/history/state requests, observations, SSOT/runbooks, task bridge nodes, lifecycle changes, and integrity checks. Filesystem-primary, deterministic CLI — minimal tokens to stay consistent.
 ---
 
 # Wiki
@@ -29,10 +29,10 @@ knowledge is worth recalling or proposing.
    code/runtime evidence conflicts, an anchor changes, or the user asks for a refresh.
 3. **Keep candidates ephemeral** — during the work, collect possible durable knowledge in session
    context only. Do not create a snapshot, ledger, or wiki file merely to hold a candidate.
-4. **Audit at a semantic milestone** — deduplicate candidates by claim and anchors, then choose one:
-   - approved items were written → report `recorded` with ids;
-   - approval is needed → make one grouped proposal and report `proposed`;
-   - the audit-triggering work produced no durable candidate → report `none` with a short reason.
+4. **Audit at a semantic milestone** — finish the original task and primary answer first. Using
+   existing context only, internally deduplicate candidates by claim and anchors. If genuine
+   durable candidates exist, append one natural, optional grouped capture question at the bottom
+   of that same final answer. Otherwise add no user-facing audit, status, or `none` text.
 5. **Write only with authority** — all wiki writes, including observations and living-document
    updates, require explicit user confirmation unless the workspace has explicitly opted into a
    narrower auto-write class. An explicit request to record a specific item counts as confirmation.
@@ -41,10 +41,27 @@ Judge durability by future reuse, revisit/reversal cost, and impact on current s
 size, execution/review cost, or which plugin called the wiki. Do not repeat a rejected or deferred
 proposal without new evidence.
 
-The plugin reinforces this contract with a gated Stop-hook capture checkpoint on Claude Code and
-Codex. It stays silent unless a vault exists and a real output batch crosses the edit/commit
-threshold, then requests one `proposed`/`none` closeout pass. Codex users must review and trust the
-plugin hook after install or update before it can run.
+The `agent-policy` skill scaffolds this best-effort contract into auto-loaded `CLAUDE.md` and
+`AGENTS.md`. There is no runtime hook, activity heuristic, state ledger, or hard stop: the agent
+performs the internal audit from context it already has without displacing the primary answer.
+
+## Initialize a project
+
+When the user asks to initialize the wiki or invokes `$wiki init`, complete both phases as one
+agent-facing workflow:
+
+1. Inspect existing `CLAUDE.md`, `AGENTS.md`, and any managed agent-policy block. Infer target,
+   profile, tracker, and concurrency from current project policy/config; elicit only a materially
+   missing choice instead of blindly applying script defaults.
+2. Run raw `wiki_cli.py init` to create or reconcile the vault structure and derived indexes.
+3. Follow the `agent-policy` workflow and run its bundled `scaffold_agent_policy.py` with the
+   resolved options. Default to `--target all` only when the project supports both hosts.
+4. Review the combined diff. The policy script may change only its marked block and must preserve
+   every other line in the entry files.
+
+The raw `wiki_cli.py init` command remains a vault-only deterministic API: direct CLI callers never
+get surprise `CLAUDE.md` or `AGENTS.md` writes. Installing the auto-loaded capture policy is the
+responsibility of the agent-facing `$wiki init` workflow above.
 
 ## When to use
 
@@ -78,7 +95,8 @@ milestone under the proactive contract.
 ## Quick start
 
 ```bash
-# 0. Init (idempotent). ($CLI is shorthand for this cheat-sheet's examples.)
+# 0. Raw vault init (idempotent). Agent-facing `$wiki init` also runs the policy phase above.
+#    ($CLI is shorthand for this cheat-sheet's examples.)
 CLI="${WIKI_MARKDOWN_ROOT:-$CLAUDE_PLUGIN_ROOT}/skills/wiki/scripts/wiki_cli.py"
 python3 "$CLI" init
 

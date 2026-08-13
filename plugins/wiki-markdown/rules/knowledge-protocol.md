@@ -194,9 +194,10 @@ delivery 비용으로 wiki의 recall/후보/capture 여부를 바꾸지 않는�
    때만 다시 읽는다.
 2. **Ephemeral candidate**: 작업·대화 중 durable 후보는 세션 안에서만 모은다. 후보 보관만을 위해
    snapshot·ledger·wiki node를 만들지 않는다.
-3. **Semantic milestone 감사**: 의미 있는 결정 시점 또는 종료 전에 claim+anchor 기준으로 중복을
-   제거하고 `recorded`(승인 후 기록한 id), `proposed`(한 번에 묶은 승인 요청), `none`(감사 대상
-   작업에 durable 후보 없음 + 짧은 이유) 중 하나로 끝낸다. 일반 문답에는 형식적 감사를 붙이지 않는다.
+3. **Semantic milestone 감사**: 본 작업과 primary 답변을 먼저 완료한다. 의미 있는 결정 시점 또는
+   closeout에 이미 가진 context만으로 claim+anchor 기준 internal candidate audit을 수행한다. genuine
+   durable 후보가 실제 있을 때만 같은 최종 답변 하단에 자연스러운 optional grouped capture 질문을
+   붙인다. 후보가 없으면 user-facing audit/status/`none` 문구 없이 종료한다.
 4. **승인 전 write 0**: observation과 living ssot/runbook 갱신을 포함한 모든 write는 workspace가
    더 좁은 auto-write class를 명시적으로 opt-in하지 않는 한 사용자 승인을 먼저 받는다. 특정 항목을
    “기록해”라고 한 요청은 그 항목의 승인이다. 거절·보류 후보는 새 근거 없이 재제안하지 않는다.
@@ -213,25 +214,12 @@ delivery 비용으로 wiki의 recall/후보/capture 여부를 바꾸지 않는�
 - 운영 절차 정립 → 승인 후 `capture runbook`
 - 주기적(예: 주 1회 또는 큰 변경 직후) → `refresh --strict` 점검. CI에서 `refresh --check changed-path-stale`로 코드 drift 감지. 결정/정의 품질 점검은 필요 시 `refresh --check decision-quality,task-quality`로 별도 실행한다.
 
-### Capture checkpoint hook (Claude Code + Codex)
+### Auto-loaded operating policy (Claude Code + Codex)
 
-위 3번(semantic milestone 감사)은 모델 재량만으로는 누락되기 쉬워, Claude Code와 Codex에서
-Stop hook `hooks/capture_checkpoint.py`가 턴 종료 시점에 감사 리마인더 1회를 강제 주입한다.
-토큰 비용을 막기 위해 게이트를 전부 통과할 때만 발화하고 그 외에는 완전 침묵한다:
-
-1. env kill-switch — `WIKI_MARKDOWN_CHECKPOINT=off`(또는 `0`/`false`)면 항상 침묵
-2. `stop_hook_active` 루프 가드 — hook이 유발한 continuation은 다시 막지 않음
-3. vault 존재 — `<cwd>/wiki`가 없으면 침묵 (`wiki_cli`와 같은 해석)
-4. linked git worktree면 침묵 — 병렬 worker lane은 감사 대상이 아니고, capture는 메인
-   세션/closeout 몫
-5. 산출물 임계 — 직전 발화 이후 파일 편집 tool use ≥ `WIKI_MARKDOWN_CHECKPOINT_MIN_EDITS`
-   (기본 3) 또는 Bash `git commit` ≥ 1일 때만 발화. Claude Code는 Stop 시 transcript를 세고,
-   Codex는 `PostToolUse`의 `apply_patch`/`Bash` event를 휘발성 session ledger에 먼저 누적한다.
-
-발화하면 세션별 cursor를 기록해 **배치당 1회**만 리마인드한다(새 작업 배치가 쌓여야 재발화).
-리마인더는 "새 recall/탐색 없이 기존 컨텍스트에서 제안 또는 none 한 줄"을 지시해 후속 비용도
-짧게 캡한다. Codex 배포는 `.codex-plugin/plugin.json` → `hooks/codex-hooks.json`으로 연결되며,
-설치·업데이트 후 사용자가 현재 hook 정의를 review/trust해야 실제로 실행된다.
+위 3번은 `agent-policy` skill이 auto-loaded `CLAUDE.md`와 `AGENTS.md`에 설치하는 best-effort 운영
+정책으로 유지한다. 긴 작업의 기존 context에서 semantic audit을 한 번 수행하면 충분하며, 이를 hard
+guarantee로 만들 runtime hook, activity/commit heuristic, transcript/session ledger, continuation은 두지
+않는다. capture 감사가 본 작업이나 primary 답변을 대체하지 않으며, 승인 전 wiki write는 금지한다.
 
 ## 13. 4계층 분리 (§15)
 
@@ -242,7 +230,7 @@ Stop hook `hooks/capture_checkpoint.py`가 턴 종료 시점에 감사 리마인
 | **policy rationale** | 프로젝트가 정한 운영 이력 위치. 이 플러그인 개발 repo는 `wiki/context/decision/`에 dogfood 기록 | 정책을 왜 채택했는가. 소비 프로젝트 wiki에 자동 생성하지 않음 |
 | **knowledge** | `wiki/*` | 제품·서비스·시스템 지식과 작업이 낳은 context/task 기록 |
 
-플러그인은 기본적으로 **mechanism**만 제공한다 — agent-neutral. 다만 소비 프로젝트가 자동로드 정책을 쉽게 설치하도록 `skills/agent-policy/` 스캐폴드를 함께 제공한다. 이 스캐폴드는 `CLAUDE.md`/`AGENTS.md`의 관리 블록만 병합하며, 소비 프로젝트의 `wiki/ssot/agent-operating-model.md`를 만들거나 덮어쓰지 않는다. `wiki init`도 vault 구조만 만든다.
+플러그인은 기본적으로 **mechanism**만 제공한다 — agent-neutral. 다만 소비 프로젝트가 자동로드 정책을 쉽게 설치하도록 `skills/agent-policy/` 스캐폴드를 함께 제공한다. 이 스캐폴드는 `CLAUDE.md`/`AGENTS.md`의 관리 블록만 병합하며, 소비 프로젝트의 `wiki/ssot/agent-operating-model.md`를 만들거나 덮어쓰지 않는다. raw `wiki_cli.py init`은 vault 구조만 만드는 결정적 API로 유지한다. 사용자가 호출하는 agent-facing `$wiki init` workflow는 raw init 뒤에 기존 파일·설정을 확인하고 `agent-policy` 스캐폴드를 실행해 capture 정책을 auto-loaded entry에 설치한다.
 
 ---
 

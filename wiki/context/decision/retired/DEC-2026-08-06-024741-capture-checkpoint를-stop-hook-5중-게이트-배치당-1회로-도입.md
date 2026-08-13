@@ -6,6 +6,9 @@ tags: [token-efficiency]
 relations:
   intents: [INT-2026-05-29-104710-ai-driven-documentation, INT-2026-05-29-104707-token-efficient-context-loading]
   tasks: [Jeis-Jw/ai-plugins#87]
+retired_at: 2026-08-13
+retired_type: superseded
+superseded_by: DEC-2026-08-13-152825-capture-정책은-초기화-시-auto-loaded-agent-entry에-설치한다
 ---
 
 ## 결정
