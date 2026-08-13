@@ -28,6 +28,7 @@ EXIT_INTEGRITY = 6
 PROTOCOL = "context-common/v1"
 MAX_STAGE1_BYTES = 4 * 1024
 MAX_USER_BYTES = 32 * 1024
+MAX_CANDIDATE_BYTES = 16 * 1024
 ROOT_INDEX = "context/context.index.md"
 BUILTIN_AREAS = ("snapshot", "observation")
 RESERVED_INDEX_PATHS = {
@@ -322,6 +323,24 @@ def _validate_timestamp(value: Any, field: str) -> None:
         raise ContextError("schema_invalid", f"{field} must include an offset and seconds precision")
 
 
+def _timestamp(value: str | None = None) -> str:
+    resolved = value or datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+    _validate_timestamp(resolved, "timestamp")
+    return resolved
+
+
+def _substantive(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip()) and value.strip() not in PLACEHOLDERS
+
+
+def _string_list(value: Any, field: str, *, required: bool = False, maximum: int = 12, item_maximum: int = 500) -> list[str]:
+    if not isinstance(value, list) or any(not _substantive(item) or "\n" in item or len(item) > item_maximum for item in value):
+        raise ContextError("schema_invalid", f"{field} must be a substantive string list")
+    if (required and not value) or len(value) > maximum:
+        raise ContextError("schema_invalid", f"{field} has an invalid item count")
+    return [nfc(item.strip()) for item in value]
+
+
 def _validate_common_document(frontmatter: dict[str, Any]) -> None:
     required = ("schema", "id", "title", "summary", "created_at", "captured_from")
     missing = [key for key in required if key not in frontmatter]
@@ -341,6 +360,36 @@ def _validate_common_document(frontmatter: dict[str, Any]) -> None:
     for field in ("updated_at", "verified_at", "retired_at"):
         if field in frontmatter:
             _validate_timestamp(frontmatter[field], field)
+    created = datetime.datetime.fromisoformat(frontmatter["created_at"])
+    for field in ("updated_at", "verified_at", "retired_at"):
+        if field in frontmatter and datetime.datetime.fromisoformat(frontmatter[field]) < created:
+            raise ContextError("clock_invalid", f"{field} cannot precede created_at", exit_code=EXIT_CONFLICT)
+    for field, maximum, item_maximum in (("tags", 12, 40), ("search_terms", 12, 40), ("source_refs", 12, 500)):
+        if field in frontmatter:
+            _string_list(frontmatter[field], field, maximum=maximum, item_maximum=item_maximum)
+    if schema == "context-snapshot/v1":
+        if "anchors" in frontmatter:
+            anchors = _string_list(frontmatter["anchors"], "anchors", maximum=12, item_maximum=36)
+            for identifier in anchors:
+                _require_context_id(identifier, "anchors")
+        forbidden = {"verified_at", "retired_at", "retired_reason", "retirement_note", "supersedes", "superseded_by"}
+        if forbidden & set(frontmatter):
+            raise ContextError("lifecycle_invalid", "snapshot cannot carry history or verification fields")
+    if schema == "context-observation/v1":
+        if frontmatter.get("kind_hint") not in {None, "decision"}:
+            raise ContextError("schema_invalid", "observation kind_hint is invalid")
+        fingerprint = frontmatter.get("claim_fingerprint")
+        if fingerprint is not None and (not isinstance(fingerprint, str) or not re.fullmatch(r"sha256:[0-9a-f]{24}", fingerprint)):
+            raise ContextError("schema_invalid", "observation claim_fingerprint is invalid")
+        if frontmatter.get("retired_reason") not in {None, "invalidated", "superseded"}:
+            raise ContextError("lifecycle_invalid", "observation retired_reason is invalid")
+        if frontmatter.get("retired_reason") == "invalidated" and not _substantive(frontmatter.get("retirement_note")):
+            raise ContextError("lifecycle_invalid", "invalidated observation requires retirement_note")
+        if frontmatter.get("retired_reason") == "superseded":
+            _require_context_id(frontmatter.get("superseded_by"), "superseded_by")
+        if "supersedes" in frontmatter:
+            for identifier in _string_list(frontmatter["supersedes"], "supersedes", maximum=12, item_maximum=36):
+                _require_context_id(identifier, "supersedes")
 
 
 def parse_document(text: str) -> Document:
@@ -794,7 +843,19 @@ def builtin_capability(kind: str) -> dict[str, Any]:
             "claim_surface": {"type": "agent_skill", "name": "context-core:snapshot", "operation": "claim"},
             "claim_rule": "사용자가 재개할 unfinished session handoff를 명시적으로 저장하려 한다",
             "claim_assertions": ["handoff_requested", "unfinished_context_present"],
-            "draft_fields": {"required": {}, "optional": {}},
+            "draft_fields": {
+                "required": {
+                    "current_context": {"type": "string", "min_chars": 1, "max_chars": 1200},
+                    "open_items": {"type": "string_list", "min_items": 1, "max_items": 8, "max_item_chars": 240},
+                    "next_steps": {"type": "string_list", "min_items": 1, "max_items": 8, "max_item_chars": 240},
+                },
+                "optional": {
+                    "decided": {"type": "string_list", "max_items": 8, "max_item_chars": 240},
+                    "refs": {"type": "string_list", "max_items": 8, "max_item_chars": 500},
+                    "capture_candidates": {"type": "string_list", "max_items": 8, "max_item_chars": 240},
+                    "anchors": {"type": "string_list", "format": "context_id", "max_items": 12, "max_item_chars": 36},
+                },
+            },
         }
     if kind == "observation":
         return {
@@ -803,14 +864,268 @@ def builtin_capability(kind: str) -> dict[str, Any]:
             "claim_surface": {"type": "agent_skill", "name": "context-core:observation", "operation": "claim"},
             "claim_rule": "나중에 조사·판단에 재사용할 수 있는 발견 또는 근거다",
             "claim_assertions": ["reusable_observation", "evidence_present"],
-            "lifecycle_operations": {"same_claim": {"surface": {"type": "agent_skill", "name": "context-core:observation", "operation": "same_claim"}, "rule": "same observation claim", "assertions": ["same_semantic_claim"]}},
-            "draft_fields": {"required": {}, "optional": {}},
+            "lifecycle_operations": {"same_claim": {"surface": {"type": "agent_skill", "name": "context-core:observation", "operation": "same_claim"}, "rule": "successor OBS가 predecessor OBS의 같은 관찰 claim을 교정하거나 더 정확히 인수한다", "assertions": ["same_semantic_claim"]}},
+            "draft_fields": {
+                "required": {
+                    "observation": {"type": "string", "min_chars": 1, "max_chars": 1200},
+                    "evidence": {"type": "string_list", "min_items": 1, "max_items": 4, "max_item_chars": 500},
+                },
+                "optional": {
+                    "impact": {"type": "string", "max_chars": 800},
+                    "current_handling": {"type": "string", "max_chars": 800},
+                    "followup_conditions": {"type": "string_list", "max_items": 8, "max_item_chars": 240},
+                },
+            },
         }
     raise ContextError("owner_unavailable", "built-in capability is unavailable", {"kind": kind}, EXIT_CONFLICT)
 
 
 def capabilities_result() -> dict[str, Any]:
     return {"schema": "context-owner-capabilities/v1", "owners": [builtin_capability("snapshot"), builtin_capability("observation")]}
+
+
+def _validate_owner_inputs(kind: str, value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ContextError("candidate_invalid", "owner input must be an object")
+    capability = builtin_capability(kind)
+    fields = capability["draft_fields"]
+    allowed = set(fields["required"]) | set(fields["optional"])
+    missing = set(fields["required"]) - set(value)
+    extra = set(value) - allowed
+    if missing or extra:
+        raise ContextError("candidate_invalid", "owner input fields differ from capability", {"missing": sorted(missing), "extra": sorted(extra)})
+    normalized: dict[str, Any] = {}
+    for name, raw in value.items():
+        spec = fields["required"].get(name) or fields["optional"][name]
+        if spec["type"] == "string":
+            if not _substantive(raw) or len(raw) > spec["max_chars"]:
+                raise ContextError("candidate_invalid", f"owner input {name} is not substantive")
+            normalized[name] = nfc(raw.strip())
+        elif spec["type"] == "string_list":
+            items = _string_list(
+                raw,
+                name,
+                required=bool(spec.get("min_items")),
+                maximum=spec["max_items"],
+                item_maximum=spec["max_item_chars"],
+            )
+            if spec.get("format") == "context_id":
+                for identifier in items:
+                    _require_context_id(identifier, name)
+            normalized[name] = items
+        else:
+            raise ContextError("candidate_invalid", "unsupported capability field type", {"field": name})
+    return normalized
+
+
+def direct_candidate(
+    kind: str,
+    *,
+    title: str,
+    summary: str,
+    captured_from: str,
+    owner_inputs: dict[str, Any],
+    source_refs: Sequence[str] = (),
+    tags: Sequence[str] = (),
+    search_terms: Sequence[str] = (),
+    kind_hint: str | None = None,
+) -> dict[str, Any]:
+    if kind not in BUILTIN_AREAS:
+        raise ContextError("owner_unavailable", "direct candidate kind is unavailable", {"kind": kind}, EXIT_CONFLICT)
+    if not _substantive(title) or "\n" in title or len(title) > 120:
+        raise ContextError("candidate_invalid", "candidate title is invalid")
+    if not _substantive(summary) or "\n" in summary or len(summary) > 280:
+        raise ContextError("candidate_invalid", "candidate summary is invalid")
+    if captured_from not in {"conversation", "workspace", "manual", "import"}:
+        raise ContextError("candidate_invalid", "candidate captured_from is invalid")
+    if kind_hint is not None and (kind != "observation" or kind_hint != "decision"):
+        raise ContextError("candidate_invalid", "kind_hint is only supported for decision-like observations")
+    normalized_inputs = _validate_owner_inputs(kind, owner_inputs)
+    primary = normalized_inputs["current_context" if kind == "snapshot" else "observation"]
+    candidate: dict[str, Any] = {
+        "schema": "context-capture-candidate/v1",
+        "candidate_id": "cand_" + uuid.uuid4().hex,
+        "claim_key": "direct",
+        "title": nfc(title.strip()),
+        "claim": primary,
+        "summary": nfc(summary.strip()),
+        "captured_from": captured_from,
+        "requested_kind": kind,
+        "specialized_kinds": [kind],
+        "fallback_kind": None,
+        "source_refs": _string_list(list(source_refs), "source_refs", maximum=12, item_maximum=500),
+        "tags": _string_list(list(tags), "tags", maximum=12, item_maximum=40),
+        "search_terms": _string_list(list(search_terms), "search_terms", maximum=12, item_maximum=40),
+        "owner_inputs": {kind: normalized_inputs},
+    }
+    if kind_hint is not None:
+        candidate["kind_hint"] = kind_hint
+    if len(canonical_json(candidate).encode("utf-8")) > MAX_CANDIDATE_BYTES:
+        raise ContextError("candidate_too_large", "candidate exceeds the v1 byte budget", exit_code=EXIT_CONFLICT)
+    return candidate
+
+
+def _validate_attestation(attestation: dict[str, Any], operation: str, input_value: dict[str, Any], expected_assertions: set[str]) -> None:
+    if (
+        not isinstance(attestation, dict)
+        or attestation.get("schema") != "context-semantic-attestation/v1"
+        or attestation.get("operation") != operation
+        or attestation.get("input_schema") != input_value.get("schema")
+        or attestation.get("input_digest") != canonical_digest(input_value)
+    ):
+        raise ContextError("semantic_attestation_invalid", "attestation is not bound to the exact semantic input", exit_code=EXIT_CONFLICT)
+    assertions = attestation.get("assertions")
+    if not isinstance(assertions, list) or {item.get("name") for item in assertions} != expected_assertions:
+        raise ContextError("semantic_attestation_invalid", "attestation assertions differ from the owner capability", exit_code=EXIT_CONFLICT)
+    for assertion in assertions:
+        pointers = assertion.get("evidence_pointers")
+        if assertion.get("value") is not True or not isinstance(pointers, list) or not 1 <= len(pointers) <= 4:
+            raise ContextError("semantic_attestation_invalid", "attestation assertion is invalid", exit_code=EXIT_CONFLICT)
+        for pointer in pointers:
+            _json_pointer(input_value, pointer)
+    if operation == "same_claim":
+        pointers = {pointer for assertion in assertions for pointer in assertion["evidence_pointers"]}
+        if not {"/predecessor/primary_claim", "/successor/primary_claim"}.issubset(pointers):
+            raise ContextError("semantic_attestation_invalid", "same_claim must cite both primary claims", exit_code=EXIT_CONFLICT)
+
+
+def _list_section(items: Sequence[str]) -> str:
+    return "\n".join(f"- {item}" for item in items)
+
+
+def _list_section_matches(value: str | None, items: Sequence[str]) -> bool:
+    if not isinstance(value, str):
+        return False
+    actual = [line[2:].strip() if line.startswith("- ") else line.strip() for line in value.splitlines() if line.strip()]
+    return actual == list(items)
+
+
+def _validate_claim_draft(kind: str, candidate: dict[str, Any], draft: dict[str, Any]) -> None:
+    owner_inputs = _validate_owner_inputs(kind, candidate.get("owner_inputs", {}).get(kind))
+    document = parse_document(draft.get("content", ""))
+    frontmatter = document.frontmatter
+    if (
+        frontmatter.get("schema") != builtin_capability(kind)["artifact_schema"]
+        or frontmatter.get("title") != candidate.get("title")
+        or frontmatter.get("summary") != candidate.get("summary")
+        or frontmatter.get("captured_from") != candidate.get("captured_from")
+        or frontmatter.get("source_refs", []) != candidate.get("source_refs", [])
+        or frontmatter.get("tags", []) != candidate.get("tags", [])
+        or frontmatter.get("search_terms", []) != candidate.get("search_terms", [])
+    ):
+        raise ContextError("claim_result_mismatch", "claim draft envelope differs from embedded candidate", exit_code=EXIT_CONFLICT)
+    if kind == "snapshot":
+        expected = {
+            "현재 맥락": owner_inputs["current_context"],
+            "열린 항목": owner_inputs["open_items"],
+            "다음 단계": owner_inputs["next_steps"],
+        }
+        optional = (("decided", "정해진 것"), ("refs", "참조"), ("capture_candidates", "capture 후보"))
+        if frontmatter.get("anchors", []) != owner_inputs.get("anchors", []):
+            raise ContextError("claim_result_mismatch", "snapshot anchors differ from embedded candidate", exit_code=EXIT_CONFLICT)
+    else:
+        primary = owner_inputs["observation"]
+        expected = {"관찰": primary, "근거": owner_inputs["evidence"]}
+        optional = (("impact", "영향"), ("current_handling", "현재 처리"), ("followup_conditions", "후속 조건"))
+        if frontmatter.get("claim_fingerprint") != claim_fingerprint("observation", "", primary):
+            raise ContextError("claim_result_mismatch", "observation fingerprint differs from embedded candidate", exit_code=EXIT_CONFLICT)
+        if frontmatter.get("kind_hint") != candidate.get("kind_hint"):
+            raise ContextError("claim_result_mismatch", "observation kind_hint differs from embedded candidate", exit_code=EXIT_CONFLICT)
+        expected_source = claim_fingerprint("decision", "", primary) if candidate.get("kind_hint") == "decision" else None
+        if frontmatter.get("source_claim_fingerprint") != expected_source:
+            raise ContextError("claim_result_mismatch", "observation source fingerprint differs from embedded candidate", exit_code=EXIT_CONFLICT)
+    for field, section in optional:
+        value = owner_inputs.get(field)
+        if value:
+            expected[section] = value
+    if set(document.sections) != set(expected) or any(
+        not (_list_section_matches(document.sections.get(section), value) if isinstance(value, list) else document.sections.get(section) == value)
+        for section, value in expected.items()
+    ):
+        raise ContextError("claim_result_mismatch", "claim draft sections differ from embedded owner inputs", exit_code=EXIT_CONFLICT)
+
+
+def draft_owner_result(
+    candidate: dict[str, Any],
+    attestation: dict[str, Any],
+    *,
+    filename: str | None = None,
+    identifier: str | None = None,
+    now: str | None = None,
+) -> dict[str, Any]:
+    if candidate.get("schema") != "context-capture-candidate/v1" or candidate.get("requested_kind") not in BUILTIN_AREAS:
+        raise ContextError("candidate_invalid", "direct candidate envelope is invalid")
+    kind = candidate["requested_kind"]
+    if candidate.get("specialized_kinds") != [kind] or candidate.get("fallback_kind") is not None:
+        raise ContextError("candidate_invalid", "direct candidate routing fields are invalid")
+    inputs = candidate.get("owner_inputs")
+    if not isinstance(inputs, dict) or set(inputs) != {kind}:
+        raise ContextError("candidate_invalid", "candidate owner_inputs must contain only the target kind")
+    owner_inputs = _validate_owner_inputs(kind, inputs[kind])
+    capability = builtin_capability(kind)
+    _validate_attestation(attestation, "claim", candidate, set(capability["claim_assertions"]))
+    created_at = _timestamp(now)
+    identifier = identifier or new_context_id()
+    _require_context_id(identifier)
+    relative = f"context/{kind}/{validate_filename(filename) if filename else natural_filename(candidate['title'])}"
+    frontmatter: dict[str, Any] = {
+        "schema": capability["artifact_schema"],
+        "id": identifier,
+        "title": candidate["title"],
+        "summary": candidate["summary"],
+        "created_at": created_at,
+        "captured_from": candidate["captured_from"],
+    }
+    for field in ("source_refs", "tags", "search_terms"):
+        if candidate.get(field):
+            frontmatter[field] = list(candidate[field])
+    if kind == "snapshot":
+        frontmatter["updated_at"] = created_at
+        if owner_inputs.get("anchors"):
+            frontmatter["anchors"] = owner_inputs["anchors"]
+        sections = {
+            "현재 맥락": owner_inputs["current_context"],
+            "열린 항목": _list_section(owner_inputs["open_items"]),
+            "다음 단계": _list_section(owner_inputs["next_steps"]),
+        }
+        optional_sections = (("decided", "정해진 것"), ("refs", "참조"), ("capture_candidates", "capture 후보"))
+    else:
+        primary_claim = owner_inputs["observation"]
+        frontmatter["claim_fingerprint"] = claim_fingerprint("observation", "", primary_claim)
+        if candidate.get("kind_hint") == "decision":
+            frontmatter["kind_hint"] = "decision"
+            frontmatter["source_claim_fingerprint"] = claim_fingerprint("decision", "", primary_claim)
+        sections = {"관찰": primary_claim, "근거": _list_section(owner_inputs["evidence"])}
+        optional_sections = (("impact", "영향"), ("current_handling", "현재 처리"), ("followup_conditions", "후속 조건"))
+    for field, section in optional_sections:
+        value = owner_inputs.get(field)
+        if value:
+            sections[section] = _list_section(value) if isinstance(value, list) else value
+    content = render_document(frontmatter, sections)
+    effect_id = f"effect_create_{kind}"
+    supporting = owner_inputs.get("evidence", owner_inputs.get("open_items", []))[:4]
+    projection = {
+        "kind": kind,
+        "primary_claim": next(iter(sections.values())),
+        "claim_fingerprint": frontmatter.get("claim_fingerprint"),
+        "supporting_context": supporting,
+    }
+    return {
+        "schema": "context-owner-result/v1",
+        "result_type": "claim",
+        "transition": "capture",
+        "owner": "context-core",
+        "target_kind": kind,
+        "candidate_id": candidate["candidate_id"],
+        "decision": "claim",
+        "reason": "explicit direct capture",
+        "capability_digest": canonical_digest(capability),
+        "semantic_inputs": [{"operation": "claim", "input_schema": candidate["schema"], "input_digest": canonical_digest(candidate), "value": candidate}],
+        "semantic_attestations": [attestation],
+        "artifact_drafts": [{"effect_id": effect_id, "path": relative, "content": content, "semantic_projection": projection}],
+        "effects": [{"effect_id": effect_id, "action": "create", "area": kind, "id": identifier, "state": "current"}],
+        "proposed_plan": {"schema": "context-owner-plan/v1", "transition": "capture", "operations": [{"op": "create", "effect_id": effect_id, "area": kind, "path": relative}]},
+    }
 
 
 def _json_pointer(value: Any, pointer: str) -> Any:
@@ -876,11 +1191,34 @@ def validate_owner_result(result: dict[str, Any]) -> None:
             actual = {assertion["name"] for assertion in attestations["claim"]["assertions"]}
             if expected != actual:
                 raise ContextError("semantic_attestation_invalid", "claim assertions do not match capability", exit_code=EXIT_CONFLICT)
+            _validate_attestation(attestations["claim"], "claim", inputs["claim"]["value"], expected)
     elif result["result_type"] == "mutation":
         if "mutation_request" not in inputs or "mutation_request" in attestations:
             raise ContextError("owner_result_invalid", "mutation result lacks an unattested mutation request", exit_code=EXIT_CONFLICT)
+        required_inputs = {
+            "snapshot_update": {"mutation_request"},
+            "observation_annotate": {"mutation_request"},
+            "observation_reverify": {"mutation_request"},
+            "observation_invalidate": {"mutation_request"},
+            "discard": {"mutation_request"},
+            "rename": {"mutation_request"},
+            "observation_supersede": {"claim", "same_claim", "mutation_request"},
+        }.get(result["transition"])
+        if required_inputs is not None and set(inputs) != required_inputs:
+            raise ContextError("owner_result_invalid", "mutation semantic input set is incomplete", {"expected": sorted(required_inputs)}, EXIT_CONFLICT)
+        if result["transition"] == "observation_supersede":
+            if set(attestations) != {"claim", "same_claim"}:
+                raise ContextError("semantic_attestation_invalid", "observation supersede requires claim and same_claim attestations", exit_code=EXIT_CONFLICT)
+            _validate_attestation(attestations["claim"], "claim", inputs["claim"]["value"], set(builtin_capability("observation")["claim_assertions"]))
+            _validate_attestation(attestations["same_claim"], "same_claim", inputs["same_claim"]["value"], {"same_semantic_claim"})
     else:
         raise ContextError("owner_result_invalid", "result_type is unsupported", exit_code=EXIT_CONFLICT)
+    if "claim" in inputs and result["owner"] == "context-core":
+        create_ids = {effect.get("effect_id") for effect in result.get("effects", []) if effect.get("action") == "create"}
+        claim_drafts = [draft for draft in result.get("artifact_drafts", []) if draft.get("effect_id") in create_ids]
+        if len(claim_drafts) != 1:
+            raise ContextError("claim_result_mismatch", "embedded claim must bind exactly one create draft", exit_code=EXIT_CONFLICT)
+        _validate_claim_draft(kind, inputs["claim"]["value"], claim_drafts[0])
     plan = result["proposed_plan"]
     if plan.get("schema") != "context-owner-plan/v1" or plan.get("transition") != result["transition"]:
         raise ContextError("owner_result_invalid", "owner plan does not match result transition", exit_code=EXIT_CONFLICT)
@@ -896,6 +1234,20 @@ def validate_owner_result(result: dict[str, Any]) -> None:
     if effect_ids != operation_ids:
         raise ContextError("plan_preview_mismatch", "effects and operations are not 1:1", exit_code=EXIT_CONFLICT)
     draft_ids = {item["effect_id"] for item in drafts}
+    for draft in drafts:
+        document = parse_document(draft.get("content", ""))
+        projection = draft.get("semantic_projection")
+        if not isinstance(projection, dict) or set(projection) != {"kind", "primary_claim", "claim_fingerprint", "supporting_context"}:
+            raise ContextError("owner_result_invalid", "draft semantic projection is invalid", exit_code=EXIT_CONFLICT)
+        primary_name = "현재 맥락" if kind == "snapshot" else "관찰"
+        if (
+            projection["kind"] != kind
+            or projection["primary_claim"] != document.sections[primary_name]
+            or projection["claim_fingerprint"] != document.frontmatter.get("claim_fingerprint")
+            or not isinstance(projection["supporting_context"], list)
+            or len(projection["supporting_context"]) > 4
+        ):
+            raise ContextError("owner_result_invalid", "draft semantic projection differs from artifact content", exit_code=EXIT_CONFLICT)
     for operation in operations:
         if operation.get("op") not in {"create", "replace", "move", "delete"}:
             raise ContextError("plan_preview_mismatch", "owner operation is not allowed", exit_code=EXIT_CONFLICT)
@@ -912,6 +1264,278 @@ def _bundle_result(preview: dict[str, Any], plan: dict[str, Any], materials: lis
     digest = canonical_digest(approval_material)
     bundle = {"schema": "context-mutation-bundle/v1", "approval_material": approval_material, "approval_digest": digest, "materials": materials}
     return {"bundle": bundle, "approval_preview": preview, "approval_digest": digest, "applied": False, "noop": False}
+
+
+def _capture_bundle(repo: pathlib.Path, owner_result: dict[str, Any]) -> dict[str, Any]:
+    draft = owner_result["artifact_drafts"][0]
+    area = owner_result["target_kind"]
+    destination = resolve_artifact_path(repo, area, pathlib.PurePosixPath(draft["path"]).name)
+    if destination.relative_to(repo).as_posix() != draft["path"]:
+        raise ContextError("path_escape", "owner draft path is not canonical", exit_code=EXIT_CONFLICT)
+    identifier = owner_result["effects"][0]["id"]
+    try:
+        _find_artifact(repo, identifier)
+    except ContextError as error:
+        if error.code != "artifact_not_found":
+            raise
+    else:
+        raise ContextError("duplicate_id", "owner draft id already exists", {"id": identifier}, EXIT_CONFLICT)
+    return finalize_owner_result(repo, owner_result)
+
+
+def build_snapshot_save_bundle(
+    repo: pathlib.Path,
+    candidate: dict[str, Any],
+    attestation: dict[str, Any],
+    *,
+    filename: str | None = None,
+    now: str | None = None,
+) -> dict[str, Any]:
+    if candidate.get("requested_kind") != "snapshot":
+        raise ContextError("candidate_invalid", "snapshot save requires a snapshot candidate")
+    return _capture_bundle(repo, draft_owner_result(candidate, attestation, filename=filename, now=now))
+
+
+def build_observation_capture_bundle(
+    repo: pathlib.Path,
+    candidate: dict[str, Any],
+    attestation: dict[str, Any],
+    *,
+    filename: str | None = None,
+    now: str | None = None,
+) -> dict[str, Any]:
+    if candidate.get("requested_kind") != "observation":
+        raise ContextError("candidate_invalid", "observation capture requires an observation candidate")
+    return _capture_bundle(repo, draft_owner_result(candidate, attestation, filename=filename, now=now))
+
+
+def _semantic_projection(kind: str, document: Document) -> dict[str, Any]:
+    primary_name = "현재 맥락" if kind == "snapshot" else "관찰"
+    supporting_name = "열린 항목" if kind == "snapshot" else "근거"
+    supporting = [line[2:].strip() for line in document.sections.get(supporting_name, "").splitlines() if line.startswith("- ")][:4]
+    return {
+        "kind": kind,
+        "primary_claim": document.sections[primary_name],
+        "claim_fingerprint": document.frontmatter.get("claim_fingerprint"),
+        "supporting_context": supporting,
+    }
+
+
+def _mutation_request(
+    transition: str,
+    kind: str,
+    requested_changes: dict[str, Any],
+    targets: Sequence[tuple[pathlib.Path, Document]],
+    repo: pathlib.Path,
+    *,
+    successor_owner_result_digest: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "schema": "context-domain-mutation-input/v1",
+        "transition": transition,
+        "owner": "context-core",
+        "target_kind": kind,
+        "requested_changes": requested_changes,
+        "targets": sorted(
+            (
+                {
+                    "id": document.frontmatter["id"],
+                    "path": path.relative_to(repo).as_posix(),
+                    "sha256": sha256_bytes(path.read_bytes()),
+                }
+                for path, document in targets
+            ),
+            key=lambda item: item["path"],
+        ),
+        "successor_owner_result_digest": successor_owner_result_digest,
+    }
+
+
+def _mutation_result(
+    kind: str,
+    transition: str,
+    request: dict[str, Any],
+    drafts: list[dict[str, Any]],
+    effects: list[dict[str, Any]],
+    operations: list[dict[str, Any]],
+    *,
+    extra_inputs: Sequence[dict[str, Any]] = (),
+    attestations: Sequence[dict[str, Any]] = (),
+) -> dict[str, Any]:
+    inputs = list(extra_inputs) + [{"operation": "mutation_request", "input_schema": request["schema"], "input_digest": canonical_digest(request), "value": request}]
+    return {
+        "schema": "context-owner-result/v1",
+        "result_type": "mutation",
+        "transition": transition,
+        "owner": "context-core",
+        "target_kind": kind,
+        "capability_digest": canonical_digest(builtin_capability(kind)),
+        "semantic_inputs": inputs,
+        "semantic_attestations": list(attestations),
+        "artifact_drafts": drafts,
+        "effects": effects,
+        "proposed_plan": {"schema": "context-owner-plan/v1", "transition": transition, "operations": operations},
+    }
+
+
+def _artifact_in_area(repo: pathlib.Path, identifier: str, area: str, *, current_only: bool = False) -> tuple[pathlib.Path, Document]:
+    found_area, path, document = _find_artifact(repo, identifier)
+    if found_area != area or (current_only and "/retired/" in path.relative_to(repo).as_posix()):
+        raise ContextError("artifact_state_invalid", f"artifact is not a current {area}", {"id": identifier}, EXIT_CONFLICT)
+    return path, document
+
+
+def _validate_update_values(
+    *,
+    title: str | None,
+    summary: str | None,
+    tags: Sequence[str] | None,
+    search_terms: Sequence[str] | None,
+    source_refs: Sequence[str] | None,
+    anchors: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    values: dict[str, Any] = {}
+    if title is not None:
+        if not _substantive(title) or "\n" in title or len(title) > 120:
+            raise ContextError("schema_invalid", "title is invalid")
+        values["title"] = nfc(title.strip())
+    if summary is not None:
+        if not _substantive(summary) or "\n" in summary or len(summary) > 280:
+            raise ContextError("schema_invalid", "summary is invalid")
+        values["summary"] = nfc(summary.strip())
+    for field, raw, maximum, item_maximum in (
+        ("tags", tags, 12, 40),
+        ("search_terms", search_terms, 12, 40),
+        ("source_refs", source_refs, 12, 500),
+        ("anchors", anchors, 12, 36),
+    ):
+        if raw is not None:
+            values[field] = _string_list(list(raw), field, maximum=maximum, item_maximum=item_maximum)
+    for identifier in values.get("anchors", []):
+        _require_context_id(identifier, "anchors")
+    return values
+
+
+def build_snapshot_update_bundle(
+    repo: pathlib.Path,
+    identifier: str,
+    *,
+    merge: bool = False,
+    sections: dict[str, str] | None = None,
+    title: str | None = None,
+    summary: str | None = None,
+    tags: Sequence[str] | None = None,
+    search_terms: Sequence[str] | None = None,
+    source_refs: Sequence[str] | None = None,
+    anchors: Sequence[str] | None = None,
+    clear: Sequence[str] = (),
+    now: str | None = None,
+) -> dict[str, Any]:
+    path, document = _artifact_in_area(repo, identifier, "snapshot", current_only=True)
+    sections = dict(sections or {})
+    allowed, required = SECTION_SPECS["context-snapshot/v1"]
+    if set(sections) - set(allowed):
+        raise ContextError("section_schema_error", "snapshot update contains an unknown section")
+    if not merge and not set(required).issubset(sections):
+        raise ContextError("snapshot_full_update_required", "full snapshot update requires all required sections", {"required": list(required)})
+    for name, content in sections.items():
+        if name in required and not _substantive(content):
+            raise ContextError("section_schema_error", "required snapshot section is not substantive", {"section": name})
+    clear_set = set(clear)
+    if clear_set - {"anchors", "tags", "search_terms", "source_refs"}:
+        raise ContextError("usage_invalid", "snapshot clear target is invalid")
+    updates = _validate_update_values(title=title, summary=summary, tags=tags, search_terms=search_terms, source_refs=source_refs, anchors=anchors)
+    frontmatter = dict(document.frontmatter)
+    for field in clear_set:
+        frontmatter.pop(field, None)
+    frontmatter.update(updates)
+    if merge:
+        next_sections = dict(document.sections)
+        next_sections.update(sections)
+    else:
+        next_sections = {name: sections[name] for name in required}
+        next_sections.update({name: sections[name] for name in allowed if name not in required and name in sections})
+        for field in ("anchors", "tags", "search_terms", "source_refs"):
+            if field not in updates and field not in clear_set:
+                frontmatter.pop(field, None)
+    comparison_frontmatter = dict(frontmatter)
+    comparison_frontmatter["updated_at"] = document.frontmatter["updated_at"]
+    comparison_content = render_document(comparison_frontmatter, next_sections)
+    current_content = render_document(document.frontmatter, document.sections)
+    if file_bytes(comparison_content) == file_bytes(current_content):
+        return {"noop": True, "applied": False, "changed_paths": []}
+    frontmatter["updated_at"] = _timestamp(now)
+    after_content = render_document(frontmatter, next_sections)
+    relative = path.relative_to(repo).as_posix()
+    request = _mutation_request(
+        "snapshot_update",
+        "snapshot",
+        {"merge": merge, "sections": sections, "metadata": updates, "clear": sorted(clear_set)},
+        [(path, document)],
+        repo,
+    )
+    effect_id = "effect_update_snapshot"
+    result = _mutation_result(
+        "snapshot",
+        "snapshot_update",
+        request,
+        [{"effect_id": effect_id, "path": relative, "content": after_content, "semantic_projection": _semantic_projection("snapshot", Document(frontmatter, next_sections))}],
+        [{"effect_id": effect_id, "action": "replace", "area": "snapshot", "id": identifier, "state": "current"}],
+        [{"op": "replace", "effect_id": effect_id, "area": "snapshot", "id": identifier, "path": relative}],
+    )
+    return finalize_owner_result(repo, result)
+
+
+def _read_artifact(repo: pathlib.Path, identifier: str, area: str, sections: Sequence[str] = ()) -> dict[str, Any]:
+    path, document = _artifact_in_area(repo, identifier, area)
+    selected = sections or tuple(document.sections)
+    result: dict[str, Any] = {
+        "artifact": dict(document.frontmatter),
+        "path": path.relative_to(repo).as_posix(),
+        "sections": {name: document.sections[name] for name in selected if name in document.sections},
+        "authority": "staging" if area == "snapshot" else "evidence",
+        "truncated": False,
+    }
+    if area == "snapshot":
+        result["use_as"] = "resume_context"
+        anchors = document.frontmatter.get("anchors", [])
+        warnings: list[str] = []
+        if not anchors:
+            freshness = "authority_unknown"
+        else:
+            freshness = "anchored"
+            for anchor in anchors:
+                try:
+                    _, anchor_path, _ = _find_artifact(repo, anchor)
+                    if "/retired/" in anchor_path.relative_to(repo).as_posix():
+                        freshness = "anchor_changed"
+                except ContextError:
+                    freshness = "anchor_changed"
+            if freshness == "anchor_changed":
+                warnings.append("anchor_changed")
+        result.update({"freshness": freshness, "warnings": warnings})
+    else:
+        result["use_as"] = "investigate_or_support"
+        result["state"] = "history" if "/retired/" in result["path"] else "current"
+    return result
+
+
+def snapshot_load(repo: pathlib.Path, identifier: str, sections: Sequence[str] = ()) -> dict[str, Any]:
+    return _read_artifact(repo, identifier, "snapshot", sections)
+
+
+def snapshot_list(repo: pathlib.Path, limit: int = 8) -> dict[str, Any]:
+    return recall_repository(repo, areas=["snapshot"], limit=limit)
+
+
+def snapshot_search(repo: pathlib.Path, query: str, limit: int = 8) -> dict[str, Any]:
+    return recall_repository(repo, query=query, areas=["snapshot"], limit=limit)
+
+
+def build_snapshot_discard_bundle(repo: pathlib.Path, identifier: str) -> dict[str, Any]:
+    path, _ = _artifact_in_area(repo, identifier, "snapshot", current_only=True)
+    del path
+    return build_discard_bundle(repo, identifier)
 
 
 def build_init_bundle(repo: pathlib.Path) -> dict[str, Any]:
@@ -1028,8 +1652,11 @@ def _virtual_area_index(index: AreaIndex, effects: Sequence[dict[str, Any]], dra
             row = {
                 "id": document.frontmatter["id"], "path": draft["path"], "title": document.frontmatter["title"],
                 "summary": document.frontmatter["summary"], "state": "history" if "/retired/" in draft["path"] else "current",
-                "created_at": document.frontmatter["created_at"], "terms": _terms(document.frontmatter),
+                "created_at": document.frontmatter["created_at"],
             }
+            if "updated_at" in document.frontmatter:
+                row["updated_at"] = document.frontmatter["updated_at"]
+            row["terms"] = _terms(document.frontmatter)
             del path, fake_repo
             for key in metadata.get("projection_fields", []):
                 if key in document.frontmatter:
@@ -1071,6 +1698,11 @@ def finalize_owner_result(repo: pathlib.Path, owner_result: dict[str, Any], owne
     owner_content = canonical_json(owner_result)
     owner_digest = sha256_bytes(owner_content.encode("utf-8"))
     materials.append(_material(owner_material_id, None, owner_content))
+    vacated_paths = {
+        operation["from_path"]
+        for operation in owner_result["proposed_plan"]["operations"]
+        if operation.get("op") == "move"
+    }
     for proposed in owner_result["proposed_plan"]["operations"]:
         effect_id = proposed["effect_id"]
         effect = effects[effect_id]
@@ -1095,7 +1727,7 @@ def finalize_owner_result(repo: pathlib.Path, owner_result: dict[str, Any], owne
             if path != draft["path"]:
                 raise ContextError("plan_preview_mismatch", "create path and draft differ", exit_code=EXIT_CONFLICT)
             current = repo / path
-            if current.exists():
+            if current.exists() and path not in vacated_paths:
                 raise ContextError("path_exists", "create target already exists", {"path": path}, EXIT_CONFLICT)
             operations.append({"op": "file_create", "effect_id": effect_id, "role": "artifact", "area": area, "path": path, "before_sha256": None, "after_sha256": after, "material": material_id})
         elif operation == "replace":
@@ -1231,6 +1863,261 @@ def build_discard_bundle(repo: pathlib.Path, identifier: str) -> dict[str, Any]:
     return finalize_owner_result(repo, result)
 
 
+def observation_read(repo: pathlib.Path, identifier: str, sections: Sequence[str] = ()) -> dict[str, Any]:
+    return _read_artifact(repo, identifier, "observation", sections)
+
+
+def observation_search(repo: pathlib.Path, query: str = "", *, include_history: bool = False, limit: int = 8) -> dict[str, Any]:
+    return recall_repository(repo, query=query, areas=["observation"], include_history=include_history, limit=limit)
+
+
+def build_observation_annotate_bundle(
+    repo: pathlib.Path,
+    identifier: str,
+    *,
+    title: str | None = None,
+    summary: str | None = None,
+    tags: Sequence[str] | None = None,
+    search_terms: Sequence[str] | None = None,
+    source_refs: Sequence[str] | None = None,
+    related: Sequence[str] | None = None,
+    clear: Sequence[str] = (),
+) -> dict[str, Any]:
+    path, document = _artifact_in_area(repo, identifier, "observation", current_only=True)
+    clear_set = set(clear)
+    if clear_set - {"tags", "search_terms", "source_refs", "related"}:
+        raise ContextError("usage_invalid", "observation clear target is invalid")
+    updates = _validate_update_values(title=title, summary=summary, tags=tags, search_terms=search_terms, source_refs=source_refs)
+    if related is not None:
+        updates["related"] = _string_list(list(related), "related", maximum=12, item_maximum=36)
+        for target in updates["related"]:
+            _require_context_id(target, "related")
+    frontmatter = dict(document.frontmatter)
+    for field in clear_set - {"related"}:
+        frontmatter.pop(field, None)
+    relations = dict(frontmatter.get("relations", {}))
+    if "related" in clear_set:
+        relations.pop("related", None)
+    if "related" in updates:
+        if updates["related"]:
+            relations["related"] = updates.pop("related")
+        else:
+            relations.pop("related", None)
+    if relations:
+        frontmatter["relations"] = relations
+    else:
+        frontmatter.pop("relations", None)
+    frontmatter.update(updates)
+    after = render_document(frontmatter, document.sections)
+    if file_bytes(after) == path.read_bytes():
+        return {"noop": True, "applied": False, "changed_paths": []}
+    relative = path.relative_to(repo).as_posix()
+    requested = {"metadata": updates, "clear": sorted(clear_set), "related": relations.get("related")}
+    request = _mutation_request("observation_annotate", "observation", requested, [(path, document)], repo)
+    effect_id = "effect_annotate_observation"
+    result = _mutation_result(
+        "observation",
+        "observation_annotate",
+        request,
+        [{"effect_id": effect_id, "path": relative, "content": after, "semantic_projection": _semantic_projection("observation", Document(frontmatter, document.sections))}],
+        [{"effect_id": effect_id, "action": "replace", "area": "observation", "id": identifier, "state": "current"}],
+        [{"op": "replace", "effect_id": effect_id, "area": "observation", "id": identifier, "path": relative}],
+    )
+    return finalize_owner_result(repo, result)
+
+
+def build_observation_reverify_bundle(repo: pathlib.Path, identifier: str, verified_at: str, evidence_ref: str) -> dict[str, Any]:
+    path, document = _artifact_in_area(repo, identifier, "observation", current_only=True)
+    _validate_timestamp(verified_at, "verified_at")
+    if datetime.datetime.fromisoformat(verified_at) < datetime.datetime.fromisoformat(document.frontmatter["created_at"]):
+        raise ContextError("clock_invalid", "verified_at cannot precede created_at", exit_code=EXIT_CONFLICT)
+    if not _substantive(evidence_ref) or "\n" in evidence_ref or len(evidence_ref) > 500:
+        raise ContextError("schema_invalid", "evidence_ref is invalid")
+    frontmatter = dict(document.frontmatter)
+    refs = list(frontmatter.get("source_refs", []))
+    if evidence_ref not in refs:
+        refs.append(evidence_ref)
+    frontmatter["source_refs"] = refs
+    frontmatter["verified_at"] = verified_at
+    after = render_document(frontmatter, document.sections)
+    if file_bytes(after) == path.read_bytes():
+        return {"noop": True, "applied": False, "changed_paths": []}
+    relative = path.relative_to(repo).as_posix()
+    request = _mutation_request(
+        "observation_reverify",
+        "observation",
+        {"verified_at": verified_at, "evidence_ref": evidence_ref},
+        [(path, document)],
+        repo,
+    )
+    effect_id = "effect_reverify_observation"
+    result = _mutation_result(
+        "observation",
+        "observation_reverify",
+        request,
+        [{"effect_id": effect_id, "path": relative, "content": after, "semantic_projection": _semantic_projection("observation", Document(frontmatter, document.sections))}],
+        [{"effect_id": effect_id, "action": "replace", "area": "observation", "id": identifier, "state": "current"}],
+        [{"op": "replace", "effect_id": effect_id, "area": "observation", "id": identifier, "path": relative}],
+    )
+    return finalize_owner_result(repo, result)
+
+
+def _history_path(path: pathlib.Path, identifier: str, repo: pathlib.Path) -> str:
+    stem = path.stem
+    return f"context/observation/retired/{stem}--{identifier[4:16]}.md"
+
+
+def build_observation_invalidate_bundle(repo: pathlib.Path, identifier: str, reason: str, *, now: str | None = None) -> dict[str, Any]:
+    path, document = _artifact_in_area(repo, identifier, "observation", current_only=True)
+    if not _substantive(reason) or "\n" in reason or len(reason) > 500:
+        raise ContextError("schema_invalid", "invalidation reason must be one substantive line")
+    retired_at = _timestamp(now)
+    frontmatter = dict(document.frontmatter)
+    frontmatter.update({"retired_at": retired_at, "retired_reason": "invalidated", "retirement_note": reason.strip()})
+    destination = _history_path(path, identifier, repo)
+    if (repo / destination).exists():
+        raise ContextError("history_path_collision", "deterministic history path already exists", {"path": destination}, EXIT_INTEGRITY)
+    after = render_document(frontmatter, document.sections)
+    source = path.relative_to(repo).as_posix()
+    request = _mutation_request("observation_invalidate", "observation", {"reason": reason.strip(), "retired_at": retired_at}, [(path, document)], repo)
+    effect_id = "effect_invalidate_observation"
+    result = _mutation_result(
+        "observation",
+        "observation_invalidate",
+        request,
+        [{"effect_id": effect_id, "path": destination, "content": after, "semantic_projection": _semantic_projection("observation", Document(frontmatter, document.sections))}],
+        [{"effect_id": effect_id, "action": "retire", "area": "observation", "id": identifier, "state": "history", "reason": "invalidated"}],
+        [{"op": "move", "effect_id": effect_id, "area": "observation", "id": identifier, "from_path": source, "to_path": destination}],
+    )
+    return finalize_owner_result(repo, result)
+
+
+def prepare_lifecycle_input(repo: pathlib.Path, transition: str, predecessor_id: str, successor_result: dict[str, Any]) -> dict[str, Any]:
+    if transition != "observation_supersede":
+        raise ContextError("lifecycle_transition_invalid", "unsupported lifecycle transition", {"transition": transition}, EXIT_CONFLICT)
+    validate_owner_result(successor_result)
+    if (
+        successor_result.get("result_type") != "claim"
+        or successor_result.get("owner") != "context-core"
+        or successor_result.get("target_kind") != "observation"
+        or len(successor_result.get("artifact_drafts", [])) != 1
+    ):
+        raise ContextError("successor_result_invalid", "observation successor must be one complete claim result", exit_code=EXIT_CONFLICT)
+    predecessor_path, predecessor = _artifact_in_area(repo, predecessor_id, "observation", current_only=True)
+    successor_draft = successor_result["artifact_drafts"][0]
+    successor_document = parse_document(successor_draft["content"])
+    projection = successor_draft["semantic_projection"]
+    claim_input = next(item for item in successor_result["semantic_inputs"] if item["operation"] == "claim")
+    value = {
+        "schema": "context-lifecycle-semantic-input/v1",
+        "operation": "same_claim",
+        "transition": transition,
+        "owner": "context-core",
+        "predecessor": {
+            "id": predecessor_id,
+            "kind": "observation",
+            "path": predecessor_path.relative_to(repo).as_posix(),
+            "primary_claim": predecessor.sections["관찰"],
+            "claim_fingerprint": predecessor.frontmatter["claim_fingerprint"],
+            "supporting_context": _semantic_projection("observation", predecessor)["supporting_context"],
+        },
+        "successor": {
+            "id": successor_document.frontmatter["id"],
+            "kind": "observation",
+            "path": successor_draft["path"],
+            "primary_claim": projection["primary_claim"],
+            "claim_fingerprint": projection["claim_fingerprint"],
+            "supporting_context": projection["supporting_context"],
+        },
+        "source_candidate_digest": claim_input["input_digest"],
+    }
+    if len(canonical_json(value).encode("utf-8")) > 4 * 1024:
+        raise ContextError("lifecycle_input_too_large", "lifecycle semantic input exceeds 4 KiB", exit_code=EXIT_CONFLICT)
+    return value
+
+
+def build_observation_supersede_bundle(
+    repo: pathlib.Path,
+    predecessor_id: str,
+    successor_result: dict[str, Any],
+    lifecycle_input: dict[str, Any],
+    lifecycle_attestation: dict[str, Any],
+    *,
+    now: str | None = None,
+) -> dict[str, Any]:
+    expected_input = prepare_lifecycle_input(repo, "observation_supersede", predecessor_id, successor_result)
+    if canonical_json(lifecycle_input) != canonical_json(expected_input):
+        raise ContextError("lifecycle_input_mismatch", "lifecycle input is not the exact prepared current input", exit_code=EXIT_CONFLICT)
+    _validate_attestation(lifecycle_attestation, "same_claim", lifecycle_input, {"same_semantic_claim"})
+    predecessor_path, predecessor = _artifact_in_area(repo, predecessor_id, "observation", current_only=True)
+    successor_draft = successor_result["artifact_drafts"][0]
+    successor_document = parse_document(successor_draft["content"])
+    successor_id = successor_document.frontmatter["id"]
+    if successor_id == predecessor_id:
+        raise ContextError("successor_result_invalid", "successor id must differ from predecessor", exit_code=EXIT_CONFLICT)
+    try:
+        _find_artifact(repo, successor_id)
+    except ContextError as error:
+        if error.code != "artifact_not_found":
+            raise
+    else:
+        raise ContextError("duplicate_id", "successor id already exists", {"id": successor_id}, EXIT_CONFLICT)
+    destination = successor_draft["path"]
+    existing_destination = repo / destination
+    if existing_destination.exists() and existing_destination != predecessor_path:
+        raise ContextError("path_exists", "successor path already exists", {"path": destination}, EXIT_CONFLICT)
+    retired_at = _timestamp(now)
+    predecessor_frontmatter = dict(predecessor.frontmatter)
+    predecessor_frontmatter.update({"superseded_by": successor_id, "retired_at": retired_at, "retired_reason": "superseded"})
+    predecessor_history_path = _history_path(predecessor_path, predecessor_id, repo)
+    if (repo / predecessor_history_path).exists():
+        raise ContextError("history_path_collision", "deterministic history path already exists", {"path": predecessor_history_path}, EXIT_INTEGRITY)
+    successor_frontmatter = dict(successor_document.frontmatter)
+    successor_frontmatter["supersedes"] = list(dict.fromkeys([*successor_frontmatter.get("supersedes", []), predecessor_id]))
+    predecessor_after = render_document(predecessor_frontmatter, predecessor.sections)
+    successor_after = render_document(successor_frontmatter, successor_document.sections)
+    successor_result_digest = canonical_digest(successor_result)
+    request = _mutation_request(
+        "observation_supersede",
+        "observation",
+        {"predecessor": predecessor_id, "successor": successor_id, "retired_at": retired_at},
+        [(predecessor_path, predecessor)],
+        repo,
+        successor_owner_result_digest=successor_result_digest,
+    )
+    retire_effect = "effect_retire_observation"
+    create_effect = "effect_create_observation"
+    source = predecessor_path.relative_to(repo).as_posix()
+    claim_input = next(item for item in successor_result["semantic_inputs"] if item["operation"] == "claim")
+    claim_attestation = next(item for item in successor_result["semantic_attestations"] if item["operation"] == "claim")
+    lifecycle_semantic_input = {"operation": "same_claim", "input_schema": lifecycle_input["schema"], "input_digest": canonical_digest(lifecycle_input), "value": lifecycle_input}
+    result = _mutation_result(
+        "observation",
+        "observation_supersede",
+        request,
+        [
+            {"effect_id": retire_effect, "path": predecessor_history_path, "content": predecessor_after, "semantic_projection": _semantic_projection("observation", Document(predecessor_frontmatter, predecessor.sections))},
+            {"effect_id": create_effect, "path": destination, "content": successor_after, "semantic_projection": _semantic_projection("observation", Document(successor_frontmatter, successor_document.sections))},
+        ],
+        [
+            {"effect_id": retire_effect, "action": "retire", "area": "observation", "id": predecessor_id, "state": "history", "reason": "superseded", "successor": successor_id},
+            {"effect_id": create_effect, "action": "create", "area": "observation", "id": successor_id, "state": "current", "predecessor": predecessor_id},
+        ],
+        [
+            {"op": "move", "effect_id": retire_effect, "area": "observation", "id": predecessor_id, "from_path": source, "to_path": predecessor_history_path},
+            {"op": "create", "effect_id": create_effect, "area": "observation", "path": destination},
+        ],
+        extra_inputs=[claim_input, lifecycle_semantic_input],
+        attestations=[claim_attestation, lifecycle_attestation],
+    )
+    return finalize_owner_result(repo, result)
+
+
+def build_observation_discard_bundle(repo: pathlib.Path, identifier: str) -> dict[str, Any]:
+    _artifact_in_area(repo, identifier, "observation")
+    return build_discard_bundle(repo, identifier)
+
+
 def build_index_fix_bundle(repo: pathlib.Path) -> dict[str, Any]:
     integrity = refresh_repository(repo, strict=True)
     if integrity["ok"]:
@@ -1313,7 +2200,59 @@ def _validate_bundle(repo: pathlib.Path, bundle: dict[str, Any], approved_digest
         except json.JSONDecodeError as error:
             raise ContextError("owner_result_invalid", "owner result material is not JSON", exit_code=EXIT_CONFLICT) from error
         validate_owner_result(owner_result)
+        if canonical_json(owner_result) != owner_material["content"]:
+            raise ContextError("owner_result_invalid", "owner result material is not canonical JSON", exit_code=EXIT_CONFLICT)
+        if (
+            owner_result["transition"] != plan.get("transition")
+            or owner_result["owner"] != plan.get("owner")
+            or owner_result["capability_digest"] != plan.get("capability_digest")
+        ):
+            raise ContextError("plan_preview_mismatch", "final plan is not bound to its owner result", exit_code=EXIT_CONFLICT)
         _area_for_owner(repo, plan["owner_descriptor"]["kind"], plan["owner"])
+        request_inputs = [item for item in owner_result["semantic_inputs"] if item.get("operation") == "mutation_request"]
+        if request_inputs:
+            request = request_inputs[0]["value"]
+            for target in request["targets"]:
+                matching_operations = [
+                    operation
+                    for operation in non_index
+                    if operation.get("from_path", operation.get("path")) == target["path"]
+                    and operation.get("id") == target["id"]
+                    and operation.get("before_sha256") == target["sha256"]
+                ]
+                if len(matching_operations) != 1:
+                    raise ContextError("plan_preview_mismatch", "mutation target is not exact in the physical plan", {"path": target["path"]}, EXIT_CONFLICT)
+        if owner_result["transition"] == "observation_supersede":
+            inputs = {item["operation"]: item["value"] for item in owner_result["semantic_inputs"]}
+            lifecycle = inputs["same_claim"]
+            request = inputs["mutation_request"]
+            drafts = {draft["effect_id"]: draft for draft in owner_result["artifact_drafts"]}
+            effects = {effect["effect_id"]: effect for effect in owner_result["effects"]}
+            create_effects = [effect for effect in effects.values() if effect.get("action") == "create"]
+            retire_effects = [effect for effect in effects.values() if effect.get("action") == "retire"]
+            if len(create_effects) != 1 or len(retire_effects) != 1:
+                raise ContextError("plan_preview_mismatch", "observation supersede must contain one create and one retire", exit_code=EXIT_CONFLICT)
+            created = parse_document(drafts[create_effects[0]["effect_id"]]["content"])
+            retired = parse_document(drafts[retire_effects[0]["effect_id"]]["content"])
+            successor_id = created.frontmatter["id"]
+            predecessor_id = retired.frontmatter["id"]
+            predecessor_target = request["targets"][0] if len(request["targets"]) == 1 else {}
+            if (
+                lifecycle["source_candidate_digest"] != next(item["input_digest"] for item in owner_result["semantic_inputs"] if item["operation"] == "claim")
+                or lifecycle["predecessor"]["id"] != predecessor_id
+                or lifecycle["predecessor"]["path"] != predecessor_target.get("path")
+                or lifecycle["predecessor"]["primary_claim"] != retired.sections["관찰"]
+                or lifecycle["predecessor"]["claim_fingerprint"] != retired.frontmatter["claim_fingerprint"]
+                or lifecycle["successor"]["id"] != successor_id
+                or lifecycle["successor"]["path"] != drafts[create_effects[0]["effect_id"]]["path"]
+                or lifecycle["successor"]["primary_claim"] != created.sections["관찰"]
+                or lifecycle["successor"]["claim_fingerprint"] != created.frontmatter["claim_fingerprint"]
+                or request["requested_changes"].get("predecessor") != predecessor_id
+                or request["requested_changes"].get("successor") != successor_id
+                or retired.frontmatter.get("superseded_by") != successor_id
+                or predecessor_id not in created.frontmatter.get("supersedes", [])
+            ):
+                raise ContextError("lifecycle_input_mismatch", "supersede lifecycle inputs and reciprocal artifact edges differ", exit_code=EXIT_CONFLICT)
     elif plan.get("source_type") != "core_control":
         raise ContextError("bundle_invalid", "source_type is unsupported", exit_code=EXIT_CONFLICT)
     return plan, by_id
@@ -1374,6 +2313,8 @@ def _apply_file_operation(repo: pathlib.Path, operation: dict[str, Any], materia
             return
         if current != operation["before_sha256"]:
             raise ContextError("precondition_changed", "file precondition changed", {"path": operation["path"]}, EXIT_CONFLICT)
+        if op == "file_replace" and parse_document(path.read_text(encoding="utf-8")).frontmatter["id"] != operation.get("id"):
+            raise ContextError("precondition_changed", "replace target id changed", {"path": operation["path"]}, EXIT_CONFLICT)
         _atomic_write(path, materials[operation["material"]]["content"])
         changed.append(operation["path"])
     elif op == "file_move":
@@ -1386,6 +2327,8 @@ def _apply_file_operation(repo: pathlib.Path, operation: dict[str, Any], materia
         material = operation.get("material")
         if source_digest is None and destination_digest == after:
             return
+        if source_digest == before and parse_document(source.read_text(encoding="utf-8")).frontmatter["id"] != operation.get("id"):
+            raise ContextError("precondition_changed", "move source id changed", {"path": operation["from_path"]}, EXIT_CONFLICT)
         if material is None:
             if source_digest != before or destination_digest is not None:
                 raise ContextError("precondition_changed", "rename state is invalid", exit_code=EXIT_CONFLICT)
@@ -1405,7 +2348,9 @@ def _apply_file_operation(repo: pathlib.Path, operation: dict[str, Any], materia
         current = _digest_or_none(path)
         if current is None:
             return
-        if current != operation["before_sha256"] or operation.get("inbound_refs"):
+        inbound = _inbound_refs(repo, operation["id"], path)
+        target_id = parse_document(path.read_text(encoding="utf-8")).frontmatter["id"] if current == operation["before_sha256"] else None
+        if current != operation["before_sha256"] or target_id != operation["id"] or operation.get("inbound_refs") or inbound:
             raise ContextError("precondition_changed", "delete precondition changed", exit_code=EXIT_CONFLICT)
         os.unlink(path)
         changed.append(operation["path"])
@@ -1526,6 +2471,21 @@ def refresh_repository(repo: pathlib.Path, *, strict: bool = False) -> dict[str,
         for target in refs:
             if isinstance(target, str) and target.startswith("ctx_") and target not in documents:
                 issues.append({"code": "broken_internal_ref", "path": path, "id": identifier, "target": target})
+        retired = "/retired/" in path
+        reason = frontmatter.get("retired_reason")
+        if retired and reason == "superseded":
+            successor_id = frontmatter.get("superseded_by")
+            successor = documents.get(successor_id)
+            if successor is not None and identifier not in successor[1].get("supersedes", []):
+                issues.append({"code": "supersede_edge_missing", "path": path, "id": identifier, "target": successor_id})
+        if retired and reason == "invalidated" and "superseded_by" in frontmatter:
+            issues.append({"code": "lifecycle_invalid", "path": path, "id": identifier})
+        if not retired and ("retired_at" in frontmatter or reason is not None or "superseded_by" in frontmatter):
+            issues.append({"code": "lifecycle_invalid", "path": path, "id": identifier})
+        for predecessor_id in frontmatter.get("supersedes", []):
+            predecessor = documents.get(predecessor_id)
+            if predecessor is not None and predecessor[1].get("superseded_by") != identifier:
+                issues.append({"code": "supersede_edge_missing", "path": path, "id": identifier, "target": predecessor_id})
     current_slots: dict[tuple[str, str], str] = {}
     for identifier, (path, frontmatter) in documents.items():
         if frontmatter.get("schema") == "context-decision/v1" and "/retired/" not in path:
@@ -1554,7 +2514,11 @@ def schema_result() -> dict[str, Any]:
         "id": "ctx_<lowercase-uuidv4-hex>", "json_success": {"ok": True, "result": {}},
         "json_error": {"ok": False, "error": {"code": "string", "message": "string", "details": {}}},
         "exit_codes": {"usage_schema_filename": 2, "not_found": 3, "ambiguous": 4, "conflict": 5, "integrity_index": 6},
-        "commands": ["schema", "capabilities", "doctor", "init", "area register", "transaction preview", "transaction apply", "recall", "rename", "discard", "refresh"],
+        "commands": [
+            "schema", "capabilities", "doctor", "init", "draft", "lifecycle prepare", "area register",
+            "transaction preview", "transaction apply", "recall", "snapshot save/update/list/search/load/discard",
+            "observation capture/read/search/annotate/reverify/invalidate/supersede/discard", "rename", "discard", "refresh",
+        ],
     }
 
 
@@ -1592,12 +2556,63 @@ def _load_text_argument(value: str) -> str:
     return pathlib.Path(value[1:]).read_text(encoding="utf-8")
 
 
+def _load_body_argument(value: str) -> str:
+    if value.startswith("@@"):
+        return value[1:]
+    if value == "@-":
+        return sys.stdin.read()
+    if value.startswith("@"):
+        return pathlib.Path(value[1:]).read_text(encoding="utf-8")
+    return value
+
+
+def _direct_attestation(value: dict[str, Any], candidate: dict[str, Any], kind: str) -> dict[str, Any]:
+    normalized = dict(value)
+    normalized.setdefault("schema", "context-semantic-attestation/v1")
+    normalized.setdefault("operation", "claim")
+    normalized.setdefault("input_schema", candidate["schema"])
+    normalized.setdefault("input_digest", canonical_digest(candidate))
+    _validate_attestation(normalized, "claim", candidate, set(builtin_capability(kind)["claim_assertions"]))
+    return normalized
+
+
+def _section_arguments(args: argparse.Namespace, mapping: Sequence[tuple[str, str]]) -> dict[str, str]:
+    output: dict[str, str] = {}
+    for argument, section in mapping:
+        value = getattr(args, argument, None)
+        if value is not None:
+            output[section] = _load_body_argument(value)
+    return output
+
+
+def _body_to_items(value: str) -> list[str]:
+    body = _load_body_argument(value).strip()
+    if not body:
+        return []
+    lines = [line.strip() for line in body.splitlines() if line.strip()]
+    if all(line.startswith("- ") for line in lines):
+        return [line[2:].strip() for line in lines]
+    return [body]
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="context_cli.py")
     sub = parser.add_subparsers(dest="command", required=True)
     for name in ("schema", "capabilities", "doctor", "init"):
         command = sub.add_parser(name)
         command.add_argument("--json", action="store_true")
+    draft = sub.add_parser("draft")
+    draft.add_argument("--kind", choices=BUILTIN_AREAS, required=True)
+    draft.add_argument("--candidate", required=True)
+    draft.add_argument("--attestation", required=True)
+    draft.add_argument("--json", action="store_true")
+    lifecycle = sub.add_parser("lifecycle")
+    lifecycle_sub = lifecycle.add_subparsers(dest="lifecycle_command", required=True)
+    prepare = lifecycle_sub.add_parser("prepare")
+    prepare.add_argument("--transition", choices=("observation_supersede",), required=True)
+    prepare.add_argument("--predecessor", required=True)
+    prepare.add_argument("--successor-result", required=True)
+    prepare.add_argument("--json", action="store_true")
     area = sub.add_parser("area")
     area_sub = area.add_subparsers(dest="area_command", required=True)
     register = area_sub.add_parser("register")
@@ -1634,6 +2649,108 @@ def build_parser() -> argparse.ArgumentParser:
     discard = sub.add_parser("discard")
     discard.add_argument("--id", required=True)
     discard.add_argument("--json", action="store_true")
+    snapshot = sub.add_parser("snapshot")
+    snapshot_sub = snapshot.add_subparsers(dest="snapshot_command", required=True)
+    snapshot_save = snapshot_sub.add_parser("save")
+    snapshot_save.add_argument("--title", required=True)
+    snapshot_save.add_argument("--summary", required=True)
+    snapshot_save.add_argument("--filename")
+    snapshot_save.add_argument("--captured-from", choices=("conversation", "workspace", "manual", "import"), required=True)
+    snapshot_save.add_argument("--attestation", required=True)
+    snapshot_save.add_argument("--sec-context", required=True)
+    snapshot_save.add_argument("--sec-open-items", required=True)
+    snapshot_save.add_argument("--sec-next-steps", required=True)
+    snapshot_save.add_argument("--sec-decided")
+    snapshot_save.add_argument("--sec-refs")
+    snapshot_save.add_argument("--sec-candidates")
+    snapshot_save.add_argument("--anchor", action="append", default=[])
+    snapshot_save.add_argument("--source-ref", action="append", default=[])
+    snapshot_save.add_argument("--tag", action="append", default=[])
+    snapshot_save.add_argument("--search-term", action="append", default=[])
+    snapshot_save.add_argument("--json", action="store_true")
+    snapshot_update = snapshot_sub.add_parser("update")
+    snapshot_update.add_argument("--id", required=True)
+    snapshot_update.add_argument("--title")
+    snapshot_update.add_argument("--summary")
+    snapshot_update.add_argument("--merge", action="store_true")
+    snapshot_update.add_argument("--sec-context")
+    snapshot_update.add_argument("--sec-open-items")
+    snapshot_update.add_argument("--sec-next-steps")
+    snapshot_update.add_argument("--sec-decided")
+    snapshot_update.add_argument("--sec-refs")
+    snapshot_update.add_argument("--sec-candidates")
+    snapshot_update.add_argument("--anchor", action="append")
+    snapshot_update.add_argument("--source-ref", action="append")
+    snapshot_update.add_argument("--tag", action="append")
+    snapshot_update.add_argument("--search-term", action="append")
+    snapshot_update.add_argument("--clear", action="append", default=[])
+    snapshot_update.add_argument("--json", action="store_true")
+    for name in ("list", "search", "load", "discard"):
+        command = snapshot_sub.add_parser(name)
+        if name in {"load", "discard"}:
+            command.add_argument("--id", required=True)
+        if name == "search":
+            command.add_argument("--query", required=True)
+        if name in {"list", "search"}:
+            command.add_argument("--limit", type=int, default=8)
+        if name == "load":
+            command.add_argument("--section", action="append", default=[])
+        command.add_argument("--json", action="store_true")
+    observation = sub.add_parser("observation")
+    observation_sub = observation.add_subparsers(dest="observation_command", required=True)
+    observation_capture = observation_sub.add_parser("capture")
+    observation_capture.add_argument("--title", required=True)
+    observation_capture.add_argument("--summary", required=True)
+    observation_capture.add_argument("--filename")
+    observation_capture.add_argument("--captured-from", choices=("conversation", "workspace", "manual", "import"), required=True)
+    observation_capture.add_argument("--attestation", required=True)
+    observation_capture.add_argument("--sec-observation", required=True)
+    observation_capture.add_argument("--sec-evidence", required=True)
+    observation_capture.add_argument("--sec-impact")
+    observation_capture.add_argument("--sec-handling")
+    observation_capture.add_argument("--sec-followup")
+    observation_capture.add_argument("--kind-hint", choices=("decision",))
+    observation_capture.add_argument("--source-ref", action="append", default=[])
+    observation_capture.add_argument("--tag", action="append", default=[])
+    observation_capture.add_argument("--search-term", action="append", default=[])
+    observation_capture.add_argument("--json", action="store_true")
+    observation_read = observation_sub.add_parser("read")
+    observation_read.add_argument("--id", required=True)
+    observation_read.add_argument("--section", action="append", default=[])
+    observation_read.add_argument("--json", action="store_true")
+    observation_search_parser = observation_sub.add_parser("search")
+    observation_search_parser.add_argument("--query", default="")
+    observation_search_parser.add_argument("--include-history", action="store_true")
+    observation_search_parser.add_argument("--limit", type=int, default=8)
+    observation_search_parser.add_argument("--json", action="store_true")
+    annotate = observation_sub.add_parser("annotate")
+    annotate.add_argument("--id", required=True)
+    annotate.add_argument("--title")
+    annotate.add_argument("--summary")
+    annotate.add_argument("--tag", action="append")
+    annotate.add_argument("--search-term", action="append")
+    annotate.add_argument("--source-ref", action="append")
+    annotate.add_argument("--related", action="append")
+    annotate.add_argument("--clear", action="append", default=[])
+    annotate.add_argument("--json", action="store_true")
+    reverify = observation_sub.add_parser("reverify")
+    reverify.add_argument("--id", required=True)
+    reverify.add_argument("--verified-at", required=True)
+    reverify.add_argument("--evidence-ref", required=True)
+    reverify.add_argument("--json", action="store_true")
+    invalidate = observation_sub.add_parser("invalidate")
+    invalidate.add_argument("--id", required=True)
+    invalidate.add_argument("--reason", required=True)
+    invalidate.add_argument("--json", action="store_true")
+    supersede = observation_sub.add_parser("supersede")
+    supersede.add_argument("--id", required=True)
+    supersede.add_argument("--successor-result", required=True)
+    supersede.add_argument("--lifecycle-input", required=True)
+    supersede.add_argument("--lifecycle-attestation", required=True)
+    supersede.add_argument("--json", action="store_true")
+    observation_discard = observation_sub.add_parser("discard")
+    observation_discard.add_argument("--id", required=True)
+    observation_discard.add_argument("--json", action="store_true")
     refresh = sub.add_parser("refresh")
     refresh.add_argument("--level", choices=("integrity", "hygiene", "all"), default="integrity")
     refresh.add_argument("--strict", action="store_true")
@@ -1652,6 +2769,17 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
         return doctor_repository(repo)
     if args.command == "init":
         return build_init_bundle(repo)
+    if args.command == "draft":
+        candidate = _load_json_argument(args.candidate, allow_stdin=True)
+        if candidate.get("requested_kind") != args.kind:
+            raise ContextError("candidate_invalid", "draft kind differs from embedded candidate")
+        return draft_owner_result(
+            candidate,
+            _load_json_argument(args.attestation),
+        )
+    if args.command == "lifecycle" and args.lifecycle_command == "prepare":
+        value = prepare_lifecycle_input(repo, args.transition, args.predecessor, _load_json_argument(args.successor_result, allow_stdin=True))
+        return {"input": value, "input_digest": canonical_digest(value), "applied": False}
     if args.command == "area" and args.area_command == "register":
         return build_area_register_bundle(repo, _load_json_argument(args.descriptor, allow_stdin=True), _load_text_argument(args.index_seed))
     if args.command == "transaction" and args.transaction_command == "preview":
@@ -1672,6 +2800,112 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
         return build_rename_bundle(repo, args.id, args.filename)
     if args.command == "discard":
         return build_discard_bundle(repo, args.id)
+    if args.command == "snapshot":
+        if args.snapshot_command == "save":
+            owner_inputs: dict[str, Any] = {
+                "current_context": _load_body_argument(args.sec_context),
+                "open_items": _body_to_items(args.sec_open_items),
+                "next_steps": _body_to_items(args.sec_next_steps),
+            }
+            for argument, field in (("sec_decided", "decided"), ("sec_refs", "refs"), ("sec_candidates", "capture_candidates")):
+                value = getattr(args, argument)
+                if value is not None:
+                    owner_inputs[field] = _body_to_items(value)
+            if args.anchor:
+                owner_inputs["anchors"] = args.anchor
+            candidate = direct_candidate(
+                "snapshot",
+                title=args.title,
+                summary=args.summary,
+                captured_from=args.captured_from,
+                owner_inputs=owner_inputs,
+                source_refs=args.source_ref,
+                tags=args.tag,
+                search_terms=args.search_term,
+            )
+            attestation = _direct_attestation(_load_json_argument(args.attestation), candidate, "snapshot")
+            return build_snapshot_save_bundle(repo, candidate, attestation, filename=args.filename)
+        if args.snapshot_command == "update":
+            sections = _section_arguments(args, (
+                ("sec_context", "현재 맥락"), ("sec_open_items", "열린 항목"), ("sec_next_steps", "다음 단계"),
+                ("sec_decided", "정해진 것"), ("sec_refs", "참조"), ("sec_candidates", "capture 후보"),
+            ))
+            return build_snapshot_update_bundle(
+                repo,
+                args.id,
+                merge=args.merge,
+                sections=sections,
+                title=args.title,
+                summary=args.summary,
+                tags=args.tag,
+                search_terms=args.search_term,
+                source_refs=args.source_ref,
+                anchors=args.anchor,
+                clear=args.clear,
+            )
+        if args.snapshot_command == "list":
+            return snapshot_list(repo, args.limit)
+        if args.snapshot_command == "search":
+            return snapshot_search(repo, args.query, args.limit)
+        if args.snapshot_command == "load":
+            return snapshot_load(repo, args.id, args.section)
+        if args.snapshot_command == "discard":
+            return build_snapshot_discard_bundle(repo, args.id)
+    if args.command == "observation":
+        if args.observation_command == "capture":
+            owner_inputs = {
+                "observation": _load_body_argument(args.sec_observation),
+                "evidence": _body_to_items(args.sec_evidence),
+            }
+            if args.sec_impact is not None:
+                owner_inputs["impact"] = _load_body_argument(args.sec_impact)
+            if args.sec_handling is not None:
+                owner_inputs["current_handling"] = _load_body_argument(args.sec_handling)
+            if args.sec_followup is not None:
+                owner_inputs["followup_conditions"] = _body_to_items(args.sec_followup)
+            candidate = direct_candidate(
+                "observation",
+                title=args.title,
+                summary=args.summary,
+                captured_from=args.captured_from,
+                owner_inputs=owner_inputs,
+                source_refs=args.source_ref,
+                tags=args.tag,
+                search_terms=args.search_term,
+                kind_hint=args.kind_hint,
+            )
+            attestation = _direct_attestation(_load_json_argument(args.attestation), candidate, "observation")
+            return build_observation_capture_bundle(repo, candidate, attestation, filename=args.filename)
+        if args.observation_command == "read":
+            return observation_read(repo, args.id, args.section)
+        if args.observation_command == "search":
+            return observation_search(repo, args.query, include_history=args.include_history, limit=args.limit)
+        if args.observation_command == "annotate":
+            return build_observation_annotate_bundle(
+                repo,
+                args.id,
+                title=args.title,
+                summary=args.summary,
+                tags=args.tag,
+                search_terms=args.search_term,
+                source_refs=args.source_ref,
+                related=args.related,
+                clear=args.clear,
+            )
+        if args.observation_command == "reverify":
+            return build_observation_reverify_bundle(repo, args.id, args.verified_at, args.evidence_ref)
+        if args.observation_command == "invalidate":
+            return build_observation_invalidate_bundle(repo, args.id, args.reason)
+        if args.observation_command == "supersede":
+            return build_observation_supersede_bundle(
+                repo,
+                args.id,
+                _load_json_argument(args.successor_result, allow_stdin=True),
+                _load_json_argument(args.lifecycle_input),
+                _load_json_argument(args.lifecycle_attestation),
+            )
+        if args.observation_command == "discard":
+            return build_observation_discard_bundle(repo, args.id)
     if args.command == "refresh":
         if args.fix:
             return build_index_fix_bundle(repo)
