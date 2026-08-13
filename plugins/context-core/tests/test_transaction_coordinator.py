@@ -20,6 +20,13 @@ context_cli = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = context_cli
 SPEC.loader.exec_module(context_cli)
 
+DECISION_CLI_PATH = PLUGIN.parent / "context-decision/skills/decision/scripts/decision_cli.py"
+DECISION_SPEC = importlib.util.spec_from_file_location("decision_cli_transactions", DECISION_CLI_PATH)
+assert DECISION_SPEC and DECISION_SPEC.loader
+decision_cli = importlib.util.module_from_spec(DECISION_SPEC)
+sys.modules[DECISION_SPEC.name] = decision_cli
+DECISION_SPEC.loader.exec_module(decision_cli)
+
 
 def git_repo() -> tempfile.TemporaryDirectory[str]:
     temp = tempfile.TemporaryDirectory()
@@ -98,6 +105,47 @@ def observation_owner_result(identifier: str = "ctx_550e8400e29b41d4a71644665544
         }],
         "effects": [{"effect_id": "effect_create_observation", "action": "create", "area": "observation", "id": identifier, "state": "current"}],
         "proposed_plan": {"schema": "context-owner-plan/v1", "transition": "capture", "operations": [{"op": "create", "effect_id": "effect_create_observation", "area": "observation", "path": "context/observation/Cookie-전달-관찰.md"}]},
+    }
+
+
+def decision_candidate(candidate_id: str, decision: str) -> dict:
+    return {
+        "schema": "context-capture-candidate/v1",
+        "candidate_id": candidate_id,
+        "claim_key": "choice-1",
+        "title": "인증 세션 소유권",
+        "claim": decision,
+        "summary": "OAuth callback과 cookie boundary를 한 경계로 통합한다.",
+        "captured_from": "conversation",
+        "requested_kind": "decision",
+        "specialized_kinds": ["decision"],
+        "fallback_kind": None,
+        "scope_hint": "project/auth",
+        "source_refs": ["conversation:test"],
+        "evidence": ["결정 권한자가 현재 따를 선택으로 확정했다."],
+        "tags": ["auth"],
+        "owner_inputs": {
+            "decision": {
+                "decision": decision,
+                "rationale": "브라우저별 cookie 차이를 서버 경계 안으로 모은다.",
+                "rejected_alternatives": ["SPA token 소유: XSS 노출이 커져 반려"],
+                "decision_key": "session-owner",
+            }
+        },
+    }
+
+
+def decision_attestation(candidate: dict) -> dict:
+    return {
+        "schema": "context-semantic-attestation/v1",
+        "operation": "claim",
+        "input_schema": candidate["schema"],
+        "input_digest": decision_cli.canonical_digest(candidate),
+        "assertions": [
+            {"name": "explicit_choice", "value": True, "evidence_pointers": ["/owner_inputs/decision/decision"]},
+            {"name": "scope_identified", "value": True, "evidence_pointers": ["/scope_hint"]},
+            {"name": "commitment_present", "value": True, "evidence_pointers": ["/evidence/0"]},
+        ],
     }
 
 
@@ -240,6 +288,61 @@ class TransactionCoordinatorTests(unittest.TestCase):
             self.assertTrue(destination.exists())
             repeated = context_cli.apply_bundle(repo, preview["bundle"], preview["approval_digest"])
             self.assertEqual([], repeated["changed_paths"])
+
+    def test_decision_supersede_preview_matches_applied_repository_index(self) -> None:
+        with git_repo() as temp:
+            repo = Path(temp)
+            initialize(repo)
+            decision_init = decision_cli.build_init_plan()
+            registration = context_cli.build_area_register_bundle(
+                repo, decision_init["owner_descriptor"], decision_init["index_seed"]
+            )
+            context_cli.apply_bundle(repo, registration["bundle"], registration["approval_digest"])
+
+            predecessor_candidate = decision_candidate(
+                "cand_550e8400e29b41d4a716446655440000",
+                "인증 세션은 BFF가 소유한다.",
+            )
+            predecessor = decision_cli.build_claim_result(
+                predecessor_candidate,
+                decision_attestation(predecessor_candidate),
+                identifier="ctx_550e8400e29b41d4a716446655440000",
+                created_at="2026-08-13T18:20:00+09:00",
+            )
+            predecessor_validation = decision_cli.validate_batch(repo, predecessor)
+            capture = context_cli.finalize_owner_result(repo, predecessor, predecessor_validation)
+            context_cli.apply_bundle(repo, capture["bundle"], capture["approval_digest"])
+
+            successor_candidate = decision_candidate(
+                "cand_550e8400e29b41d4a716446655440001",
+                "인증 세션은 auth service가 소유한다.",
+            )
+            successor = decision_cli.build_supersede_result(
+                repo,
+                "ctx_550e8400e29b41d4a716446655440000",
+                successor_candidate,
+                decision_attestation(successor_candidate),
+                identifier="ctx_123e4567e89b42d3a456426614174001",
+                retired_at="2026-08-14T09:00:00+09:00",
+            )
+            validation = decision_cli.validate_batch(repo, successor)
+            preview = context_cli.finalize_owner_result(repo, successor, validation)
+            index_operation = next(
+                operation
+                for operation in preview["bundle"]["approval_material"]["plan"]["operations"]
+                if operation["op"] == "index_rebuild"
+            )
+            index_path = "context/decision/decision.index.md"
+
+            context_cli.apply_bundle(repo, preview["bundle"], preview["approval_digest"])
+
+            applied = (repo / index_path).read_text(encoding="utf-8")
+            regenerated = context_cli.render_area_index_from_repository(repo, "decision")
+            self.assertEqual(
+                index_operation["after_sha256"][index_path],
+                context_cli.sha256_bytes(context_cli.file_bytes(applied)),
+            )
+            self.assertEqual(applied, regenerated)
 
     def test_owner_area_allowlist_and_seed_requirements_fail_closed(self) -> None:
         with git_repo() as temp:

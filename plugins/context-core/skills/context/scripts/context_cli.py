@@ -1965,14 +1965,15 @@ def _virtual_area_index(index: AreaIndex, effects: Sequence[dict[str, Any]], dra
                 row["updated_at"] = document.frontmatter["updated_at"]
             row["terms"] = _terms(document.frontmatter)
             del path, fake_repo
-            for key in metadata.get("projection_fields", []):
-                if key in document.frontmatter:
-                    row[key] = document.frontmatter[key]
             if row["state"] == "history":
                 row["retired_at"] = document.frontmatter["retired_at"]
                 row["retired_reason"] = document.frontmatter["retired_reason"]
                 if "superseded_by" in document.frontmatter:
                     row["superseded_by"] = document.frontmatter["superseded_by"]
+            for key in metadata.get("projection_fields", []):
+                if key in document.frontmatter:
+                    row[key] = document.frontmatter[key]
+            if row["state"] == "history":
                 current.pop(identifier, None)
                 history[identifier] = row
             else:
