@@ -24,6 +24,8 @@
 
 모든 실패는 exact source와 manual action을 표시하며 repository와 host configuration bytes를 바꾸지 않습니다. Storage-level `context_root_missing`은 core read surface의 별도 오류이며 addon UX에서는 ready core의 `core_uninitialized`로 분류합니다.
 
+Host는 `schema`/`capabilities`를 제외한 모든 CLI 호출에 `--host`, `--core-inventory @file`, `--core-doctor @file`을 전달합니다. Direct DEC는 `candidate prepare --candidate-id ... --commitment-evidence ...`로 exact candidate를 고정한 뒤 semantic owner가 판독하고, accepted choice만 `capture --candidate @file --attestation @file`로 draft합니다. fact/idea는 `capture --candidate @file --decline-reason ...`로 draft 없이 종료합니다.
+
 ## Product flow
 
 결정이 확정되면 한 번의 grouped proposal에서 `결정`, `취지`, `반려대안`, lifecycle과 digest를 확인합니다. 승인된 final bundle은 `context-core` coordinator만 적용합니다. 이후 brief는 세 핵심 section을 함께 복원하고, 새 결정이 같은 slot을 supersede하면 이전 DEC를 history로 이동해 더는 따르지 않도록 표시합니다.

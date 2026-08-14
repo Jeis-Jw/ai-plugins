@@ -38,6 +38,16 @@ REQUIRED_PLUGIN = {
     "provider": "Jinwuk-Lee (Jeis-Jw)",
     "required_protocol": PROTOCOL,
 }
+OBSERVED_PLUGIN_FIELDS = ("marketplace", "plugin", "source", "enabled", "protocol", "repository_state")
+PREFLIGHT_MESSAGES = {
+    "core_missing": "exact context-core가 현재 host inventory에 없다.",
+    "core_source_mismatch": "동명 core의 marketplace 또는 source가 요구 좌표와 다르다.",
+    "core_disabled": "exact context-core가 현재 scope에서 비활성이다.",
+    "core_incompatible": "exact context-core가 context-common/v1 handshake를 통과하지 못했다.",
+    "core_uninitialized": "exact core는 준비됐지만 repository context root가 없다.",
+    "partial_core_init": "repository context root가 partial 또는 invalid 상태다.",
+    "ready": "exact context-core와 repository가 준비됐다.",
+}
 
 
 class DecisionError(Exception):
@@ -104,6 +114,13 @@ def bytes_digest(value: bytes) -> str:
 
 def new_context_id() -> str:
     return "ctx_" + uuid.uuid4().hex
+
+
+def _valid_candidate_id(value: Any) -> bool:
+    if not isinstance(value, str) or not re.fullmatch(r"cand_[0-9a-f]{32}", value):
+        return False
+    parsed = uuid.UUID(hex=value[5:])
+    return parsed.version == 4 and parsed.variant == uuid.RFC_4122
 
 
 def now_rfc3339() -> str:
@@ -455,7 +472,7 @@ def schema_result() -> dict[str, Any]:
         "physical_write": False,
         "required_plugin": REQUIRED_PLUGIN,
         "core_sections": list(CORE_SECTIONS),
-        "commands": ["init", "schema", "capabilities", "draft", "capture", "search", "read", "brief", "conflicts", "supersede", "import-fallback", "withdraw", "annotate", "revisit", "batch validate", "plan validate"],
+        "commands": ["init", "schema", "capabilities", "candidate prepare", "draft", "capture", "search", "read", "brief", "conflicts", "supersede", "import-fallback", "withdraw", "annotate", "revisit", "batch validate", "plan validate"],
     }
 
 
@@ -478,8 +495,8 @@ def validate_candidate(candidate: dict[str, Any]) -> tuple[str, str, dict[str, A
     if candidate.get("schema") != "context-capture-candidate/v1" or missing:
         raise DecisionError("candidate_invalid", "candidate envelope is incomplete", {"missing": sorted(missing)})
     candidate_id = candidate.get("candidate_id")
-    if not isinstance(candidate_id, str) or not re.fullmatch(r"cand_[0-9a-f]{32}", candidate_id):
-        raise DecisionError("candidate_invalid", "candidate_id is invalid")
+    if not _valid_candidate_id(candidate_id):
+        raise DecisionError("candidate_invalid", "candidate_id must be cand_ plus lowercase UUIDv4 hex")
     if candidate.get("requested_kind") not in {None, "decision"}:
         raise DecisionError("candidate_invalid", "candidate is not routed to the decision owner")
     if "decision" not in candidate.get("specialized_kinds", []):
@@ -506,6 +523,11 @@ def validate_candidate(candidate: dict[str, Any]) -> tuple[str, str, dict[str, A
     _bounded_string(candidate.get("summary"), "summary", 280)
     if candidate.get("captured_from") not in {"conversation", "workspace", "manual", "import"}:
         raise DecisionError("candidate_invalid", "captured_from is invalid")
+    evidence = candidate.get("evidence")
+    if not isinstance(evidence, list) or not 1 <= len(evidence) <= 2:
+        raise DecisionError("candidate_invalid", "decision candidate requires one or two caller-provided evidence items")
+    for item in evidence:
+        _bounded_string(item, "evidence", 240)
     if len(canonical_json(values).encode("utf-8")) > 2 * 1024:
         raise DecisionError("candidate_too_large", "decision owner input exceeds 2 KiB", exit_code=EXIT_CONFLICT)
     if normalized_key(candidate["claim"]) != normalized_key(decision):
@@ -1574,13 +1596,170 @@ def _load_json_argument(value: str, *, allow_stdin: bool = False) -> Any:
             raise DecisionError("usage_invalid", "stdin is not allowed for this argument")
         text = sys.stdin.read()
     elif value.startswith("@"):
-        text = pathlib.Path(value[1:]).read_text(encoding="utf-8")
+        try:
+            text = pathlib.Path(value[1:]).read_text(encoding="utf-8")
+        except OSError as error:
+            raise DecisionError("input_unavailable", "JSON input could not be read", {"path": value[1:]}) from error
     else:
         raise DecisionError("usage_invalid", "JSON input must use @file or @-")
     try:
         return json.loads(text)
     except json.JSONDecodeError as error:
         raise DecisionError("schema_invalid", "input is not valid JSON") from error
+
+
+def _doctor_result(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict) and "ok" in value:
+        if value.get("ok") is not True or not isinstance(value.get("result"), dict):
+            raise DecisionError("doctor_receipt_invalid", "core doctor command receipt did not succeed", exit_code=EXIT_CONFLICT)
+        value = value["result"]
+    if not isinstance(value, dict):
+        raise DecisionError("doctor_receipt_invalid", "core doctor receipt must be an object", exit_code=EXIT_CONFLICT)
+    if not {"supported_protocols", "repository_state", "issues"}.issubset(value):
+        raise DecisionError("doctor_receipt_invalid", "core doctor receipt is incomplete", exit_code=EXIT_CONFLICT)
+    if "schema" in value and value.get("schema") != "context-core-doctor/v1":
+        raise DecisionError("doctor_receipt_invalid", "core doctor receipt schema is incompatible", exit_code=EXIT_CONFLICT)
+    if "owner" in value and value.get("owner") != "context-core":
+        raise DecisionError("doctor_receipt_invalid", "core doctor receipt owner is invalid", exit_code=EXIT_CONFLICT)
+    return value
+
+
+def _observed_plugin(plugin: Any, doctor: dict[str, Any]) -> dict[str, Any]:
+    protocols = plugin.get("protocols", []) if isinstance(plugin, dict) else []
+    doctor_protocols = doctor.get("supported_protocols", [])
+    if PROTOCOL in protocols and PROTOCOL in doctor_protocols:
+        protocol = PROTOCOL
+    elif isinstance(protocols, list) and protocols:
+        protocol = protocols[0]
+    elif isinstance(doctor_protocols, list) and doctor_protocols:
+        protocol = doctor_protocols[0]
+    else:
+        protocol = None
+    observed = {
+        "marketplace": plugin.get("marketplace") if isinstance(plugin, dict) else None,
+        "plugin": plugin.get("plugin") if isinstance(plugin, dict) else None,
+        "source": plugin.get("source") if isinstance(plugin, dict) else None,
+        "enabled": plugin.get("enabled") if isinstance(plugin, dict) else None,
+        "protocol": protocol,
+        "repository_state": doctor.get("repository_state"),
+    }
+    if tuple(observed) != OBSERVED_PLUGIN_FIELDS:
+        raise AssertionError("preflight observed projection drift")
+    return observed
+
+
+def classify_core_preflight(inventory: Any, doctor_receipt: Any) -> dict[str, Any]:
+    if not isinstance(inventory, dict) or not isinstance(inventory.get("plugins"), list):
+        raise DecisionError("host_inventory_invalid", "host plugin inventory must contain a plugins array", exit_code=EXIT_CONFLICT)
+    doctor = _doctor_result(doctor_receipt)
+    plugins = inventory["plugins"]
+    exact = [
+        plugin for plugin in plugins
+        if isinstance(plugin, dict)
+        and plugin.get("marketplace") == REQUIRED_PLUGIN["marketplace"]
+        and plugin.get("plugin") == REQUIRED_PLUGIN["plugin"]
+    ]
+    same_name = [plugin for plugin in plugins if isinstance(plugin, dict) and plugin.get("plugin") == REQUIRED_PLUGIN["plugin"]]
+    if len(exact) > 1:
+        raise DecisionError("host_inventory_invalid", "exact context-core coordinate is ambiguous", exit_code=EXIT_CONFLICT)
+    if not exact:
+        observed_plugin = same_name[0] if len(same_name) == 1 else None
+        code = "core_source_mismatch" if observed_plugin is not None else "core_missing"
+        return {"code": code, "observed": _observed_plugin(observed_plugin, doctor)}
+    plugin = exact[0]
+    observed = _observed_plugin(plugin, doctor)
+    if plugin.get("source") != REQUIRED_PLUGIN["source"]:
+        return {"code": "core_source_mismatch", "observed": observed}
+    if plugin.get("enabled") is not True:
+        return {"code": "core_disabled", "observed": observed}
+    plugin_protocols = plugin.get("protocols")
+    doctor_protocols = doctor.get("supported_protocols")
+    if (
+        not isinstance(plugin_protocols, list)
+        or not isinstance(doctor_protocols, list)
+        or PROTOCOL not in plugin_protocols
+        or PROTOCOL not in doctor_protocols
+    ):
+        return {"code": "core_incompatible", "observed": observed}
+    repository_state = doctor.get("repository_state")
+    if repository_state == "absent":
+        return {"code": "core_uninitialized", "observed": observed}
+    if repository_state in {"partial", "invalid"}:
+        return {"code": "partial_core_init", "observed": observed}
+    if repository_state != "ready":
+        raise DecisionError("doctor_receipt_invalid", "core doctor repository_state is invalid", exit_code=EXIT_CONFLICT)
+    return {"code": "ready", "observed": observed}
+
+
+def _manual_actions(code: str) -> list[str]:
+    selector = REQUIRED_PLUGIN["selector"]
+    marketplace = REQUIRED_PLUGIN["marketplace"]
+    source = REQUIRED_PLUGIN["source"]
+    retry = "host reload 또는 새 session 뒤 context-decision:init을 다시 실행한다."
+    return {
+        "core_missing": [
+            f"provider marketplace {marketplace} (source {source})에서 {selector}를 사용자가 직접 설치한다.",
+            "설치 scope는 사용자가 직접 선택한다.",
+            retry,
+        ],
+        "core_source_mismatch": [
+            f"source {source}의 exact {selector} 좌표를 사용자가 직접 설치한다.",
+            "다른 marketplace의 동명 plugin은 충족으로 간주하지 않는다.",
+            retry,
+        ],
+        "core_disabled": [
+            f"exact {selector}를 사용자가 선택한 올바른 scope에서 직접 활성화한다.",
+            retry,
+        ],
+        "core_incompatible": [
+            f"exact {selector}를 {PROTOCOL} 호환 버전으로 사용자가 직접 업데이트한다.",
+            retry,
+        ],
+        "core_uninitialized": [
+            "사용자가 context-core:init을 실행한다.",
+            "초기화가 완료된 뒤 context-decision:init을 다시 실행한다.",
+        ],
+        "partial_core_init": [
+            "context-core doctor의 issue/path를 확인한다.",
+            "context-core의 승인된 repair 절차로 수동 복구한다.",
+            "repository_state=ready 확인 뒤 context-decision:init을 다시 실행한다.",
+        ],
+        "ready": [],
+    }[code]
+
+
+def render_core_preflight(result: dict[str, Any], host: str) -> dict[str, Any]:
+    code = result.get("code")
+    if host not in {"codex", "claude-code"} or code not in PREFLIGHT_MESSAGES or not isinstance(result.get("observed"), dict):
+        raise DecisionError("core_preflight_invalid", "core preflight result or host is invalid", exit_code=EXIT_CONFLICT)
+    return {
+        "code": code,
+        "host": host,
+        "message": PREFLIGHT_MESSAGES[code],
+        "required_plugin": dict(REQUIRED_PLUGIN),
+        "observed": dict(result["observed"]),
+        "manual_actions": _manual_actions(code),
+        "write_policy": {"repository": "none", "host_configuration": "none"},
+    }
+
+
+def require_core_preflight(args: argparse.Namespace) -> dict[str, Any]:
+    host = getattr(args, "host", None)
+    inventory_argument = getattr(args, "core_inventory", None)
+    doctor_argument = getattr(args, "core_doctor", None)
+    if host is None or inventory_argument is None or doctor_argument is None:
+        raise DecisionError(
+            "core_preflight_required",
+            "non-static context-decision operations require host inventory and core doctor receipt",
+            {"required_plugin": dict(REQUIRED_PLUGIN), "write_policy": {"repository": "none", "host_configuration": "none"}},
+            EXIT_CONFLICT,
+        )
+    result = classify_core_preflight(_load_json_argument(inventory_argument), _load_json_argument(doctor_argument))
+    rendered = render_core_preflight(result, host)
+    if rendered["code"] != "ready":
+        details = {key: value for key, value in rendered.items() if key not in {"code", "message"}}
+        raise DecisionError(rendered["code"], rendered["message"], details, EXIT_CONFLICT)
+    return rendered
 
 
 def _direct_candidate(args: argparse.Namespace) -> dict[str, Any]:
@@ -1596,24 +1775,26 @@ def _direct_candidate(args: argparse.Namespace) -> dict[str, Any]:
     if args.revisit_on:
         values["revisit_on"] = args.revisit_on
     candidate = {
-        "schema": "context-capture-candidate/v1", "candidate_id": "cand_" + uuid.uuid4().hex, "claim_key": "direct",
+        "schema": "context-capture-candidate/v1", "candidate_id": args.candidate_id, "claim_key": "direct",
         "title": args.title, "claim": args.sec_decision, "summary": args.summary, "captured_from": args.captured_from,
         "requested_kind": "decision", "specialized_kinds": ["decision"], "fallback_kind": None,
-        "scope_hint": args.scope, "source_refs": args.source_ref, "tags": args.tag, "evidence": ["explicit direct decision request"],
+        "scope_hint": args.scope, "source_refs": args.source_ref, "tags": args.tag, "evidence": args.commitment_evidence,
         "owner_inputs": {"decision": values},
     }
     if args.informed_by:
         candidate["informed_by"] = args.informed_by
+    validate_candidate(candidate)
     return candidate
 
 
 def _add_capture_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--candidate-id", required=True)
     parser.add_argument("--title", required=True)
     parser.add_argument("--summary", required=True)
     parser.add_argument("--scope", required=True)
     parser.add_argument("--decision-key", required=True)
     parser.add_argument("--captured-from", choices=("conversation", "workspace", "manual", "import"), required=True)
-    parser.add_argument("--attestation", required=True)
+    parser.add_argument("--commitment-evidence", action="append", required=True)
     parser.add_argument("--sec-decision", required=True)
     parser.add_argument("--sec-rationale", required=True)
     parser.add_argument("--sec-alternatives", action="append", required=True)
@@ -1624,21 +1805,38 @@ def _add_capture_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--source-ref", action="append", default=[])
     parser.add_argument("--tag", action="append", default=[])
     parser.add_argument("--informed-by", action="append", default=[])
-    parser.add_argument("--ack-conflicts", action="append", default=[])
+
+
+def _add_preflight_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--host", choices=("codex", "claude-code"))
+    parser.add_argument("--core-inventory")
+    parser.add_argument("--core-doctor")
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="decision_cli.py")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("init", "schema", "capabilities"):
-        child = sub.add_parser(name)
-        child.add_argument("--json", action="store_true")
+    init = sub.add_parser("init")
+    init.add_argument("--json", action="store_true")
+    for name in ("schema", "capabilities"):
+        static = sub.add_parser(name)
+        static.add_argument("--json", action="store_true")
+    candidate = sub.add_parser("candidate")
+    candidate_sub = candidate.add_subparsers(dest="candidate_command", required=True)
+    prepare = candidate_sub.add_parser("prepare")
+    _add_capture_arguments(prepare)
+    prepare.add_argument("--json", action="store_true")
     draft = sub.add_parser("draft")
     draft.add_argument("--candidate", required=True)
     draft.add_argument("--attestation", required=True)
     draft.add_argument("--json", action="store_true")
     capture = sub.add_parser("capture")
-    _add_capture_arguments(capture)
+    capture.add_argument("--candidate", required=True)
+    outcome = capture.add_mutually_exclusive_group(required=True)
+    outcome.add_argument("--attestation")
+    outcome.add_argument("--decline-reason")
+    outcome.add_argument("--needs-clarification-reason")
+    capture.add_argument("--ack-conflicts", action="append", default=[])
     capture.add_argument("--json", action="store_true")
     search = sub.add_parser("search")
     search.add_argument("--query", default="")
@@ -1705,6 +1903,11 @@ def build_parser() -> argparse.ArgumentParser:
     plan_validate = plan_sub.add_parser("validate")
     plan_validate.add_argument("--plan-bundle", required=True)
     plan_validate.add_argument("--json", action="store_true")
+    for operational in (
+        init, prepare, draft, capture, search, read, brief, conflicts, supersede,
+        fallback, withdraw, annotate, revisit, validate, plan_validate,
+    ):
+        _add_preflight_arguments(operational)
     return parser
 
 
@@ -1713,14 +1916,21 @@ def dispatch(args: argparse.Namespace) -> dict[str, Any]:
         return schema_result()
     if args.command == "capabilities":
         return {"schema": "context-owner-capabilities/v1", "owners": [decision_capability()]}
+    require_core_preflight(args)
     if args.command == "init":
         return build_init_plan()
+    if args.command == "candidate" and args.candidate_command == "prepare":
+        return _direct_candidate(args)
     if args.command == "draft":
         candidate = _load_json_argument(args.candidate, allow_stdin=True)
         return build_claim_result(candidate, _load_json_argument(args.attestation))
     repo = repository_root()
     if args.command == "capture":
-        candidate = _direct_candidate(args)
+        candidate = _load_json_argument(args.candidate, allow_stdin=True)
+        if args.decline_reason is not None:
+            return build_decline_result(candidate, args.decline_reason)
+        if args.needs_clarification_reason is not None:
+            return build_decline_result(candidate, args.needs_clarification_reason, needs_clarification=True)
         return build_claim_result(candidate, _load_json_argument(args.attestation), acknowledged_conflicts=args.ack_conflicts, repo=repo)
     if args.command == "search":
         return search_decisions(repo, query=args.query, scope=args.scope, decision_key=args.decision_key, include_history=args.include_history, limit=args.limit)

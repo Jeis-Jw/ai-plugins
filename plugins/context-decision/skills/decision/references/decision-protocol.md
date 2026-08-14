@@ -10,7 +10,7 @@
 - source: `Jeis-Jw/ai-plugins`
 - protocol: `context-common/v1`
 
-`schema`와 `capabilities`만 core 없이 호출할 수 있다. host는 다른 operation 전에 exact identity, enabled state, protocol과 `doctor.repository_state=ready`를 read-only로 확인한다. decision owner는 install, enable, update, marketplace add, `context-core:init`, cache probing 또는 embedded core를 수행하지 않는다.
+`schema`와 `capabilities`만 core 없이 호출할 수 있다. host는 다른 operation에 `--host`, `--core-inventory @file`, `--core-doctor @file`을 넘긴다. production CLI가 repository root를 탐색하기 전 exact identity, source, enabled state, protocol과 `doctor.repository_state=ready`를 read-only로 확인한다. decision owner는 install, enable, update, marketplace add, `context-core:init`, cache probing 또는 embedded core를 수행하지 않는다.
 
 ## Semantic claim gate
 
@@ -21,6 +21,8 @@ DEC는 현재 또는 미래 행동을 지배하는 명시적 선택이며 다음
 - `commitment_present` → `/evidence/*`
 
 idea, question, fact, preference와 미합의 제안은 `decline` 또는 `needs_clarification`이다. `requested_kind:"decision"`은 owner 선택만 고정하며 이 gate를 우회하지 않는다. CLI는 agent skill의 의미 판단을 대신하지 않고 assertion set, input digest와 RFC 6901 pointer만 fail-closed 검증한다.
+
+Direct surface는 2단계다. `candidate prepare`는 caller가 명시한 UUIDv4 candidate ID와 commitment evidence를 포함한 exact candidate만 정규화한다. owner skill이 그 object를 판독한 뒤 `capture --candidate @file --attestation @file`로 claim하거나 `--decline-reason`/`--needs-clarification-reason`으로 권위 draft 없이 종료한다. random candidate 생성, 상수 commitment evidence, CLI 자체 attestation은 금지다.
 
 ## DEC schema와 slot
 
@@ -59,7 +61,7 @@ Receipt 없는 final owner plan이나 altered receipt는 `plan validate`에서 �
 
 `search`는 `decision.index.md` metadata만 읽는다. `read`와 `brief`는 선택된 DEC만 연다. brief는 `결정`, `취지`, `반려대안`만 포함하고 최대 8 KiB다. 낮은 순위 item을 통째로 제외하며 section 중간 절단은 하지 않는다. History에는 항상 `do_not_follow:true`와 lifecycle reason을 붙인다.
 
-`init`은 `context-owner-descriptor/v1`, complete empty decision index seed, descriptor/seed digest와 `context-core area register` 요청만 반환한다. root/area/index를 직접 만들거나 수정하지 않는다.
+`init`은 production six-state preflight가 ready일 때만 `context-owner-descriptor/v1`, complete empty decision index seed, descriptor/seed digest와 `context-core area register` 요청을 반환한다. root/area/index를 직접 만들거나 수정하지 않는다.
 
 ## Output and errors
 

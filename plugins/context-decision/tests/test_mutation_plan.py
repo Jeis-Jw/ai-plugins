@@ -103,11 +103,11 @@ class MutationPlanTests(unittest.TestCase):
             decision_cli.validate_batch(repo, supersede)
             self.assertEqual(before, helpers.tree_digest(repo))
 
-    def test_cli_static_surfaces_do_not_modify_repository(self) -> None:
+    def test_cli_core_free_static_surfaces_do_not_modify_repository(self) -> None:
         with helpers.git_repo() as temp:
             repo = helpers.Path(temp)
             before = helpers.tree_digest(repo)
-            for command in (("schema", "--json"), ("capabilities", "--json"), ("init", "--json")):
+            for command in (("schema", "--json"), ("capabilities", "--json")):
                 completed = subprocess.run(["python3", str(helpers.CLI_PATH), *command], cwd=repo, text=True, capture_output=True)
                 self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
                 self.assertTrue(json.loads(completed.stdout)["ok"])
