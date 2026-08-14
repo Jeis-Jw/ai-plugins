@@ -70,7 +70,12 @@ class ProductFlowTests(unittest.TestCase):
             area = context_cli.build_area_register_bundle(repo, addon["owner_descriptor"], addon["index_seed"])
             context_cli.apply_bundle(repo, area["bundle"], area["approval_digest"])
             choice = flow.choice()
-            owner_result = decision_cli.build_claim_result(choice, flow.decision_attestation(choice), repo=repo)
+            owner_result = decision_cli.build_claim_result(
+                choice,
+                flow.decision_attestation(choice),
+                repo=repo,
+                created_at="2026-08-14T11:00:00+09:00",
+            )
             validation = decision_cli.validate_batch(repo, owner_result)
             proposal = context_cli.finalize_owner_result(repo, owner_result, validation)
             before = tree_digest(repo)
