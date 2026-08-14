@@ -10,7 +10,7 @@
 4. 반환된 `doctor.repository_state: ready`와 phase result를 확인합니다. ready 재호출은 noop입니다.
 5. repository-root agent policy가 필요하면 별도로 요청하고 preview/digest 승인 뒤 적용합니다.
 
-`schema`와 `capabilities`는 repository root 없이 확인할 수 있습니다. `doctor`는 read-only이며 `context-common/v1`과 `repository_state`를 보고합니다. 저장소가 아직 초기화되지 않은 read operation은 dependency 오류가 아닌 `context_root_missing`으로 실패합니다. `init`은 absent에서 fixed root/SNAP/OBS seed만 직접 적용하고 partial/invalid는 자동 repair하지 않습니다.
+`schema`와 `capabilities`는 repository root 없이 확인할 수 있습니다. `doctor`는 read-only이며 `context-common/v1`과 `repository_state`를 보고합니다. 저장소가 아직 초기화되지 않은 read operation은 dependency 오류가 아닌 `context_root_missing`으로 실패합니다. `init`은 absent에서 fixed root/SNAP/OBS seed만 직접 적용합니다. 직전 fixed bundle이 남긴 exact canonical write prefix만 재개하며, 그 밖의 partial/invalid는 자동 repair하지 않습니다.
 
 ## 제품 흐름
 

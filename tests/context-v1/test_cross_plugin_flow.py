@@ -28,6 +28,7 @@ context_cli = load("context_cli_cross", ROOT / "plugins/context-core/skills/cont
 decision_cli = load("decision_cli_cross", ROOT / "plugins/context-decision/skills/decision/scripts/decision_cli.py")
 CORE_CLI = ROOT / "plugins/context-core/skills/context/scripts/context_cli.py"
 DECISION_CLI = ROOT / "plugins/context-decision/skills/decision/scripts/decision_cli.py"
+DECISION_INIT = ROOT / "plugins/context-decision/skills/init/scripts/decision_init.py"
 
 
 def run_cli(repo: Path, cli: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
@@ -252,39 +253,23 @@ class CrossPluginFlowTests(unittest.TestCase):
             doctor = root / "doctor.json"
             inventory.write_text(json.dumps(case["inventory"], ensure_ascii=False), encoding="utf-8")
             doctor.write_text(json.dumps(case["doctor"], ensure_ascii=False), encoding="utf-8")
-            planned = run_cli(
+            completed = run_cli(
                 repo,
-                DECISION_CLI,
-                "init",
+                DECISION_INIT,
                 "--host",
                 case["host"],
                 "--core-inventory",
                 f"@{inventory}",
                 "--core-doctor",
                 f"@{doctor}",
-                "--json",
-            )
-            self.assertEqual(0, planned.returncode, planned.stdout + planned.stderr)
-            plan = json.loads(planned.stdout)["result"]
-            self.assertEqual("absent", plan["core_repository_state"])
-            self.assertEqual("pending", plan["phases"][0]["status"])
-            descriptor = root / "descriptor.json"
-            seed = root / "decision.index.md"
-            descriptor.write_text(json.dumps(plan["owner_descriptor"], ensure_ascii=False), encoding="utf-8")
-            seed.write_text(plan["index_seed"], encoding="utf-8")
-
-            completed = run_cli(
-                repo,
-                CORE_CLI,
-                "bootstrap",
-                "--descriptor",
-                f"@{descriptor}",
-                "--index-seed",
-                f"@{seed}",
+                "--core-cli",
+                str(CORE_CLI),
                 "--json",
             )
             self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
             result = json.loads(completed.stdout)["result"]
+            self.assertEqual("context-decision-init-result/v1", result["schema"])
+            self.assertEqual("absent", result["core_repository_state_before"])
             self.assertEqual(["applied", "applied"], [phase["status"] for phase in result["phases"]])
             self.assertEqual("ready", result["doctor"]["repository_state"])
             self.assertTrue((repo / "context/decision/decision.index.md").is_file())
@@ -294,12 +279,15 @@ class CrossPluginFlowTests(unittest.TestCase):
 
             repeated = run_cli(
                 repo,
-                CORE_CLI,
-                "bootstrap",
-                "--descriptor",
-                f"@{descriptor}",
-                "--index-seed",
-                f"@{seed}",
+                DECISION_INIT,
+                "--host",
+                case["host"],
+                "--core-inventory",
+                f"@{inventory}",
+                "--core-doctor",
+                f"@{doctor}",
+                "--core-cli",
+                str(CORE_CLI),
                 "--json",
             )
             self.assertEqual(0, repeated.returncode, repeated.stdout + repeated.stderr)

@@ -15,9 +15,10 @@
     "category": "Productivity",
     "capabilities": ["Read", "Validation"],
     "defaultPrompt": [
-      "Before any repository operation, require the exact enabled context-core@jeis-ai-plugins source, context-common/v1 protocol, and doctor repository_state=ready.",
+      "Before any repository operation, require the exact installed and enabled context-core@jeis-ai-plugins source, context-common/v1 protocol, and a compatible doctor receipt.",
+      "For an explicitly invoked $context-decision:init only, accept doctor repository_state=ready or absent; when absent, delegate the fixed core and decision seeds to the active installed context-core public bootstrap surface so the same call reaches decision ready.",
       "Use $context-decision:decision only for an explicit accepted choice with scope and commitment; keep the decision, rationale, and rejected alternatives together.",
-      "Never install, enable, update, initialize, or physically write on the user's behalf; final approved writes belong to the context-core coordinator."
+      "Never install, enable, or update plugins, probe plugin caches, embed context-core, or install agent policy automatically; all physical repository writes belong to the context-core coordinator and non-init durable mutations retain exact digest approval."
     ]
   }
 }

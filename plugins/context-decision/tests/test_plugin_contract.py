@@ -27,6 +27,8 @@ def load(name: str, path: Path):
 
 phase0 = load("phase0_distribution_contract", PHASE0)
 CLI_PATH = ROOT / "plugins/context-decision/skills/decision/scripts/decision_cli.py"
+INIT_PATH = ROOT / "plugins/context-decision/skills/init/scripts/decision_init.py"
+CORE_CLI_PATH = ROOT / "plugins/context-core/skills/context/scripts/context_cli.py"
 
 
 def digest_tree(root: Path) -> str:
@@ -71,6 +73,23 @@ def run_cli(repo: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def run_init(repo: Path, case: dict, inventory: Path, doctor: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            sys.executable,
+            str(INIT_PATH),
+            *preflight_args(case, inventory, doctor),
+            "--core-cli",
+            str(CORE_CLI_PATH),
+            "--json",
+        ],
+        cwd=repo,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        text=True,
+        capture_output=True,
+    )
+
+
 class PluginContractTests(unittest.TestCase):
     def test_acceptance_02_core_missing(self) -> None:
         fixtures = ROOT / "tests/context-v1/fixtures/host-inventory"
@@ -108,6 +127,8 @@ class PluginContractTests(unittest.TestCase):
             self.assertIn(forbidden, protocol)
         self.assertIn("먼저 context-core 설치", init)
         self.assertIn("context_cli.py bootstrap", init)
+        self.assertIn("decision_init.py", init)
+        self.assertIn("한 번만", init)
 
     def test_public_cli_runs_exact_six_state_preflight_before_init(self) -> None:
         fixtures = ROOT / "tests/context-v1/fixtures/host-inventory"
@@ -151,6 +172,10 @@ class PluginContractTests(unittest.TestCase):
                         self.assertEqual(case["expected_observed"], details["observed"])
                         self.assertEqual(case["expected_rendered"]["manual_actions"], details["manual_actions"])
                         self.assertEqual({"repository": "none", "host_configuration": "none"}, details["write_policy"])
+                        orchestrated = run_init(repo, case, inventory, doctor)
+                        self.assertEqual(5, orchestrated.returncode, orchestrated.stdout + orchestrated.stderr)
+                        self.assertEqual(payload, json.loads(orchestrated.stdout))
+                        self.assertEqual(before, (digest_tree(repo), digest_tree(host)))
 
     def test_non_static_cli_fails_closed_without_host_preflight(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

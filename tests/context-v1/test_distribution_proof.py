@@ -200,6 +200,21 @@ class DistributionProofTests(unittest.TestCase):
         self.assertTrue((ROOT / "plugins/context-core/skills/context/SKILL.md").is_file())
         self.assertTrue((ROOT / "plugins/context-decision/skills/decision/SKILL.md").is_file())
         decision_root = ROOT / "plugins/context-decision"
+        init_entrypoint = decision_root / "skills/init/scripts/decision_init.py"
+        init_skill = (decision_root / "skills/init/SKILL.md").read_text(encoding="utf-8")
+        default_prompt = "\n".join(read_json(decision_root / ".codex-plugin/plugin.json")["interface"]["defaultPrompt"])
+        self.assertTrue(init_entrypoint.is_file())
+        self.assertIn("decision_init.py", init_skill)
+        self.assertIn("--core-cli", init_skill)
+        for token in (
+            "context-core@jeis-ai-plugins",
+            "context-common/v1",
+            "repository_state=ready or absent",
+            "same call",
+            "Never install, enable, or update",
+            "context-core coordinator",
+        ):
+            self.assertIn(token, default_prompt)
         self.assertFalse((decision_root / "skills/context").exists())
         self.assertFalse(any(path.name == "context_cli.py" for path in decision_root.rglob("*.py")))
 

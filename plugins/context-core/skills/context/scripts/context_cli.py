@@ -2067,6 +2067,63 @@ def build_snapshot_discard_bundle(repo: pathlib.Path, identifier: str) -> dict[s
     return build_discard_bundle(repo, identifier)
 
 
+def _core_init_contents() -> dict[str, str]:
+    return {
+        ROOT_INDEX: render_root_index(_root_seed(), _builtin_area_specs()),
+        "context/snapshot/snapshot.index.md": _area_seed(
+            "snapshot",
+            "context-core",
+            "context-snapshot/v1",
+            "staging",
+            "session handoff staging",
+            search_terms=("handoff", "resume"),
+        ),
+        "context/observation/observation.index.md": _area_seed(
+            "observation",
+            "context-core",
+            "context-observation/v1",
+            "evidence",
+            "비권위 발견과 근거",
+            search_terms=("observation", "evidence"),
+        ),
+    }
+
+
+def _is_exact_core_init_prefix(repo: pathlib.Path, contents: dict[str, str]) -> bool:
+    root_path = repo / "context"
+    if not root_path.exists():
+        return True
+    if root_path.is_symlink() or not root_path.is_dir():
+        return False
+    entries = list(root_path.rglob("*"))
+    if any(path.is_symlink() for path in entries):
+        return False
+    allowed_directories = {
+        "context/snapshot",
+        "context/observation",
+        "context/observation/retired",
+    }
+    present_directories = {
+        path.relative_to(repo).as_posix()
+        for path in entries
+        if path.is_dir()
+    }
+    if not present_directories.issubset(allowed_directories):
+        return False
+    present = sorted(
+        path.relative_to(repo).as_posix()
+        for path in entries
+        if path.is_file()
+    )
+    ordered = sorted(contents)
+    if present != ordered[: len(present)]:
+        return False
+    return all(
+        (repo / relative).read_bytes() == file_bytes(contents[relative])
+        for relative in present
+    )
+
+
 def build_init_bundle(repo: pathlib.Path) -> dict[str, Any]:
     root_path = repo / "context"
     paths = [repo / ROOT_INDEX, repo / "context/snapshot/snapshot.index.md", repo / "context/observation/observation.index.md"]
@@ -2098,15 +2155,9 @@ def build_init_bundle(repo: pathlib.Path) -> dict[str, Any]:
         except (ContextError, OSError, UnicodeError):
             pass
         raise ContextError("partial_core_init", "context root is partially initialized", exit_code=EXIT_CONFLICT)
-    allowed_empty = {root_path, root_path / "snapshot", root_path / "observation", root_path / "observation/retired"}
-    present_files = [path for path in root_path.rglob("*") if path.is_file()] if root_path.exists() else []
-    present_nonempty = [path for path in root_path.rglob("*") if path.is_dir() and path not in allowed_empty and any(path.iterdir())] if root_path.exists() else []
-    if any(existing) or present_files or present_nonempty:
+    contents = _core_init_contents()
+    if root_path.exists() and not _is_exact_core_init_prefix(repo, contents):
         raise ContextError("partial_core_init", "context root is partially initialized", exit_code=EXIT_CONFLICT)
-    snapshot = _area_seed("snapshot", "context-core", "context-snapshot/v1", "staging", "session handoff staging", search_terms=("handoff", "resume"))
-    observation = _area_seed("observation", "context-core", "context-observation/v1", "evidence", "비권위 발견과 근거", search_terms=("observation", "evidence"))
-    root = render_root_index(_root_seed(), _builtin_area_specs())
-    contents = {ROOT_INDEX: root, "context/snapshot/snapshot.index.md": snapshot, "context/observation/observation.index.md": observation}
     materials = [_material(f"seed_{path.split('/')[-2] if path != ROOT_INDEX else 'root'}", path, content) for path, content in contents.items()]
     material_ids = {material["path"]: material["material_id"] for material in materials}
     before = {path: None for path in contents}
@@ -2137,6 +2188,35 @@ def _bootstrap_phase_error(
     return ContextError(error.code, error.message, details, error.exit_code)
 
 
+def _pending_area_resume_bundle(
+    repo: pathlib.Path,
+    descriptor: dict[str, Any],
+    index_seed: str,
+) -> dict[str, Any] | None:
+    try:
+        owner, area, schema, authority = _area_descriptor_fields(descriptor)
+        root_path = _ensure_contained(repo, ROOT_INDEX)
+        if not root_path.is_file():
+            return None
+        _, rows = parse_root_index(root_path.read_text(encoding="utf-8"))
+        expected = {
+            "area": area,
+            "path": f"context/{area}/{area}.index.md",
+            "owner": owner,
+            "claims": [area],
+            "artifact_schema": schema,
+            "authority": authority,
+        }
+        if [row for row in rows if row["area"] == area or area in row["claims"]] != [expected]:
+            return None
+        if _ensure_contained(repo, expected["path"]).exists():
+            return None
+        result = build_area_register_bundle(repo, descriptor, index_seed)
+    except (ContextError, OSError, UnicodeError):
+        return None
+    return result if result.get("resume_prefix") is True else None
+
+
 def bootstrap_repository(
     repo: pathlib.Path,
     descriptor: dict[str, Any] | None = None,
@@ -2157,37 +2237,45 @@ def bootstrap_repository(
         )
     phases: list[dict[str, Any]] = []
     changed_paths: list[str] = []
-    try:
-        core = build_init_bundle(repo)
-        if core.get("noop") is True:
-            phases.append({"phase": "core_init", "status": "noop", "changed_paths": []})
-        else:
-            applied = apply_bundle(
-                repo,
-                core["bundle"],
-                core["approval_digest"],
-                approval_source="explicit_init",
-            )
-            changed_paths.extend(applied["changed_paths"])
-            phases.append(
-                {"phase": "core_init", "status": "applied", "changed_paths": applied["changed_paths"]}
-            )
-    except ContextError as error:
-        raise _bootstrap_phase_error(error, "core_init", phases) from error
+    area_resume = (
+        _pending_area_resume_bundle(repo, descriptor, index_seed)
+        if descriptor is not None and index_seed is not None
+        else None
+    )
+    if area_resume is not None:
+        phases.append({"phase": "core_init", "status": "noop", "changed_paths": []})
+    else:
+        try:
+            core = build_init_bundle(repo)
+            if core.get("noop") is True:
+                phases.append({"phase": "core_init", "status": "noop", "changed_paths": []})
+            else:
+                applied = apply_bundle(
+                    repo,
+                    core["bundle"],
+                    core["approval_digest"],
+                    approval_source="explicit_init",
+                )
+                changed_paths.extend(applied["changed_paths"])
+                phases.append(
+                    {"phase": "core_init", "status": "applied", "changed_paths": applied["changed_paths"]}
+                )
+        except ContextError as error:
+            raise _bootstrap_phase_error(error, "core_init", phases) from error
 
-    doctor = doctor_repository(repo)
-    if doctor["repository_state"] != "ready":
-        error = ContextError(
-            "bootstrap_incomplete",
-            "core bootstrap did not converge to repository_state=ready",
-            {"doctor": doctor},
-            EXIT_INTEGRITY,
-        )
-        raise _bootstrap_phase_error(error, "core_verify", phases) from error
+        doctor = doctor_repository(repo)
+        if doctor["repository_state"] != "ready":
+            error = ContextError(
+                "bootstrap_incomplete",
+                "core bootstrap did not converge to repository_state=ready",
+                {"doctor": doctor},
+                EXIT_INTEGRITY,
+            )
+            raise _bootstrap_phase_error(error, "core_verify", phases) from error
 
     if descriptor is not None and index_seed is not None:
         try:
-            area = build_area_register_bundle(repo, descriptor, index_seed)
+            area = area_resume or build_area_register_bundle(repo, descriptor, index_seed)
             if area.get("noop") is True:
                 phases.append({"phase": "area_register", "status": "noop", "changed_paths": []})
             else:
@@ -2204,13 +2292,23 @@ def bootstrap_repository(
         except ContextError as error:
             raise _bootstrap_phase_error(error, "area_register", phases) from error
 
+    doctor = doctor_repository(repo)
+    if doctor["repository_state"] != "ready":
+        error = ContextError(
+            "bootstrap_incomplete",
+            "bootstrap did not converge to repository_state=ready",
+            {"doctor": doctor},
+            EXIT_INTEGRITY,
+        )
+        raise _bootstrap_phase_error(error, "bootstrap_verify", phases) from error
+
     return {
         "schema": "context-core-bootstrap-result/v1",
         "applied": any(phase["status"] == "applied" for phase in phases),
         "noop": all(phase["status"] == "noop" for phase in phases),
         "phases": phases,
         "changed_paths": sorted(set(changed_paths)),
-        "doctor": doctor_repository(repo),
+        "doctor": doctor,
         "policy": {"requested": False, "applied": False},
     }
 
@@ -2224,15 +2322,45 @@ def _root_catalog(repo: pathlib.Path) -> tuple[str, list[dict[str, Any]]]:
     return text, rows
 
 
-def build_area_register_bundle(repo: pathlib.Path, descriptor: dict[str, Any], index_seed: str | None) -> dict[str, Any]:
-    if index_seed is None:
-        raise ContextError("index_seed_required", "area registration requires a complete index seed", exit_code=EXIT_CONFLICT)
+def _area_descriptor_fields(descriptor: dict[str, Any]) -> tuple[str, str, str, str]:
+    fields = {"schema", "owner", "kind", "artifact_schema", "authority"}
+    if set(descriptor) != fields or descriptor.get("schema") != "context-owner-descriptor/v1":
+        raise ContextError(
+            "owner_descriptor_invalid",
+            "area owner descriptor fields differ from context-owner-descriptor/v1",
+            exit_code=EXIT_CONFLICT,
+        )
     owner = descriptor.get("owner")
     area = descriptor.get("kind")
     schema = descriptor.get("artifact_schema")
     authority = descriptor.get("authority")
     if not all(isinstance(value, str) and value for value in (owner, area, schema, authority)) or not AREA_NAME.fullmatch(area):
         raise ContextError("owner_descriptor_invalid", "area owner descriptor is invalid", exit_code=EXIT_CONFLICT)
+    return owner, area, schema, authority
+
+
+def _registered_area_spec(repo: pathlib.Path, row: dict[str, Any]) -> tuple[dict[str, Any], str, str]:
+    index = parse_area_index(_ensure_contained(repo, row["path"]).read_text(encoding="utf-8"))
+    metadata = index.frontmatter
+    if (metadata["area"], metadata["owner"], metadata["artifact_schema"], metadata["authority"]) != (
+        row["area"],
+        row["owner"],
+        row["artifact_schema"],
+        row["authority"],
+    ):
+        raise ContextError(
+            "owner_descriptor_conflict",
+            "registered area index metadata differs from its root descriptor",
+            {"area": row["area"], "path": row["path"]},
+            EXIT_CONFLICT,
+        )
+    return row, _area_label(row["area"]), metadata["summary"]
+
+
+def build_area_register_bundle(repo: pathlib.Path, descriptor: dict[str, Any], index_seed: str | None) -> dict[str, Any]:
+    if index_seed is None:
+        raise ContextError("index_seed_required", "area registration requires a complete index seed", exit_code=EXIT_CONFLICT)
+    owner, area, schema, authority = _area_descriptor_fields(descriptor)
     seed_index = parse_area_index(index_seed)
     if seed_index.current or seed_index.history:
         raise ContextError("index_seed_invalid", "area seed generated blocks must be empty", exit_code=EXIT_CONFLICT)
@@ -2240,21 +2368,79 @@ def build_area_register_bundle(repo: pathlib.Path, descriptor: dict[str, Any], i
     if (fm["area"], fm["owner"], fm["artifact_schema"], fm["authority"]) != (area, owner, schema, authority):
         raise ContextError("index_seed_invalid", "area seed does not match descriptor", exit_code=EXIT_CONFLICT)
     root_text, rows = _root_catalog(repo)
-    if any(row["area"] == area or area in row["claims"] for row in rows):
-        existing = next(row for row in rows if row["area"] == area)
-        path = repo / existing["path"]
-        if existing["owner"] == owner and path.is_file():
-            parse_area_index(path.read_text(encoding="utf-8"))
-            return {"noop": True, "applied": False, "changed_paths": []}
-        raise ContextError("duplicate_area_owner", "area or claim is already owned", exit_code=EXIT_CONFLICT)
     area_path = f"context/{area}/{area}.index.md"
-    row = {"area": area, "path": area_path, "owner": owner, "claims": [area], "artifact_schema": schema, "authority": authority}
-    specs: list[tuple[dict[str, Any], str, str]] = []
-    for existing in rows:
-        index = parse_area_index((repo / existing["path"]).read_text(encoding="utf-8"))
-        specs.append((existing, _area_label(existing["area"]), index.frontmatter["summary"]))
-    specs.append((row, _area_label(area), fm["summary"]))
-    root_after = render_root_index(root_text, specs)
+    expected_row = {
+        "area": area,
+        "path": area_path,
+        "owner": owner,
+        "claims": [area],
+        "artifact_schema": schema,
+        "authority": authority,
+    }
+    matching = [row for row in rows if row["area"] == area or area in row["claims"]]
+    resume_prefix = False
+    root_before = root_text
+    if matching:
+        if matching != [expected_row]:
+            raise ContextError(
+                "owner_descriptor_conflict",
+                "existing area registration differs from the requested descriptor",
+                {"area": area},
+                EXIT_CONFLICT,
+            )
+        path = _ensure_contained(repo, area_path)
+        if path.is_file():
+            existing_index = parse_area_index(path.read_text(encoding="utf-8"))
+            metadata = existing_index.frontmatter
+            if (metadata["area"], metadata["owner"], metadata["artifact_schema"], metadata["authority"]) != (
+                area,
+                owner,
+                schema,
+                authority,
+            ):
+                raise ContextError(
+                    "owner_descriptor_conflict",
+                    "existing area index differs from the requested descriptor",
+                    {"area": area, "path": area_path},
+                    EXIT_CONFLICT,
+                )
+            return {"noop": True, "applied": False, "changed_paths": []}
+        if path.exists():
+            raise ContextError(
+                "owner_descriptor_conflict",
+                "registered area index path is not a regular file",
+                {"area": area, "path": area_path},
+                EXIT_CONFLICT,
+            )
+        area_root = _ensure_contained(repo, f"context/{area}")
+        if area_root.exists() and (not area_root.is_dir() or any(area_root.iterdir())):
+            raise ContextError(
+                "partial_area_register",
+                "registered area has noncanonical content while its index is missing",
+                {"area": area, "path": area_path},
+                EXIT_CONFLICT,
+            )
+        prior_specs = [_registered_area_spec(repo, row) for row in rows if row["area"] != area]
+        root_before = render_root_index(root_text, prior_specs)
+        expected_after = render_root_index(
+            root_before,
+            [*prior_specs, (expected_row, _area_label(area), fm["summary"])],
+        )
+        if expected_after != root_text:
+            raise ContextError(
+                "partial_area_register",
+                "registered area root row is not the exact canonical write prefix",
+                {"area": area, "path": ROOT_INDEX},
+                EXIT_CONFLICT,
+            )
+        root_after = root_text
+        resume_prefix = True
+    else:
+        specs = [_registered_area_spec(repo, row) for row in rows]
+        root_after = render_root_index(
+            root_text,
+            [*specs, (expected_row, _area_label(area), fm["summary"])],
+        )
     contents = {ROOT_INDEX: root_after, area_path: index_seed}
     materials = [_material("material_root_index", ROOT_INDEX, root_after), _material("seed_area_index", area_path, index_seed)]
     effect_id = "effect_register_area"
@@ -2262,10 +2448,13 @@ def build_area_register_bundle(repo: pathlib.Path, descriptor: dict[str, Any], i
         "schema": "context-mutation-plan/v1", "plan_id": new_plan_id(), "owner": owner, "source_type": "core_control", "transition": "area_register",
         "owner_descriptor": descriptor, "control_input": {"schema": "context-core-control/v1", "transition": "area_register", "descriptor_digest": canonical_digest(descriptor), "seed_digests": {area_path: sha256_bytes(file_bytes(index_seed))}},
         "prior_bundle_digests": [], "read_preconditions": [],
-        "operations": [{"op": "index_rebuild", "derived_from": [effect_id], "areas": [area], "include_root": True, "before_sha256": {ROOT_INDEX: sha256_bytes((repo / ROOT_INDEX).read_bytes()), area_path: None}, "after_sha256": {path: sha256_bytes(file_bytes(content)) for path, content in contents.items()}, "seed_materials": {area_path: "seed_area_index"}}],
+        "operations": [{"op": "index_rebuild", "derived_from": [effect_id], "areas": [area], "include_root": True, "before_sha256": {ROOT_INDEX: sha256_bytes(file_bytes(root_before)), area_path: None}, "after_sha256": {path: sha256_bytes(file_bytes(content)) for path, content in contents.items()}, "seed_materials": {area_path: "seed_area_index"}}],
     }
     preview = {"schema": "context-approval-preview/v1", "owner": owner, "candidate_id": None, "artifacts": [], "effects": [{"effect_id": effect_id, "action": "register_area", "area": area, "path": area_path}]}
-    return _bundle_result(preview, plan, materials)
+    result = _bundle_result(preview, plan, materials)
+    if resume_prefix:
+        result["resume_prefix"] = True
+    return result
 
 
 def build_policy_bundle(repo: pathlib.Path, target: str) -> dict[str, Any]:
@@ -3103,6 +3292,15 @@ def _validate_area_register_control(
             or root_material["content"] != render_root_index(current_root, specs)
         ):
             _core_control_error("area_register root material does not add exactly one area")
+    elif current_root_digest == operation.get("after_sha256", {}).get(ROOT_INDEX):
+        prior_specs = [spec for spec in specs if spec[0]["area"] != area]
+        prior_root = render_root_index(root_material["content"], prior_specs)
+        if (
+            operation.get("before_sha256", {}).get(ROOT_INDEX)
+            != sha256_bytes(file_bytes(prior_root))
+            or render_root_index(prior_root, specs) != root_material["content"]
+        ):
+            _core_control_error("area_register resume state is not the exact canonical write prefix")
     seed_digest = sha256_bytes(file_bytes(seed["content"]))
     if (
         plan["owner"] != owner

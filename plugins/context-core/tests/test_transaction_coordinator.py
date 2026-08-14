@@ -265,6 +265,95 @@ class TransactionCoordinatorTests(unittest.TestCase):
                 self.assertEqual("failed", caught.exception.details["phases"][-1]["status"])
                 self.assertEqual(before, tree_digest(repo))
 
+    def test_explicit_init_resumes_exact_core_prefix_after_interruption(self) -> None:
+        with git_repo() as temp:
+            repo = Path(temp)
+            keep = repo / "keep.txt"
+            keep.write_text("preserve\n", encoding="utf-8")
+            original = context_cli._atomic_write
+            calls = 0
+
+            def interrupt_after_first_write(path: Path, content: str) -> None:
+                nonlocal calls
+                original(path, content)
+                calls += 1
+                if calls == 1:
+                    raise RuntimeError("fault after first core index write")
+
+            context_cli._atomic_write = interrupt_after_first_write
+            try:
+                with self.assertRaisesRegex(RuntimeError, "first core index"):
+                    context_cli.bootstrap_repository(repo)
+            finally:
+                context_cli._atomic_write = original
+
+            self.assertTrue((repo / context_cli.ROOT_INDEX).is_file())
+            self.assertFalse((repo / "context/observation/observation.index.md").exists())
+            resumed = context_cli.bootstrap_repository(repo)
+            self.assertEqual("applied", resumed["phases"][0]["status"])
+            self.assertEqual("ready", resumed["doctor"]["repository_state"])
+            self.assertEqual("preserve\n", keep.read_text(encoding="utf-8"))
+
+    def test_explicit_init_rejects_noncanonical_empty_directory_prefix(self) -> None:
+        with git_repo() as temp:
+            repo = Path(temp)
+            (repo / "context/unexpected").mkdir(parents=True)
+            before = tree_digest(repo)
+            with self.assertRaises(context_cli.ContextError) as caught:
+                context_cli.bootstrap_repository(repo)
+            self.assertEqual("partial_core_init", caught.exception.code)
+            self.assertEqual(before, tree_digest(repo))
+
+    def test_area_register_resumes_exact_root_prefix_after_interruption(self) -> None:
+        with git_repo() as temp:
+            repo = Path(temp)
+            initialize(repo)
+            plan = decision_cli.build_init_plan()
+            original = context_cli._atomic_write
+            calls = 0
+
+            def interrupt_after_root_write(path: Path, content: str) -> None:
+                nonlocal calls
+                original(path, content)
+                calls += 1
+                if calls == 1:
+                    raise RuntimeError("fault after area root index write")
+
+            context_cli._atomic_write = interrupt_after_root_write
+            try:
+                with self.assertRaisesRegex(RuntimeError, "area root index"):
+                    context_cli.bootstrap_repository(repo, plan["owner_descriptor"], plan["index_seed"])
+            finally:
+                context_cli._atomic_write = original
+
+            _, rows = context_cli.parse_root_index((repo / context_cli.ROOT_INDEX).read_text(encoding="utf-8"))
+            self.assertIn("decision", {row["area"] for row in rows})
+            self.assertFalse((repo / "context/decision/decision.index.md").exists())
+            resumed = context_cli.bootstrap_repository(repo, plan["owner_descriptor"], plan["index_seed"])
+            self.assertEqual(
+                [("core_init", "noop"), ("area_register", "applied")],
+                [(phase["phase"], phase["status"]) for phase in resumed["phases"]],
+            )
+            self.assertEqual("ready", resumed["doctor"]["repository_state"])
+
+    def test_existing_area_rejects_incompatible_descriptor_without_writes(self) -> None:
+        with git_repo() as temp:
+            repo = Path(temp)
+            initialize(repo)
+            plan = decision_cli.build_init_plan()
+            context_cli.bootstrap_repository(repo, plan["owner_descriptor"], plan["index_seed"])
+            incompatible = dict(plan["owner_descriptor"], artifact_schema="context-decision/v2")
+            incompatible_seed = plan["index_seed"].replace(
+                'artifact_schema: "context-decision/v1"',
+                'artifact_schema: "context-decision/v2"',
+            )
+            before = tree_digest(repo)
+            with self.assertRaises(context_cli.ContextError) as caught:
+                context_cli.bootstrap_repository(repo, incompatible, incompatible_seed)
+            self.assertEqual("owner_descriptor_conflict", caught.exception.code)
+            self.assertEqual("area_register", caught.exception.details["phases"][-1]["phase"])
+            self.assertEqual(before, tree_digest(repo))
+
     def test_acceptance_05_rename_identity(self) -> None:
         with git_repo() as temp:
             repo = Path(temp)
