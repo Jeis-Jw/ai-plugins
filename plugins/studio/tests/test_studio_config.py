@@ -173,6 +173,48 @@ execute:
         self.assertEqual(review["decision"], "invoke-command")
         self.assertEqual(review["probe"], "required")
 
+    def test_auto_work_requires_a_real_graph_or_durable_lifecycle(self) -> None:
+        config = studio_config.parse_yaml_subset(
+            """
+execute:
+  work:
+    command: task-worker
+    activation: auto
+    fallback: native
+"""
+        )
+        route = studio_config.resolve_execute_route(config, kind="work")
+
+        bounded = studio_config.select_work_route(route, work_units=1)
+        multiple_but_unstructured = studio_config.select_work_route(route, work_units=3)
+        dependency_graph = studio_config.select_work_route(
+            route, work_units=2, dependency_graph=True
+        )
+        resumable = studio_config.select_work_route(
+            route, work_units=1, cross_session_resume=True
+        )
+
+        self.assertEqual(bounded["decision"], "native")
+        self.assertEqual(bounded["reason_codes"], ["bounded-direct-work"])
+        self.assertEqual(multiple_but_unstructured["decision"], "native")
+        self.assertEqual(dependency_graph["decision"], "invoke-command")
+        self.assertEqual(dependency_graph["reason_codes"], ["dependency-graph"])
+        self.assertEqual(resumable["decision"], "invoke-command")
+        self.assertEqual(resumable["reason_codes"], ["cross-session-resume"])
+
+    def test_explicit_work_route_still_honors_operator_intent(self) -> None:
+        route = studio_config.resolve_execute_route(
+            {}, kind="work", command_override="task-worker"
+        )
+        decision = studio_config.select_work_route(route, work_units=1)
+        self.assertEqual(decision["decision"], "invoke-command")
+        self.assertEqual(decision["reason_codes"], ["explicit-command-route"])
+
+    def test_invalid_work_shape_fails_closed(self) -> None:
+        route = studio_config.resolve_execute_route({}, kind="work")
+        with self.assertRaisesRegex(studio_config.ConfigError, "positive integer"):
+            studio_config.select_work_route(route, work_units=0)
+
     def test_delivery_requires_explicit_operator_enable(self) -> None:
         config = studio_config.parse_yaml_subset(
             """
@@ -292,6 +334,23 @@ execute:
             route_payload = json.loads(route.stdout)["route"]
             self.assertEqual(route_payload["decision"], "invoke-command")
             self.assertEqual(route_payload["fallback"], "stop")
+
+            selected = self.run_cli(
+                "select-work",
+                "--path",
+                str(path),
+                "--work-units",
+                "2",
+                "--dependency-graph",
+                "--command",
+                "task-worker",
+                "--activation",
+                "auto",
+            )
+            self.assertEqual(selected.returncode, 0, selected.stderr)
+            selected_payload = json.loads(selected.stdout)["work"]
+            self.assertEqual(selected_payload["decision"], "invoke-command")
+            self.assertEqual(selected_payload["reason_codes"], ["dependency-graph"])
 
     def test_cli_rejects_invalid_config_with_stable_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

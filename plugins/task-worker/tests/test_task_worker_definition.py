@@ -181,6 +181,18 @@ class DefinitionArtifactTests(unittest.TestCase):
             plan["ready_actions"][1]["identity"]["worktree"],
         )
 
+    def test_public_state_root_resolves_runs_and_legacy_state_dir_still_works(self):
+        self.assertEqual(
+            worker.resolve_run_state_dir(".task-worker/custom"),
+            Path(".task-worker/custom/runs"),
+        )
+        self.assertEqual(
+            worker.resolve_run_state_dir(
+                ".task-worker/custom", ".legacy-task-worker/runs"
+            ),
+            Path(".legacy-task-worker/runs"),
+        )
+
     def test_manual_dispatch_exposes_ready_set_without_local_execution(self):
         spec = graph_spec()
         spec["dispatch"] = "manual"

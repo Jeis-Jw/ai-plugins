@@ -3,7 +3,7 @@ title: Studio 플러그인
 created_at: 2026-07-14
 summary: Codex와 Claude Code가 제공하는 subagent 기능으로 역할 기반 crew를 운용하는 orchestration skill. 영속 상태는 mission receipt 재개 인덱스 하나뿐이다.
 tags: [studio, orchestration, crew, codex, claude-code]
-verified_at: 2026-08-04
+verified_at: 2026-08-14
 affects_paths: [plugins/studio/**]
 ---
 
@@ -54,9 +54,10 @@ runtime이나 상태 저장소를 만들지 않는다.
 - `decision:native|skip` / `invoke-command` / `producer-decision` 세 갈래로 discovery
   여부를 정하고, 실행 override(기본 `activation:always`, `fallback:stop`)가 config보다
   우선한다.
-- work는 `activation:auto`에서 독립 work unit 복수, worktree/ready-set/재개 필요,
-  integration gate, evidence pin 중 하나라도 실질적이면 configured command(예:
-  `task-worker`)를 선택하고, 그렇지 않으면 native로 Producer가 직접 crew를 소집한다.
+- work는 `activation:auto`에서 둘 이상의 unit에 실제 dependency/ready-set 병렬성이 있거나,
+  integration gate, cross-session resume 또는 외부 실행 handoff가 필요할 때만 configured
+  command(예: `task-worker`)를 선택한다. 단일 bounded 작업은 위험도, 독립 review, 선호
+  worktree, 일반 evidence pin만으로 task-worker에 진입하지 않고 native로 실행한다.
   configured 경로에서는 command가 분해·ready planning을 소유하고 Producer는 미션
   경계·완료 조건만 보존하며, leaf crew는 자기 lane(`start→run→verify→done`)만 수행하고
   재분해·orchestration·nested subagent 생성을 하지 않는다.

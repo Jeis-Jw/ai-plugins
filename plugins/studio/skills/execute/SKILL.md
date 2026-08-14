@@ -44,14 +44,26 @@ production-public claim, major 변경, acceptance-registry 작업은 route 선�
 실제 호출한 probe가 없거나 unavailable이면 `unknown`으로 중단한다. 작은 internal 변경은 동일
 criteria digest에 pin된 기존 registry mapping을 재사용한다.
 
-`activation:auto`에서는 다음 중 하나라도 실질적이면 configured work command를 선택한다.
+`activation:auto`에서는 실제 work graph 또는 durable execution lifecycle이 필요할 때만
+configured work command를 선택한다.
 
-- 독립적으로 진행 가능한 work unit이 둘 이상이다.
-- 별도 worktree, dependency ready-set 또는 재개 상태가 필요하다.
-- leaf 결과 뒤 integration gate가 필요하다.
-- 실행·검증 evidence의 pin이나 중복 실행 방지가 필요하다.
+- 둘 이상의 work unit 사이에 dependency graph 또는 유의미한 ready-set 병렬성이 있다.
+- leaf 결과가 새 통합 상태를 만들고 별도 integration gate가 필요하다.
+- 세션을 넘어 재개할 canonical work state나 외부 실행 handoff가 명시적으로 필요하다.
 
-그렇지 않은 단일 bounded 작업은 native를 선택한다. 선택 이유를 한 줄로 남긴다.
+단일 bounded 작업과 dependency 없는 단순한 역할 분담은 native를 선택한다. 위험도,
+독립 review, 선호 worktree, 일반적인 evidence pin이나 중복 실행 방지만으로 work command를
+선택하지 않는다. 이들은 각각 review·QA 정책에서 독립 판정한다.
+
+`auto` 선택은 아래 결정적 projection으로 확인한다. 명시적 `activation:always`는 operator
+override이므로 work shape와 무관하게 configured command를 유지한다.
+
+```bash
+python3 "${STUDIO_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/studio_config.py" select-work \
+  --path .studio.yml --work-units <N> \
+  [--dependency-graph] [--parallel-graph] [--integration-gate] \
+  [--cross-session-resume] [--external-handoff]
+```
 
 ### Native
 

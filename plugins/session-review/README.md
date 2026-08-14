@@ -88,10 +88,13 @@ so the transient snapshot does not survive in main history.
 
 ## Reviewer episode lease
 
-Round 1 always acquires a fresh reviewer. Later rounds reuse that reviewer only
-when the scope digest, target/base refs, review strength, and round horizon are
-unchanged and the harness can address `reviewer_ref`. Otherwise the decision is
-fresh with one of `scope_changed|ref_changed|risk_changed|round_expired|harness_unaddressable`.
+Round 1 always acquires a fresh reviewer. Later rounds reuse that reviewer when
+the scope digest, base ref, review strength, and round horizon are unchanged and
+the harness can address the same `reviewer_ref`. A changed target ref is the
+normal confirmation input and updates `lease_target_ref` without replacing the
+reviewer. Scope, base, reviewer, strength, expiry, or addressability changes
+produce a fresh decision with an explicit reason. Diff mode rejects identical
+`base_ref` and `target_ref` before reviewer handoff.
 The default horizon permits two reuse rounds after acquisition.
 
 The status carries the lease id, optional reviewer ref, last reviewed ref,

@@ -32,6 +32,26 @@ class PluginContractTests(unittest.TestCase):
         self.assertIn("별도 worktree", text)
         self.assertIn("integration", text)
 
+    def test_define_skips_standalone_single_work_and_cli_exposes_one_state_root(self):
+        define = (PLUGIN / "skills" / "define" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("standalone 단일 작업", define)
+        self.assertIn("기존 work graph", define)
+
+        for command in ("ready", "local-start"):
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(PLUGIN / "scripts" / "definition_artifact.py"),
+                    command,
+                    "--help",
+                ],
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+            )
+            self.assertIn("--state-root", result.stdout)
+            self.assertNotIn("--state-dir", result.stdout)
+
     def test_capability_contract_is_machine_readable(self):
         result = subprocess.run(
             [sys.executable, str(PLUGIN / "scripts" / "definition_artifact.py"), "capabilities"],

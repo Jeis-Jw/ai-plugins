@@ -3,7 +3,7 @@ title: task-worker 플러그인
 created_at: 2026-07-14
 summary: provider-neutral 작업 정의·분해·병렬 실행·검증·evidence 재사용을 소유하고 외부 provider가 상태와 delivery를 투영하는 범용 작업 엔진 설계 정본
 tags: [task-worker, workflow, orchestration, execution, evidence]
-verified_at: 2026-08-04
+verified_at: 2026-08-14
 affects_paths: [plugins/task-worker/**, plugins/task-github/**]
 ---
 
@@ -98,6 +98,7 @@ task-worker 동작 확인은 `plugins/task-worker/DESIGN.md`, 소스와 테스�
 | 판단 갱신 | scope·ref·risk·criteria가 바뀌면 기존 증거를 무효화하고 필요한 판단을 새로 한다. |
 | 통합 검증 | 병합으로 새 상태가 만들어지면 leaf evidence가 있어도 integration gate를 생략하지 않는다. |
 | no extra hop | plugin delegation 자체를 이유로 fresh agent/session을 추가하지 않는다. |
+| no standalone promotion | 1-node 실행은 기존 graph 축소나 명시적인 durable resume·외부 handoff 호환 경로이며 standalone 단일 작업을 위한 별도 제품 경로를 만들지 않는다. |
 | provider neutrality | Issue·PR·label·Studio track·wiki node 같은 외부 식별자를 core schema에 넣지 않는다. |
 | fail closed | graph 불완전, dependency cycle, stale lease, evidence ambiguity에서는 부분 ready set을 실행하지 않는다. |
 | review owner fencing | `owner=task-worker`가 아닌 opaque external-owned edge에서는 reviewer dispatch만 externally-owned handoff로 전환하고 run/verify/done/integration gate를 유지한다. |
@@ -159,6 +160,9 @@ provider-neutral 실행 설정은 `.task-worker.yml`을 정본으로 한다.
 - telemetry 요구 수준
 
 현재 schema는 `mode`, `state-root`, `dispatch`, `delivery`, planning/verify/review tool, `orchestrate`, `define`, `evidence`, `recovery`다. 예시는 `plugins/task-worker/config.example.yml`이며 consumer workspace의 실제 파일은 local config로 취급한다.
+
+공개 local lifecycle CLI는 `--state-root` 하나를 사용하고 run ledger는
+`<state-root>/runs`에서 해석한다. 기존 `--state-dir`은 이전 caller 호환성만 유지한다.
 
 workspace onboarding은 다음 계약을 따른다.
 

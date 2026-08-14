@@ -3,7 +3,7 @@ title: session-review 플러그인
 created_at: 2026-06-18
 summary: read-only doctor로 준비 상태를 확인하고 worker/reviewer가 audit snapshot 또는 fast context와 reviewer lease로 리뷰를 수렴시키는 플러그인 설계 정본
 tags: [session-review, review, design]
-verified_at: 2026-07-15
+verified_at: 2026-08-14
 affects_paths: [plugins/session-review/**]
 ---
 
@@ -36,8 +36,14 @@ session-review 0.6.0은 별도 persistent config를 만들지 않는다. `sessio
 - 모드는 status block `flow_mode`에 기록해 콜드 핸드오프가 어느 모드인지 알 수 있게 한다.
 
 ### Reviewer episode lease
-- round 1은 항상 fresh reviewer다. 수정 라운드는 scope digest, target/base ref, review strength, round horizon이 유지되고 harness가 `reviewer_ref`를 다시 address할 수 있을 때만 reuse한다.
-- lease 만료는 `scope_changed`, `ref_changed`, `risk_changed`, `round_expired`, `harness_unaddressable` fresh fallback reason으로 기계 판정한다. 기본 horizon은 최초 획득 뒤 수정 라운드 2회다.
+- round 1은 항상 fresh reviewer다. 수정 라운드는 scope digest, base ref, review strength,
+  round horizon이 유지되고 harness가 같은 `reviewer_ref`를 다시 address할 수 있을 때 reuse한다.
+  새 candidate의 target ref 변경은 정상 confirm 입력이므로 reviewer를 교체하지 않고
+  `lease_target_ref`만 갱신한다.
+- lease 만료는 `scope_changed`, base 변경의 `ref_changed`, `reviewer_changed`,
+  `risk_changed`, `round_expired`, `harness_unaddressable` fresh fallback reason으로 기계
+  판정한다. 기본 horizon은 최초 획득 뒤 수정 라운드 2회다. diff mode의
+  `base_ref == target_ref` handoff는 reviewer 호출 전에 거부한다.
 - status에는 `lease_id`, optional `reviewer_ref`, `reviewed_ref`, `scope_digest`, `finding_digest`, started/updated timestamp, expiry round, `fresh_count`/`reuse_count`, `fresh_required`를 저장한다. `reviewed_ref`와 `finding_digest`는 함께 기록한다.
 - lease가 없는 legacy snapshot은 reviewer identity를 추정하지 않고 `fresh_required: true`, `fresh_fallback_reason: legacy_snapshot`으로 lazy migration한다.
 - fast mode는 snapshot 대신 동일한 전체 status JSON을 reviewer context로 전달한다. recording overhead만 제거하며 worker/reviewer 분리는 유지한다. validate 계열 CLI(`status`/`validate-turn`/`validate-status`/`validate-complete`)도 `--status-json`을 받아 fast에서 같은 phase/lease 게이트를 기계로 강제한다.

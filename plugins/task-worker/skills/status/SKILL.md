@@ -9,7 +9,7 @@ description: DefinitionArtifact와 local run ledger를 읽어 ready, blocked, ac
 
 ```bash
 python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py" ready \
-  --artifact {ARTIFACT} --state-dir .task-worker/local/runs
+  --artifact {ARTIFACT} --state-root .task-worker/local
 ```
 
 `ready_actions[]`, `manual_actions[]`, `blocked[]`, `active[]`, `completed[]`, `integration_candidates[]`를 그대로 보고한다. 여러 ready action을 임의로 직렬화하지 않는다. 중복 active run이나 schema ambiguity는 fail-closed 오류로 올린다.

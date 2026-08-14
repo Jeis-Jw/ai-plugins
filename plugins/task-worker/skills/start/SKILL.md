@@ -9,8 +9,11 @@ description: DefinitionArtifact의 ready leaf 또는 준비된 integration candi
 
 ```bash
 python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py" local-start \
-  --artifact {ARTIFACT} --node {KEY_OR_NODE_ID} --state-dir .task-worker/local/runs
+  --artifact {ARTIFACT} --node {KEY_OR_NODE_ID} --state-root .task-worker/local
 ```
+
+공개 상태 위치는 `--state-root` 하나다. run ledger는 그 아래 `runs/`에서 해석한다. 기존
+`--state-dir` 호출은 호환되지만 새 호출과 문서에서는 사용하지 않는다.
 
 출력의 `identity.branch`, `identity.worktree`, run-state `path`를 그대로 사용한다. 기존 run이면 새 실행을 만들지 않고 같은 state를 반환한다. worktree 생성 전 사용자 소유 dirty change를 확인하고 덮어쓰지 않는다.
 

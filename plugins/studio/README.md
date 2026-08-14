@@ -70,8 +70,10 @@ execute:
 
 `studio:execute`는 메인 Producer 세션 전용 진입점이다.
 
-- `auto` work는 독립 work unit, worktree 격리, dependency ready-set, integration gate 또는
-  evidence pin이 필요할 때 configured command를 선택한다.
+- `auto` work는 둘 이상의 unit에 실제 dependency/ready-set 병렬성이 있거나 integration
+  gate, cross-session resume, 외부 실행 handoff가 필요할 때만 configured command를 선택한다.
+  단일 bounded 작업은 위험하거나 review가 필요해도 native로 실행하고 review route를 별도로
+  판단한다. 선호 worktree나 일반 evidence pin만으로 task-worker를 선택하지 않는다.
 - configured work command가 작업 분해와 ready planning을 소유한다. Producer는 mission
   경계와 완료 조건을 보존하고 메인 세션에서 orchestration을 수행한다.
 - Producer가 ready action마다 적합한 crew를 생성한다. leaf crew는 자기 lane만 수행하며
@@ -85,6 +87,9 @@ route 확인:
 ```bash
 python3 "${STUDIO_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/studio_config.py" route \
   --path .studio.yml --kind work
+
+python3 "${STUDIO_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/studio_config.py" select-work \
+  --path .studio.yml --work-units 2 --dependency-graph
 ```
 
 ## 크루 model/effort 설정

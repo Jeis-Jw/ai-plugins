@@ -32,7 +32,7 @@ python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py
 
 ```bash
 python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py" ready \
-  --artifact {ARTIFACT} --state-dir .task-worker/local/runs
+  --artifact {ARTIFACT} --state-root .task-worker/local
 ```
 
 외부 provider graph는 `task-worker.work-graph/v1` snapshot을 `plan-graph`에 전달한다. 출력의 `ready_actions[]`는 병렬 dispatch 대상, `integration_candidates[]`는 자식 완료로 새 상태가 만들어진 container/root gate 대상이다.

@@ -374,10 +374,30 @@ class ReviewerLeaseAndReceiptTests(unittest.TestCase):
         self.assertIsNone(result["status"]["reviewed_ref"])
         self.assertIsNone(result["status"]["finding_digest"])
 
-    def test_scope_ref_risk_round_and_harness_expiry_force_fresh(self):
+    def test_target_ref_change_reuses_same_reviewer_and_updates_lease_target(self):
+        status = dict(
+            self.fresh_lease(),
+            round=2,
+            target_ref="candidate-v2",
+            reviewed_ref="candidate-v1",
+            finding_digest="findings:v1",
+        )
+        result = session_review.acquire_reviewer_lease(
+            status,
+            scope_digest="scope:v1",
+            reviewer_ref="agent:7",
+            now="2026-07-10T08:05:00Z",
+        )
+        self.assertEqual((result["decision"], result["reason"]), ("reuse", None))
+        self.assertEqual(result["status"]["lease_target_ref"], "candidate-v2")
+        self.assertEqual(result["status"]["fresh_count"], 1)
+        self.assertEqual(result["status"]["reuse_count"], 1)
+
+    def test_scope_base_reviewer_risk_round_and_harness_expiry_force_fresh(self):
         cases = (
             ("scope_changed", {"scope_digest": "scope:v2"}, {}),
-            ("ref_changed", {}, {"target_ref": "other-review"}),
+            ("ref_changed", {}, {"base_ref": "other-base"}),
+            ("reviewer_changed", {"reviewer_ref": "agent:8"}, {}),
             ("risk_changed", {}, {"review_strength": "normal"}),
             ("round_expired", {}, {"round": 4}),
             ("harness_unaddressable", {"reviewer_addressable": False}, {}),
@@ -393,6 +413,17 @@ class ReviewerLeaseAndReceiptTests(unittest.TestCase):
                 self.assertEqual((result["decision"], result["reason"]),
                                  ("fresh", reason))
                 self.assertEqual(result["status"]["fresh_count"], 2)
+
+    def test_diff_status_rejects_identical_base_and_target_refs(self):
+        status = dict(self.base_status(), target_ref="same", base_ref="same")
+        with self.assertRaisesRegex(session_review.StatusError, "distinct base_ref"):
+            session_review.validate_status(status)
+        with self.assertRaisesRegex(session_review.StatusError, "distinct base_ref"):
+            session_review.acquire_reviewer_lease(
+                status,
+                scope_digest="scope:v1",
+                reviewer_ref="agent:7",
+            )
 
     def test_receipt_keeps_unknown_tokens_null_and_reports_lease_quality(self):
         status = dict(self.fresh_lease(), phase="approved", next_actor="worker",

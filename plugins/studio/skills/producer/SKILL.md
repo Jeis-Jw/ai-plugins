@@ -118,7 +118,9 @@ Claude Code에서는 resolved `model`을 `Agent` 생성 인자에 전달한다. 
 dependency 선언이 아니다.
 
 - 미설정·비활성 route는 해당 command를 discovery/probe하지 않는다.
-- `auto` route의 필요성은 Producer가 미션 복잡도·격리·병렬성·독립 리뷰 요구로 판단한다.
+- `auto` work route는 실제 dependency/parallel work graph, integration gate 또는 명시적인
+  cross-session resume·외부 handoff가 있을 때만 선택한다. 위험도·격리·review·일반 evidence
+  요구는 work route와 분리해 판단한다.
 - configured work command가 분해·ready planning·evidence·integration을 소유하면 Producer가
   메인 세션에서 그 command를 실행하고 상태를 복제하지 않는다.
 - Producer가 ready action별 native subagent를 만들고 route의 model/effort를 적용한다.

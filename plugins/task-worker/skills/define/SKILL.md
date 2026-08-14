@@ -11,9 +11,14 @@ description: provider-neutral DefinitionArtifact로 작업을 정의하거나 re
 
 define은 기본 경로가 아니다 — 분해·추적·검증 이득이 있을 때만 진입한다.
 
-- 단일 파일·단일 세션·리뷰 불요 작업은 플러그인 진입 없이 직접 수행한다.
+- standalone 단일 작업은 파일 수나 위험도와 무관하게 기본적으로 플러그인 진입 없이 직접
+  수행한다. 위험도가 높다면 실행 graph를 만드는 대신 독립 review를 별도로 붙인다.
 - 대화 안에서 완결 가능한 질문·조사는 define 대상이 아니다.
 - 리프 고정비(worker spawn + 세리머니, ~20분+)를 넘는 payoff가 없으면 진입하지 않는다.
+
+1-node 실행은 기존 work graph가 조건 분기로 하나만 남았거나, 사용자가 canonical
+cross-session resume·외부 실행 handoff를 명시적으로 요구한 경우의 호환 경로다. standalone
+단일 작업을 위해 별도 `single-run` 제품 경로나 축약 lifecycle을 만들지 않는다.
 
 ## 분해 기준
 

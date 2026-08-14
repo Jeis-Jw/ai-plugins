@@ -49,8 +49,9 @@ Codex 등 `$CLAUDE_PLUGIN_ROOT`가 없으면 이 스킬 로드 위치의 플러�
    python3 "$SR" set-status --slug <snapshot> \
      --status-json '{"phase":"awaiting-review","active_actor":"none","lock_since":null,"next_actor":"reviewer","target_mode":"diff","target_nature":"code","target_ref":"<ref>","base_ref":"<BASE>","responding_to":"<FEEDBACK_SHA>","round":<n+1>,"round_type":"converge","flow_mode":"<self|separate>","review_strength":"<...>","blocking_count":0}'
    ```
-   이어서 같은 `scope_digest`로 lease를 판정한다. scope/target·base ref/review strength가
-   바뀌었거나 expiry를 넘었으면 fresh, 모두 같고 `reviewer_ref`가 addressable하면 reuse다.
+   이어서 같은 `scope_digest`로 lease를 판정한다. scope, base ref, reviewer identity,
+   review strength가 바뀌었거나 expiry를 넘었으면 fresh다. target ref만 새 candidate로
+   바뀌었고 기존 `reviewer_ref`가 addressable하면 같은 reviewer를 reuse한다.
    ```bash
    python3 "$SR" lease-acquire --slug <snapshot> --scope-digest "<SCOPE_DIGEST>" \
      --reviewer-ref "<addressable reviewer ref>"

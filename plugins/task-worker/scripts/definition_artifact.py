@@ -616,6 +616,20 @@ def execution_identity(artifact: dict[str, Any], node_ref: str) -> dict[str, str
     }
 
 
+def resolve_run_state_dir(
+    state_root: str | Path = ".task-worker/local",
+    legacy_state_dir: str | Path | None = None,
+) -> Path:
+    """Resolve run ledgers below the canonical state root.
+
+    ``legacy_state_dir`` preserves existing callers without keeping two public
+    state-location concepts in skills and documentation.
+    """
+    if legacy_state_dir is not None:
+        return Path(legacy_state_dir)
+    return Path(state_root) / "runs"
+
+
 def _read_matching_states(artifact: dict[str, Any], state_dir: Path) -> list[dict[str, Any]]:
     if not state_dir.is_dir():
         return []
@@ -1372,11 +1386,13 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("capabilities")
     ready = sub.add_parser("ready")
     ready.add_argument("--artifact", required=True)
-    ready.add_argument("--state-dir", default=".task-worker/local/runs")
+    ready.add_argument("--state-root", default=".task-worker/local")
+    ready.add_argument("--state-dir", help=argparse.SUPPRESS)
     local_start = sub.add_parser("local-start")
     local_start.add_argument("--artifact", required=True)
     local_start.add_argument("--node", required=True)
-    local_start.add_argument("--state-dir", default=".task-worker/local/runs")
+    local_start.add_argument("--state-root", default=".task-worker/local")
+    local_start.add_argument("--state-dir", help=argparse.SUPPRESS)
     local_start.add_argument("--run-id")
     local_event = sub.add_parser("local-event")
     local_event.add_argument("--artifact", required=True)
@@ -1573,10 +1589,12 @@ def main(argv: Iterable[str] | None = None) -> int:
                 ],
             }
         elif args.command == "ready":
-            payload = {"ok": True, "plan": ready_plan(read_json(args.artifact), args.state_dir)}
+            state_dir = resolve_run_state_dir(args.state_root, args.state_dir)
+            payload = {"ok": True, "plan": ready_plan(read_json(args.artifact), state_dir)}
         elif args.command == "local-start":
+            state_dir = resolve_run_state_dir(args.state_root, args.state_dir)
             state, path, created = start_local_run(
-                read_json(args.artifact), node_ref=args.node, state_dir=args.state_dir, run_id=args.run_id
+                read_json(args.artifact), node_ref=args.node, state_dir=state_dir, run_id=args.run_id
             )
             payload = {"ok": True, "created": created, "path": str(path), "run": state}
         elif args.command == "local-event":

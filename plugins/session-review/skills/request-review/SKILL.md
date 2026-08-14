@@ -72,7 +72,8 @@ $ARGUMENTS:
    git switch -c "$REVIEW"
    ```
    이미 리뷰브랜치가 있으면 `python3 "$SR" snapshot-load --slug <snapshot>` 후
-   status block을 읽어 `base_ref`와 `target_ref`가 같은지 확인한다.
+   status block을 읽어 기존 review episode와 base를 확인한다. diff mode에서 `base_ref`와
+   `target_ref`가 같으면 빈 handoff이므로 중단한다.
 3. status block + reviewer lease 생성
    - `phase: "awaiting-review"`
    - `active_actor: "none"`
@@ -125,6 +126,8 @@ $ARGUMENTS:
 - `separate`: 사용자 운영 릴레이를 전제로 독립 reviewer 세션이 `review`를 실행한다.
 - `self`: 최초 라운드는 fresh reviewer를 띄운다. 수정 라운드는 lease가 `reuse`면
   `reviewer_ref`의 기존 reviewer를 다시 호출하고, `fresh`면 새 reviewer를 띄운다.
+  동일 scope·base·strength에서 target ref만 새 candidate로 바뀐 경우는 같은 reviewer를
+  reuse한다.
 - `self + audit`: snapshot, review branch, status block, round commit을 유지한다.
 - `self + fast`: snapshot, review branch, round commit을 생략하지만 reviewer lease와
   worker/reviewer 분리는 필수다. same-agent self-check는 session-review가 아니다. 최종 commit

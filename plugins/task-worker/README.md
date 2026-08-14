@@ -104,7 +104,7 @@ python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py
 # ready leaf 전체 계획
 python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py" ready \
   --artifact .task-worker/local/definitions/example/revision-000001.json \
-  --state-dir .task-worker/local/runs
+  --state-root .task-worker/local
 ```
 
 `manual`은 외부 개발자에게 맡길 때 사용한다. 분해·dependency·ready-set은 동일하게 계산하지만 local run/worktree를 만들지 않는다. `worker`는 ready leaf를 bounded parallel로 실행한다.
@@ -123,6 +123,13 @@ python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py
 ```
 
 이 디렉터리는 같은 머신·workspace에서 세션을 이어가기 위한 로컬 상태다. 여러 머신 간 동기화 정본이 아니다.
+공개 CLI는 `--state-root`만 사용하고 run ledger는 자동으로 `<state-root>/runs`에서 찾는다.
+기존 `--state-dir`은 이전 호출 호환성만 유지한다.
+
+task-worker는 standalone 단일 실행의 기본 도구가 아니다. 실제 dependency/ready-set 병렬성,
+integration gate 또는 명시적인 cross-session resume·외부 실행 handoff가 있을 때 정의한다.
+기존 graph가 하나의 node로 축소되는 경우는 지원하지만 별도 `single-run` 제품 경로를 만들지
+않는다.
 
 ## 변경 이력
 

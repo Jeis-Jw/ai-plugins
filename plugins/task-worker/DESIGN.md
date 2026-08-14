@@ -9,6 +9,8 @@
 5. **provider 상태를 core에 넣지 않는다.** Issue, PR, label, Studio track, wiki node는 adapter binding이다.
 6. **review owner는 edge당 하나다.** review가 필요한 edge만 review lease를 갖고 reviewer dispatch 전에 permit을 소비한다.
 7. **추가 agent hop을 만들지 않는다.** plugin 호출 경계와 execution episode 경계는 동일하지 않다.
+8. **standalone 단일 작업을 graph로 승격하지 않는다.** 1-node 실행은 기존 graph 축소나
+   명시적인 durable resume·외부 handoff를 위한 호환 경로일 뿐 별도 제품 경로가 아니다.
 
 ## 0.2.0 경계
 

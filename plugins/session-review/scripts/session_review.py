@@ -106,6 +106,7 @@ FRESH_FALLBACK_REASONS = {
     "legacy_snapshot",
     "scope_changed",
     "ref_changed",
+    "reviewer_changed",
     "risk_changed",
     "round_expired",
     "harness_unaddressable",
@@ -316,6 +317,17 @@ def validate_self_profile_fields(status: dict[str, Any]) -> None:
         raise StatusError("self turnkey requires recording_mode fast")
 
 
+def validate_diff_refs(status: dict[str, Any]) -> None:
+    """Reject an empty diff handoff caused by identical base and target refs."""
+    normalized = normalize_status(status)
+    if normalized.get("target_mode") != "diff":
+        return
+    base_ref = normalized.get("base_ref")
+    target_ref = normalized.get("target_ref")
+    if base_ref and target_ref and base_ref == target_ref:
+        raise StatusError("diff review requires distinct base_ref and target_ref")
+
+
 def effective_review_posture(status: dict[str, Any]) -> str:
     normalized = normalize_status(status)
     validate_review_posture_fields(normalized)
@@ -446,6 +458,7 @@ def acquire_reviewer_lease(
     scope_digest = scope_digest or normalized.get("scope_digest")
     if round_number < 1 or not all((target_ref, base_ref, scope_digest)):
         raise StatusError("lease requires round, target_ref, base_ref and scope_digest")
+    validate_diff_refs(normalized)
 
     reason: str | None = None
     if not raw_had_lease:
@@ -456,12 +469,10 @@ def acquire_reviewer_lease(
         reason = str(normalized.get("fresh_fallback_reason") or "legacy_snapshot")
     elif normalized.get("scope_digest") != scope_digest:
         reason = "scope_changed"
-    elif (
-        normalized.get("lease_target_ref") != target_ref
-        or normalized.get("lease_base_ref") != base_ref
-        or (reviewer_ref is not None and reviewer_ref != normalized.get("reviewer_ref"))
-    ):
+    elif normalized.get("lease_base_ref") != base_ref:
         reason = "ref_changed"
+    elif reviewer_ref is not None and reviewer_ref != normalized.get("reviewer_ref"):
+        reason = "reviewer_changed"
     elif normalized.get("lease_risk") != risk:
         reason = "risk_changed"
     elif round_number > int(normalized.get("lease_expires_round") or 0):
@@ -499,6 +510,7 @@ def acquire_reviewer_lease(
                 "reviewed_ref": None,
                 "finding_digest": None,
                 "lease_updated_at": timestamp,
+                "lease_target_ref": str(target_ref),
                 "fresh_required": False,
                 "fresh_fallback_reason": None,
                 "reuse_count": int(normalized.get("reuse_count") or 0) + 1,
@@ -651,6 +663,7 @@ def validate_status(status: dict[str, Any]) -> None:
     normalized = normalize_status(status)
     validate_review_posture_fields(normalized)
     validate_self_profile_fields(normalized)
+    validate_diff_refs(normalized)
     validate_reviewer_lease_fields(normalized)
     phase = str(normalized.get("phase"))
     expected = PHASE_OWNER.get(phase)
