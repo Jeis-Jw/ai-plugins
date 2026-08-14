@@ -9,43 +9,43 @@
       "name": "wiki-markdown",
       "source": "./plugins/wiki-markdown",
       "description": "Markdown-backed AI-native durable-context provider with proactive scoped recall, approval-gated capture proposals, deterministic lifecycle, and a dedicated initialization skill.",
-      "version": "0.24.1"
+      "version": "0.24.2"
     },
     {
       "name": "task-github",
       "source": "./plugins/task-github",
       "description": "Issue Tree 기록과 PR·CI·review·merge·closeout transport가 필요한 작업용 GitHub delivery adapter. local-only 실행에는 사용하지 않는다.",
-      "version": "0.27.1"
+      "version": "0.27.2"
     },
     {
       "name": "session-review",
       "source": "./plugins/session-review",
       "description": "reviewer 독립성·feedback continuity·audit approval gate가 필요한 작업용 worker/reviewer episode protocol. 단순 same-agent self-check에는 사용하지 않는다.",
-      "version": "0.6.0"
+      "version": "0.6.1"
     },
     {
       "name": "studio",
       "source": "./plugins/studio",
       "description": "host skill의 공개 설명으로 필요한 능력을 선택하고 role별 native crew를 지휘하는 description-driven Producer",
-      "version": "0.14.0"
+      "version": "0.15.0"
     },
     {
       "name": "task-worker",
       "source": "./plugins/task-worker",
       "description": "dependency·병렬 ready-set·통합 gate·cross-session resume가 필요한 multi-unit 작업용 provider-neutral WorkGraph 플러그인. standalone bounded 작업의 기본 wrapper로는 사용하지 않는다.",
-      "version": "0.9.0"
+      "version": "0.10.0"
     },
     {
       "name": "context-core",
       "source": "./plugins/context-core",
       "description": "승인된 handoff와 evidence, index-first recall, 단일 physical write coordinator를 제공하는 shared-context runtime",
-      "version": "0.1.1"
+      "version": "0.1.2"
     },
     {
       "name": "context-decision",
       "source": "./plugins/context-decision",
       "description": "결정·취지·반려대안과 superseded history를 함께 보존하는 decision continuity plugin",
-      "version": "0.1.1"
+      "version": "0.1.2"
     }
   ]
 }

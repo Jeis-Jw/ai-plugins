@@ -1,5 +1,5 @@
 {
   "name": "task-worker",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "dependency·병렬 ready-set·통합 gate·cross-session resume가 필요한 multi-unit 작업용 provider-neutral WorkGraph 플러그인. standalone bounded 작업의 기본 wrapper로는 사용하지 않는다."
 }

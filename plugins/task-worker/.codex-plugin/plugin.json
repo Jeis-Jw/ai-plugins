@@ -1,6 +1,6 @@
 {
   "name": "task-worker",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "Provider-neutral work graphs for multi-unit dependency, parallel, integration-gated, or resumable execution; not a default wrapper for standalone bounded work.",
   "author": {
     "name": "Jinwuk-Lee",

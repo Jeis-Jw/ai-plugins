@@ -1,6 +1,6 @@
 {
   "name": "context-decision",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Decision continuity with rationale, rejected alternatives, conflict checks, and superseded history.",
   "author": {
     "name": "Jinwuk-Lee",

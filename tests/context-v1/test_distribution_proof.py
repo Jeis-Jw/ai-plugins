@@ -179,7 +179,7 @@ class DistributionProofTests(unittest.TestCase):
             root = ROOT / "plugins" / name
             claude = read_json(root / ".claude-plugin/plugin.json")
             codex = read_json(root / ".codex-plugin/plugin.json")
-            self.assertEqual("0.1.1", claude["version"])
+            self.assertEqual("0.1.2", claude["version"])
             self.assertEqual(claude["version"], codex["version"])
             self.assertEqual(claude["version"], claude_entries[name]["version"])
             self.assertEqual(claude["version"], codex_entries[name]["version"])

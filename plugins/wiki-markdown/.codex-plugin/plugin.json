@@ -1,6 +1,6 @@
 {
   "name": "wiki-markdown",
-  "version": "0.24.1",
+  "version": "0.24.2",
   "description": "Markdown-backed AI-native durable-context provider with proactive recall, approval-gated capture proposals, and a dedicated initialization skill for agent policy scaffolding.",
   "author": {
     "name": "Jinwuk-Lee",

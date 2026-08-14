@@ -1,5 +1,5 @@
 {
   "name": "studio",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "description": "host skill의 공개 설명으로 필요한 능력을 선택하고 role별 native crew를 지휘하는 description-driven Producer"
 }

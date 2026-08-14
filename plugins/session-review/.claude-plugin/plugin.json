@@ -1,5 +1,5 @@
 {
   "name": "session-review",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "reviewer 독립성·feedback continuity·audit approval gate가 필요한 작업용 worker/reviewer episode protocol. 단순 same-agent self-check에는 사용하지 않는다."
 }

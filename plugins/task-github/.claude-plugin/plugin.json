@@ -1,5 +1,5 @@
 {
   "name": "task-github",
-  "version": "0.27.1",
+  "version": "0.27.2",
   "description": "Issue Tree 기록과 PR·CI·review·merge·closeout transport가 필요한 작업용 GitHub delivery adapter. local-only 실행에는 사용하지 않는다."
 }
