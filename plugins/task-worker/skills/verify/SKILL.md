@@ -43,10 +43,11 @@ python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py
   --state-root .task-worker/local
 ```
 
-같은 tree/profile의 여러 selector는 child receipt/evidence ref, result, output digest와 selector
-coverage를 보존한 batch digest로 묶을 수 있다. fail/error/missing child가 하나라도 있으면 batch는
-fail이다. batch는 projection일 뿐 새 ledger가 아니며 integration evidence에는 digest 하나만
-연결한다.
+같은 HEAD의 related profiles는 공통 source/criteria/environment/target과 전체 expected selector
+set을 pin한 채 profile별 fingerprint를 섞지 않고 child permit/claim/receipt/evidence ref, result,
+output digest와 selector coverage를 보존한 batch digest로 묶을 수 있다. fail/error/cancel/missing
+child가 하나라도 있으면 batch는 fail이다. batch는 기존 execution-control store의 pure projection일
+뿐 새 ledger가 아니며 integration evidence에는 digest 하나만 연결한다.
 
 독립 hard review와 finding 수정이 끝난 candidate는 같은 addressable reviewer가 최종 commit을
 확인한 뒤 fresh final-grade root QA를 한 번 실행한다. final QA 뒤 source/test/config가 바뀌면

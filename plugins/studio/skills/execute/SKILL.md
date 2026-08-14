@@ -83,7 +83,8 @@ Producer의 model/effort resolver 결과로 생성한다.
 
 task-worker의 artifact, run state, evidence나 receipt를 Studio 상태로 복제하지 않는다.
 leaf 개발 QA는 targeted/delta를 기본으로 한다. dependency/shared contract, 영향 범위
-불확실성 또는 독립 검증 reason이 있을 때만 full QA를 선택한다. 같은 tree/profile의 검증은
+불확실성 또는 독립 검증 reason이 있을 때만 full QA를 선택한다. 같은 HEAD의 related profiles 검증은
+공통 source/criteria/environment/target과 expected selector set을 pin하고 각 profile fingerprint 및
 child refs/result/output digest/selector coverage를 보존한 task-worker batch digest로 전달하고,
 integration evidence에는 그 digest 하나만 연결한다.
 

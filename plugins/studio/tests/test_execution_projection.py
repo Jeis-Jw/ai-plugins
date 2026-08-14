@@ -37,14 +37,43 @@ class ExecutionProjectionTests(unittest.TestCase):
     @staticmethod
     def attempt(result="pass", started="2026-07-15T00:00:04Z",
                 finished="2026-07-15T00:00:05Z"):
-        return {
-            "receipt_ref": {"receipt_id": "receipt-1", "digest": "sha256:" + "1" * 64},
+        suffix = started.replace(":", "").replace("-", "")
+        profile_refs = [{
+            "profile_id": "python:one", "command_profile_digest": "sha256:" + "5" * 64,
+            "command_digest": "sha256:" + "6" * 64, "tool_version": "python/3",
+            "tool_identity_digest": "sha256:" + "9" * 64,
+            "reuse_fingerprint_digest": "sha256:" + "a" * 64,
+            "selectors": ["selector-1"],
+        }]
+        child = {
+            "permit_ref": {"permit_id": "permit-" + suffix, "digest": "sha256:" + "b" * 64},
+            "claim_ref": {"claim_id": "claim-" + suffix, "digest": "sha256:" + "c" * 64},
+            "receipt_ref": {"receipt_id": "receipt-" + suffix, "digest": "sha256:" + "1" * 64},
             "evidence_ref": (
-                {"evidence_id": "evidence-1", "digest": "sha256:" + "2" * 64}
+                {"evidence_id": "evidence-" + suffix, "digest": "sha256:" + "2" * 64}
                 if result == "pass" else None
             ),
-            "result": result, "started_at": started, "finished_at": finished,
+            "profile_id": "python:one", "reuse_fingerprint_digest": "sha256:" + "a" * 64,
+            "result": result, "output_digest": "sha256:" + "d" * 64,
+            "selectors": ["selector-1"], "started_at": started, "finished_at": finished,
         }
+        batch = {
+            "schema": "task-worker.verification-evidence-batch/v1",
+            "candidate_ref": "candidate-1", "source_tree_digest": "sha256:" + "3" * 64,
+            "criteria_digest": "sha256:" + "4" * 64, "target": "repository",
+            "environment_digest": "sha256:" + "e" * 64,
+            "fresh_requirement_id": "final-root-qa:" + "f" * 64,
+            "expected_selectors": ["selector-1"], "covered_selectors": ["selector-1"],
+            "profile_refs": profile_refs,
+            "profiles_digest": "sha256:" + projection.hashlib.sha256(
+                projection.canonical_json(profile_refs).encode("utf-8")
+            ).hexdigest(),
+            "children": [child], "missing_selectors": [], "unexpected_selectors": [],
+            "failed_child_refs": [] if result == "pass" else [child["receipt_ref"]["receipt_id"]],
+            "result": result,
+        }
+        batch["digest"] = projection.instance_digest(batch)
+        return {"batch": batch, "result": result, "started_at": started, "finished_at": finished}
 
     def qa(self, attempts=None, result="pass"):
         value = {

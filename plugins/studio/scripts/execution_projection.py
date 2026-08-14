@@ -118,33 +118,62 @@ def _combine_final_candidate(
     passed = []
     failure_after_confirmation = False
     pass_before_confirmation = False
+    seen_batches: set[str] = set()
     for attempt in attempts:
         if not isinstance(attempt, dict) or set(attempt) != {
-            "receipt_ref", "evidence_ref", "result", "started_at", "finished_at",
+            "batch", "result", "started_at", "finished_at",
         }:
             raise ValueError("qa_projection attempt fields differ")
-        receipt_ref = attempt["receipt_ref"]
-        if not isinstance(receipt_ref, dict) or set(receipt_ref) != {"receipt_id", "digest"}:
-            raise ValueError("qa_projection receipt_ref fields differ")
-        if not isinstance(receipt_ref["receipt_id"], str) or not receipt_ref["receipt_id"]:
-            raise ValueError("qa_projection receipt_id must be non-empty")
-        _digest(receipt_ref["digest"], "receipt_ref.digest")
+        batch = attempt["batch"]
+        batch_fields = {
+            "schema", "candidate_ref", "source_tree_digest", "criteria_digest", "target",
+            "environment_digest", "fresh_requirement_id", "expected_selectors",
+            "covered_selectors", "profile_refs", "profiles_digest", "children",
+            "missing_selectors", "unexpected_selectors", "failed_child_refs", "result", "digest",
+        }
+        if (
+            not isinstance(batch, dict) or set(batch) != batch_fields
+            or batch.get("schema") != "task-worker.verification-evidence-batch/v1"
+            or batch.get("digest") != instance_digest(batch)
+            or batch.get("candidate_ref") != candidate
+            or batch.get("source_tree_digest") != qa_projection["source_tree_digest"]
+            or batch.get("criteria_digest") != qa_projection["criteria_digest"]
+            or batch.get("result") != attempt.get("result")
+        ):
+            raise ValueError("qa_projection batch differs")
+        batch_digest = _digest(batch["digest"], "batch.digest")
+        if batch_digest in seen_batches:
+            raise ValueError("qa_projection batch is duplicated")
+        seen_batches.add(batch_digest)
+        _digest(batch.get("environment_digest"), "batch.environment_digest")
+        _digest(batch.get("profiles_digest"), "batch.profiles_digest")
+        if batch.get("profiles_digest") != "sha256:" + hashlib.sha256(
+            canonical_json(batch.get("profile_refs")).encode("utf-8")
+        ).hexdigest():
+            raise ValueError("qa_projection profile set digest differs")
+        for field in (
+            "expected_selectors", "covered_selectors", "profile_refs", "children",
+            "missing_selectors", "unexpected_selectors", "failed_child_refs",
+        ):
+            if not isinstance(batch.get(field), list):
+                raise ValueError(f"qa_projection batch {field} must be a list")
+        if not batch["children"] or not batch["expected_selectors"]:
+            raise ValueError("qa_projection batch must preserve child and selector refs")
         started = _timestamp(attempt["started_at"], "attempt.started_at")
         finished = _timestamp(attempt["finished_at"], "attempt.finished_at")
         if finished < started:
             raise ValueError("QA attempt finish precedes start")
         if attempt["result"] != "pass":
-            if attempt["evidence_ref"] is not None:
-                raise ValueError("failed QA attempt cannot claim passing evidence")
             if finished >= confirmed_at:
                 failure_after_confirmation = True
             continue
-        evidence_ref = attempt["evidence_ref"]
-        if not isinstance(evidence_ref, dict) or set(evidence_ref) != {"evidence_id", "digest"}:
-            raise ValueError("passing QA evidence_ref fields differ")
-        if not isinstance(evidence_ref["evidence_id"], str) or not evidence_ref["evidence_id"]:
-            raise ValueError("qa_projection evidence_id must be non-empty")
-        _digest(evidence_ref["digest"], "evidence_ref.digest")
+        if (
+            batch["missing_selectors"] or batch["unexpected_selectors"]
+            or batch["failed_child_refs"]
+            or batch["expected_selectors"] != batch["covered_selectors"]
+            or any(child.get("result") != "pass" for child in batch["children"])
+        ):
+            raise ValueError("passing QA batch contains incomplete children")
         if started <= confirmed_at:
             pass_before_confirmation = True
         passed.append(attempt)
@@ -158,7 +187,7 @@ def _combine_final_candidate(
         "schema": SCHEMA, "action": "accept", "candidate_ref": candidate,
         "reviewer_ref": reviewer_ref, "review_finding_digest": review_status["finding_digest"],
         "qa_projection_digest": qa_projection["digest"],
-        "receipt_ref": passed[0]["receipt_ref"], "evidence_ref": passed[0]["evidence_ref"],
+        "final_batch_ref": {"digest": passed[0]["batch"]["digest"]},
     }
     result["digest"] = instance_digest(result)
     return result

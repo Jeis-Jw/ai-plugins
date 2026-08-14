@@ -846,10 +846,10 @@ class CanonicalContractTests(unittest.TestCase):
         )
 
     @staticmethod
-    def _batch_child(receipt, evidence):
+    def _batch_child(receipt, evidence=None):
         return {
-            "evidence_id": evidence["evidence_id"],
-            "evidence_digest": evidence["digest"],
+            "evidence_id": evidence["evidence_id"] if evidence else None,
+            "evidence_digest": evidence["digest"] if evidence else None,
             "receipt_id": receipt["receipt_id"],
             "receipt_digest": receipt["digest"],
         }
@@ -870,11 +870,11 @@ class CanonicalContractTests(unittest.TestCase):
             child = self._batch_child(receipt, evidence)
             kwargs = {
                 "state_root": tmp,
+                "candidate_ref": permit["head"],
                 "source_tree_digest": fingerprint["source_tree_digest"],
-                "command_profile_digest": plan["command_profile_digest"],
                 "criteria_digest": permit["criteria_digest"],
                 "target": permit["target"],
-                "reuse_fingerprint_digest": fingerprint["digest"],
+                "environment_digest": permit["environment_digest"],
                 "expected_selectors": ["selector-1", "selector-2"],
                 "contract": self.contract,
             }
@@ -918,12 +918,15 @@ class CanonicalContractTests(unittest.TestCase):
                 )
         self.assertEqual("pass", passed["result"])
         self.assertEqual(receipt["output_digest"], passed["children"][0]["output_digest"])
+        self.assertEqual([plan["command_profile_digest"]], [
+            item["command_profile_digest"] for item in passed["profile_refs"]
+        ])
         self.assertEqual({"batch_digest": passed["digest"]}, projection["evidence_ref"])
         self.assertEqual(2, fabricated.returncode, fabricated.stderr or fabricated.stdout)
         self.assertEqual("evidence_batch_body_deprecated", json.loads(fabricated.stdout)["error_code"])
         self.assertEqual("evidence_batch_invalid", duplicated.exception.code)
         self.assertEqual("fail", missing["result"])
-        self.assertEqual(["EV-missing"], missing["failed_evidence_refs"])
+        self.assertEqual([receipt["receipt_id"]], missing["failed_child_refs"])
         self.assertEqual("execution_projection_invalid", fabricated_projection.exception.code)
 
     def test_final_qa_projection_resolves_only_canonical_task_worker_state(self):
@@ -958,6 +961,117 @@ class CanonicalContractTests(unittest.TestCase):
         self.assertEqual("final_qa_invalid", caller_attempts.exception.code)
         self.assertEqual("final_qa_stale", changed_after_final.exception.code)
 
+    def test_heterogeneous_final_children_project_as_one_complete_logical_batch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, first_permit, first_resolver, first_plan, initial_fingerprint = (
+                self._live_execution_context(tmp, purpose="integration-full", qa_mode="final")
+            )
+            expected = ["selector-1", "selector-3"]
+            batch_id = control.final_batch_requirement_id(
+                candidate_ref=first_permit["head"],
+                source_tree_digest=initial_fingerprint["source_tree_digest"],
+                criteria_digest=first_permit["criteria_digest"],
+                target=first_permit["target"],
+                environment_digest=first_permit["environment_digest"],
+                expected_selectors=expected,
+            )
+            first_permit.update({
+                "permit_id": "permit-final-one", "fresh_requirement_id": batch_id,
+            })
+            first_permit["digest"] = control.instance_digest(first_permit)
+            first_resolver.update({
+                "selectors": ["selector-1"], "batch_selectors": expected,
+            })
+            first_fingerprint, _ = control.resolve_reuse_fingerprint(
+                first_permit, first_plan, first_resolver,
+            )
+
+            second_profile = self._profile(
+                profile_id="python:two",
+                args=["-m", "unittest", "selector-3"],
+            )
+            second_command = self._command(second_profile, cwd=".")
+            second_plan = {
+                "command": second_command,
+                "command_profile_digest": second_profile["digest"],
+            }
+            second_permit = {
+                **first_permit,
+                "permit_id": "permit-final-two",
+                "command_profile_id": second_profile["profile_id"],
+                "command_digest": control.command_digest(second_command),
+            }
+            second_permit["digest"] = control.instance_digest(second_permit)
+            second_resolver = {
+                **first_resolver, "selectors": ["selector-3"],
+            }
+            second_fingerprint, _ = control.resolve_reuse_fingerprint(
+                second_permit, second_plan, second_resolver,
+            )
+            first_claim = control.claim_execution(
+                first_permit, tmp, claimed_by="worker", contract=self.contract,
+                reuse_resolver=first_resolver, policy_plan=first_plan,
+            )
+            first_receipt = self._command_receipt(
+                first_permit, first_claim["claim"]["claim_id"],
+                receipt_id="receipt-final-one",
+            )
+            first_evidence = self._verification_evidence(
+                first_permit, first_receipt, first_fingerprint,
+                evidence_id="EV-final-one",
+            )
+            control.complete_execution(
+                first_permit, first_receipt["claim_id"], first_receipt, tmp,
+                evidence=first_evidence, contract=self.contract,
+            )
+            request = {
+                "candidate_ref": first_permit["head"], "state_root": tmp,
+                "source_tree_digest": first_fingerprint["source_tree_digest"],
+                "criteria_digest": first_permit["criteria_digest"],
+            }
+            incomplete = control.final_qa_projection(request, self.contract)
+
+            second_claim = control.claim_execution(
+                second_permit, tmp, claimed_by="worker", contract=self.contract,
+                reuse_resolver=second_resolver, policy_plan=second_plan,
+            )
+            second_receipt = self._command_receipt(
+                second_permit, second_claim["claim"]["claim_id"],
+                receipt_id="receipt-final-two",
+                started_at="2026-07-15T00:00:03Z", finished_at="2026-07-15T00:00:04Z",
+            )
+            second_evidence = self._verification_evidence(
+                second_permit, second_receipt, second_fingerprint,
+                evidence_id="EV-final-two",
+            )
+            control.complete_execution(
+                second_permit, second_receipt["claim_id"], second_receipt, tmp,
+                evidence=second_evidence, contract=self.contract,
+            )
+            accepted = control.final_qa_projection(request, self.contract)
+            batch = accepted["attempts"][0]["batch"]
+            with self.assertRaises(control.ExecutionControlError) as duplicated:
+                control.build_evidence_batch(
+                    state_root=tmp, candidate_ref=first_permit["head"],
+                    source_tree_digest=first_fingerprint["source_tree_digest"],
+                    criteria_digest=first_permit["criteria_digest"], target="repository",
+                    environment_digest=first_permit["environment_digest"],
+                    expected_selectors=expected,
+                    children=[
+                        self._batch_child(first_receipt, first_evidence),
+                        self._batch_child(first_receipt, first_evidence),
+                    ], contract=self.contract,
+                )
+
+        self.assertEqual("fail", incomplete["result"])
+        self.assertEqual(["selector-3"], incomplete["attempts"][0]["batch"]["missing_selectors"])
+        self.assertEqual("pass", accepted["result"])
+        self.assertEqual(1, len(accepted["attempts"]))
+        self.assertEqual(2, len(batch["children"]))
+        self.assertEqual(2, len(batch["profile_refs"]))
+        self.assertEqual(2, len({item["reuse_fingerprint_digest"] for item in batch["profile_refs"]}))
+        self.assertEqual("evidence_batch_invalid", duplicated.exception.code)
+
     def test_final_qa_projection_preserves_failed_attempt_before_one_pass(self):
         with tempfile.TemporaryDirectory() as tmp:
             _, permit, resolver, plan, fingerprint = self._live_execution_context(
@@ -981,19 +1095,27 @@ class CanonicalContractTests(unittest.TestCase):
             }
             failed = control.final_qa_projection(base, self.contract)
 
+            retry_permit = {
+                **permit, "permit_id": "permit-final-retry",
+                "fresh_requirement_id": "fresh-live-2",
+            }
+            retry_permit["digest"] = control.instance_digest(retry_permit)
+            retry_fingerprint, _ = control.resolve_reuse_fingerprint(
+                retry_permit, plan, resolver,
+            )
             second_claim = control.claim_execution(
-                permit, tmp, claimed_by="worker", contract=self.contract,
+                retry_permit, tmp, claimed_by="worker", contract=self.contract,
                 reuse_resolver=resolver, policy_plan=plan,
             )
             passed_receipt = self._command_receipt(
-                permit, second_claim["claim"]["claim_id"], receipt_id="receipt-final-pass",
+                retry_permit, second_claim["claim"]["claim_id"], receipt_id="receipt-final-pass",
                 started_at="2026-07-15T00:00:04Z", finished_at="2026-07-15T00:00:05Z",
             )
             evidence = self._verification_evidence(
-                permit, passed_receipt, fingerprint, evidence_id="EV-final-pass",
+                retry_permit, passed_receipt, retry_fingerprint, evidence_id="EV-final-pass",
             )
             control.complete_execution(
-                permit, passed_receipt["claim_id"], passed_receipt, tmp,
+                retry_permit, passed_receipt["claim_id"], passed_receipt, tmp,
                 evidence=evidence, contract=self.contract,
             )
             confirmed = control.final_qa_projection(base, self.contract)

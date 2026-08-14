@@ -45,6 +45,7 @@ REUSE_RESOLVER_FIELDS = frozenset((
     "schema", "repo_root", "relevant_paths", "dependency_paths",
     "public_surface_paths", "selectors",
 ))
+REUSE_RESOLVER_BATCH_FIELD = "batch_selectors"
 
 
 class ExecutionControlError(Exception):
@@ -695,7 +696,11 @@ def resolve_tool_identity(repo: Path, command: dict[str, Any]) -> dict[str, Any]
 def resolve_reuse_fingerprint(
     permit: dict[str, Any], plan: dict[str, Any], resolver: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    if not isinstance(resolver, dict) or set(resolver) != REUSE_RESOLVER_FIELDS:
+    resolver_fields = frozenset(resolver) if isinstance(resolver, dict) else frozenset()
+    if resolver_fields not in {
+        REUSE_RESOLVER_FIELDS,
+        REUSE_RESOLVER_FIELDS | {REUSE_RESOLVER_BATCH_FIELD},
+    }:
         raise ExecutionControlError("reuse_resolver_invalid", "reuse resolver fields differ")
     if resolver.get("schema") != REUSE_RESOLVER_SCHEMA:
         raise ExecutionControlError("reuse_resolver_invalid", "reuse resolver schema differs")
@@ -711,6 +716,17 @@ def resolve_reuse_fingerprint(
         if len(values) != len(set(values)):
             raise ExecutionControlError("reuse_resolver_invalid", f"{field} contains duplicates")
         normalized[field] = sorted(values)
+    batch_selectors = resolver.get(REUSE_RESOLVER_BATCH_FIELD)
+    if batch_selectors is not None:
+        if (
+            not isinstance(batch_selectors, list) or not batch_selectors
+            or any(not isinstance(item, str) or not item for item in batch_selectors)
+            or len(batch_selectors) != len(set(batch_selectors))
+        ):
+            raise ExecutionControlError(
+                "reuse_resolver_invalid", "batch_selectors must be non-empty unique strings",
+            )
+        normalized[REUSE_RESOLVER_BATCH_FIELD] = sorted(batch_selectors)
     if normalized["relevant_paths"] != sorted(set(permit.get("impact_set") or [])):
         raise ExecutionControlError("reuse_resolver_invalid", "relevant_paths must equal permit impact_set")
     if not normalized["dependency_paths"] or not normalized["public_surface_paths"]:
@@ -772,17 +788,34 @@ def resolve_reuse_fingerprint(
     return fingerprint, preimage
 
 
+def final_batch_requirement_id(
+    *, candidate_ref: str, source_tree_digest: str, criteria_digest: str,
+    target: str, environment_digest: str, expected_selectors: Iterable[str],
+) -> str:
+    """Bind a fresh final execution group to its complete selector set."""
+    return "final-root-qa:" + tagged_digest({
+        "candidate_ref": candidate_ref,
+        "source_tree_digest": source_tree_digest,
+        "criteria_digest": criteria_digest,
+        "target": target,
+        "environment_digest": environment_digest,
+        "expected_selectors": sorted(expected_selectors),
+    }).removeprefix("sha256:")
+
+
 def build_evidence_batch(
-    *, state_root: str | Path, source_tree_digest: str, command_profile_digest: str,
-    criteria_digest: str, target: str, reuse_fingerprint_digest: str,
+    *, state_root: str | Path, candidate_ref: str, source_tree_digest: str,
+    criteria_digest: str, target: str, environment_digest: str,
     expected_selectors: Iterable[str], children: Iterable[dict[str, Any]],
     contract: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Pure projection over canonical heterogeneous child executions."""
     contract = contract or load_contract()
     _require_tagged_digest(source_tree_digest, "source_tree_digest")
-    _require_tagged_digest(command_profile_digest, "command_profile_digest")
     _require_tagged_digest(criteria_digest, "criteria_digest")
-    _require_tagged_digest(reuse_fingerprint_digest, "reuse_fingerprint_digest")
+    _require_tagged_digest(environment_digest, "environment_digest")
+    if not isinstance(candidate_ref, str) or not candidate_ref:
+        raise ExecutionControlError("evidence_batch_invalid", "candidate_ref must be non-empty")
     if not isinstance(target, str) or not target:
         raise ExecutionControlError("evidence_batch_invalid", "target must be non-empty")
     requested_selectors = list(expected_selectors)
@@ -799,24 +832,51 @@ def build_evidence_batch(
     child_fields = {"evidence_id", "evidence_digest", "receipt_id", "receipt_digest"}
     if any(not isinstance(child, dict) or set(child) != child_fields for child in requests):
         raise ExecutionControlError("evidence_batch_invalid", "child refs fields differ")
-    for field in child_fields:
+    for field in ("receipt_id", "receipt_digest"):
         values = [child[field] for child in requests]
         if any(not isinstance(value, str) or not value for value in values):
             raise ExecutionControlError("evidence_batch_invalid", f"{field} must be non-empty")
         if field.endswith("digest"):
-            for value in values:
-                _require_tagged_digest(value, field)
+            for item in values:
+                _require_tagged_digest(item, field)
+        if len(values) != len(set(values)):
+            raise ExecutionControlError("evidence_batch_invalid", f"duplicate {field}")
+    for child in requests:
+        evidence_id = child["evidence_id"]
+        evidence_digest = child["evidence_digest"]
+        if (evidence_id is None) != (evidence_digest is None):
+            raise ExecutionControlError("evidence_batch_invalid", "evidence ref fields must both be null")
+        if evidence_id is not None:
+            if not isinstance(evidence_id, str) or not evidence_id:
+                raise ExecutionControlError("evidence_batch_invalid", "evidence_id must be non-empty")
+            _require_tagged_digest(evidence_digest, "evidence_digest")
+    for field in ("evidence_id", "evidence_digest"):
+        values = [child[field] for child in requests if child[field] is not None]
         if len(values) != len(set(values)):
             raise ExecutionControlError("evidence_batch_invalid", f"duplicate {field}")
 
     root = Path(state_root) / "execution-control"
     normalized: list[dict[str, Any]] = []
+    profiles: list[dict[str, Any]] = []
     covered: set[str] = set()
+    covered_owner: dict[str, str] = {}
+    declared_batch_selectors: list[list[str]] = []
+    fresh_ids: set[str | None] = set()
+    seen_permits: set[str] = set()
+    seen_claims: set[str] = set()
     for requested in requests:
         receipt_path = _object_file(root / "receipts", requested["receipt_id"])
-        evidence_path = _object_file(root / "evidence", requested["evidence_id"])
         if not receipt_path.exists():
-            normalized.append({**requested, "result": "missing", "output_digest": None, "selectors": []})
+            normalized.append({
+                "permit_ref": None, "claim_ref": None,
+                "receipt_ref": {
+                    "receipt_id": requested["receipt_id"], "digest": requested["receipt_digest"],
+                },
+                "evidence_ref": None, "profile_id": None,
+                "reuse_fingerprint_digest": None, "result": "missing",
+                "output_digest": None, "selectors": [],
+                "started_at": None, "finished_at": None,
+            })
             continue
         receipt = _read(receipt_path)
         validate_instance(receipt, "command-receipt", contract)
@@ -825,69 +885,180 @@ def build_evidence_batch(
             or receipt.get("digest") != requested["receipt_digest"]
         ):
             raise ExecutionControlError("evidence_batch_invalid", "stored child receipt differs")
-        _, _, claim = _find_claim(root, receipt["claim_id"])
-        preimage = claim.get("reuse_preimage") or {}
-        fingerprint = preimage.get("fingerprint") or {}
-        resolver = preimage.get("resolver") or {}
-        selectors = sorted(resolver.get("selectors") or [])
-        if (
-            claim.get("state") not in {"succeeded", "failed"}
-            or claim.get("receipt_ref") != requested["receipt_id"]
-            or fingerprint.get("digest") != reuse_fingerprint_digest
-            or fingerprint.get("source_tree_digest") != source_tree_digest
-            or preimage.get("command_profile_digest") != command_profile_digest
-        ):
-            raise ExecutionControlError("evidence_batch_invalid", "stored child execution pins differ")
-        if not evidence_path.exists():
-            normalized.append({
-                **requested, "result": "missing", "output_digest": receipt["output_digest"],
-                "selectors": selectors,
-            })
-            continue
-        evidence = _read(evidence_path)
-        validate_instance(evidence, "verification-evidence", contract)
-        permit_path = _object_file(root / "permits", claim["permit_id"])
+        execution_path, execution, claim = _find_claim(root, receipt["claim_id"])
+        permit_path = _object_file(root / "permits", claim.get("permit_id") or "")
         if not permit_path.exists():
             raise ExecutionControlError("evidence_batch_invalid", "stored child permit is missing")
         permit = _read(permit_path)
         validate_instance(permit, "execution-permit", contract)
+        preimage = claim.get("reuse_preimage")
+        if not isinstance(preimage, dict):
+            raise ExecutionControlError("evidence_batch_invalid", "stored child source preimage is missing")
+        fingerprint = preimage.get("fingerprint")
+        resolver = preimage.get("resolver")
+        if not isinstance(resolver, dict):
+            raise ExecutionControlError("evidence_batch_invalid", "stored child resolver is missing")
+        validate_reuse_fingerprint_policy(fingerprint, permit)
+        selectors = sorted(resolver.get("selectors") or [])
+        batch_selectors = resolver.get(REUSE_RESOLVER_BATCH_FIELD)
+        if batch_selectors is not None:
+            declared_batch_selectors.append(sorted(batch_selectors))
+        expected_key = physical_identity(permit, fingerprint)
+        expected_state = "succeeded" if receipt.get("result") == "pass" else "failed"
         if (
-            evidence.get("evidence_id") != requested["evidence_id"]
-            or evidence.get("digest") != requested["evidence_digest"]
-            or evidence.get("source_receipt_id") != receipt.get("receipt_id")
-            or requested["evidence_id"] not in (claim.get("evidence_refs") or [])
-            or not evidence_applicable(permit, evidence, reuse_fingerprint=fingerprint)
+            claim.get("state") != expected_state
+            or claim.get("receipt_ref") != receipt["receipt_id"]
+            or claim.get("permit_digest") != permit.get("digest")
+            or claim.get("physical_key") != expected_key
+            or execution.get("physical_key") != expected_key
+            or execution_path.name != expected_key.removeprefix("sha256:") + ".json"
+            or receipt.get("permit_id") != permit.get("permit_id")
+            or receipt.get("claim_id") != claim.get("claim_id")
+            or permit.get("head") != candidate_ref or receipt.get("head") != candidate_ref
+            or permit.get("target") != target or receipt.get("target") != target
+            or permit.get("criteria_digest") != criteria_digest
+            or permit.get("environment_digest") != environment_digest
+            or receipt.get("environment_digest") != environment_digest
+            or fingerprint.get("source_tree_digest") != source_tree_digest
+            or fingerprint.get("criteria_digest") != criteria_digest
+            or fingerprint.get("environment_digest") != environment_digest
+            or preimage.get("command_profile_digest") != fingerprint.get("command_profile_digest")
         ):
-            raise ExecutionControlError("evidence_batch_invalid", "stored child refs or digests differ")
-        if (
-            evidence.get("criteria_digest") != criteria_digest
-            or evidence.get("target") != target
-            or evidence.get("surface_digest") != reuse_fingerprint_digest
+            raise ExecutionControlError("evidence_batch_invalid", "stored child execution pins differ")
+        for receipt_field, permit_field in (
+            ("profile_id", "command_profile_id"), ("purpose", "purpose"),
+            ("command_digest", "command_digest"), ("tool_version", "tool_version"),
+            ("fresh_requirement_id", "fresh_requirement_id"),
         ):
-            raise ExecutionControlError("evidence_batch_invalid", "stored child pins differ")
-        result = receipt["result"] if receipt["result"] != "pass" else evidence["result"]
-        covered.update(selectors)
-        normalized.append({
-            **requested, "result": result, "output_digest": receipt["output_digest"],
+            if receipt.get(receipt_field) != permit.get(permit_field):
+                raise ExecutionControlError("evidence_batch_invalid", "stored child receipt pins differ")
+        if permit["permit_id"] in seen_permits or claim["claim_id"] in seen_claims:
+            raise ExecutionControlError("evidence_batch_invalid", "duplicate child permit or claim")
+        seen_permits.add(permit["permit_id"])
+        seen_claims.add(claim["claim_id"])
+        fresh_ids.add(permit.get("fresh_requirement_id"))
+        for selector in selectors:
+            if selector in covered_owner:
+                raise ExecutionControlError("evidence_batch_invalid", "duplicate selector coverage")
+            covered_owner[selector] = claim["claim_id"]
+            covered.add(selector)
+
+        result = receipt["result"]
+        evidence_ref = None
+        if result == "pass":
+            if requested["evidence_id"] is None:
+                result = "missing"
+            else:
+                evidence_path = _object_file(root / "evidence", requested["evidence_id"])
+                if not evidence_path.exists():
+                    result = "missing"
+                else:
+                    evidence = _read(evidence_path)
+                    validate_instance(evidence, "verification-evidence", contract)
+                    if (
+                        evidence.get("evidence_id") != requested["evidence_id"]
+                        or evidence.get("digest") != requested["evidence_digest"]
+                        or evidence.get("source_receipt_id") != receipt["receipt_id"]
+                        or claim.get("evidence_refs") != [requested["evidence_id"]]
+                        or evidence.get("criteria_digest") != criteria_digest
+                        or evidence.get("target") != target
+                        or evidence.get("surface_digest") != fingerprint.get("digest")
+                        or not evidence_applicable(permit, evidence, reuse_fingerprint=fingerprint)
+                    ):
+                        raise ExecutionControlError(
+                            "evidence_batch_invalid", "stored child evidence pins differ",
+                        )
+                    try:
+                        _, live_preimage = resolve_reuse_fingerprint(
+                            permit,
+                            {
+                                "command": preimage.get("command"),
+                                "command_profile_digest": preimage.get("command_profile_digest"),
+                            },
+                            resolver,
+                        )
+                    except (OSError, ExecutionControlError) as exc:
+                        raise ExecutionControlError(
+                            "evidence_batch_stale", "live child execution pins are unavailable",
+                        ) from exc
+                    if live_preimage != preimage:
+                        raise ExecutionControlError(
+                            "evidence_batch_stale", "live child execution pins changed",
+                        )
+                    evidence_ref = {
+                        "evidence_id": evidence["evidence_id"], "digest": evidence["digest"],
+                    }
+        elif requested["evidence_id"] is not None or claim.get("evidence_refs"):
+            raise ExecutionControlError(
+                "evidence_batch_invalid", "non-passing child cannot claim passing evidence",
+            )
+
+        permit_ref = {"permit_id": permit["permit_id"], "digest": permit["digest"]}
+        claim_ref = {"claim_id": claim["claim_id"], "digest": tagged_digest(claim)}
+        receipt_ref = {"receipt_id": receipt["receipt_id"], "digest": receipt["digest"]}
+        profile_ref = {
+            "profile_id": permit["command_profile_id"],
+            "command_profile_digest": preimage["command_profile_digest"],
+            "command_digest": permit["command_digest"],
+            "tool_version": permit["tool_version"],
+            "tool_identity_digest": fingerprint["tool_identity_digest"],
+            "reuse_fingerprint_digest": fingerprint["digest"],
             "selectors": selectors,
+        }
+        profiles.append(profile_ref)
+        normalized.append({
+            "permit_ref": permit_ref, "claim_ref": claim_ref,
+            "receipt_ref": receipt_ref, "evidence_ref": evidence_ref,
+            "profile_id": permit["command_profile_id"],
+            "reuse_fingerprint_digest": fingerprint["digest"],
+            "result": result, "output_digest": receipt["output_digest"],
+            "selectors": selectors, "started_at": receipt["started_at"],
+            "finished_at": receipt["finished_at"],
         })
+
+    if len(fresh_ids) > 1:
+        raise ExecutionControlError("evidence_batch_invalid", "child fresh requirements differ")
+    if declared_batch_selectors:
+        if len(declared_batch_selectors) != len([
+            item for item in normalized if item["permit_ref"] is not None
+        ]) or any(item != expected for item in declared_batch_selectors):
+            raise ExecutionControlError(
+                "evidence_batch_invalid", "stored expected selector sets differ",
+            )
+        required_id = final_batch_requirement_id(
+            candidate_ref=candidate_ref, source_tree_digest=source_tree_digest,
+            criteria_digest=criteria_digest, target=target,
+            environment_digest=environment_digest, expected_selectors=expected,
+        )
+        if fresh_ids != {required_id}:
+            raise ExecutionControlError(
+                "evidence_batch_invalid", "fresh requirement does not pin the final selector set",
+            )
     missing = sorted(set(expected) - covered)
     unexpected = sorted(covered - set(expected))
-    failed = [item["evidence_id"] for item in normalized if item["result"] != "pass"]
+    failed = [
+        item["receipt_ref"]["receipt_id"] for item in normalized if item["result"] != "pass"
+    ]
+    profiles.sort(key=lambda item: (
+        item["profile_id"], item["command_profile_digest"], item["command_digest"],
+    ))
     result = "pass" if normalized and not missing and not unexpected and not failed else "fail"
     value: dict[str, Any] = {
         "schema": EVIDENCE_BATCH_SCHEMA,
+        "candidate_ref": candidate_ref,
         "source_tree_digest": source_tree_digest,
-        "command_profile_digest": command_profile_digest,
         "criteria_digest": criteria_digest,
         "target": target,
-        "reuse_fingerprint_digest": reuse_fingerprint_digest,
+        "environment_digest": environment_digest,
+        "fresh_requirement_id": next(iter(fresh_ids), None),
         "expected_selectors": expected,
         "covered_selectors": sorted(covered),
+        "profile_refs": profiles,
+        "profiles_digest": tagged_digest(profiles),
         "children": normalized,
         "missing_selectors": missing,
         "unexpected_selectors": unexpected,
-        "failed_evidence_refs": failed,
+        "failed_child_refs": failed,
         "result": result,
     }
     value["digest"] = instance_digest(value)
@@ -911,10 +1082,7 @@ def final_qa_projection(
     if not state_root.is_absolute():
         raise ExecutionControlError("final_qa_invalid", "state_root must be absolute")
     root = state_root / "execution-control"
-    projected_attempts: list[dict[str, Any]] = []
-    seen_claims: set[str] = set()
-    seen_receipts: set[str] = set()
-    seen_evidence: set[str] = set()
+    grouped: dict[str, dict[str, Any]] = {}
     for execution_path in sorted((root / "executions").glob("*.json")):
         execution = _read(execution_path)
         if (
@@ -952,17 +1120,13 @@ def final_qa_projection(
                 raise ExecutionControlError("final_qa_invalid", "final QA criteria pin differs")
             if fingerprint.get("source_tree_digest") != source_digest:
                 continue
-            if claim_id in seen_claims:
-                raise ExecutionControlError("final_qa_invalid", "duplicate final QA claim")
-            seen_claims.add(claim_id)
             if claim.get("state") == "claimed":
                 raise ExecutionControlError("final_qa_incomplete", "matching final QA is still active")
             if claim.get("state") not in {"succeeded", "failed"}:
                 raise ExecutionControlError("final_qa_invalid", "final QA claim state differs")
             receipt_id = claim.get("receipt_ref")
-            if not isinstance(receipt_id, str) or not receipt_id or receipt_id in seen_receipts:
-                raise ExecutionControlError("final_qa_invalid", "final QA receipt ref is invalid or duplicated")
-            seen_receipts.add(receipt_id)
+            if not isinstance(receipt_id, str) or not receipt_id:
+                raise ExecutionControlError("final_qa_invalid", "final QA receipt ref is invalid")
             expected_key = physical_identity(stored_permit, fingerprint)
             if (
                 execution.get("physical_key") != expected_key
@@ -1006,55 +1170,63 @@ def final_qa_projection(
             finished_at = _timestamp(receipt.get("finished_at"))
             if started_at is None or finished_at is None or finished_at < started_at:
                 raise ExecutionControlError("final_qa_invalid", "final receipt timestamps differ")
-            if receipt["result"] != "pass":
-                if claim.get("evidence_refs"):
-                    raise ExecutionControlError("final_qa_invalid", "failed final QA claimed evidence")
-                projected_attempts.append({
-                    "receipt_ref": {"receipt_id": receipt_id, "digest": receipt["digest"]},
-                    "evidence_ref": None, "result": receipt["result"],
-                    "started_at": receipt["started_at"], "finished_at": receipt["finished_at"],
-                })
-                continue
-            try:
-                _, live_preimage = resolve_reuse_fingerprint(
-                    stored_permit,
-                    {
-                        "command": stored_preimage.get("command"),
-                        "command_profile_digest": stored_preimage.get("command_profile_digest"),
-                    },
-                    stored_preimage.get("resolver"),
-                )
-            except (OSError, ExecutionControlError) as exc:
-                raise ExecutionControlError("final_qa_stale", "live final QA pins are unavailable") from exc
-            if live_preimage != stored_preimage:
-                raise ExecutionControlError("final_qa_stale", "live final QA pins changed")
             evidence_refs = claim.get("evidence_refs") or []
-            if len(evidence_refs) != 1 or evidence_refs[0] in seen_evidence:
-                raise ExecutionControlError("final_qa_invalid", "final QA evidence ref is invalid or duplicated")
-            evidence_id = evidence_refs[0]
-            seen_evidence.add(evidence_id)
-            evidence_path = _object_file(root / "evidence", evidence_id)
-            if not evidence_path.exists():
-                raise ExecutionControlError("final_qa_invalid", "stored final evidence is missing")
-            evidence = _read(evidence_path)
-            validate_instance(evidence, "verification-evidence", contract)
-            if (
-                evidence.get("evidence_id") != evidence_id
-                or evidence.get("source_receipt_id") != receipt_id or evidence.get("result") != "pass"
-                or claim.get("evidence_refs") != [evidence_id]
-                or evidence.get("criteria_digest") != criteria_digest
-                or evidence.get("surface_digest") != fingerprint.get("digest")
-                or not evidence_applicable(stored_permit, evidence, reuse_fingerprint=fingerprint)
-            ):
-                raise ExecutionControlError("final_qa_invalid", "stored final evidence differs")
-            projected_attempts.append({
-                "receipt_ref": {"receipt_id": receipt_id, "digest": receipt["digest"]},
-                "evidence_ref": {"evidence_id": evidence_id, "digest": evidence["digest"]},
-                "result": "pass", "started_at": receipt["started_at"],
-                "finished_at": receipt["finished_at"],
+            if receipt["result"] == "pass" and len(evidence_refs) > 1:
+                raise ExecutionControlError("final_qa_invalid", "final QA evidence refs are duplicated")
+            if receipt["result"] != "pass" and evidence_refs:
+                raise ExecutionControlError("final_qa_invalid", "failed final QA claimed evidence")
+            evidence_id = evidence_refs[0] if evidence_refs else None
+            evidence_digest = None
+            if evidence_id is not None:
+                evidence_path = _object_file(root / "evidence", evidence_id)
+                if evidence_path.exists():
+                    evidence_digest = _read(evidence_path).get("digest")
+                else:
+                    evidence_digest = "sha256:" + "0" * 64
+            batch_id = stored_permit.get("fresh_requirement_id")
+            if not isinstance(batch_id, str) or not batch_id:
+                raise ExecutionControlError("final_qa_invalid", "final QA batch id is missing")
+            resolver = stored_preimage.get("resolver") or {}
+            declared = resolver.get(REUSE_RESOLVER_BATCH_FIELD)
+            selectors = sorted(declared if declared is not None else resolver.get("selectors") or [])
+            group = grouped.setdefault(batch_id, {
+                "environment_digest": stored_permit["environment_digest"],
+                "expected_sets": [], "children": [],
             })
+            group["expected_sets"].append(selectors)
+            group["children"].append({
+                "receipt_id": receipt_id, "receipt_digest": receipt["digest"],
+                "evidence_id": evidence_id, "evidence_digest": evidence_digest,
+            })
+
+    projected_attempts: list[dict[str, Any]] = []
+    for batch_id, group in grouped.items():
+        expected_sets = group["expected_sets"]
+        if not expected_sets or any(item != expected_sets[0] for item in expected_sets):
+            raise ExecutionControlError("final_qa_invalid", "final QA expected selector sets differ")
+        try:
+            batch = build_evidence_batch(
+                state_root=state_root, candidate_ref=candidate,
+                source_tree_digest=source_digest, criteria_digest=criteria_digest,
+                target="repository", environment_digest=group["environment_digest"],
+                expected_selectors=expected_sets[0], children=group["children"], contract=contract,
+            )
+        except ExecutionControlError as exc:
+            if exc.code == "evidence_batch_stale":
+                raise ExecutionControlError(
+                    "final_qa_stale", "live final QA batch pins changed",
+                ) from exc
+            raise
+        completed = [item for item in batch["children"] if item["finished_at"] is not None]
+        if not completed:
+            raise ExecutionControlError("final_qa_invalid", "final QA batch has no completed child")
+        projected_attempts.append({
+            "batch": batch, "result": batch["result"],
+            "started_at": min(item["started_at"] for item in completed),
+            "finished_at": max(item["finished_at"] for item in completed),
+        })
     projected_attempts.sort(key=lambda item: (
-        _timestamp(item["started_at"]), item["receipt_ref"]["receipt_id"],
+        _timestamp(item["started_at"]), item["batch"]["digest"],
     ))
     passed = [item for item in projected_attempts if item["result"] == "pass"]
     projection: dict[str, Any] = {
@@ -1279,10 +1451,10 @@ def evaluate_request(value: dict[str, Any], contract: dict[str, Any] | None = No
             raise ExecutionControlError("evidence_batch_invalid", "evidence_batch must be an object")
         return build_evidence_batch(
             state_root=batch.get("state_root"),
+            candidate_ref=batch.get("candidate_ref"),
             source_tree_digest=batch.get("source_tree_digest"),
-            command_profile_digest=batch.get("command_profile_digest"),
             criteria_digest=batch.get("criteria_digest"), target=batch.get("target"),
-            reuse_fingerprint_digest=batch.get("reuse_fingerprint_digest"),
+            environment_digest=batch.get("environment_digest"),
             expected_selectors=batch.get("expected_selectors") or [],
             children=batch.get("children") or [],
             contract=contract,
@@ -2238,18 +2410,18 @@ def project_receipts(
         evidence_ref = {"evidence_id": evidence["evidence_id"], "digest": evidence["digest"]}
     elif evidence_batch_request is not None:
         fields = {
-            "source_tree_digest", "command_profile_digest", "criteria_digest", "target",
-            "reuse_fingerprint_digest", "expected_selectors", "children",
+            "candidate_ref", "source_tree_digest", "criteria_digest", "target",
+            "environment_digest", "expected_selectors", "children",
         }
         if not isinstance(evidence_batch_request, dict) or set(evidence_batch_request) != fields:
             raise ExecutionControlError("execution_projection_invalid", "evidence batch request fields differ")
         evidence_batch = build_evidence_batch(
             state_root=state_root,
+            candidate_ref=evidence_batch_request["candidate_ref"],
             source_tree_digest=evidence_batch_request["source_tree_digest"],
-            command_profile_digest=evidence_batch_request["command_profile_digest"],
             criteria_digest=evidence_batch_request["criteria_digest"],
             target=evidence_batch_request["target"],
-            reuse_fingerprint_digest=evidence_batch_request["reuse_fingerprint_digest"],
+            environment_digest=evidence_batch_request["environment_digest"],
             expected_selectors=evidence_batch_request["expected_selectors"],
             children=evidence_batch_request["children"], contract=contract,
         )
