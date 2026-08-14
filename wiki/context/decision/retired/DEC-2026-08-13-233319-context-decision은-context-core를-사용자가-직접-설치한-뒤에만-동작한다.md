@@ -5,6 +5,9 @@ summary: Claude Code와 Codex 모두 native dependency와 자동 설치를 사�
 tags: [context-decision, context-core, dependency, marketplace, bootstrap]
 relations:
   ssot: [context-decision-plugin, context-v1-implementation]
+retired_at: 2026-08-14
+retired_type: superseded
+superseded_by: DEC-2026-08-14-173233-명시적-init-호출은-필요한-repository-bootstrap을-한-번에-완료한다
 ---
 
 ## 결정
