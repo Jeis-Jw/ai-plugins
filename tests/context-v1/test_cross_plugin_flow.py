@@ -170,7 +170,10 @@ class CrossPluginFlowTests(unittest.TestCase):
             obs_id = obs_result["effects"][0]["id"]
 
             dec_candidate = choice("cand_123e4567e89b42d3a456426614174000", "choice-import")
-            dec_result = decision_cli.build_claim_result(dec_candidate, decision_attestation(dec_candidate), repo=repo)
+            dec_result = decision_cli.build_claim_result(
+                dec_candidate, decision_attestation(dec_candidate), repo=repo,
+                created_at="2026-08-14T09:00:00+09:00",
+            )
             lifecycle = context_cli.prepare_lifecycle_input(repo, "decision_fallback_import", obs_id, dec_result)
             same_claim = {
                 "schema": "context-semantic-attestation/v1",
