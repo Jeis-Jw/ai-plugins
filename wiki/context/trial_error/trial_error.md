@@ -18,3 +18,4 @@ audience: [human, agent]
 - [[TRI-2026-06-17-032634-다중값-관계-플래그-누적은-action-append-공유-정규화로-통일]] — argparse 기본 store는 반복 다중값 플래그를 조용히 last-wins 드롭한다. 교훈: 모든 list형 관계 인자를 action=append + 콤마 split·flatten·strip·순서보존 dedup 공유 헬퍼로 통일하고, 반복·콤마·혼합·중복 4형 회귀 테스트로 고정.
 - [[TRI-2026-07-09-000640-브로커-턴-조인은-에이전트-산출의-문자열-위치가-아니라-브로커-부여-id로-한다]] — studio 브로커가 서로 다른 에이전트의 산출(critic 판정↔제출 delta, dev 방어↔qa 실패)을 배열 위치·제목 문자열로 조인해 오귀속/미매칭 발생. 브로커가 부여한 안정 id로 조인해야 한다. brainstorm·pairing 두 곳에서 동일 계열로 재발.
 - [[TRI-2026-08-04-191805-verified-at은-재검증한-문서-전체에만-올린다-부분-절-갱신이-반복-재발하는-drift]] — studio/task-worker SSOT와 관련 OBS에서 절 일부만 갱신하고 문서 전체 verified_at을 올리는 패턴이 최소 3회(9c6d736·46ac147, b72f812, 1f342c6) 재현됐다. verified_at은 전체 재검증 문서에만, 부분 갱신 시 금지, affects_paths로 자동 감지를 보강한다.
+- [[TRI-2026-08-14-111703-context-v1-studio-미션은-final-qa와-evidence-ceremony를-과도하게-반복했다]] — 품질 게이트는 유효했지만 review 이전 full QA, 늦은 executable-criteria audit, 명령 단위 receipt가 214회 실행과 18 lane을 만들었다.
