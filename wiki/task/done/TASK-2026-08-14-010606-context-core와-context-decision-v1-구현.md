@@ -19,3 +19,9 @@ Phase 0~5로 context-core와 context-decision v1을 구현한다. Phase 0은 Cod
 ## 범위와 완료 기준
 
 산출물은 두 plugin의 manifest/skills/stdlib CLI/templates/tests, 하나의 host-independent protocol fixture, deterministic index·transaction·lifecycle·routing contracts, README/demo와 package validation이다. acceptance는 init idempotence, index-first Stage 1 I-O budget, SNAP·OBS·DEC lifecycle/slot/conflict, preview+exact digest apply, crash resume·strict integrity, 양 host portability, manual dependency 오류 matrix와 distribution metadata 0을 포함한다. release gate는 strict integrity, fixture matrix, token/I-O evidence 및 product flow proof다. 기존 wiki 자동 migration, vector/DB/daemon, generic addon SDK, 자동 semantic conflict 판정, PCMS sync/control plane은 범위 밖이다. 이 root TASK는 DefinitionArtifact와 후속 leaf binding 전의 work order일 뿐 세부 leaf TASK를 만들지 않는다. GitHub Issue/PR, publish, release, push는 이 작업 범위에서 수행하지 않는다.
+
+### 완료 기록
+
+2026-08-14에 main `7db74d6b893aed11fbec970cf4bc00dbd76804b9`를 기준으로 task-worker root run `run-5c35e07309b7-f0975b827bc5`가 `closed`로 종료됐다. supplemental QA `.task-worker/local/evidence/context-v1-supplemental-root-qa-7db74d6b893a.json`은 16/16 profile 통과, 193 test invocation, acceptance 43/43을 기록한다. session-review round 2는 `approved`, blocking 0이며 receipt는 `.task-worker/local/evidence/context-v1-session-review-receipt.json`이다. GitHub Issue/PR, push, publish, release는 수행하지 않았다.
+
+이 완료 판정은 fixture·static contract·현재 macOS local runtime 검증 범위다. Claude Code live plugin inventory, Linux runtime, 실제 설치된 Codex `context-core` live operational path는 미검증으로 남기며 dual-host live 완료로 판정하지 않는다.
