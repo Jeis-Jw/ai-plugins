@@ -4,6 +4,7 @@ from __future__ import annotations
 import concurrent.futures
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -25,6 +26,18 @@ def load(name: str, path: Path):
 
 context_cli = load("context_cli_cross", ROOT / "plugins/context-core/skills/context/scripts/context_cli.py")
 decision_cli = load("decision_cli_cross", ROOT / "plugins/context-decision/skills/decision/scripts/decision_cli.py")
+CORE_CLI = ROOT / "plugins/context-core/skills/context/scripts/context_cli.py"
+DECISION_CLI = ROOT / "plugins/context-decision/skills/decision/scripts/decision_cli.py"
+
+
+def run_cli(repo: Path, cli: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(cli), *arguments],
+        cwd=repo,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        text=True,
+        capture_output=True,
+    )
 
 
 def initialize(repo: Path) -> None:
@@ -221,6 +234,129 @@ class CrossPluginFlowTests(unittest.TestCase):
             index = context_cli.parse_area_index((repo / "context/observation/observation.index.md").read_text(encoding="utf-8"))
             self.assertEqual(2, len(index.current))
             self.assertEqual(2, len({row["id"] for row in index.current}))
+
+    def test_acceptance_44_decision_init_bootstraps_absent_core(self) -> None:
+        fixtures = ROOT / "tests/context-v1/fixtures/host-inventory"
+        case = next(
+            item
+            for item in json.loads((fixtures / "preflight-cases.json").read_text(encoding="utf-8"))["cases"]
+            if item["expected_code"] == "core_uninitialized"
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            repo = root / "repository"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            (repo / "keep.txt").write_text("preserve\n", encoding="utf-8")
+            inventory = root / "inventory.json"
+            doctor = root / "doctor.json"
+            inventory.write_text(json.dumps(case["inventory"], ensure_ascii=False), encoding="utf-8")
+            doctor.write_text(json.dumps(case["doctor"], ensure_ascii=False), encoding="utf-8")
+            planned = run_cli(
+                repo,
+                DECISION_CLI,
+                "init",
+                "--host",
+                case["host"],
+                "--core-inventory",
+                f"@{inventory}",
+                "--core-doctor",
+                f"@{doctor}",
+                "--json",
+            )
+            self.assertEqual(0, planned.returncode, planned.stdout + planned.stderr)
+            plan = json.loads(planned.stdout)["result"]
+            self.assertEqual("absent", plan["core_repository_state"])
+            self.assertEqual("pending", plan["phases"][0]["status"])
+            descriptor = root / "descriptor.json"
+            seed = root / "decision.index.md"
+            descriptor.write_text(json.dumps(plan["owner_descriptor"], ensure_ascii=False), encoding="utf-8")
+            seed.write_text(plan["index_seed"], encoding="utf-8")
+
+            completed = run_cli(
+                repo,
+                CORE_CLI,
+                "bootstrap",
+                "--descriptor",
+                f"@{descriptor}",
+                "--index-seed",
+                f"@{seed}",
+                "--json",
+            )
+            self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
+            result = json.loads(completed.stdout)["result"]
+            self.assertEqual(["applied", "applied"], [phase["status"] for phase in result["phases"]])
+            self.assertEqual("ready", result["doctor"]["repository_state"])
+            self.assertTrue((repo / "context/decision/decision.index.md").is_file())
+            self.assertEqual("preserve\n", (repo / "keep.txt").read_text(encoding="utf-8"))
+            self.assertFalse((repo / "AGENTS.md").exists())
+            self.assertFalse((repo / "CLAUDE.md").exists())
+
+            repeated = run_cli(
+                repo,
+                CORE_CLI,
+                "bootstrap",
+                "--descriptor",
+                f"@{descriptor}",
+                "--index-seed",
+                f"@{seed}",
+                "--json",
+            )
+            self.assertEqual(0, repeated.returncode, repeated.stdout + repeated.stderr)
+            self.assertEqual(
+                ["noop", "noop"],
+                [phase["status"] for phase in json.loads(repeated.stdout)["result"]["phases"]],
+            )
+
+    def test_acceptance_45_bootstrap_phase_failure_retries(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            repo = root / "repository"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            plan = decision_cli.build_init_plan()
+            descriptor = root / "descriptor.json"
+            invalid_seed = root / "invalid.index.md"
+            valid_seed = root / "decision.index.md"
+            descriptor.write_text(json.dumps(plan["owner_descriptor"], ensure_ascii=False), encoding="utf-8")
+            invalid_seed.write_text(plan["index_seed"].replace('owner: "context-decision"', 'owner: "other"'), encoding="utf-8")
+            valid_seed.write_text(plan["index_seed"], encoding="utf-8")
+
+            failed = run_cli(
+                repo,
+                CORE_CLI,
+                "bootstrap",
+                "--descriptor",
+                f"@{descriptor}",
+                "--index-seed",
+                f"@{invalid_seed}",
+                "--json",
+            )
+            self.assertEqual(5, failed.returncode, failed.stdout + failed.stderr)
+            error = json.loads(failed.stdout)["error"]
+            self.assertEqual("index_seed_invalid", error["code"])
+            self.assertEqual(
+                [("core_init", "applied"), ("area_register", "failed")],
+                [(phase["phase"], phase["status"]) for phase in error["details"]["phases"]],
+            )
+            self.assertEqual("ready", context_cli.doctor_repository(repo)["repository_state"])
+            self.assertFalse((repo / "context/decision/decision.index.md").exists())
+
+            retried = run_cli(
+                repo,
+                CORE_CLI,
+                "bootstrap",
+                "--descriptor",
+                f"@{descriptor}",
+                "--index-seed",
+                f"@{valid_seed}",
+                "--json",
+            )
+            self.assertEqual(0, retried.returncode, retried.stdout + retried.stderr)
+            self.assertEqual(
+                [("core_init", "noop"), ("area_register", "applied")],
+                [(phase["phase"], phase["status"]) for phase in json.loads(retried.stdout)["result"]["phases"]],
+            )
 
 
 if __name__ == "__main__":

@@ -112,10 +112,13 @@ class DistributionProofTests(unittest.TestCase):
             "context-decision:init",
         ):
             self.assertIn(token, readme)
-        for code in expected - {"ready"}:
+        for code in expected - {"ready", "core_uninitialized"}:
             line = next(line for line in readme.splitlines() if line.startswith(f"- `{code}`:"))
             for token in ("Jeis-Jw/ai-plugins", "scope", "reload", "새 session", "context-decision:init", "재시도"):
                 self.assertIn(token, line)
+        absent_line = next(line for line in readme.splitlines() if line.startswith("- `core_uninitialized`:"))
+        for token in ("installed", "context-core", "bootstrap", "같은 호출", "decision"):
+            self.assertIn(token, absent_line)
 
     def test_acceptance_42_repository_absent(self) -> None:
         fixtures = ROOT / "tests/context-v1/fixtures/host-inventory"
@@ -138,8 +141,19 @@ class DistributionProofTests(unittest.TestCase):
             )
             self.assertEqual("core_uninitialized", rendered["code"])
             self.assertNotEqual("core_missing", rendered["code"])
-            self.assertIn("context-core:init", " ".join(rendered["manual_actions"]))
+            self.assertIn("public bootstrap surface", " ".join(rendered["manual_actions"]))
             self.assertEqual(before, (digest_tree(repo), digest_tree(host)))
+
+            context_cli = load(
+                "context_cli_distribution_direct_init",
+                ROOT / "plugins/context-core/skills/context/scripts/context_cli.py",
+            )
+            initialized = context_cli.bootstrap_repository(repo)
+            self.assertEqual("applied", initialized["phases"][0]["status"])
+            self.assertEqual("ready", initialized["doctor"]["repository_state"])
+            self.assertEqual({"requested": False, "applied": False}, initialized["policy"])
+            self.assertEqual("keep\n", (repo / "keep.txt").read_text(encoding="utf-8"))
+            self.assertEqual(before[1], digest_tree(host))
 
         context_cli = load(
             "context_cli_distribution_storage_error",

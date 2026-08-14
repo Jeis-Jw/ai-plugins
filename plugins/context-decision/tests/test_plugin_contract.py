@@ -102,11 +102,12 @@ class PluginContractTests(unittest.TestCase):
         protocol = (ROOT / "plugins/context-decision/skills/decision/references/decision-protocol.md").read_text(encoding="utf-8")
         init = (ROOT / "plugins/context-decision/skills/init/SKILL.md").read_text(encoding="utf-8")
         self.assertIn("`schema`와 `capabilities`만 core 없이", protocol)
-        for token in ("identity", "enabled", "protocol", "doctor.repository_state=ready"):
+        for token in ("identity", "enabled", "protocol", "repository_state=absent"):
             self.assertIn(token, protocol)
-        for forbidden in ("install", "enable", "update", "marketplace add", "context-core:init", "cache probing", "embedded core"):
+        for forbidden in ("install", "enable", "update", "marketplace add", "cache probing", "embedded core"):
             self.assertIn(forbidden, protocol)
         self.assertIn("먼저 context-core 설치", init)
+        self.assertIn("context_cli.py bootstrap", init)
 
     def test_public_cli_runs_exact_six_state_preflight_before_init(self) -> None:
         fixtures = ROOT / "tests/context-v1/fixtures/host-inventory"
@@ -133,10 +134,12 @@ class PluginContractTests(unittest.TestCase):
                     )
                     payload = json.loads(completed.stdout)
                     self.assertEqual(before, (digest_tree(repo), digest_tree(host)))
-                    if case["expected_code"] == "ready":
+                    if case["expected_code"] in {"ready", "core_uninitialized"}:
                         self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
                         self.assertTrue(payload["ok"])
                         self.assertEqual("context-decision-init-plan/v1", payload["result"]["schema"])
+                        self.assertEqual(case["doctor"]["repository_state"], payload["result"]["core_repository_state"])
+                        self.assertEqual("bootstrap", payload["result"]["bootstrap"]["operation"])
                     else:
                         self.assertEqual(5, completed.returncode, completed.stdout + completed.stderr)
                         self.assertFalse(payload["ok"])

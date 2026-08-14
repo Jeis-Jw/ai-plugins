@@ -63,7 +63,7 @@ decision CLI는 filesystem을 직접 쓰지 않는다. 자기 area와 허용된 
 
 | skill | 역할 |
 |---|---|
-| `context-decision:init` | core readiness 확인 후 decision area/index를 멱등 등록 |
+| `context-decision:init` | exact core를 확인하고 필요한 core bootstrap과 decision area/index를 한 호출로 멱등 등록 |
 | `context-decision:decision` | candidate claim, capture, search/brief, conflict, supersede/withdraw/revisit |
 
 직접 decision skill을 호출할 수 있지만, 일반 대화 closeout audit에서는 context-core가 만든 candidate만 받아 원문을 재판독하지 않는다.
@@ -75,9 +75,9 @@ decision CLI는 filesystem을 직접 쓰지 않는다. 자기 area와 허용된 
 1. host의 plugin inventory에서 exact `marketplace=jeis-ai-plugins`, `plugin=context-core`를 찾는다. plugin cache path를 직접 탐색하거나 동명 plugin을 marketplace 구분 없이 수락하지 않는다.
 2. exact plugin이 현재 scope에서 enabled/available인지 확인한다.
 3. host가 노출한 core capability와 `context_cli.py doctor --json` receipt에서 `context-common/v1` 호환성을 확인한다.
-4. repository state가 `ready`인지 확인한다. `absent`면 core 설치 문제가 아니라 project initialization 문제다.
+4. repository state를 확인한다. 일반 operation은 `ready`를 요구하고, init은 `absent`를 installed core bootstrap-required state로 수락한다.
 
-preflight 실패는 repository filesystem과 host configuration 모두 write 0이다. context-decision은 install, enable, update, marketplace add 또는 `context-core:init`을 대신 실행하지 않는다.
+missing/source mismatch/disabled/incompatible/partial preflight 실패는 repository filesystem과 host configuration 모두 write 0이다. context-decision은 install, enable, update 또는 marketplace add를 실행하지 않는다. Exact compatible core가 installed/enabled이고 repository가 absent일 때만 그 core의 public bootstrap surface를 init orchestration으로 호출한다.
 
 | code | 조건 | 안내 후 동작 |
 |---|---|---|
@@ -85,7 +85,7 @@ preflight 실패는 repository filesystem과 host configuration 모두 write 0�
 | `core_source_mismatch` | 다른 marketplace의 동명 core만 존재 | source `Jeis-Jw/ai-plugins`의 exact marketplace/plugin 좌표를 표시하고 중단 |
 | `core_disabled` | exact core가 설치됐지만 현재 scope에서 비활성 | 사용자가 직접 올바른 scope에서 활성화 |
 | `core_incompatible` | exact core가 `context-common/v1`을 제공하지 않음 | 사용자가 exact core를 호환 버전으로 직접 업데이트 |
-| `core_uninitialized` | plugin은 준비됐지만 repository state가 `absent` | 사용자가 `context-core:init`을 실행한 뒤 재시도 |
+| `core_uninitialized` | plugin은 준비됐지만 repository state가 `absent` | 같은 `context-decision:init` 호출에서 installed core bootstrap 뒤 area 등록 계속 |
 | `partial_core_init` | repository state가 `partial` 또는 invalid | core doctor/repair 안내 후 중단; decision이 덮어쓰지 않음 |
 
 모든 오류는 structured `required_plugin`을 포함한다.
@@ -101,7 +101,7 @@ preflight 실패는 repository filesystem과 host configuration 모두 write 0�
 }
 ```
 
-사람용 안내는 현재 host에 맞는 수동 설치·활성화 방법, reload 또는 새 session, 마지막 `context-decision:init` 재실행 순서를 보여준다. scope는 사용자가 선택하며 command를 자동 실행 가능한 confirmation으로 제안하지 않는다.
+missing/source mismatch/disabled/incompatible의 사람용 안내는 현재 host에 맞는 수동 설치·활성화·업데이트 방법, reload 또는 새 session, 마지막 `context-decision:init` 재실행 순서를 보여준다. scope는 사용자가 선택하며 command를 자동 실행 가능한 confirmation으로 제안하지 않는다. `core_uninitialized`는 host 설정을 바꾸지 않고 repository bootstrap phase로 진행한다.
 
 ### CLI surface
 
@@ -141,7 +141,7 @@ decision_cli.py batch validate --owner-result @file|@-
 decision_cli.py plan validate --plan-bundle @file|@- [--json]
 ```
 
-`init`은 owner descriptor와 decision area index seed를, `draft`·새 slot의 `capture`는 claim variant를, `supersede`·`import-fallback`·`withdraw`·`annotate`는 mutation variant의 complete `context-owner-result/v1`을 반환할 뿐 write하지 않는다. existing slot 대체는 `capture` option이 아니라 반드시 `supersede --id OLD`를 사용한다. context-decision skill은 init 결과를 `context_cli.py area register`에, mutation result와 `batch validate` receipt를 `context_cli.py transaction preview`에 넘겨 final bundle을 만든 뒤 grouped approval에 포함한다. 승인 뒤에는 모두 `context_cli.py transaction apply --plan-bundle @file --approved-digest DIGEST`에 위임한다. rename·discard·index refresh는 decision owner의 plan validation을 거쳐 context-core 공통 명령을 사용한다. body `@file`/`@-`, JSON error와 exit code는 context-core 공통 계약을 따른다.
+`init`은 owner descriptor와 decision area index seed를, `draft`·새 slot의 `capture`는 claim variant를, `supersede`·`import-fallback`·`withdraw`·`annotate`는 mutation variant의 complete `context-owner-result/v1`을 반환할 뿐 write하지 않는다. existing slot 대체는 `capture` option이 아니라 반드시 `supersede --id OLD`를 사용한다. context-decision skill은 init 결과를 installed core의 public `context_cli.py bootstrap`에 넘겨 fixed core/area seed를 coordinator로 적용한다. 일반 mutation result와 `batch validate` receipt는 `context_cli.py transaction preview`에 넘겨 grouped approval에 포함하고 승인 뒤 `transaction apply`에 위임한다. rename·discard·index refresh는 decision owner의 plan validation을 거쳐 context-core 공통 명령을 사용한다. body `@file`/`@-`, JSON error와 exit code는 context-core 공통 계약을 따른다.
 
 JSON success output은 context-core envelope을 따른다. owner skill과 `draft`·domain mutation이 합성한 결과는 discriminated `context-owner-result/v1`, `batch validate`는 `context-owner-validation-receipt/v1`, `search`는 index projection `items`, `read`는 exact DEC와 요청 section, `brief`는 bounded DEC core section projection, `conflicts/revisit`는 read-only candidate/warning 목록을 반환한다. final bundle/digest는 core `transaction preview`가 만든다. `[--flag VALUE]...`는 repeatable option이다.
 
@@ -330,7 +330,7 @@ core-only fallback OBS를 DEC로 import하려면 `kind_hint: decision`, OBS `sou
 
 ### Init·packaging gate
 
-`init`은 위 manual dependency preflight를 먼저 수행한다. 실패하면 owner descriptor나 index seed도 만들지 않고 structured error와 수동 next action만 반환한다. exact core가 ready일 때만 owner descriptor와 complete `decision.index.md` seed를 생성한다. context-decision skill이 core의 `area register --index-seed` preview를 호출하고, seed bytes와 root/area diff digest가 승인된 뒤에만 core coordinator가 `context/decision/`, `retired/`, decision index와 root area entry를 함께 등록한다. 동일 descriptor/index가 이미 valid면 noop이고, 일부만 존재하거나 다른 owner가 decision kind를 claim하면 fail-closed한다.
+`init`은 위 manual dependency preflight를 먼저 수행한다. missing/source mismatch/disabled/incompatible/partial이면 owner descriptor나 index seed를 만들지 않고 structured error와 수동 next action만 반환한다. exact core가 ready 또는 absent이면 owner descriptor와 complete `decision.index.md` seed를 생성하고 installed core의 public `bootstrap` surface에 전달한다. core coordinator가 absent core seed를 먼저 적용하고 `context/decision/`, decision index와 root area entry를 등록한다. 두 phase는 `applied|noop|failed`와 changed paths를 반환하며 중간 실패 후 재시도는 완료 phase를 반복 쓰지 않는다. 동일 descriptor/index가 이미 valid면 noop이고, 일부만 존재하거나 다른 owner가 decision kind를 claim하면 fail-closed한다.
 
 두 host의 `.claude-plugin/plugin.json`과 `.codex-plugin/plugin.json`에는 plugin dependency metadata를 넣지 않는다. marketplace entry도 context-decision 설치를 이유로 context-core를 `INSTALLED_BY_DEFAULT` 처리하지 않는다. README와 init error는 provider marketplace `jeis-ai-plugins`, plugin `context-core`, source `Jeis-Jw/ai-plugins`를 정확히 표시하되 marketplace 추가·plugin 설치·활성화·업데이트를 실행하지 않는다. host별 command/GUI 안내는 distribution adapter가 현재 host surface에 맞춰 render하며 scope 선택은 사용자에게 남긴다.
 
@@ -353,7 +353,7 @@ plugin cache path 추측이나 두 개의 독립 core 구현을 만들지 않는
 - decision plugin 제거 후 기존 area는 core recall로 읽히되 새 DEC write owner로 간주되지 않음
 - 양 host manifest와 marketplace entry의 dependency/implicit-install metadata 0
 - exact core missing/source mismatch/disabled/incompatible이면 repository·host config write 0, 정확한 provider marketplace/plugin/source와 reload·재실행 안내
-- core repository absent이면 `core_missing`이 아니라 `core_uninitialized`, context-core init 자동 실행 0
+- core repository absent이면 `core_missing`이 아니라 `core_uninitialized`, installed core bootstrap으로 core+decision ready
 
 ## 취지
 

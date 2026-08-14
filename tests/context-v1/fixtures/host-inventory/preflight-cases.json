@@ -171,10 +171,10 @@
       "expected_rendered": {
         "code": "core_uninitialized",
         "host": "codex",
-        "message": "exact core는 준비됐지만 repository context root가 없다.",
+        "message": "exact core는 준비됐고 repository bootstrap이 필요하다.",
         "manual_actions": [
-          "사용자가 context-core:init을 실행한다.",
-          "초기화가 완료된 뒤 context-decision:init을 다시 실행한다."
+          "context-decision:init이 installed context-core public bootstrap surface를 호출한다.",
+          "같은 명시적 호출에서 core init 뒤 decision area 등록을 계속한다."
         ]
       }
     },

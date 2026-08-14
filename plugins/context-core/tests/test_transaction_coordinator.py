@@ -153,15 +153,39 @@ class TransactionCoordinatorTests(unittest.TestCase):
     def test_acceptance_01_init_is_idempotent(self) -> None:
         with git_repo() as temp:
             repo = Path(temp)
-            preview = context_cli.build_init_bundle(repo)
+            keep = repo / "keep.txt"
+            keep.write_text("preserve existing repository content\n", encoding="utf-8")
             before = tree_digest(repo)
-            self.assertEqual(before, tree_digest(repo), "preview must not write")
-            context_cli.apply_bundle(repo, preview["bundle"], preview["approval_digest"])
-            after_first = tree_digest(repo)
-            second = context_cli.build_init_bundle(repo)
+            completed = subprocess.run(
+                [sys.executable, str(CLI_PATH), "init", "--json"],
+                cwd=repo,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
+            first = json.loads(completed.stdout)["result"]
+            self.assertEqual("applied", first["phases"][0]["status"])
+            self.assertEqual("ready", first["doctor"]["repository_state"])
+            self.assertEqual({"requested": False, "applied": False}, first["policy"])
+            self.assertEqual("preserve existing repository content\n", keep.read_text(encoding="utf-8"))
+            self.assertNotEqual(before, tree_digest(repo))
+
+            capture = context_cli.finalize_owner_result(repo, observation_owner_result())
+            context_cli.apply_bundle(repo, capture["bundle"], capture["approval_digest"])
+            after_user_content = tree_digest(repo)
+            repeated = subprocess.run(
+                [sys.executable, str(CLI_PATH), "init", "--json"],
+                cwd=repo,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(0, repeated.returncode, repeated.stdout + repeated.stderr)
+            second = json.loads(repeated.stdout)["result"]
             self.assertTrue(second["noop"])
-            self.assertNotIn("bundle", second)
-            self.assertEqual(after_first, tree_digest(repo))
+            self.assertEqual("noop", second["phases"][0]["status"])
+            self.assertEqual(after_user_content, tree_digest(repo))
+            self.assertFalse((repo / "AGENTS.md").exists())
+            self.assertFalse((repo / "CLAUDE.md").exists())
 
         corruptions = {
             "evil-owner": lambda repo: (
@@ -236,8 +260,9 @@ class TransactionCoordinatorTests(unittest.TestCase):
                 corrupt(repo)
                 before = tree_digest(repo)
                 with self.assertRaises(context_cli.ContextError) as caught:
-                    context_cli.build_init_bundle(repo)
+                    context_cli.bootstrap_repository(repo)
                 self.assertEqual("partial_core_init", caught.exception.code)
+                self.assertEqual("failed", caught.exception.details["phases"][-1]["status"])
                 self.assertEqual(before, tree_digest(repo))
 
     def test_acceptance_05_rename_identity(self) -> None:
@@ -473,6 +498,9 @@ class TransactionCoordinatorTests(unittest.TestCase):
                 self.assertEqual(before, tree_digest(repo))
             with self.assertRaises(context_cli.ContextError) as caught:
                 context_cli.apply_bundle(repo, preview["bundle"], preview["approval_digest"], approval_source="autonomous")
+            self.assertEqual("approval_required", caught.exception.code)
+            with self.assertRaises(context_cli.ContextError) as caught:
+                context_cli.apply_bundle(repo, preview["bundle"], preview["approval_digest"], approval_source="explicit_init")
             self.assertEqual("approval_required", caught.exception.code)
             self.assertEqual(before, tree_digest(repo))
 

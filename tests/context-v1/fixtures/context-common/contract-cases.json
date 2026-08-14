@@ -1,7 +1,7 @@
 {
   "schema": "context-common-acceptance-corpus/v1",
   "cases": {
-    "init_idempotent": {"input": "core init preview, exact digest apply, second init", "expected": ["second_diff_zero", "human_description_preserved"]},
+    "init_idempotent": {"input": "one explicit core init call, second init", "expected": ["doctor_ready", "second_diff_zero", "human_description_preserved", "policy_not_installed"]},
     "decision_core_missing": {"input": "decision init without exact core", "expected": ["core_missing", "manual_exact_provider_action", "write_zero"]},
     "natural_filename": {"input": "capture title without filename", "expected": ["no_type_prefix", "no_timestamp", "uuid_v4_context_id"]},
     "path_collision": {"input": "NFKC+casefold-equivalent basename", "expected": ["path_exists", "no_overwrite", "no_suffix"]},
@@ -42,7 +42,9 @@
     "strict_refresh": {"input": "out-of-band add, rename and frontmatter edit", "expected": ["all_drift_detected", "document_not_overwritten"]},
     "obsidian_graph": {"input": "repository root opened as vault", "expected": ["root_to_area_to_artifact_hubs"]},
     "core_dependency_matrix": {"input": "wrong source, disabled and incompatible exact core", "expected": ["distinct_error_codes", "automatic_mutation_zero"]},
-    "repository_absent": {"input": "exact core ready with absent context root", "expected": ["core_uninitialized", "manual_core_init", "decision_write_zero"]},
+    "repository_absent": {"input": "exact core ready with absent context root", "expected": ["core_uninitialized", "installed_core_bootstrap", "decision_ready_same_call"]},
+    "decision_init_bootstrap": {"input": "decision init with exact compatible installed core and absent repository", "expected": ["core_ready", "decision_ready", "retry_noop", "sole_writer"]},
+    "bootstrap_phase_retry": {"input": "core phase succeeds before area phase failure", "expected": ["structured_phases", "retry_converges", "user_content_preserved"]},
     "distribution_manifests": {"input": "Claude, Codex and marketplace manifests", "expected": ["dependency_fields_zero", "implicit_install_policy_zero"]}
   }
 }

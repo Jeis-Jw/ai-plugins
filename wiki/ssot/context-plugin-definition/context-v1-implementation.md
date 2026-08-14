@@ -121,7 +121,7 @@ agent skill과 deterministic router를 연결한다.
 - actual artifact content와 lifecycle effect를 포함한 one grouped preview
 - 승인된 final bundle digest만 core coordinator apply
 - batch receipt에 proposal/created/skipped/error를 묶음
-- init의 AGENTS.md/CLAUDE.md policy preview·managed block·sequential receipt
+- init의 fixed core/area seed direct bootstrap, structured phase·retry convergence와 선택적 AGENTS.md/CLAUDE.md policy 분리
 
 완료 조건:
 
@@ -209,8 +209,10 @@ agent skill과 deterministic router를 연결한다.
 | 39 | strict refresh | out-of-band 신규/rename/frontmatter drift 전수 검출 |
 | 40 | Obsidian graph | repository root vault에서 context.index→area index→artifact hub 구분 |
 | 41 | wrong-source/disabled/incompatible core | 각각 `core_source_mismatch|core_disabled|core_incompatible`, install/enable/update 자동 실행과 repository·host config write 0 |
-| 42 | exact core, repository absent | `core_uninitialized`, `context-core:init` 수동 안내, decision seed/descriptor와 filesystem write 0 |
+| 42 | exact core, repository absent | core init 단일 호출로 ready, 기존 content/policy 보존 |
 | 43 | distribution manifests | Claude/Codex manifest dependency field 0, context-decision 때문에 core를 implicit/default install하는 marketplace policy 0 |
+| 44 | decision init bootstrap | exact compatible installed core에서 absent core→decision area ready를 같은 호출로 완료, ready 재호출 noop |
+| 45 | bootstrap phase retry | core 성공 뒤 area 실패 phase 구조화, 같은 호출 재시도에서 core noop·area apply로 수렴 |
 
 ### Integrity release gate
 

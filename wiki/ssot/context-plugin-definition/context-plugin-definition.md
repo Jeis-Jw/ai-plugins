@@ -43,7 +43,7 @@ affects_paths: [plugins/context-core/**, plugins/context-decision/**]
 
 v1의 exact core distribution identity는 `marketplace: jeis-ai-plugins`, `plugin: context-core`, selector `context-core@jeis-ai-plugins`, source `Jeis-Jw/ai-plugins`다. `context-decision`을 비롯한 addon은 이 좌표의 core가 현재 scope에서 enabled이고 `context-common/v1` compatible인지 확인한 뒤에만 동작한다. 다른 marketplace의 동명 plugin은 충족으로 간주하지 않는다.
 
-Plugin install/enable/update와 marketplace add는 사용자 환경 mutation이고 repository init은 project mutation이므로 분리한다. addon은 어느 것도 자동 수행하지 않는다. exact core 부재·source mismatch·disabled·incompatible이면 정확한 provider marketplace와 수동 next action을 보여주고 중단한다. core plugin은 준비됐지만 project root가 없으면 `context-core:init`을 사용자가 먼저 실행하도록 안내한다. 정적 `schema`/`capabilities` discovery만 core 없이 허용한다.
+Plugin install/enable/update와 marketplace add는 사용자 환경 mutation이고 repository init은 project mutation이므로 분리한다. addon은 host 환경 mutation을 자동 수행하지 않는다. exact core 부재·source mismatch·disabled·incompatible이면 정확한 provider marketplace와 수동 next action을 보여주고 write 0으로 중단한다. exact compatible core가 installed/enabled지만 project root가 absent이면 명시적 addon init 호출이 installed core의 public bootstrap surface로 repository init을 먼저 완료하고 같은 호출의 area registration을 계속한다. partial/invalid는 자동 repair하지 않는다. 정적 `schema`/`capabilities` discovery만 core 없이 허용한다.
 
 ## 런타임 지도
 

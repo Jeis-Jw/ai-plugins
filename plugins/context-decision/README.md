@@ -8,10 +8,10 @@
 
 1. 사용자가 provider marketplace에서 exact core를 원하는 scope에 직접 설치·활성화합니다.
 2. host를 reload하거나 새 session을 엽니다.
-3. 사용자가 `$context-core:init`을 실행하고 repository state가 `ready`인지 확인합니다.
-4. `$context-decision:init`을 다시 실행합니다.
+3. `$context-decision:init`을 한 번 호출합니다.
+4. exact core repository가 absent이면 installed core public bootstrap이 core seed를 먼저 적용하고 decision area를 이어서 등록합니다. ready 재호출은 모두 noop입니다.
 
-`context-decision`은 marketplace add, install, enable, update, core init 또는 host configuration 변경을 자동 실행하지 않습니다. Manifest에도 dependency나 implicit/default install metadata가 없고 core 구현을 내장하지 않습니다. `schema`와 `capabilities`만 core 없이 확인할 수 있으며, 그 밖의 repository operation은 identity → source → enabled → protocol → read-only core doctor `repository_state` 순서의 preflight를 먼저 통과해야 합니다.
+`context-decision`은 marketplace add, install, enable, update 또는 host configuration 변경을 자동 실행하지 않습니다. Manifest에도 dependency나 implicit/default install metadata가 없고 core 구현을 내장하지 않습니다. `schema`와 `capabilities`만 core 없이 확인할 수 있으며, 그 밖의 repository operation은 identity → source → enabled → protocol → read-only core doctor `repository_state` 순서의 preflight를 먼저 통과해야 합니다. Init만 `repository_state=absent`를 installed core public bootstrap으로 넘깁니다.
 
 ## Exact failure UX
 
@@ -19,10 +19,10 @@
 - `core_source_mismatch`: source `Jeis-Jw/ai-plugins`의 exact selector를 사용자가 선택한 scope에 직접 설치하고 다른 marketplace의 동명 plugin을 사용하지 않습니다. reload 또는 새 session 뒤 `context-decision:init`을 재시도합니다.
 - `core_disabled`: source `Jeis-Jw/ai-plugins`의 exact core를 사용자가 선택한 올바른 scope에서 직접 활성화하고 reload 또는 새 session 뒤 `context-decision:init`을 재시도합니다.
 - `core_incompatible`: source `Jeis-Jw/ai-plugins`의 exact core를 사용자가 선택한 scope에서 `context-common/v1` 호환 버전으로 직접 업데이트하고 reload 또는 새 session 뒤 `context-decision:init`을 재시도합니다.
-- `core_uninitialized`: plugin 설치 문제가 아닙니다. source `Jeis-Jw/ai-plugins`의 exact core와 사용자가 선택한 scope를 유지하고 `$context-core:init`을 직접 실행한 뒤 reload 또는 새 session에서 `context-decision:init`을 재시도합니다.
+- `core_uninitialized`: plugin 설치 문제가 아닙니다. installed `context-core` public `bootstrap` surface가 같은 호출에서 core seed와 decision area를 순서대로 적용합니다. 별도 core init 호출은 필요하지 않습니다.
 - `partial_core_init`: source `Jeis-Jw/ai-plugins`의 exact core와 사용자가 선택한 scope를 유지하고 core doctor의 issue/path를 확인합니다. 승인된 수동 repair로 `repository_state=ready`를 만든 뒤 reload 또는 새 session에서 `context-decision:init`을 재시도합니다.
 
-모든 실패는 exact source와 manual action을 표시하며 repository와 host configuration bytes를 바꾸지 않습니다. Storage-level `context_root_missing`은 core read surface의 별도 오류이며 addon UX에서는 ready core의 `core_uninitialized`로 분류합니다.
+missing/source mismatch/disabled/incompatible/partial 실패는 exact source와 manual action을 표시하며 repository와 host configuration bytes를 바꾸지 않습니다. Storage-level `context_root_missing`은 core read surface의 별도 오류이며 addon preflight에서는 installed core의 bootstrap-required `core_uninitialized`로 분류합니다.
 
 Host는 `schema`/`capabilities`를 제외한 모든 CLI 호출에 `--host`, `--core-inventory @file`, `--core-doctor @file`을 전달합니다. Direct DEC는 `candidate prepare --candidate-id ... --commitment-evidence ...`로 exact candidate를 고정한 뒤 semantic owner가 판독하고, accepted choice만 `capture --candidate @file --attestation @file`로 draft합니다. fact/idea는 `capture --candidate @file --decline-reason ...`로 draft 없이 종료합니다.
 

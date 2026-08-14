@@ -6,15 +6,17 @@
 
 1. provider marketplace `jeis-ai-plugins`(source `Jeis-Jw/ai-plugins`)에서 `context-core@jeis-ai-plugins`를 원하는 scope에 직접 설치·활성화합니다.
 2. host를 reload하거나 새 session을 엽니다.
-3. `$context-core:init`으로 storage와 선택한 repository-root policy를 preview합니다.
-4. complete preview와 exact digest를 승인한 뒤에만 apply합니다.
+3. `$context-core:init`을 한 번 호출하면 canonical storage seed를 core coordinator가 적용합니다.
+4. 반환된 `doctor.repository_state: ready`와 phase result를 확인합니다. ready 재호출은 noop입니다.
+5. repository-root agent policy가 필요하면 별도로 요청하고 preview/digest 승인 뒤 적용합니다.
 
-`schema`와 `capabilities`는 repository root 없이 확인할 수 있습니다. `doctor`는 read-only이며 `context-common/v1`과 `repository_state`를 보고합니다. 저장소가 아직 초기화되지 않은 read operation은 dependency 오류가 아닌 `context_root_missing`으로 실패합니다.
+`schema`와 `capabilities`는 repository root 없이 확인할 수 있습니다. `doctor`는 read-only이며 `context-common/v1`과 `repository_state`를 보고합니다. 저장소가 아직 초기화되지 않은 read operation은 dependency 오류가 아닌 `context_root_missing`으로 실패합니다. `init`은 absent에서 fixed root/SNAP/OBS seed만 직접 적용하고 partial/invalid는 자동 repair하지 않습니다.
 
 ## 제품 흐름
 
 - Standalone: 명시적 handoff는 SNAP, 재사용 가능한 발견·근거는 OBS로 제안합니다.
 - Integrated: semantic owner가 complete draft와 plan을 만들고, `context-core`가 grouped preview를 봉인한 뒤 유일한 physical coordinator로 적용합니다.
 - Audit, route, claim, draft, preview와 denied apply는 repository와 host configuration을 변경하지 않습니다.
+- 명시적 `init`과 addon init용 `bootstrap`만 fixed `core_init|area_register` seed를 coordinator 검증으로 직접 적용합니다. 일반 artifact/policy/index mutation의 exact digest approval은 유지됩니다.
 
 기존 `wiki/`를 자동 migration하지 않습니다. Obsidian은 repository root를 vault로 열 때의 선택적 view일 뿐 runtime dependency가 아닙니다. PCMS는 조직 권한·승인 queue·cross-project search·정책·감사 같은 control-plane 범위를 담당하며, 이 local plugin은 그 기능을 제한해 판매하는 제품이 아닙니다.

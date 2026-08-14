@@ -78,7 +78,7 @@ class AcceptanceRegistryTests(unittest.TestCase):
     def test_registry_contains_each_acceptance_id_exactly_once(self) -> None:
         entries = self.registry["entries"]
         ids = [entry["id"] for entry in entries]
-        self.assertEqual(list(range(1, 44)), sorted(ids))
+        self.assertEqual(list(range(1, 46)), sorted(ids))
         self.assertEqual(len(ids), len(set(ids)))
         self.assertEqual("context-v1-acceptance-registry/v1", self.registry["schema"])
 
@@ -126,8 +126,11 @@ class AcceptanceRegistryTests(unittest.TestCase):
             surface = entry.get("public_surface")
             self.assertIsInstance(surface, dict)
             self.assertEqual(PUBLIC_SURFACE_FIELDS, set(surface))
-            self.assertIn(surface["kind"], {"cli", "skill", "adapter", "artifact-layout"})
-            self.assertIn(surface["write_policy"], {"read-only", "approval-gated", "none-before-ready"})
+            self.assertIn(surface["kind"], {"cli", "skill", "adapter", "artifact-layout", "agent-skill-composition"})
+            self.assertIn(
+                surface["write_policy"],
+                {"read-only", "approval-gated", "none-before-ready", "explicit-init-fixed-seed", "core-sole-writer"},
+            )
             self.assertTrue(surface["observable_result"])
             self.assertIn(surface["availability"], {"available", "unavailable"})
             public.append(surface)

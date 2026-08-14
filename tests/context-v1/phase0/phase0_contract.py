@@ -201,7 +201,7 @@ _MESSAGES = {
     "core_source_mismatch": "동명 core의 marketplace 또는 source가 요구 좌표와 다르다.",
     "core_disabled": "exact context-core가 현재 scope에서 비활성이다.",
     "core_incompatible": "exact context-core가 context-common/v1 handshake를 통과하지 못했다.",
-    "core_uninitialized": "exact core는 준비됐지만 repository context root가 없다.",
+    "core_uninitialized": "exact core는 준비됐고 repository bootstrap이 필요하다.",
     "partial_core_init": "repository context root가 partial 또는 invalid 상태다.",
     "ready": "exact context-core와 repository가 준비됐다.",
 }
@@ -232,8 +232,8 @@ def _manual_actions(code, required):
             retry,
         ],
         "core_uninitialized": [
-            "사용자가 context-core:init을 실행한다.",
-            "초기화가 완료된 뒤 context-decision:init을 다시 실행한다.",
+            "context-decision:init이 installed context-core public bootstrap surface를 호출한다.",
+            "같은 명시적 호출에서 core init 뒤 decision area 등록을 계속한다.",
         ],
         "partial_core_init": [
             "context-core doctor의 issue/path를 확인한다.",

@@ -1,10 +1,12 @@
 ---
 name: init
-description: context-core index를 preview하고 선택적으로 repository-root agent policy marker를 설치한다.
+description: 명시적 1회 호출로 canonical context-core seed를 안전하고 멱등하게 적용한다.
 ---
 
 # Init
 
-`context_cli.py init --json`은 complete core-init bundle만 만든다. 사용자가 exact digest를 승인하기 전에는 적용하지 않는다.
+`context_cli.py init --json`을 한 번 호출한다. repository가 absent이면 canonical root/SNAP/OBS seed를 context-core coordinator로 즉시 적용하고 `doctor.repository_state=ready`를 반환한다. 이미 ready이면 `phases[core_init].status=noop`이며 filesystem diff는 0이다. partial 또는 invalid이면 기존 bytes를 고치거나 덮어쓰지 않고 `partial_core_init`으로 중단한다.
 
-agent policy는 repository root의 `AGENTS.md` 또는 `CLAUDE.md`만 허용한다. 기존 파일의 managed marker 밖 byte는 그대로 보존하고, marker가 깨졌거나 중복됐거나 target이 symlink·nested path이면 중단한다. policy preview도 자동 적용하지 않으며 exact approval 뒤 context-core `transaction apply`만 사용한다.
+이 명시적 init 호출은 fixed seed에만 적용 권한을 준다. 일반 SNAP·OBS·DEC/user-content mutation은 기존 complete bundle과 exact `approval_digest` 승인을 계속 요구하며, 물리 write는 context-core coordinator만 수행한다.
+
+agent policy는 init에 포함하지 않는다. 사용자가 별도로 명시한 경우에만 repository root의 `AGENTS.md` 또는 `CLAUDE.md`를 `policy preview`하고 exact approval 뒤 `transaction apply`한다. 기존 파일의 managed marker 밖 byte는 그대로 보존하고, marker가 깨졌거나 중복됐거나 target이 symlink·nested path이면 중단한다.

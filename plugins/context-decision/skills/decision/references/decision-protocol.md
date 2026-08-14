@@ -10,7 +10,7 @@
 - source: `Jeis-Jw/ai-plugins`
 - protocol: `context-common/v1`
 
-`schema`와 `capabilities`만 core 없이 호출할 수 있다. host는 다른 operation에 `--host`, `--core-inventory @file`, `--core-doctor @file`을 넘긴다. production CLI가 repository root를 탐색하기 전 exact identity, source, enabled state, protocol과 `doctor.repository_state=ready`를 read-only로 확인한다. decision owner는 install, enable, update, marketplace add, `context-core:init`, cache probing 또는 embedded core를 수행하지 않는다.
+`schema`와 `capabilities`만 core 없이 호출할 수 있다. host는 다른 operation에 `--host`, `--core-inventory @file`, `--core-doctor @file`을 넘긴다. production CLI가 repository root를 탐색하기 전 exact identity, source, enabled state와 protocol을 read-only로 확인한다. 일반 operation은 `doctor.repository_state=ready`도 요구하고, init만 `repository_state=absent`를 bootstrap-required state로 수락한다. decision owner는 install, enable, update, marketplace add, cache probing 또는 embedded core를 수행하지 않는다.
 
 ## Semantic claim gate
 
@@ -61,7 +61,7 @@ Receipt 없는 final owner plan이나 altered receipt는 `plan validate`에서 �
 
 `search`는 `decision.index.md` metadata만 읽는다. `read`와 `brief`는 선택된 DEC만 연다. brief는 `결정`, `취지`, `반려대안`만 포함하고 최대 8 KiB다. 낮은 순위 item을 통째로 제외하며 section 중간 절단은 하지 않는다. History에는 항상 `do_not_follow:true`와 lifecycle reason을 붙인다.
 
-`init`은 production six-state preflight가 ready일 때만 `context-owner-descriptor/v1`, complete empty decision index seed, descriptor/seed digest와 `context-core area register` 요청을 반환한다. root/area/index를 직접 만들거나 수정하지 않는다.
+`init`은 production preflight가 ready 또는 absent일 때 `context-owner-descriptor/v1`, complete empty decision index seed, descriptor/seed digest와 installed core `bootstrap` 요청을 반환한다. Host/skill은 active installed core의 public `context_cli.py bootstrap` surface에 exact descriptor/seed를 전달한다. 이 core surface가 absent core init과 decision area registration을 순서대로 coordinator로 적용하며 phase result를 반환한다. ready 재호출은 noop이고, 중간 실패 재시도는 완료 phase를 반복 쓰지 않는다. decision CLI 자체는 root/area/index를 만들거나 수정하지 않는다.
 
 ## Output and errors
 

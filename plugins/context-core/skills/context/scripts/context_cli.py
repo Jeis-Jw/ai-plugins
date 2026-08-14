@@ -2123,6 +2123,98 @@ def build_init_bundle(repo: pathlib.Path) -> dict[str, Any]:
     return _bundle_result(preview, plan, materials)
 
 
+def _bootstrap_phase_error(
+    error: ContextError,
+    phase: str,
+    completed: Sequence[dict[str, Any]],
+) -> ContextError:
+    details = dict(error.details)
+    details["phases"] = [
+        *completed,
+        {"phase": phase, "status": "failed", "code": error.code, "changed_paths": []},
+    ]
+    details["retry"] = "같은 명시적 init 호출을 재시도한다. partial 또는 invalid state는 먼저 수동 복구한다."
+    return ContextError(error.code, error.message, details, error.exit_code)
+
+
+def bootstrap_repository(
+    repo: pathlib.Path,
+    descriptor: dict[str, Any] | None = None,
+    index_seed: str | None = None,
+) -> dict[str, Any]:
+    """Apply only fixed init seeds through the core coordinator.
+
+    An explicit init call is the approval source for these two allowlisted
+    transitions. User-content mutations and optional policy installation stay
+    on the ordinary exact-digest approval path.
+    """
+
+    if (descriptor is None) != (index_seed is None):
+        raise ContextError(
+            "bootstrap_request_invalid",
+            "area bootstrap requires both owner descriptor and index seed",
+            exit_code=EXIT_CONFLICT,
+        )
+    phases: list[dict[str, Any]] = []
+    changed_paths: list[str] = []
+    try:
+        core = build_init_bundle(repo)
+        if core.get("noop") is True:
+            phases.append({"phase": "core_init", "status": "noop", "changed_paths": []})
+        else:
+            applied = apply_bundle(
+                repo,
+                core["bundle"],
+                core["approval_digest"],
+                approval_source="explicit_init",
+            )
+            changed_paths.extend(applied["changed_paths"])
+            phases.append(
+                {"phase": "core_init", "status": "applied", "changed_paths": applied["changed_paths"]}
+            )
+    except ContextError as error:
+        raise _bootstrap_phase_error(error, "core_init", phases) from error
+
+    doctor = doctor_repository(repo)
+    if doctor["repository_state"] != "ready":
+        error = ContextError(
+            "bootstrap_incomplete",
+            "core bootstrap did not converge to repository_state=ready",
+            {"doctor": doctor},
+            EXIT_INTEGRITY,
+        )
+        raise _bootstrap_phase_error(error, "core_verify", phases) from error
+
+    if descriptor is not None and index_seed is not None:
+        try:
+            area = build_area_register_bundle(repo, descriptor, index_seed)
+            if area.get("noop") is True:
+                phases.append({"phase": "area_register", "status": "noop", "changed_paths": []})
+            else:
+                applied = apply_bundle(
+                    repo,
+                    area["bundle"],
+                    area["approval_digest"],
+                    approval_source="explicit_init",
+                )
+                changed_paths.extend(applied["changed_paths"])
+                phases.append(
+                    {"phase": "area_register", "status": "applied", "changed_paths": applied["changed_paths"]}
+                )
+        except ContextError as error:
+            raise _bootstrap_phase_error(error, "area_register", phases) from error
+
+    return {
+        "schema": "context-core-bootstrap-result/v1",
+        "applied": any(phase["status"] == "applied" for phase in phases),
+        "noop": all(phase["status"] == "noop" for phase in phases),
+        "phases": phases,
+        "changed_paths": sorted(set(changed_paths)),
+        "doctor": doctor_repository(repo),
+        "policy": {"requested": False, "applied": False},
+    }
+
+
 def _root_catalog(repo: pathlib.Path) -> tuple[str, list[dict[str, Any]]]:
     path = repo / ROOT_INDEX
     if not path.is_file():
@@ -3586,9 +3678,15 @@ def _apply_index_operation(repo: pathlib.Path, plan: dict[str, Any], operation: 
 
 
 def apply_bundle(repo: pathlib.Path, bundle: dict[str, Any], approved_digest: str, *, approval_source: str = "user") -> dict[str, Any]:
-    if approval_source != "user":
+    if approval_source not in {"user", "explicit_init"}:
         raise ContextError("approval_required", "autonomous audit or maintenance cannot apply a durable mutation", exit_code=EXIT_CONFLICT)
     plan, materials = _validate_bundle(repo, bundle, approved_digest)
+    if approval_source == "explicit_init" and plan["transition"] not in {"core_init", "area_register"}:
+        raise ContextError(
+            "approval_required",
+            "explicit init authorizes only fixed core_init and area_register transitions",
+            exit_code=EXIT_CONFLICT,
+        )
     changed: list[str] = []
     index_paths: list[str] = []
     with _root_lock(repo):
@@ -3825,7 +3923,7 @@ def schema_result() -> dict[str, Any]:
         "json_error": {"ok": False, "error": {"code": "string", "message": "string", "details": {}}},
         "exit_codes": {"usage_schema_filename": 2, "not_found": 3, "ambiguous": 4, "conflict": 5, "integrity_index": 6},
         "commands": [
-            "schema", "capabilities", "doctor", "init", "draft", "lifecycle prepare", "area register",
+            "schema", "capabilities", "doctor", "init", "bootstrap", "draft", "lifecycle prepare", "area register",
             "transaction preview", "transaction apply", "recall", "snapshot save/update/list/search/load/discard",
             "observation capture/read/search/annotate/reverify/invalidate/supersede/discard", "rename", "discard", "refresh",
         ],
@@ -3911,6 +4009,10 @@ def build_parser() -> argparse.ArgumentParser:
     for name in ("schema", "capabilities", "doctor", "init"):
         command = sub.add_parser(name)
         command.add_argument("--json", action="store_true")
+    bootstrap = sub.add_parser("bootstrap")
+    bootstrap.add_argument("--descriptor", required=True)
+    bootstrap.add_argument("--index-seed", required=True)
+    bootstrap.add_argument("--json", action="store_true")
     draft = sub.add_parser("draft")
     draft.add_argument("--kind", choices=BUILTIN_AREAS, required=True)
     draft.add_argument("--candidate", required=True)
@@ -4090,7 +4192,13 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
     if args.command == "doctor":
         return doctor_repository(repo)
     if args.command == "init":
-        return build_init_bundle(repo)
+        return bootstrap_repository(repo)
+    if args.command == "bootstrap":
+        return bootstrap_repository(
+            repo,
+            _load_json_argument(args.descriptor, allow_stdin=True),
+            _load_text_argument(args.index_seed),
+        )
     if args.command == "draft":
         candidate = _load_json_argument(args.candidate, allow_stdin=True)
         if candidate.get("requested_kind") != args.kind:

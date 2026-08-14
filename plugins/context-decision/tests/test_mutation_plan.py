@@ -29,7 +29,9 @@ class MutationPlanTests(unittest.TestCase):
             self.assertEqual("decision", result["owner_descriptor"]["kind"])
             self.assertEqual(decision_cli.canonical_digest(result["owner_descriptor"]), result["descriptor_digest"])
             self.assertEqual(decision_cli.file_digest(result["index_seed"]), result["index_seed_sha256"])
-            self.assertEqual({"owner": "context-core", "operation": "area register", "index_path": "context/decision/decision.index.md"}, result["registration"])
+            self.assertEqual({"owner": "context-core", "operation": "bootstrap", "index_path": "context/decision/decision.index.md"}, result["registration"])
+            self.assertEqual(["ready", "pending"], [phase["status"] for phase in result["phases"]])
+            self.assertEqual("apply_if_absent", result["bootstrap"]["core_init"])
             self.assertNotIn("context.index.md", result["index_seed"])
             decision_cli.parse_decision_index(result["index_seed"])
 

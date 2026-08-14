@@ -44,7 +44,7 @@ PREFLIGHT_MESSAGES = {
     "core_source_mismatch": "동명 core의 marketplace 또는 source가 요구 좌표와 다르다.",
     "core_disabled": "exact context-core가 현재 scope에서 비활성이다.",
     "core_incompatible": "exact context-core가 context-common/v1 handshake를 통과하지 못했다.",
-    "core_uninitialized": "exact core는 준비됐지만 repository context root가 없다.",
+    "core_uninitialized": "exact core는 준비됐고 repository bootstrap이 필요하다.",
     "partial_core_init": "repository context root가 partial 또는 invalid 상태다.",
     "ready": "exact context-core와 repository가 준비됐다.",
 }
@@ -931,18 +931,31 @@ projection_fields: [\"scope\",\"decision_key\",\"revisit_on\"]
 """
 
 
-def build_init_plan() -> dict[str, Any]:
+def build_init_plan(preflight: dict[str, Any] | None = None) -> dict[str, Any]:
     descriptor = {"schema": "context-owner-descriptor/v1", "owner": "context-decision", "kind": "decision", "artifact_schema": "context-decision/v1", "authority": "authoritative"}
     seed = decision_index_seed()
     parse_decision_index(seed)
+    core_state = "ready" if preflight is None else preflight["observed"]["repository_state"]
     return {
         "schema": "context-decision-init-plan/v1",
-        "required_plugin": REQUIRED_PLUGIN,
+        "required_plugin": dict(REQUIRED_PLUGIN),
+        "core_repository_state": core_state,
         "owner_descriptor": descriptor,
         "descriptor_digest": canonical_digest(descriptor),
         "index_seed": seed,
         "index_seed_sha256": file_digest(seed),
-        "registration": {"owner": "context-core", "operation": "area register", "index_path": DECISION_INDEX},
+        "bootstrap": {
+            "owner": "context-core",
+            "operation": "bootstrap",
+            "core_init": "apply_if_absent",
+            "area_register": "context-decision",
+            "index_path": DECISION_INDEX,
+        },
+        "phases": [
+            {"phase": "core_init", "status": "pending" if core_state == "absent" else "ready"},
+            {"phase": "area_register", "status": "pending"},
+        ],
+        "registration": {"owner": "context-core", "operation": "bootstrap", "index_path": DECISION_INDEX},
         "applied": False,
     }
 
@@ -1716,8 +1729,8 @@ def _manual_actions(code: str) -> list[str]:
             retry,
         ],
         "core_uninitialized": [
-            "사용자가 context-core:init을 실행한다.",
-            "초기화가 완료된 뒤 context-decision:init을 다시 실행한다.",
+            "context-decision:init이 installed context-core public bootstrap surface를 호출한다.",
+            "같은 명시적 호출에서 core init 뒤 decision area 등록을 계속한다.",
         ],
         "partial_core_init": [
             "context-core doctor의 issue/path를 확인한다.",
@@ -1743,7 +1756,7 @@ def render_core_preflight(result: dict[str, Any], host: str) -> dict[str, Any]:
     }
 
 
-def require_core_preflight(args: argparse.Namespace) -> dict[str, Any]:
+def require_core_preflight(args: argparse.Namespace, *, allow_absent: bool = False) -> dict[str, Any]:
     host = getattr(args, "host", None)
     inventory_argument = getattr(args, "core_inventory", None)
     doctor_argument = getattr(args, "core_doctor", None)
@@ -1756,7 +1769,7 @@ def require_core_preflight(args: argparse.Namespace) -> dict[str, Any]:
         )
     result = classify_core_preflight(_load_json_argument(inventory_argument), _load_json_argument(doctor_argument))
     rendered = render_core_preflight(result, host)
-    if rendered["code"] != "ready":
+    if rendered["code"] != "ready" and not (allow_absent and rendered["code"] == "core_uninitialized"):
         details = {key: value for key, value in rendered.items() if key not in {"code", "message"}}
         raise DecisionError(rendered["code"], rendered["message"], details, EXIT_CONFLICT)
     return rendered
@@ -1916,9 +1929,9 @@ def dispatch(args: argparse.Namespace) -> dict[str, Any]:
         return schema_result()
     if args.command == "capabilities":
         return {"schema": "context-owner-capabilities/v1", "owners": [decision_capability()]}
-    require_core_preflight(args)
+    preflight = require_core_preflight(args, allow_absent=args.command == "init")
     if args.command == "init":
-        return build_init_plan()
+        return build_init_plan(preflight)
     if args.command == "candidate" and args.candidate_command == "prepare":
         return _direct_candidate(args)
     if args.command == "draft":

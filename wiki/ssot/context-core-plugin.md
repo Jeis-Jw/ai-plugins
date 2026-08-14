@@ -70,7 +70,7 @@ Python stdlib-only 단일 CLI를 기준으로 한다. skill은 agent-facing cont
 
 | skill | 역할 |
 |---|---|
-| `context-core:init` | root/index/SNAP/OBS 구조와 auto-loaded agent policy를 멱등 설치·검증 |
+| `context-core:init` | root/index/SNAP/OBS canonical seed를 한 호출로 멱등 적용·검증 |
 | `context-core:context` | scoped recall, candidate route, grouped capture orchestration, refresh/schema |
 | `context-core:snapshot` | explicit handoff save·merge·load·search·discard |
 | `context-core:observation` | evidence capture·read·search·reverify·invalidate·supersede |
@@ -81,6 +81,7 @@ skill은 primary 사용자 요청을 먼저 수행한다. audit 결과가 없으
 
 ```text
 context_cli.py init [--json]
+context_cli.py bootstrap --descriptor @file --index-seed @file [--json]
 context_cli.py doctor [--json]
 context_cli.py schema [--json]
 context_cli.py capabilities [--json]
@@ -150,7 +151,7 @@ context_cli.py refresh [--level integrity|hygiene|all] [--strict]
                        [--fix index] [--json]
 ```
 
-repository root의 `context/`가 유일한 v1 storage root이며 CLI에 `--root`는 없다. core-owned domain mutation과 init/area/policy 명령은 내부 `transaction preview`를 거쳐 final `context-mutation-bundle/v1`을 반환한다. addon owner result는 명시적으로 `transaction preview`에 전달한다. create ID와 `created_at`은 owner/core preview에서 한 번 생성되고 final bundle에 고정된다. caller는 final **동일 bundle object**를 보관해 `transaction apply --plan-bundle @file --approved-digest DIGEST`에 넘긴다. JSON whitespace 재직렬화는 허용하지만 apply 시 timestamp/ID/path/artifact content를 재생성하지 않는다.
+repository root의 `context/`가 유일한 v1 storage root이며 CLI에 `--root`는 없다. core-owned domain mutation과 init/area/policy 명령은 내부 final `context-mutation-bundle/v1` 검증을 통과한다. 명시적 `init`과 addon init의 `bootstrap`만 fixed `core_init|area_register` bundle을 coordinator로 즉시 적용하고, 나머지는 exact digest 승인 뒤 `transaction apply`한다. addon owner result는 명시적으로 `transaction preview`에 전달한다. create ID와 `created_at`은 owner/core preview에서 한 번 생성되고 final bundle에 고정된다. caller는 final **동일 bundle object**를 보관해 `transaction apply --plan-bundle @file --approved-digest DIGEST`에 넘긴다. JSON whitespace 재직렬화는 허용하지만 apply 시 timestamp/ID/path/artifact content를 재생성하지 않는다.
 
 `snapshot save`는 create-only다. `snapshot update`는 기본 full replacement이므로 세 필수 section을 모두 요구하고, `--merge`일 때만 지정한 section·metadata를 부분 변경한다. repeatable list flag는 full replacement에서 해당 list 전체를 대체하고 merge에서 하나라도 주어졌을 때 전체를 대체한다. full replacement에서 생략한 optional list는 empty, merge에서 생략한 list는 unchanged다. list를 명시적으로 비우려면 `--clear anchors|tags|search_terms|source_refs`를 사용하며 required body list는 clear할 수 없다. `observation supersede`는 successor result를 검증해 new OBS create와 old OBS retirement를 하나의 plan으로 만든다. 이미 존재하는 successor ID만 연결하는 비원자 명령은 없다.
 
@@ -172,7 +173,8 @@ JSON success envelope은 `{"ok":true,"result":{...}}`다.
 - `list/search/recall`: `items`, `returned`, `omitted`, `truncated`, `index_fallback`, `warnings`
 - `load/read`: exact `artifact` metadata, 요청한 `sections`, authority/freshness와 `truncated`
 - `lifecycle prepare`: exact `context-lifecycle-semantic-input/v1`, input digest, `applied:false`
-- core domain mutation/`init`/`area register`/policy/index fix와 `transaction preview`: complete final `bundle`, `approval_preview`, `approval_digest`, `applied:false`
+- `init`/`bootstrap`: `context-core-bootstrap-result/v1`, ordered `applied|noop` phase, changed paths, post-apply doctor와 policy-not-requested receipt
+- 일반 core domain mutation/`area register`/policy/index fix와 `transaction preview`: complete final `bundle`, `approval_preview`, `approval_digest`, `applied:false`
 - `transaction apply`: `applied:true`, `plan_id`, `approval_digest`, `changed_paths`, `index_paths`, `warnings`
 
 text mode는 사람이 읽는 projection일 뿐 host orchestration과 test는 JSON envelope만 계약으로 사용한다.
@@ -290,14 +292,14 @@ OBS capture는 claim/evidence가 placeholder 또는 비어 있으면 실패한�
 
 ### Init과 policy
 
-raw `context_cli.py init`은 storage-only `transition: core_init` final bundle을 만든다. repository에 `context/`가 전혀 없으면 directory 자체는 operation이 아니며 apply가 file parent를 `mkdir(mode=0755, parents=True, exist_ok=True)`로 만들고 built-in complete root/SNAP/OBS index seed material을 canonical generator에 전달한다. 생성 가능한 parent는 exact `context/`, `context/snapshot/`, `context/observation/`, `context/observation/retired/` allowlist뿐이고 non-directory/symlink 충돌은 실패한다. index file apply 전에 crash해 생긴 빈 allowlist directory는 재실행에서 absent와 동등하게 취급한다. 세 index가 모두 valid v1이면 `noop:true`로 끝난다. 일부 index만 있거나 schema/owner가 다르면 `partial_core_init`로 실패해 doctor 결과와 수동/승인 repair를 요구하며 임의 overwrite하지 않는다. schema major upgrade는 별도 migration 결정 없이는 수행하지 않는다.
+`context_cli.py init`은 storage-only `transition: core_init` final bundle을 만들고 같은 명시적 호출에서 coordinator로 적용한다. repository에 `context/`가 전혀 없으면 directory 자체는 operation이 아니며 apply가 file parent를 `mkdir(mode=0755, parents=True, exist_ok=True)`로 만들고 built-in complete root/SNAP/OBS index seed material을 canonical generator에 전달한다. 생성 가능한 parent는 exact `context/`, `context/snapshot/`, `context/observation/`, `context/observation/retired/` allowlist뿐이고 non-directory/symlink 충돌은 실패한다. index file apply 전에 crash해 생긴 빈 allowlist directory는 재실행에서 absent와 동등하게 취급한다. 세 index가 모두 valid v1이면 `noop:true`로 끝난다. 일부 index만 있거나 schema/owner가 다르면 `partial_core_init`로 실패해 doctor 결과와 수동 repair를 요구하며 임의 overwrite하지 않는다. schema major upgrade는 별도 migration 결정 없이는 수행하지 않는다.
 
 1. repository root의 `context/`, SNAP, OBS area와 세 semantic index의 `index_rebuild(include_root:true)`를 preview한다.
 2. 기존 사람 작성 index 설명과 일반 artifact를 보존한다.
 3. 이미 root catalog에 등록된 addon area는 보존하되 addon 파일을 변경하지 않는다. 등록되지 않은 임의 폴더를 자동 claim하지 않는다.
 4. runtime hook, session ledger와 activity heuristic은 만들지 않는다.
 
-user-facing `context-core:init` skill은 storage bundle과 현재 host의 auto-loaded entry target을 위한 별도 policy bundle을 차례로 preview한다. Codex target은 repository root `AGENTS.md`, Claude Code target은 `CLAUDE.md`다. 같은 요청에서 두 host 지원을 명시하면 두 target을 각각 preview한다. grouped approval은 한 번 받을 수 있지만 apply는 bundle별 순차 transaction이며 partial success를 receipt에 표시한다.
+user-facing `context-core:init` skill은 storage bootstrap만 적용하며 agent policy를 자동 설치하지 않는다. Codex `AGENTS.md` 또는 Claude Code `CLAUDE.md` policy는 사용자가 별도로 명시했을 때만 기존 `policy preview`와 exact digest approval 경로로 설치한다.
 
 `policy preview`는 exact repository-root basename 두 개만 받고 symlink는 거부한다. target이 없으면 `file_create`, 있으면 exact before digest의 `file_replace(role:"policy")` plan을 만든다. policy plan은 `transition: policy_install`, `owner_descriptor`는 built-in `context-core/policy` descriptor, effect action은 `install_policy`, `area`는 생략한다. marker는 정확히 한 쌍만 허용하고, marker 밖 UTF-8 bytes를 보존한다. 기존 file이 UTF-8이 아니거나 mixed newline이면 `policy_file_unsupported`로 실패해 수동 설치를 안내한다.
 
@@ -314,7 +316,7 @@ user-facing `context-core:init` skill은 storage bundle과 현재 host의 auto-l
 
 marker가 없으면 file 끝에 blank line 두 개를 경계로 block을 append하고, 한 쌍이면 block bytes만 replace한다. 두 쌍 이상·unbalanced marker는 실패한다. approval preview는 target, action과 위 managed block 전체를 보여주고 final plan/material digest는 marker 밖 보존 bytes까지 결박한다. `transition: policy_install`만 `context/` 밖의 exact 두 target과 `role:"policy"`를 허용한다. rollback은 Git restore 또는 새 policy preview이며 apply 중 crash는 일반 file operation resume 규칙을 따른다.
 
-addon init은 root index를 직접 수정하지 않는다. `context-decision:init`처럼 owner descriptor와 complete area index seed를 만든 뒤 `area register --index-seed` preview를 호출하고, 승인된 plan만 coordinator가 seed material에서 새 area index를 만들고 root index에 등록한다. seed bytes와 generated output digest는 final plan에 결박되며 absent index를 seed 없이 추측 생성하지 않는다.
+addon init은 root index를 직접 수정하지 않는다. `context-decision:init`처럼 owner descriptor와 complete area index seed를 만든 뒤 public `bootstrap --descriptor --index-seed`를 호출한다. 이 surface는 core init을 먼저 완료하고 fixed area-register plan만 coordinator로 적용한다. seed bytes와 generated output digest는 final plan에 결박되며 absent index를 seed 없이 추측 생성하지 않는다. 중간 실패는 ordered phase result를 반환하고 재시도는 완료된 phase를 noop으로 수렴시킨다.
 
 ### Coordinator와 승인 경계
 
