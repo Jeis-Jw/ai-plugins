@@ -60,6 +60,10 @@ Codex 등 `$CLAUDE_PLUGIN_ROOT`가 없으면 이 스킬 로드 위치의 플러�
    `--reviewer-ref` 대신 `--reviewer-unaddressable`을 사용해 fresh fallback reason을 남긴다.
    fresh/reuse 모두 이전 `reviewed_ref`/`finding_digest`를 지우므로 새 reviewer 결과 전에는
    approved/complete로 전이할 수 없다.
+   hard review의 finding 수정 뒤 final-grade QA를 예정한 flow에서는 addressable한 최초
+   reviewer handle을 반드시 reuse해 final candidate commit을 confirm한다. 다른 reviewer로
+   바꾸거나 worker self-check로 대체하지 않는다. final QA 뒤 source/test/config가 바뀌면
+   같은 confirm과 fresh final QA를 다시 요구한다.
    미처리 반박은 `snapshot-save --merge --decided`/`--open-questions`로 남긴다.
 5. 커밋
    `recording_mode=fast` self-review면 라운드별 커밋을 생략한다. 최종 complete

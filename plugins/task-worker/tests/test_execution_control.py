@@ -93,6 +93,21 @@ class CanonicalContractTests(unittest.TestCase):
             "environment": {"PYTHONPATH": "plugins/task-worker"},
         }
 
+    def _reuse_fingerprint(self, permit, **overrides):
+        values = {
+            "source_tree_digest": permit["head"],
+            "criteria_digest": permit["criteria_digest"],
+            "impact_set": permit["impact_set"],
+            "dependency_digest": "sha256:" + "d" * 64,
+            "command_profile_digest": "sha256:" + "e" * 64,
+            "command_digest_value": permit["command_digest"],
+            "tool_version": permit["tool_version"],
+            "environment_digest": permit["environment_digest"],
+            "public_surface_digest": "sha256:" + "f" * 64,
+        }
+        values.update(overrides)
+        return control.build_reuse_fingerprint(**values)
+
     def _preflight(self, permit, mutation):
         value = {
             "schema": "preflight-receipt/v1",
@@ -420,7 +435,10 @@ class CanonicalContractTests(unittest.TestCase):
 
     def test_completion_binds_immutable_receipt_and_reuses_stored_evidence(self):
         case = next(case for case in self.contract["golden_cases"] if case["id"] == "success-reuse")
-        permit = case["input"]["permit"]
+        permit = dict(case["input"]["permit"])
+        permit["head"] = "sha256:" + "a" * 64
+        permit["digest"] = control.instance_digest(permit)
+        fingerprint = self._reuse_fingerprint(permit)
         evidence = dict(case["input"]["evidence"])
         receipt = {
             "schema": "command-receipt/v1",
@@ -447,21 +465,224 @@ class CanonicalContractTests(unittest.TestCase):
             "external_mutation_receipt_refs": [],
         }
         with tempfile.TemporaryDirectory() as tmp:
-            claimed = control.claim_execution(permit, tmp, claimed_by="worker", contract=self.contract)
+            claimed = control.claim_execution(
+                permit, tmp, claimed_by="worker", contract=self.contract,
+                reuse_fingerprint=fingerprint,
+            )
             receipt["claim_id"] = claimed["claim"]["claim_id"]
             receipt["digest"] = control.instance_digest(receipt)
             evidence["source_receipt_id"] = receipt["receipt_id"]
+            evidence["head"] = permit["head"]
+            evidence["surface_digest"] = fingerprint["digest"]
             evidence["digest"] = control.instance_digest(evidence)
             completed = control.complete_execution(
                 permit, receipt["claim_id"], receipt, tmp,
-                evidence=evidence, contract=self.contract,
+                evidence=evidence, reuse_fingerprint=fingerprint, contract=self.contract,
             )
-            reused = control.claim_execution(permit, tmp, claimed_by="other", contract=self.contract)
+            reused = control.claim_execution(
+                permit, tmp, claimed_by="other", contract=self.contract,
+                reuse_fingerprint=fingerprint,
+            )
 
         self.assertEqual(completed["state"], "succeeded")
         self.assertEqual(completed["evidence_refs"], [evidence["evidence_id"]])
         self.assertEqual(reused["action"], "reuse-evidence")
         self.assertFalse(reused["physical_run_started"])
+
+    def test_source_tree_pin_covers_staged_unstaged_untracked_mode_and_symlink(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            tracked = repo / "tracked.txt"
+            tracked.write_text("one\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "tracked.txt"], check=True)
+            staged = control.source_tree_pin(repo, ["tracked.txt"])
+
+            tracked.write_text("two\n", encoding="utf-8")
+            unstaged = control.source_tree_pin(repo, ["tracked.txt"])
+            self.assertNotEqual(staged["digest"], unstaged["digest"])
+            subprocess.run(["git", "-C", str(repo), "add", "tracked.txt"], check=True)
+            restaged = control.source_tree_pin(repo, ["tracked.txt"])
+            self.assertNotEqual(unstaged["digest"], restaged["digest"])
+
+            untracked = repo / "new.txt"
+            untracked.write_text("new\n", encoding="utf-8")
+            with_untracked = control.source_tree_pin(repo, ["tracked.txt", "new.txt"])
+            untracked.write_text("changed\n", encoding="utf-8")
+            self.assertNotEqual(
+                with_untracked["digest"],
+                control.source_tree_pin(repo, ["tracked.txt", "new.txt"])["digest"],
+            )
+
+            tracked.chmod(0o755)
+            executable = control.source_tree_pin(repo, ["tracked.txt"])
+            self.assertNotEqual(restaged["digest"], executable["digest"])
+            link = repo / "link.txt"
+            link.symlink_to("tracked.txt")
+            linked = control.source_tree_pin(repo, ["link.txt"])
+            link.unlink()
+            link.symlink_to("new.txt")
+            self.assertNotEqual(linked["digest"], control.source_tree_pin(repo, ["link.txt"])["digest"])
+
+    def test_source_tree_pin_fails_closed_for_dirty_submodule_and_unexpanded_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            nested = repo / "nested"
+            subprocess.run(["git", "init", "-q", str(nested)], check=True)
+            subprocess.run(["git", "-C", str(nested), "config", "user.name", "Test"], check=True)
+            subprocess.run(["git", "-C", str(nested), "config", "user.email", "test@example.com"], check=True)
+            (nested / "file.txt").write_text("clean\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(nested), "add", "file.txt"], check=True)
+            subprocess.run(["git", "-C", str(nested), "commit", "-qm", "init"], check=True)
+            subprocess.run(["git", "-C", str(repo), "add", "nested"], check=True)
+            clean = control.source_tree_pin(repo, ["nested"])
+            self.assertEqual(clean["status"], "canonical")
+            (nested / "file.txt").write_text("dirty\n", encoding="utf-8")
+            with self.assertRaises(control.ExecutionControlError) as dirty:
+                control.source_tree_pin(repo, ["nested"])
+            self.assertEqual(dirty.exception.code, "source_tree_unknown")
+            with self.assertRaises(control.ExecutionControlError):
+                control.source_tree_pin(repo, ["plugins/**"])
+
+    def test_reuse_fingerprint_invalidates_every_material_axis(self):
+        permit = dict(self.contract["golden_cases"][0]["input"]["permit"])
+        permit["head"] = "sha256:" + "a" * 64
+        permit["digest"] = control.instance_digest(permit)
+        base_values = {
+            "source_tree_digest": permit["head"],
+            "criteria_digest": permit["criteria_digest"],
+            "impact_set": permit["impact_set"],
+            "dependency_digest": "sha256:" + "d" * 64,
+            "command_profile_digest": "sha256:" + "e" * 64,
+            "command_digest_value": permit["command_digest"],
+            "tool_version": permit["tool_version"],
+            "environment_digest": permit["environment_digest"],
+            "public_surface_digest": "sha256:" + "f" * 64,
+        }
+        before = control.build_reuse_fingerprint(**base_values)
+        cases = {
+            "source_tree_digest": "sha256:" + "1" * 64,
+            "criteria_digest": "sha256:" + "2" * 64,
+            "impact_set": ["another/path"],
+            "dependency_digest": "sha256:" + "3" * 64,
+            "command_profile_digest": "sha256:" + "4" * 64,
+            "command_digest_value": "sha256:" + "5" * 64,
+            "tool_version": "python/next",
+            "environment_digest": "sha256:" + "6" * 64,
+            "public_surface_digest": "sha256:" + "7" * 64,
+        }
+        for field, changed in cases.items():
+            with self.subTest(field=field):
+                after = control.build_reuse_fingerprint(**{**base_values, field: changed})
+                self.assertNotEqual(before["digest"], after["digest"])
+
+    def test_development_fingerprint_reuses_across_fresh_labels_but_final_does_not(self):
+        permit = dict(self.contract["golden_cases"][0]["input"]["permit"])
+        permit.update({"head": "sha256:" + "a" * 64, "fresh_requirement_id": "dev-1"})
+        permit["digest"] = control.instance_digest(permit)
+        fingerprint = self._reuse_fingerprint(permit)
+        another = {**permit, "fresh_requirement_id": "dev-2"}
+        another["digest"] = control.instance_digest(another)
+        self.assertEqual(
+            control.physical_identity(permit, fingerprint),
+            control.physical_identity(another, fingerprint),
+        )
+        final = {**permit, "purpose": "integration-full", "qa_mode": "final"}
+        final["digest"] = control.instance_digest(final)
+        final_fingerprint = self._reuse_fingerprint(final)
+        final_next = {**final, "fresh_requirement_id": "final-2"}
+        final_next["digest"] = control.instance_digest(final_next)
+        self.assertNotEqual(
+            control.physical_identity(final, final_fingerprint),
+            control.physical_identity(final_next, final_fingerprint),
+        )
+
+    def _batch_child(self, evidence_id="EV-1", result="pass", selectors=None):
+        return {
+            "evidence_id": evidence_id,
+            "evidence_digest": "sha256:" + "1" * 64,
+            "receipt_id": "receipt-" + evidence_id,
+            "receipt_digest": "sha256:" + "2" * 64,
+            "result": result,
+            "output_digest": "sha256:" + "3" * 64 if result != "missing" else None,
+            "selectors": selectors or ["selector-1"],
+            "source_tree_digest": "sha256:" + "a" * 64,
+            "command_profile_digest": "sha256:" + "b" * 64,
+        }
+
+    def test_evidence_batch_preserves_refs_and_fails_on_child_or_missing_selector(self):
+        kwargs = {
+            "source_tree_digest": "sha256:" + "a" * 64,
+            "command_profile_digest": "sha256:" + "b" * 64,
+            "expected_selectors": ["selector-1", "selector-2"],
+        }
+        passed = control.build_evidence_batch(
+            **kwargs,
+            children=[
+                self._batch_child(),
+                self._batch_child("EV-2", selectors=["selector-2"]),
+            ],
+        )
+        self.assertEqual(passed["result"], "pass")
+        self.assertEqual([item["evidence_id"] for item in passed["children"]], ["EV-1", "EV-2"])
+        failed = control.build_evidence_batch(
+            **kwargs, children=[self._batch_child(result="error")],
+        )
+        self.assertEqual(failed["result"], "fail")
+        self.assertEqual(failed["failed_evidence_refs"], ["EV-1"])
+        self.assertEqual(failed["missing_selectors"], ["selector-2"])
+
+    def test_final_candidate_requires_same_reviewer_then_one_fresh_root_qa(self):
+        confirmation = {
+            "initial_reviewer_ref": "agent-1", "reviewer_ref": "agent-1",
+            "candidate_digest": "tree-B", "result": "approved",
+            "confirmed_at": "2026-08-14T01:00:00Z",
+        }
+        qa = {
+            "candidate_digest": "tree-B", "fresh": True, "result": "pass",
+            "started_at": "2026-08-14T01:00:01Z",
+        }
+        value = {
+            "candidate_digest": "tree-B", "review_confirmation": confirmation,
+            "final_qa_receipts": [qa],
+        }
+        self.assertEqual(control.final_candidate_gate(value)["action"], "accept")
+        wrong_reviewer = {**value, "review_confirmation": {**confirmation, "reviewer_ref": "agent-2"}}
+        self.assertEqual(
+            control.final_candidate_gate(wrong_reviewer)["reason"],
+            "review-confirmation-required",
+        )
+        before_review = {**value, "final_qa_receipts": [{**qa, "started_at": "2026-08-14T00:59:59Z"}]}
+        self.assertEqual(
+            control.final_candidate_gate(before_review)["reason"],
+            "fresh-final-root-qa-required",
+        )
+        changed = {**value, "candidate_digest": "tree-C"}
+        self.assertEqual(control.final_candidate_gate(changed)["reason"], "review-confirmation-required")
+        duplicate = {**value, "final_qa_receipts": [qa, qa]}
+        self.assertEqual(control.final_candidate_gate(duplicate)["reason"], "duplicate-final-root-qa")
+
+    def test_completed_claim_rejects_a_second_physical_receipt(self):
+        permit = self.contract["golden_cases"][0]["input"]["permit"]
+        with tempfile.TemporaryDirectory() as tmp:
+            claimed = control.claim_execution(permit, tmp, claimed_by="worker", contract=self.contract)
+            receipt = self._command_receipt(permit, claimed["claim"]["claim_id"])
+            first = control.complete_execution(
+                permit, receipt["claim_id"], receipt, tmp, contract=self.contract,
+            )
+            repeated = control.complete_execution(
+                permit, receipt["claim_id"], receipt, tmp, contract=self.contract,
+            )
+            second = {**receipt, "receipt_id": "another-receipt"}
+            second["digest"] = control.instance_digest(second)
+            with self.assertRaises(control.ExecutionControlError) as duplicate:
+                control.complete_execution(
+                    permit, second["claim_id"], second, tmp, contract=self.contract,
+                )
+        self.assertEqual(first["state"], "succeeded")
+        self.assertTrue(repeated["idempotent"])
+        self.assertEqual(duplicate.exception.code, "claim_already_completed")
 
     def test_paid_mutation_claim_atomically_binds_preflight_spend_and_execution(self):
         permit, mutation = self._mutation_permit(paid=True)

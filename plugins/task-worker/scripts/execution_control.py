@@ -8,6 +8,8 @@ import fnmatch
 import hashlib
 import json
 import os
+import stat
+import subprocess
 import tempfile
 import uuid
 from contextlib import contextmanager
@@ -29,6 +31,13 @@ FRESH_PURPOSES = frozenset((
     "integration-full", "release-artifact", "device-check", "production-preflight",
 ))
 COMMAND_DIGEST_FIELDS = ("executable", "args", "cwd", "environment")
+REUSE_FINGERPRINT_SCHEMA = "task-worker.reuse-fingerprint/v1"
+EVIDENCE_BATCH_SCHEMA = "task-worker.verification-evidence-batch/v1"
+REUSE_FINGERPRINT_FIELDS = frozenset((
+    "schema", "source_tree_digest", "criteria_digest", "impact_set",
+    "dependency_digest", "command_profile_digest", "command_digest",
+    "tool_version", "environment_digest", "public_surface_digest", "digest",
+))
 
 
 class ExecutionControlError(Exception):
@@ -291,6 +300,322 @@ def command_digest(command: dict[str, Any]) -> str:
     return tagged_digest(command)
 
 
+def _require_tagged_digest(value: Any, field: str) -> str:
+    if not isinstance(value, str) or not value.startswith("sha256:") or len(value) != 71:
+        raise ExecutionControlError("reuse_pin_invalid", f"{field} must be a sha256 digest")
+    try:
+        int(value[7:], 16)
+    except ValueError as exc:
+        raise ExecutionControlError("reuse_pin_invalid", f"{field} must be a sha256 digest") from exc
+    return value
+
+
+def _git_bytes(repo: Path, *args: str) -> bytes:
+    completed = subprocess.run(
+        ["git", "-C", str(repo), *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        check=False,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.decode("utf-8", errors="replace").strip()
+        raise ExecutionControlError(
+            "source_tree_unknown", "git could not canonicalize the selected source tree",
+            detail={"argv": list(args), "stderr": detail},
+        )
+    return completed.stdout
+
+
+def source_tree_pin(repo_root: str | Path, relevant_paths: Iterable[str]) -> dict[str, Any]:
+    """Hash index and worktree bytes for a bounded path set without writing git state.
+
+    The pin includes staged blobs, unstaged and untracked worktree bytes, file mode,
+    symlink target, and clean submodule HEAD. Dirty or unreadable submodules and
+    non-regular filesystem entries are unknown and therefore cannot be reused.
+    """
+    repo = Path(repo_root).resolve()
+    selectors = sorted(set(relevant_paths))
+    if not repo.is_dir() or not selectors:
+        raise ExecutionControlError("source_tree_unknown", "source tree requires a repository and paths")
+    normalized: list[str] = []
+    for value in selectors:
+        if not isinstance(value, str) or not value.strip():
+            raise ExecutionControlError("source_tree_unknown", "source tree paths must be non-empty strings")
+        path = Path(value)
+        if path.is_absolute() or ".." in path.parts or any(char in value for char in "*?["):
+            raise ExecutionControlError(
+                "source_tree_unknown", "source tree paths must be expanded repository-relative paths",
+                detail={"path": value},
+            )
+        normalized.append(path.as_posix())
+    top = _git_bytes(repo, "rev-parse", "--show-toplevel").decode("utf-8", errors="strict").strip()
+    if Path(top).resolve() != repo:
+        raise ExecutionControlError(
+            "source_tree_unknown", "repo_root must be the git worktree root",
+            detail={"expected": str(repo), "actual": top},
+        )
+
+    index_records: list[dict[str, Any]] = []
+    index_modes: dict[str, str] = {}
+    raw_index = _git_bytes(repo, "ls-files", "--stage", "-z", "--", *normalized)
+    for raw in raw_index.split(b"\0"):
+        if not raw:
+            continue
+        metadata, separator, raw_path = raw.partition(b"\t")
+        parts = metadata.decode("ascii", errors="strict").split()
+        if not separator or len(parts) != 3:
+            raise ExecutionControlError("source_tree_unknown", "git index entry is not canonical")
+        mode, object_id, stage = parts
+        path = raw_path.decode("utf-8", errors="surrogateescape")
+        if stage != "0":
+            raise ExecutionControlError(
+                "source_tree_unknown", "unmerged index entries cannot be reused",
+                detail={"path": path, "stage": stage},
+            )
+        if mode == "160000":
+            staged_digest = f"gitlink:{object_id}"
+        else:
+            staged_blob = _git_bytes(repo, "cat-file", "blob", object_id)
+            staged_digest = "sha256:" + hashlib.sha256(staged_blob).hexdigest()
+        index_modes[path] = mode
+        index_records.append({
+            "path": path, "mode": mode, "object_id": object_id,
+            "content_digest": staged_digest,
+        })
+
+    listed = _git_bytes(repo, "ls-files", "--cached", "--others", "-z", "--", *normalized)
+    worktree_paths = sorted(set(
+        raw.decode("utf-8", errors="surrogateescape") for raw in listed.split(b"\0") if raw
+    ) | set(index_modes))
+    worktree_records: list[dict[str, Any]] = []
+    for relative in worktree_paths:
+        path = repo / relative
+        if index_modes.get(relative) == "160000":
+            if not path.is_dir():
+                raise ExecutionControlError(
+                    "source_tree_unknown", "missing submodule cannot be reused",
+                    detail={"path": relative},
+                )
+            submodule_head = _git_bytes(path, "rev-parse", "HEAD").decode("ascii", errors="strict").strip()
+            submodule_status = _git_bytes(
+                path, "status", "--porcelain=v1", "--untracked-files=all", "-z",
+            )
+            if submodule_status:
+                raise ExecutionControlError(
+                    "source_tree_unknown", "dirty submodule cannot be canonicalized for reuse",
+                    detail={"path": relative},
+                )
+            worktree_records.append({
+                "path": relative, "kind": "submodule", "head": submodule_head,
+            })
+            continue
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            worktree_records.append({"path": relative, "kind": "missing"})
+            continue
+        mode = format(metadata.st_mode & 0o177777, "06o")
+        if stat.S_ISLNK(metadata.st_mode):
+            target = os.readlink(path)
+            worktree_records.append({
+                "path": relative, "kind": "symlink", "mode": mode,
+                "target_digest": tagged_digest({"target": target}),
+            })
+        elif stat.S_ISREG(metadata.st_mode):
+            try:
+                content = path.read_bytes()
+            except OSError as exc:
+                raise ExecutionControlError(
+                    "source_tree_unknown", "worktree file could not be read",
+                    detail={"path": relative},
+                ) from exc
+            worktree_records.append({
+                "path": relative, "kind": "file", "mode": mode, "size": len(content),
+                "content_digest": "sha256:" + hashlib.sha256(content).hexdigest(),
+            })
+        else:
+            raise ExecutionControlError(
+                "source_tree_unknown", "special filesystem entries cannot be reused",
+                detail={"path": relative, "mode": mode},
+            )
+
+    preimage = {
+        "schema": "task-worker.source-tree-pin/v1",
+        "selectors": normalized,
+        "index": sorted(index_records, key=lambda item: item["path"]),
+        "worktree": worktree_records,
+    }
+    return {
+        "schema": preimage["schema"], "selectors": normalized,
+        "status": "canonical", "digest": tagged_digest(preimage),
+    }
+
+
+def build_reuse_fingerprint(
+    *, source_tree_digest: str, criteria_digest: str, impact_set: Iterable[str],
+    dependency_digest: str, command_profile_digest: str, command_digest_value: str,
+    tool_version: str, environment_digest: str, public_surface_digest: str,
+) -> dict[str, Any]:
+    paths = sorted(set(impact_set))
+    if not paths or not all(isinstance(path, str) and path for path in paths):
+        raise ExecutionControlError("reuse_pin_invalid", "impact_set must contain paths")
+    for field, value in (
+        ("source_tree_digest", source_tree_digest), ("criteria_digest", criteria_digest),
+        ("dependency_digest", dependency_digest),
+        ("command_profile_digest", command_profile_digest),
+        ("command_digest", command_digest_value), ("environment_digest", environment_digest),
+        ("public_surface_digest", public_surface_digest),
+    ):
+        _require_tagged_digest(value, field)
+    if not isinstance(tool_version, str) or not tool_version:
+        raise ExecutionControlError("reuse_pin_invalid", "tool_version must be non-empty")
+    value: dict[str, Any] = {
+        "schema": REUSE_FINGERPRINT_SCHEMA,
+        "source_tree_digest": source_tree_digest,
+        "criteria_digest": criteria_digest,
+        "impact_set": paths,
+        "dependency_digest": dependency_digest,
+        "command_profile_digest": command_profile_digest,
+        "command_digest": command_digest_value,
+        "tool_version": tool_version,
+        "environment_digest": environment_digest,
+        "public_surface_digest": public_surface_digest,
+    }
+    value["digest"] = instance_digest(value)
+    return value
+
+
+def validate_reuse_fingerprint(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != REUSE_FINGERPRINT_FIELDS:
+        raise ExecutionControlError("reuse_pin_invalid", "reuse fingerprint fields differ")
+    if value.get("schema") != REUSE_FINGERPRINT_SCHEMA:
+        raise ExecutionControlError("reuse_pin_invalid", "reuse fingerprint schema differs")
+    expected = build_reuse_fingerprint(
+        source_tree_digest=value.get("source_tree_digest"),
+        criteria_digest=value.get("criteria_digest"), impact_set=value.get("impact_set") or [],
+        dependency_digest=value.get("dependency_digest"),
+        command_profile_digest=value.get("command_profile_digest"),
+        command_digest_value=value.get("command_digest"), tool_version=value.get("tool_version"),
+        environment_digest=value.get("environment_digest"),
+        public_surface_digest=value.get("public_surface_digest"),
+    )
+    if value != expected:
+        raise ExecutionControlError("reuse_pin_invalid", "reuse fingerprint digest differs")
+    return value
+
+
+def validate_reuse_fingerprint_policy(
+    fingerprint: dict[str, Any], permit: dict[str, Any], plan: dict[str, Any] | None = None,
+) -> None:
+    value = validate_reuse_fingerprint(fingerprint)
+    expected = {
+        "source_tree_digest": permit.get("head"),
+        "criteria_digest": permit.get("criteria_digest"),
+        "impact_set": sorted(set(permit.get("impact_set") or [])),
+        "command_digest": permit.get("command_digest"),
+        "tool_version": permit.get("tool_version"),
+        "environment_digest": permit.get("environment_digest"),
+    }
+    if plan is not None:
+        expected["command_profile_digest"] = plan.get("command_profile_digest")
+    mismatch = {
+        key: {"fingerprint": value.get(key), "expected": expected_value}
+        for key, expected_value in expected.items() if value.get(key) != expected_value
+    }
+    if mismatch:
+        raise ExecutionControlError(
+            "reuse_pin_policy_mismatch", "reuse fingerprint differs from permit or command policy",
+            detail={"mismatch": mismatch},
+        )
+
+
+def build_evidence_batch(
+    *, source_tree_digest: str, command_profile_digest: str,
+    expected_selectors: Iterable[str], children: Iterable[dict[str, Any]],
+) -> dict[str, Any]:
+    _require_tagged_digest(source_tree_digest, "source_tree_digest")
+    _require_tagged_digest(command_profile_digest, "command_profile_digest")
+    expected = sorted(set(expected_selectors))
+    if not expected:
+        raise ExecutionControlError("evidence_batch_invalid", "expected selectors must not be empty")
+    normalized: list[dict[str, Any]] = []
+    covered: set[str] = set()
+    child_fields = {
+        "evidence_id", "evidence_digest", "receipt_id", "receipt_digest", "result",
+        "output_digest", "selectors", "source_tree_digest", "command_profile_digest",
+    }
+    for child in children:
+        if not isinstance(child, dict) or set(child) != child_fields:
+            raise ExecutionControlError("evidence_batch_invalid", "child evidence fields differ")
+        if child["source_tree_digest"] != source_tree_digest or child["command_profile_digest"] != command_profile_digest:
+            raise ExecutionControlError("evidence_batch_invalid", "child evidence is from another tree or profile")
+        for field in ("evidence_digest", "receipt_digest"):
+            _require_tagged_digest(child[field], field)
+        if child["result"] not in {"pass", "fail", "error", "missing"}:
+            raise ExecutionControlError("evidence_batch_invalid", "child result is invalid")
+        if child["output_digest"] is None:
+            if child["result"] != "missing":
+                raise ExecutionControlError("evidence_batch_invalid", "child output digest is missing")
+        else:
+            _require_tagged_digest(child["output_digest"], "output_digest")
+        selectors = sorted(set(child["selectors"]))
+        if not selectors or not all(isinstance(item, str) and item for item in selectors):
+            raise ExecutionControlError("evidence_batch_invalid", "child selectors must not be empty")
+        covered.update(selectors)
+        normalized.append({**child, "selectors": selectors})
+    if len({item["evidence_id"] for item in normalized}) != len(normalized):
+        raise ExecutionControlError("evidence_batch_invalid", "child evidence refs must be unique")
+    missing = sorted(set(expected) - covered)
+    failed = [item["evidence_id"] for item in normalized if item["result"] != "pass"]
+    result = "pass" if normalized and not missing and not failed else "fail"
+    value: dict[str, Any] = {
+        "schema": EVIDENCE_BATCH_SCHEMA,
+        "source_tree_digest": source_tree_digest,
+        "command_profile_digest": command_profile_digest,
+        "expected_selectors": expected,
+        "covered_selectors": sorted(covered),
+        "children": normalized,
+        "missing_selectors": missing,
+        "failed_evidence_refs": failed,
+        "result": result,
+    }
+    value["digest"] = instance_digest(value)
+    return value
+
+
+def final_candidate_gate(value: dict[str, Any]) -> dict[str, Any]:
+    """Project existing review and QA receipts; do not create another ledger."""
+    candidate = value.get("candidate_digest")
+    confirmation = value.get("review_confirmation")
+    if not isinstance(candidate, str) or not candidate or not isinstance(confirmation, dict):
+        return {"action": "reject", "reason": "review-confirmation-required"}
+    reviewer = confirmation.get("reviewer_ref")
+    confirmed_at = _timestamp(confirmation.get("confirmed_at"))
+    if (
+        confirmation.get("result") != "approved"
+        or confirmation.get("candidate_digest") != candidate
+        or not isinstance(reviewer, str) or not reviewer
+        or reviewer != confirmation.get("initial_reviewer_ref")
+        or confirmed_at is None
+    ):
+        return {"action": "reject", "reason": "review-confirmation-required"}
+    receipts = [
+        item for item in value.get("final_qa_receipts") or []
+        if isinstance(item, dict) and item.get("candidate_digest") == candidate
+    ]
+    if len(receipts) != 1:
+        return {
+            "action": "reject",
+            "reason": "duplicate-final-root-qa" if len(receipts) > 1 else "final-root-qa-required",
+        }
+    receipt = receipts[0]
+    started_at = _timestamp(receipt.get("started_at"))
+    if (
+        receipt.get("fresh") is not True or receipt.get("result") != "pass"
+        or started_at is None or started_at <= confirmed_at
+    ):
+        return {"action": "reject", "reason": "fresh-final-root-qa-required"}
+    return {"action": "accept", "candidate_digest": candidate, "reviewer_ref": reviewer}
+
+
 def select_execution(
     *, profiles: dict[str, dict[str, Any]], impact_rules: list[dict[str, Any]],
     changed_paths: Iterable[str], qa_mode: str, profile_id: str | None = None,
@@ -412,12 +737,19 @@ def fresh_required(permit: dict[str, Any]) -> bool:
     )
 
 
-def physical_identity(permit: dict[str, Any]) -> str:
+def physical_identity(
+    permit: dict[str, Any], reuse_fingerprint: dict[str, Any] | None = None,
+) -> str:
     identity = {
         key: permit[key]
         for key in ("head", "command_digest", "environment_digest", "tool_version", "purpose")
     }
-    if permit.get("fresh_requirement_id") is not None:
+    if reuse_fingerprint is not None:
+        validate_reuse_fingerprint_policy(reuse_fingerprint, permit)
+        identity["reuse_fingerprint_digest"] = reuse_fingerprint["digest"]
+    if permit.get("fresh_requirement_id") is not None and (
+        reuse_fingerprint is None or fresh_required(permit)
+    ):
         identity["fresh_requirement_id"] = permit["fresh_requirement_id"]
     return tagged_digest(identity)
 
@@ -426,10 +758,17 @@ def evidence_applicable(
     permit: dict[str, Any], evidence: dict[str, Any], *,
     criteria_digest: str | None = None, covered_paths: Iterable[str] | None = None,
     surface_digest: str | None = None, independence: str | None = None,
+    reuse_fingerprint: dict[str, Any] | None = None,
 ) -> bool:
     if evidence.get("result") != "pass" or evidence.get("invalidation") is not None:
         return False
-    if physical_identity(permit) != physical_identity(evidence):
+    if reuse_fingerprint is not None:
+        try:
+            validate_reuse_fingerprint_policy(reuse_fingerprint, permit)
+        except ExecutionControlError:
+            return False
+        surface_digest = reuse_fingerprint["digest"]
+    if physical_identity(permit, reuse_fingerprint) != physical_identity(evidence, reuse_fingerprint):
         return False
     exact = ("purpose", "target", "impact_set")
     if any(evidence.get(key) != permit.get(key) for key in exact):
@@ -447,18 +786,19 @@ def evidence_applicable(
 def evaluate_permit(
     permit: dict[str, Any], *, contract: dict[str, Any], evidence: dict[str, Any] | None = None,
     active_claim: dict[str, Any] | None = None, attempts: int = 0,
+    reuse_fingerprint: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     validate_instance(permit, "execution-permit", contract)
     if permit["state"] != "planned" or any(
         permit.get(key) is not None for key in ("claim_id", "claimed_by", "claimed_at", "completed_at")
     ):
         raise ExecutionControlError("permit_state_invalid", "only an unclaimed planned permit may execute")
-    key = physical_identity(permit)
+    key = physical_identity(permit, reuse_fingerprint)
     if active_claim is not None and active_claim.get("physical_key") == key and active_claim.get("state") == "claimed":
         return {"action": "reject", "error": {"code": "duplicate_active", "claim_id": active_claim.get("claim_id")}, "physical_run_started": False}
     if evidence is not None:
         validate_instance(evidence, "verification-evidence", contract)
-        if evidence_applicable(permit, evidence):
+        if evidence_applicable(permit, evidence, reuse_fingerprint=reuse_fingerprint):
             return {"action": "reuse-evidence", "error": None, "evidence_refs": [evidence["evidence_id"]], "physical_run_started": False}
     if attempts >= permit["max_physical_runs"]:
         return {
@@ -470,7 +810,10 @@ def evaluate_permit(
     result: dict[str, Any] = {
         "action": "claim", "error": None, "permit_id": permit["permit_id"], "physical_key": key,
     }
-    if evidence is not None and evidence.get("fresh_requirement_id") != permit.get("fresh_requirement_id"):
+    if (
+        evidence is not None and fresh_required(permit)
+        and evidence.get("fresh_requirement_id") != permit.get("fresh_requirement_id")
+    ):
         result.update({"reason": "fresh_requirement_changed", "physical_run_started": True})
         result.pop("physical_key", None)
         result.pop("permit_id", None)
@@ -479,6 +822,34 @@ def evaluate_permit(
 
 def evaluate_request(value: dict[str, Any], contract: dict[str, Any] | None = None) -> dict[str, Any]:
     contract = contract or load_contract()
+    if "source_tree" in value:
+        request = value["source_tree"]
+        return source_tree_pin(request.get("repo_root"), request.get("relevant_paths") or [])
+    if "reuse_fingerprint" in value and set(value) == {"reuse_fingerprint"}:
+        request = value["reuse_fingerprint"]
+        return build_reuse_fingerprint(
+            source_tree_digest=request.get("source_tree_digest"),
+            criteria_digest=request.get("criteria_digest"),
+            impact_set=request.get("impact_set") or [],
+            dependency_digest=request.get("dependency_digest"),
+            command_profile_digest=request.get("command_profile_digest"),
+            command_digest_value=request.get("command_digest"),
+            tool_version=request.get("tool_version"),
+            environment_digest=request.get("environment_digest"),
+            public_surface_digest=request.get("public_surface_digest"),
+        )
+    if "evidence_batch" in value:
+        batch = value["evidence_batch"]
+        if not isinstance(batch, dict):
+            raise ExecutionControlError("evidence_batch_invalid", "evidence_batch must be an object")
+        return build_evidence_batch(
+            source_tree_digest=batch.get("source_tree_digest"),
+            command_profile_digest=batch.get("command_profile_digest"),
+            expected_selectors=batch.get("expected_selectors") or [],
+            children=batch.get("children") or [],
+        )
+    if "final_candidate" in value:
+        return final_candidate_gate(value["final_candidate"])
     if "permit" in value:
         permit = value["permit"]
         mutation = permit.get("mutation_request") if isinstance(permit, dict) else None
@@ -493,6 +864,7 @@ def evaluate_request(value: dict[str, Any], contract: dict[str, Any] | None = No
         return evaluate_permit(
             permit, contract=contract, evidence=value.get("evidence") or value.get("existing_evidence"),
             active_claim=value.get("active_claim"), attempts=len(value.get("attempts") or []),
+            reuse_fingerprint=value.get("reuse_fingerprint"),
         )
     if "evidence" in value and "change" in value:
         evidence, change = value["evidence"], value["change"]
@@ -725,7 +1097,8 @@ def claim_execution(
     permit: dict[str, Any], state_root: str | Path, *, claimed_by: str,
     evidence: dict[str, Any] | None = None, contract: dict[str, Any] | None = None,
     authorization: dict[str, Any] | None = None,
-    preflight_receipt: dict[str, Any] | None = None, now: str | None = None,
+    preflight_receipt: dict[str, Any] | None = None,
+    reuse_fingerprint: dict[str, Any] | None = None, now: str | None = None,
 ) -> dict[str, Any]:
     contract = contract or load_contract()
     validate_instance(permit, "execution-permit", contract)
@@ -735,17 +1108,19 @@ def claim_execution(
         )
     if evidence is not None:
         validate_instance(evidence, "verification-evidence", contract)
+    if reuse_fingerprint is not None:
+        validate_reuse_fingerprint_policy(reuse_fingerprint, permit)
     timestamp = now or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     mutation, paid = _validate_mutation_gate(
         permit, authorization, preflight_receipt, contract, now=timestamp,
     )
-    key = physical_identity(permit)
+    key = physical_identity(permit, reuse_fingerprint)
     root = Path(state_root) / "execution-control"
     path = root / "executions" / f"{key.removeprefix('sha256:')}.json"
     with _locked(root):
         state = _read(path) if path.exists() else {"schema": EXECUTION_STATE_SCHEMA, "physical_key": key, "claims": []}
         active = next((item for item in state["claims"] if item["state"] == "claimed"), None)
-        if active is None and evidence is None and mutation is None:
+        if active is None and evidence is None and mutation is None and reuse_fingerprint is not None:
             for prior in reversed(state["claims"]):
                 if prior.get("state") != "succeeded":
                     continue
@@ -754,14 +1129,20 @@ def claim_execution(
                     if evidence_path.exists():
                         candidate = _read(evidence_path)
                         validate_instance(candidate, "verification-evidence", contract)
-                        if evidence_applicable(permit, candidate):
+                        if evidence_applicable(
+                            permit, candidate, reuse_fingerprint=reuse_fingerprint,
+                        ):
                             return {
                                 "action": "reuse-evidence", "error": None,
                                 "evidence_refs": [evidence_ref], "physical_run_started": False,
                             }
         decision = evaluate_permit(
-            permit, contract=contract, evidence=None if mutation else evidence,
-            active_claim=active, attempts=len(state["claims"]),
+            permit,
+            contract=contract,
+            evidence=(None if mutation or reuse_fingerprint is None else evidence),
+            active_claim=active,
+            attempts=len(state["claims"]),
+            reuse_fingerprint=reuse_fingerprint,
         )
         if decision["action"] != "claim":
             return decision
@@ -959,7 +1340,9 @@ def _store_final_consumption(root: Path, consumption: dict[str, Any]) -> None:
 def complete_execution(
     permit: dict[str, Any], claim_id: str, receipt: dict[str, Any], state_root: str | Path,
     *, evidence: dict[str, Any] | None = None,
-    mutation_receipt: dict[str, Any] | None = None, contract: dict[str, Any] | None = None,
+    mutation_receipt: dict[str, Any] | None = None,
+    reuse_fingerprint: dict[str, Any] | None = None,
+    contract: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     contract = contract or load_contract()
     validate_instance(permit, "execution-permit", contract)
@@ -974,9 +1357,16 @@ def complete_execution(
         raise ExecutionControlError(telemetry["error"]["code"], "token telemetry is unavailable", detail=telemetry)
     if evidence is not None:
         validate_instance(evidence, "verification-evidence", contract)
-        if evidence["source_receipt_id"] != receipt["receipt_id"] or not evidence_applicable(permit, evidence):
+        if (
+            evidence["source_receipt_id"] != receipt["receipt_id"]
+            or not evidence_applicable(
+                permit, evidence, reuse_fingerprint=reuse_fingerprint,
+            )
+        ):
             raise ExecutionControlError("evidence_receipt_mismatch", "evidence is not applicable to its source receipt")
-    key = physical_identity(permit)
+    if reuse_fingerprint is not None:
+        validate_reuse_fingerprint_policy(reuse_fingerprint, permit)
+    key = physical_identity(permit, reuse_fingerprint)
     root = Path(state_root) / "execution-control"
     path = root / "executions" / f"{key.removeprefix('sha256:')}.json"
     with _locked(root):
@@ -999,18 +1389,31 @@ def complete_execution(
         receipt_path = _object_file(root / "receipts", receipt["receipt_id"])
         if receipt_path.exists() and _read(receipt_path) != receipt:
             raise ExecutionControlError("immutable_receipt_conflict", "command receipt id is immutable")
+        evidence_refs = [evidence["evidence_id"]] if evidence is not None else []
+        next_state = "succeeded" if receipt["result"] == "pass" else "failed"
+        if claim["state"] != "claimed":
+            if (
+                claim["state"] != next_state
+                or claim.get("receipt_ref") != receipt["receipt_id"]
+                or claim.get("evidence_refs") != evidence_refs
+                or not receipt_path.exists()
+            ):
+                raise ExecutionControlError(
+                    "claim_already_completed", "completed claim cannot bind another physical receipt",
+                )
+            return {
+                "action": "completed", "state": next_state,
+                "receipt_ref": receipt["receipt_id"], "evidence_refs": evidence_refs,
+                "external_mutation_receipt_ref": claim.get("mutation_receipt_ref"),
+                "spend_status": None, "telemetry": telemetry, "idempotent": True,
+            }
         completed_mutation, spend_status, final_consumption = _validate_mutation_completion(
             root, permit, claim, receipt, mutation_receipt, contract,
         )
-        evidence_refs: list[str] = []
         if evidence is not None:
             evidence_path = _object_file(root / "evidence", evidence["evidence_id"])
             if evidence_path.exists() and _read(evidence_path) != evidence:
                 raise ExecutionControlError("immutable_receipt_conflict", "verification evidence id is immutable")
-            evidence_refs.append(evidence["evidence_id"])
-        next_state = "succeeded" if receipt["result"] == "pass" else "failed"
-        if claim["state"] not in {"claimed", next_state}:
-            raise ExecutionControlError("claim_state_conflict", f"claim cannot complete from {claim['state']}")
         if completed_mutation is not None:
             _store_immutable(
                 _object_file(root / "mutation-receipts", completed_mutation["mutation_id"]),

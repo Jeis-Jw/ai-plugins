@@ -36,7 +36,7 @@ started → running → verified → done → closed
 
 - `probe --session-id S [--agent-id A ...] --json` → `{tokens:<int>|null, token_coverage:"exact"|"unavailable", source, breakdown{input,output,cache_creation,cache_read}|null, agents[]}`. tokens는 4개 필드의 합. `--agent-id`는 기대 subagent 집합이며, 그중 하나라도 결손이면 전체가 unavailable로 퇴각한다.
 - de-dup 계약: 세션 JSONL에서 동일 usage 블록이 연속 라인·iterations[]로 중복 출현한다(실측). message uuid 기준 중복 제거를 계약으로 고정한다.
-- `aggregate --receipts DIR --json` → `{runs, measured_runs, coverage_ratio, tokens_total:<int>|null, by_workflow{}}`. 기존 receipt 스토어를 읽기만 한다.
+- `aggregate --receipts DIR --json` → `{runs, measured_runs, coverage_ratio, tokens_total:<int>|null, measured_tokens_subtotal:<int>|null, by_workflow{}}`. coverage가 1보다 작으면 `tokens_total:null`이고 관측 부분합은 명시적으로 subtotal에만 둔다. 기존 receipt 스토어를 읽기만 한다.
 - receipt 스키마 무변경: `workflow-receipt/v1`의 `tokens`/`token_coverage`를 재사용하며 `breakdown`/`agents[]`는 stdout 전용이다. 소비처(`definition_artifact.py receipt --tokens`, `session_review.py emit-receipt --tokens`)에는 optional resolver로만 연결되고 hard dependency가 없다.
 - 기각 대안: OTEL(인프라 과대), SubagentStop 훅(usage 미제공), 별도 ledger(기존 receipt와 중복).
 
@@ -78,6 +78,19 @@ artifact 호환을 위해 `studio-verification-contract-set/v1` schema id와
 digest나 physical identity에 넣지 않는다.
 
 physical identity는 `head + command_digest + environment_digest + tool_version + purpose + optional fresh_requirement_id`만 사용한다. definition/node/cycle/unit/target/profile id는 attribution이며 identity에 섞지 않는다. 성공 결과는 immutable command receipt와 verification evidence의 digest/source binding이 유효할 때만 재사용한다. 이 제어층은 logical node 분해, 전체 ready set, worktree 격리, 독립 review와 root integration gate를 줄이지 않는다.
+
+새 physical reuse 경로는 legacy `head`만 신뢰하지 않는다. `source_tree_pin`이 expanded relevant
+path의 staged index blob, unstaged/untracked worktree bytes, mode, symlink target과 clean submodule
+HEAD를 canonicalize하고, criteria/path/dependency/profile/argv/tool/environment/public-surface pin을
+`task-worker.reuse-fingerprint/v1` digest 하나로 묶는다. claim과 complete에 같은 transient
+fingerprint를 전달해야 stored evidence lookup이 활성화된다. fingerprint가 없거나 glob/dirty
+submodule/unknown source면 reuse하지 않는다. final/integration의 fresh requirement는 유지하되
+development fresh label은 동일 fingerprint identity를 불필요하게 쪼개지 않는다.
+
+같은 source tree/profile의 selector evidence는 child receipt/evidence ref, result, output digest와
+coverage를 보존한 `task-worker.verification-evidence-batch/v1` projection으로 묶을 수 있다.
+fail/error/missing child는 batch fail이며 projection을 위한 별도 ledger는 없다. 이미 완료된
+claim은 같은 receipt의 idempotent replay만 받고 다른 physical receipt 결합은 거부한다.
 
 ## 0.4.0 review lease
 

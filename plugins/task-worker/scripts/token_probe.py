@@ -9,7 +9,8 @@ file forbids a partial sum: tokens:null + token_coverage:"unavailable", exit 0.
 aggregate: summarize measured coverage across an existing workflow-receipt/v1
 store. Consumers pass probe output to `definition_artifact.py receipt --tokens`
 or `session_review.py emit-receipt --tokens`; this module is an optional
-resolver, never a hard dependency.
+resolver, never a hard dependency. Partial coverage keeps `tokens_total:null`;
+the observed subset is exposed only as `measured_tokens_subtotal`.
 """
 
 from __future__ import annotations
@@ -112,11 +113,13 @@ def probe(session_id: str, agent_ids: list[str], projects_root: Path) -> dict:
 def _stats(values: list[int | None]) -> dict:
     runs = len(values)
     measured = [v for v in values if v is not None]
+    complete = bool(runs) and len(measured) == runs
     return {
         "runs": runs,
         "measured_runs": len(measured),
         "coverage_ratio": (len(measured) / runs) if runs else 0.0,
-        "tokens_total": sum(measured) if measured else None,
+        "tokens_total": sum(measured) if complete else None,
+        "measured_tokens_subtotal": sum(measured) if measured else None,
     }
 
 

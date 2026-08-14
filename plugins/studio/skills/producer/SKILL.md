@@ -161,18 +161,21 @@ python3 "${STUDIO_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/mission_receipt.py" <subcom
 
 ## 소집
 
-1. native work route면 미션을 독립 작업으로 나누고, configured work route면 그 command가
+1. decomposition 전에 완료 조건마다 executable selector를 확인한다. production public
+   criterion은 shipped CLI/skill/adapter/artifact layout을 실제 호출한 probe가 있어야 하며,
+   unavailable은 `unknown`으로 중단한다.
+2. native work route면 미션을 독립 작업으로 나누고, configured work route면 그 command가
    반환한 ready action을 사용한다.
-2. `rules/casting.md`를 참고해 실제 할 일이 있는 역할만 선택한다.
-3. 각 역할의 model/effort 정책을 해석한다.
-4. 각 agent에게 다음을 한 번에 전달한다.
+3. `rules/casting.md`를 참고해 실제 할 일이 있는 역할만 선택한다.
+4. 각 역할의 model/effort 정책을 해석한다.
+5. 각 agent에게 다음을 한 번에 전달한다.
    - `crew/<role>.md`의 역할
    - 미션 objective와 자기 task
    - 읽거나 변경할 범위
    - 기대 결과 형식
    - 완료 조건과 검증 방법
-5. 서로 독립적으로 진행할 수 있는 작업만 병렬 생성한다.
-6. host가 반환한 agent id와 resolved model/effort를 현재 대화의 역할↔agent 대응으로
+6. 서로 독립적으로 진행할 수 있는 작업만 병렬 생성한다.
+7. host가 반환한 agent id와 resolved model/effort를 현재 대화의 역할↔agent 대응으로
    유지한다.
 
 tool, sandbox와 권한은 host가 결정한다. `.studio.yml`은 이 값을 설정하지 않는다.
@@ -185,6 +188,8 @@ tool, sandbox와 권한은 host가 결정한다. `.studio.yml`은 이 값을 설
 - reviewer의 blocking finding은 원래 결과를 만든 agent에게 돌려보낸다.
 - 역할이나 작업 경계가 실제로 달라질 때만 새 agent를 만든다.
 - agent가 실행 중이면 메시지만 보내고, 완료되어 있으면 후속 작업으로 재개한다.
+- capacity 부족으로 생성이 실패하면 같은 spawn을 반복하지 않는다. 기존 addressable handle을
+  재사용하거나 blocker로 보고한다.
 
 Producer는 agent를 대신해 결론을 만들지 않는다. 상충하는 결과가 있으면 당사자에게 근거를
 전달해 보완하게 하거나 별도 reviewer에게 판정시킨다.
@@ -202,6 +207,17 @@ Producer는 agent를 대신해 결론을 만들지 않는다. 상충하는 결�
 독립 리뷰가 필요하면 reviewer 역할을 별도 agent로 소집한다. 결과는 `approved` 또는
 blocking finding으로 받으며, finding은 원래 agent에게 전달한다. Studio가 review episode,
 permit, evidence ledger를 만들지 않는다.
+
+개발 QA는 targeted/delta가 기본이다. full은 dependency/shared contract, 영향 불확실성 또는
+독립 검증 때문에 필요할 때만 수행한다. 독립 hard review의 blocking finding을 수정한 뒤에는
+처음 hard review를 수행한 같은 addressable reviewer handle이 final candidate commit을
+확인해야 한다. 그 확인 뒤 frozen candidate에서 fresh final-grade root QA를 한 번 수행한다.
+final QA가 실패해 source/test/config가 바뀌면 같은 reviewer 확인과 final QA를 다시 거친다.
+
+같은 source tree와 command profile의 selector 결과는 task-worker가 보존한 child
+receipt/evidence ref, result, output digest와 coverage를 포함한 batch digest 하나로 전달한다.
+Studio mission receipt에는 evidence body나 provider lifecycle을 복사하지 않고 lane의 host
+handle과 optional work ref만 유지한다.
 
 work/review/delivery command 사용 여부와 orchestration은 `$execute`에 따라 Producer가
 결정한다. 담당 leaf agent에게 command 선택이나 orchestration을 넘기지 않는다. 장기 지식
@@ -226,3 +242,6 @@ work/review/delivery command 사용 여부와 orchestration은 `$execute`에 따
 - reviewer 판정과 남은 위험
 - 변경된 artifact 참조
 - owner가 결정할 다음 gate
+- token/model-call/elapsed/owner-intervention telemetry와 coverage. 미측정은 `null`이며 부분
+  token 합계는 mission total이 아니라 `measured_tokens_subtotal`로 구분한다. elapsed는 lane
+  시간 합이 아니라 mission wall clock이다. 이 telemetry를 mission receipt에 추가하지 않는다.

@@ -39,6 +39,10 @@ command는 skill/plugin identifier다. shell 문자열로 실행하지 않는다
 
 ## 2. work 경로 선택
 
+route 선택과 decomposition 전에 완료 조건을 executable selector로 audit한다. production
+public criterion은 shipped CLI, skill, adapter 또는 artifact layout을 실제 호출한 probe가
+있어야 한다. unavailable surface는 통과로 추정하지 않고 `unknown`으로 중단한다.
+
 `activation:auto`에서는 다음 중 하나라도 실질적이면 configured work command를 선택한다.
 
 - 독립적으로 진행 가능한 work unit이 둘 이상이다.
@@ -77,6 +81,10 @@ Producer의 model/effort resolver 결과로 생성한다.
    `integration_candidates[]` gate까지 완료한다.
 
 task-worker의 artifact, run state, evidence나 receipt를 Studio 상태로 복제하지 않는다.
+leaf 개발 QA는 targeted/delta를 기본으로 한다. dependency/shared contract, 영향 범위
+불확실성 또는 독립 검증 reason이 있을 때만 full QA를 선택한다. 같은 tree/profile의 검증은
+child refs/result/output digest/selector coverage를 보존한 task-worker batch digest로 전달하고,
+integration evidence에는 그 digest 하나만 연결한다.
 
 ## 3. review 경로
 
@@ -94,6 +102,10 @@ resolved review command를 기록하고 binding에 전달한다. Studio가 lease
 - blocking finding은 원래 leaf agent handle로 돌려보낸다.
 - approved verdict와 요구 evidence가 확인되기 전에는 integration/delivery closeout을
   진행하지 않는다.
+- hard review finding 수정 후에는 최초 hard reviewer의 같은 addressable handle이 final
+  candidate commit을 확인한다. 그 뒤 frozen candidate에서 fresh final-grade root QA를 한 번
+  실행한다. final QA 실패 뒤 source/test/config를 바꾸면 reviewer 확인과 final QA를 다시
+  수행한다.
 
 ## 4. delivery 경로
 
@@ -114,5 +126,7 @@ delivery가 꺼져 있으면 command를 조회하지 않고 local 결과로 끝�
 - 선택한 work/review/delivery route와 선택 이유
 - 역할별 agent handle과 적용된 model/effort
 - work receipt, review verdict, integration gate
+- token/model-call/mission wall-clock/owner-intervention telemetry와 coverage. 미측정값은
+  `null`, 불완전 token 합은 `measured_tokens_subtotal`이며 0이나 mission total로 바꾸지 않는다.
 - delivery가 켜졌다면 provider receipt와 closeout 상태
 - 남은 owner gate와 위험

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import ast
 import json
 import re
 import unittest
@@ -36,6 +37,7 @@ class AcceptanceRegistryTests(unittest.TestCase):
             self.assertTrue(contract.get("expected"), name)
 
     def test_every_entry_has_named_downstream_selector_and_no_deferred_state(self) -> None:
+        modules = {}
         for entry in self.registry["entries"]:
             self.assertEqual("executable", entry["status"])
             self.assertFalse(FORBIDDEN.intersection(str(v).casefold() for v in entry.values()))
@@ -44,6 +46,20 @@ class AcceptanceRegistryTests(unittest.TestCase):
                 re.compile(r"^[^:]+\.py::[A-Za-z_][A-Za-z0-9_]*::test_acceptance_\d{2}_[A-Za-z0-9_]+$"),
             )
             self.assertTrue(entry["owner"].startswith("p"))
+            path_text, class_name, method_name = entry["selector"].split("::")
+            if path_text not in modules:
+                module = ast.parse((HERE.parents[1] / path_text).read_text(encoding="utf-8"))
+                modules[path_text] = {
+                    node.name: node for node in module.body if isinstance(node, ast.ClassDef)
+                }
+            self.assertIn(class_name, modules[path_text], entry["selector"])
+            selected_class = modules[path_text][class_name]
+            self.assertIn("unittest.TestCase", {ast.unparse(base) for base in selected_class.bases})
+            methods = {
+                node.name for node in selected_class.body
+                if isinstance(node, ast.FunctionDef)
+            }
+            self.assertIn(method_name, methods, entry["selector"])
 
 
 if __name__ == "__main__":

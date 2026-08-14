@@ -46,6 +46,8 @@ wiki_cli를 직접 호출하지 않는다.
      `general`이면 성격 미확정 fallback으로 보고 과도한 checklist 적용을 피한다.
    - `round_type=confirm`이면 derived posture가 `verify`여도 별도 lock-check 경로를 따른다.
      - 이전 round의 agreed feedback이 반영됐는지 확인한다.
+     - final-grade QA 전 확인이면 최초 hard review와 같은 addressable reviewer handle로 final
+       candidate commit을 확인한다.
      - 남은 이견이 lock을 막는지 판단한다.
      - 새 scope를 넓히지 않는다.
      - `[blocking]`은 lock을 막는 미해결 쟁점에만 쓴다.
@@ -107,5 +109,7 @@ wiki_cli를 직접 호출하지 않는다.
 - `phase:"approved"`는 `blocking_count:0`과만 양립한다(`validate-status`가 강제).
 - `review_posture=confirm`은 금지다. confirm은 `round_type=confirm`으로만 표현하고,
   lock-check behavior는 derived posture와 별도로 수행한다.
+- final-grade QA 뒤 source/test/config가 바뀌면 이전 confirm은 stale다. 같은 addressable
+  reviewer가 새 candidate commit을 confirm하기 전에는 approved evidence를 재사용하지 않는다.
 - co-design reviewer는 대안을 제안할 수 있지만, worker의 frame/synthesis ownership을
   가져오지 않는다.

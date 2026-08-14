@@ -12,13 +12,25 @@ artifact node의 완료 조건, 실제 diff, 영향 경로를 기준으로 검�
 - 통합으로 새 상태가 생겼다면 leaf evidence와 별도로 integration gate를 수행한다.
 - finding 수정 후에는 무효화된 조건만 delta 검증한다.
 
+새 작업은 decomposition 전에 executable-criteria audit을 통과해야 한다. production public
+criterion은 shipped CLI/skill/adapter/artifact layout을 실제 호출한 selector가 필요하며,
+unavailable surface는 `unknown`이지 pass가 아니다. 개발 중에는 targeted/delta를 기본으로 하고
+full은 dependency/shared contract/uncertainty/independence reason이 있을 때만 선택한다.
+
 physical command 전에 canonical contract digest에 맞는 `execution-permit/v1`을 만들고 command profile·impact rule을 통과시킨 뒤 atomic claim을 획득한다. definition/node/cycle/unit은 attribution일 뿐 physical identity가 아니다. `claimed`가 아니면 명령을 시작하지 않는다. `reuse-evidence`면 physical command를 건너뛰고 반환된 evidence ref를 verify event에 연결한다.
+
+reuse를 요청할 때는 expanded relevant paths의 staged/unstaged/untracked bytes, mode, symlink,
+clean submodule을 canonicalize한 source tree pin과 criteria/path/dependency/profile/argv/tool/
+environment/public-surface pin을 `task-worker.reuse-fingerprint/v1`으로 만들고 claim과 complete에
+같은 파일을 전달한다. fingerprint가 없거나 source 상태가 unknown이면 physical reuse를 하지
+않는다.
 
 ```bash
 python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py" execution-claim \
   --permit {PERMIT_JSON} --profiles {COMMAND_PROFILES_JSON} --impact-rules {IMPACT_RULES_JSON} \
   --changed-path {CHANGED_PATH} --cwd {RESOLVED_CWD} --environment '{"KEY":"resolved-value"}' \
-  --claimed-by {EXECUTOR_ID} --state-root .task-worker/local
+  --claimed-by {EXECUTOR_ID} --reuse-fingerprint {REUSE_FINGERPRINT_JSON} \
+  --state-root .task-worker/local
 ```
 
 실행 뒤에는 exact claim에 묶인 immutable `command-receipt/v1`과 `verification-evidence/v1`로 완료한다. fail-closed permit에서 token coverage가 unavailable이면 완료를 pause하며, report-only일 때만 `tokens:null`을 0으로 바꾸지 않고 보존한다.
@@ -26,8 +38,18 @@ python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py
 ```bash
 python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py" execution-complete \
   --permit {PERMIT_JSON} --claim-id {CLAIM_ID} --receipt {COMMAND_RECEIPT_JSON} \
-  --evidence {VERIFICATION_EVIDENCE_JSON} --state-root .task-worker/local
+  --evidence {VERIFICATION_EVIDENCE_JSON} --reuse-fingerprint {REUSE_FINGERPRINT_JSON} \
+  --state-root .task-worker/local
 ```
+
+같은 tree/profile의 여러 selector는 child receipt/evidence ref, result, output digest와 selector
+coverage를 보존한 batch digest로 묶을 수 있다. fail/error/missing child가 하나라도 있으면 batch는
+fail이다. batch는 projection일 뿐 새 ledger가 아니며 integration evidence에는 digest 하나만
+연결한다.
+
+독립 hard review와 finding 수정이 끝난 candidate는 같은 addressable reviewer가 최종 commit을
+확인한 뒤 fresh final-grade root QA를 한 번 실행한다. final QA 뒤 source/test/config가 바뀌면
+reviewer 확인과 final QA를 다시 수행한다.
 
 구 `evidence-plan`/`evidence-record`는 migration read compatibility이며 새 physical run의 authorization으로 사용하지 않는다.
 

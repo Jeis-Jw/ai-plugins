@@ -132,6 +132,7 @@ class AggregateTests(unittest.TestCase):
         self.assertEqual(result["measured_runs"], 0)
         self.assertEqual(result["coverage_ratio"], 0.0)
         self.assertIsNone(result["tokens_total"])
+        self.assertIsNone(result["measured_tokens_subtotal"])
 
     def test_mixed_store_sums_measured_and_groups_by_workflow(self):
         self.write("run-1.json", receipt("run-1", "task-worker", 100))
@@ -142,12 +143,15 @@ class AggregateTests(unittest.TestCase):
         self.assertEqual(result["runs"], 3)
         self.assertEqual(result["measured_runs"], 2)
         self.assertEqual(result["coverage_ratio"], 2 / 3)
-        self.assertEqual(result["tokens_total"], 150)
+        self.assertIsNone(result["tokens_total"])
+        self.assertEqual(result["measured_tokens_subtotal"], 150)
         self.assertEqual(result["by_workflow"]["task-worker"], {
-            "runs": 2, "measured_runs": 1, "coverage_ratio": 0.5, "tokens_total": 100,
+            "runs": 2, "measured_runs": 1, "coverage_ratio": 0.5,
+            "tokens_total": None, "measured_tokens_subtotal": 100,
         })
         self.assertEqual(result["by_workflow"]["session-review"], {
-            "runs": 1, "measured_runs": 1, "coverage_ratio": 1.0, "tokens_total": 50,
+            "runs": 1, "measured_runs": 1, "coverage_ratio": 1.0,
+            "tokens_total": 50, "measured_tokens_subtotal": 50,
         })
 
 

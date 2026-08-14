@@ -10,7 +10,7 @@
 - `dispatch: worker|manual`, `delivery: local-ff|external` 분리
 - child 완료 뒤 실행 가능한 `run_kind: integration` gate
 - binding/context/work-graph checkpoint를 통한 세션 간 재개
-- 동일 definition/node/HEAD/command/environment/tool version의 성공 evidence 재사용
+- 동일 canonical source tree/criteria/path/dependency/profile/argv/tool/environment/public surface의 성공 evidence 재사용
 - provider closeout receipt의 idempotent event 기록
 - `workflow-review-lease/v1` owner permit으로 external/task-worker reviewer 이중 dispatch 차단
 - GitHub·Wiki API 호출 없는 provider-neutral runtime
