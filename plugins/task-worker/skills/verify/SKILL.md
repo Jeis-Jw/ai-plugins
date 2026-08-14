@@ -52,7 +52,13 @@ fail이다. batch는 projection일 뿐 새 ledger가 아니며 integration evide
 확인한 뒤 fresh final-grade root QA를 한 번 실행한다. final QA 뒤 source/test/config가 바뀌면
 reviewer 확인과 final QA를 다시 수행한다.
 
+task-worker는 immutable permit/claim/receipt/evidence에서 final QA projection만 검증한다.
+session-review 상태와의 확인 순서 합성은 Studio의 stateless projection이 소유하며 task-worker가
+다른 provider plugin을 import하거나 review 상태를 복제하지 않는다.
+
 구 `evidence-plan`/`evidence-record`는 migration read compatibility이며 새 physical run의 authorization으로 사용하지 않는다.
+구 `--reuse-fingerprint` 입력은 안전한 migration read가 아니므로 명시적으로 거부한다. 새 claim은
+항상 `--reuse-resolver`로 live source/tool identity를 산출한다.
 
 ```bash
 python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py" local-event \

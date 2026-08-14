@@ -1462,6 +1462,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--reuse-resolver",
         help="task-worker.reuse-resolver/v1 JSON; resolves live source pins at claim and completion",
     )
+    execution_claim.add_argument(
+        "--reuse-fingerprint", help=argparse.SUPPRESS,
+    )
     execution_claim.add_argument("--profiles", required=True)
     execution_claim.add_argument("--impact-rules", required=True)
     execution_claim.add_argument("--changed-path", action="append", required=True)
@@ -1481,7 +1484,9 @@ def build_parser() -> argparse.ArgumentParser:
     execution_project = sub.add_parser("execution-project")
     execution_project.add_argument("--receipt", required=True)
     execution_project.add_argument("--evidence")
-    execution_project.add_argument("--evidence-batch")
+    execution_project.add_argument("--evidence-batch", help=argparse.SUPPRESS)
+    execution_project.add_argument("--evidence-batch-request")
+    execution_project.add_argument("--state-root", default=".task-worker/local")
     spend_claim = sub.add_parser("spend-claim")
     spend_claim.add_argument("--authorization", required=True)
     spend_claim.add_argument("--mutation", required=True)
@@ -1554,6 +1559,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                     "reuse_fingerprint": execution_control.REUSE_FINGERPRINT_SCHEMA,
                     "reuse_resolver": execution_control.REUSE_RESOLVER_SCHEMA,
                     "verification_evidence_batch": execution_control.EVIDENCE_BATCH_SCHEMA,
+                    "final_qa_projection": execution_control.FINAL_QA_PROJECTION_SCHEMA,
                 },
                 "commands": [
                     "create", "revise", "validate", "export", "store", "plan-graph", "ready",
@@ -1678,6 +1684,11 @@ def main(argv: Iterable[str] | None = None) -> int:
         elif args.command == "execution-evaluate":
             payload = {"ok": True, "decision": execution_control.evaluate_request(read_json(args.request))}
         elif args.command == "execution-claim":
+            if args.reuse_fingerprint:
+                raise execution_control.ExecutionControlError(
+                    "reuse_fingerprint_deprecated",
+                    "caller-authored --reuse-fingerprint is unsafe; use --reuse-resolver",
+                )
             permit = read_json(args.permit)
             contract = execution_control.load_contract()
             policy_plan = execution_control.select_execution(
@@ -1726,12 +1737,19 @@ def main(argv: Iterable[str] | None = None) -> int:
                 ),
             }
         elif args.command == "execution-project":
+            if args.evidence_batch:
+                raise execution_control.ExecutionControlError(
+                    "evidence_batch_body_deprecated",
+                    "caller-authored --evidence-batch is unsafe; use --evidence-batch-request",
+                )
             payload = {
                 "ok": True,
                 "projection": execution_control.project_receipts(
                     read_json(args.receipt), read_json(args.evidence) if args.evidence else None,
-                    evidence_batch=(
-                        read_json(args.evidence_batch) if args.evidence_batch else None
+                    args.state_root,
+                    evidence_batch_request=(
+                        read_json(args.evidence_batch_request)
+                        if args.evidence_batch_request else None
                     ),
                 ),
             }

@@ -29,6 +29,15 @@ def public_coverage_status(entries: list[dict]) -> str:
     return "pass"
 
 
+def public_execution_status(result: unittest.TestResult, expected_count: int) -> str:
+    """A public claim is unknown when its runnable selector did not fully execute."""
+    if result.testsRun != expected_count:
+        return "unknown"
+    if result.skipped or result.expectedFailures or result.unexpectedSuccesses:
+        return "unknown"
+    return "pass" if result.wasSuccessful() else "fail"
+
+
 def load_selected_test(selector: str) -> unittest.TestCase:
     path_text, class_name, method_name = selector.split("::")
     path = HERE.parents[1] / path_text
@@ -47,6 +56,16 @@ def load_selected_test(selector: str) -> unittest.TestCase:
     if selected.countTestCases() != 1:
         raise RuntimeError(f"public selector did not resolve exactly once: {selector}")
     return selected
+
+
+def execute_public_selectors(selectors: list[str]) -> str:
+    try:
+        selected = [load_selected_test(selector) for selector in selectors]
+    except (AttributeError, ImportError, OSError, RuntimeError, ValueError):
+        return "unknown"
+    result = unittest.TestResult()
+    unittest.TestSuite(selected).run(result)
+    return public_execution_status(result, len(selectors))
 
 
 class AcceptanceRegistryTests(unittest.TestCase):
@@ -114,9 +133,9 @@ class AcceptanceRegistryTests(unittest.TestCase):
             public.append(surface)
 
         self.assertEqual("pass", public_coverage_status(self.registry["entries"]))
-        result = unittest.TestResult()
-        unittest.TestSuite(load_selected_test(item["selector"]) for item in public).run(result)
-        self.assertTrue(result.wasSuccessful(), result.errors + result.failures)
+        self.assertEqual(
+            "pass", execute_public_selectors([item["selector"] for item in public]),
+        )
 
     def test_public_surface_unavailable_is_unknown_and_internal_is_excluded(self) -> None:
         entries = [
@@ -126,6 +145,36 @@ class AcceptanceRegistryTests(unittest.TestCase):
         self.assertEqual("unknown", public_coverage_status(entries))
         entries[1]["public_surface"]["availability"] = "available"
         self.assertEqual("pass", public_coverage_status(entries))
+
+    def test_public_execution_skip_and_non_execution_are_unknown(self) -> None:
+        class Skipped(unittest.TestCase):
+            @unittest.skip("surface unavailable")
+            def test_surface(self) -> None:
+                pass
+
+        class ExpectedFailure(unittest.TestCase):
+            @unittest.expectedFailure
+            def test_surface(self) -> None:
+                self.fail("not shipped")
+
+        class UnexpectedSuccess(unittest.TestCase):
+            @unittest.expectedFailure
+            def test_surface(self) -> None:
+                pass
+
+        for case in (Skipped("test_surface"), ExpectedFailure("test_surface"),
+                     UnexpectedSuccess("test_surface")):
+            with self.subTest(case=type(case).__name__):
+                result = unittest.TestResult()
+                case.run(result)
+                self.assertEqual("unknown", public_execution_status(result, 1))
+
+        executed = unittest.TestResult()
+        unittest.FunctionTestCase(lambda: None).run(executed)
+        self.assertEqual("unknown", public_execution_status(executed, 2))
+        self.assertEqual(
+            "unknown", execute_public_selectors(["missing.py::Missing::test_missing"]),
+        )
 
 
 if __name__ == "__main__":

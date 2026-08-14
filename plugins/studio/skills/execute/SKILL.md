@@ -107,6 +107,8 @@ resolved review command를 기록하고 binding에 전달한다. Studio가 lease
   candidate commit을 확인한다. 그 뒤 frozen candidate에서 fresh final-grade root QA를 한 번
   실행한다. final QA 실패 뒤 source/test/config를 바꾸면 reviewer 확인과 final QA를 다시
   수행한다.
+- Studio는 canonical session-review status와 task-worker final-QA projection만 stateless하게
+  합성한다. review/evidence body를 mission receipt에 복사하거나 별도 ledger를 만들지 않는다.
 
 ## 4. delivery 경로
 

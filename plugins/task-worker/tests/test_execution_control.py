@@ -1,4 +1,5 @@
 import json
+import importlib.util
 import os
 import subprocess
 import sys
@@ -119,13 +120,16 @@ class CanonicalContractTests(unittest.TestCase):
             "command_profile_digest": "sha256:" + "e" * 64,
             "command_digest_value": permit["command_digest"],
             "tool_version": permit["tool_version"],
+            "tool_identity_digest": "sha256:" + "9" * 64,
             "environment_digest": permit["environment_digest"],
             "public_surface_digest": "sha256:" + "f" * 64,
         }
         values.update(overrides)
         return control.build_reuse_fingerprint(**values)
 
-    def _live_execution_context(self, root, *, purpose="delta", qa_mode="delta"):
+    def _live_execution_context(
+        self, root, *, purpose="delta", qa_mode="delta", repository_tool=False,
+    ):
         repo = Path(root) / "repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q", str(repo)], check=True)
@@ -139,7 +143,21 @@ class CanonicalContractTests(unittest.TestCase):
             ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True,
             text=True, stdout=subprocess.PIPE,
         ).stdout.strip()
-        profile = self._profile(args=["-m", "unittest", "selector-1", "selector-2"])
+        profile_overrides = {"args": ["-m", "unittest", "selector-1", "selector-2"]}
+        if repository_tool:
+            runner = repo / "runner"
+            runner.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            runner.chmod(0o755)
+            subprocess.run(["git", "-C", str(repo), "add", "runner"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "runner"], check=True)
+            head = subprocess.run(
+                ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True,
+                text=True, stdout=subprocess.PIPE,
+            ).stdout.strip()
+            profile_overrides.update({
+                "executable": str(runner), "args": ["selector-1", "selector-2"],
+            })
+        profile = self._profile(**profile_overrides)
         command = self._command(profile)
         permit = dict(self.contract["golden_cases"][0]["input"]["permit"])
         permit.update({
@@ -314,6 +332,18 @@ class CanonicalContractTests(unittest.TestCase):
         value["digest"] = control.instance_digest(value)
         return value
 
+    @staticmethod
+    def _make_base_era_claim_fixture(state_root, claim_id):
+        """Model a stored pre-migration claim that lacks mutation_receipt_digest."""
+        for path in Path(state_root, "execution-control", "executions").glob("*.json"):
+            state = json.loads(path.read_text(encoding="utf-8"))
+            for claim in state["claims"]:
+                if claim["claim_id"] == claim_id:
+                    claim.pop("mutation_receipt_digest", None)
+                    path.write_text(json.dumps(state), encoding="utf-8")
+                    return
+        raise AssertionError(f"claim not found: {claim_id}")
+
     def test_profile_and_impact_policy_fail_closed(self):
         profile = self._profile()
         rules = [{
@@ -417,6 +447,44 @@ class CanonicalContractTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
         self.assertEqual(json.loads(result.stdout)["decision"]["action"], "claimed")
+
+    def test_cli_rejects_deprecated_caller_authored_reuse_fingerprint(self):
+        profile = self._profile()
+        permit = dict(self.contract["golden_cases"][0]["input"]["permit"])
+        permit.update({
+            "command_profile_id": profile["profile_id"],
+            "command_digest": control.command_digest(self._command(profile)),
+            "impact_set": ["plugins/task-worker/scripts/execution_control.py"],
+        })
+        permit["digest"] = control.instance_digest(permit)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = {
+                "profiles": root / "profiles.json", "rules": root / "rules.json",
+                "permit": root / "permit.json", "fingerprint": root / "fingerprint.json",
+            }
+            paths["profiles"].write_text(json.dumps({"profiles": [profile]}), encoding="utf-8")
+            paths["rules"].write_text(json.dumps([{
+                "rule_id": "worker", "path_globs": ["plugins/task-worker/**"],
+                "qa_modes": ["delta"], "command_profile_ids": [profile["profile_id"]],
+                "purposes": ["delta"],
+            }]), encoding="utf-8")
+            paths["permit"].write_text(json.dumps(permit), encoding="utf-8")
+            paths["fingerprint"].write_text("{}", encoding="utf-8")
+            result = subprocess.run([
+                sys.executable, str(TASK_WORKER / "scripts" / "definition_artifact.py"),
+                "execution-claim", "--permit", str(paths["permit"]),
+                "--profiles", str(paths["profiles"]), "--impact-rules", str(paths["rules"]),
+                "--changed-path", "plugins/task-worker/scripts/execution_control.py",
+                "--cwd", "plugins/task-worker",
+                "--environment", json.dumps({"PYTHONPATH": "plugins/task-worker"}),
+                "--claimed-by", "test-worker", "--state-root", str(root / "state"),
+                "--reuse-fingerprint", str(paths["fingerprint"]),
+            ], env={**os.environ, "STUDIO_VERIFICATION_CONTRACT": str(self.contract_path)},
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        self.assertEqual(2, result.returncode, result.stderr or result.stdout)
+        self.assertEqual("reuse_fingerprint_deprecated", json.loads(result.stdout)["error_code"])
 
     def test_cli_paid_mutation_requires_atomic_gate_and_completion_receipt(self):
         profile = self._profile()
@@ -667,6 +735,7 @@ class CanonicalContractTests(unittest.TestCase):
             "command_profile_digest": "sha256:" + "e" * 64,
             "command_digest_value": permit["command_digest"],
             "tool_version": permit["tool_version"],
+            "tool_identity_digest": "sha256:" + "9" * 64,
             "environment_digest": permit["environment_digest"],
             "public_surface_digest": "sha256:" + "f" * 64,
         }
@@ -680,6 +749,7 @@ class CanonicalContractTests(unittest.TestCase):
             "command_profile_digest": "sha256:" + "4" * 64,
             "command_digest_value": "sha256:" + "5" * 64,
             "tool_version": "python/next",
+            "tool_identity_digest": "sha256:" + "8" * 64,
             "environment_digest": "sha256:" + "6" * 64,
             "public_surface_digest": "sha256:" + "7" * 64,
         }
@@ -687,6 +757,25 @@ class CanonicalContractTests(unittest.TestCase):
             with self.subTest(field=field):
                 after = control.build_reuse_fingerprint(**{**base_values, field: changed})
                 self.assertNotEqual(before["digest"], after["digest"])
+
+    def test_completion_invalidates_live_tool_bytes_without_running_version_argv(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, permit, resolver, plan, _ = self._live_execution_context(
+                tmp, repository_tool=True,
+            )
+            claimed = control.claim_execution(
+                permit, tmp, claimed_by="worker", contract=self.contract,
+                reuse_resolver=resolver, policy_plan=plan,
+            )
+            receipt = self._command_receipt(permit, claimed["claim"]["claim_id"])
+            runner = Path(plan["command"]["executable"])
+            runner.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+            runner.chmod(0o755)
+            with self.assertRaises(control.ExecutionControlError) as stale:
+                control.complete_execution(
+                    permit, receipt["claim_id"], receipt, tmp, contract=self.contract,
+                )
+        self.assertEqual("reuse_pin_stale", stale.exception.code)
 
     def test_development_fingerprint_reuses_across_fresh_labels_but_final_does_not(self):
         permit = dict(self.contract["golden_cases"][0]["input"]["permit"])
@@ -744,8 +833,22 @@ class CanonicalContractTests(unittest.TestCase):
             }
             passed = control.build_evidence_batch(**kwargs, children=[child])
             projection = control.project_receipts(
-                receipt, None, self.contract, evidence_batch=passed,
+                receipt, None, tmp, self.contract,
+                evidence_batch_request={
+                    key: value for key, value in kwargs.items()
+                    if key not in {"state_root", "contract"}
+                } | {"children": [child]},
             )
+            receipt_path = Path(tmp, "receipt.json")
+            batch_path = Path(tmp, "fabricated-batch.json")
+            receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+            batch_path.write_text(json.dumps(passed), encoding="utf-8")
+            fabricated = subprocess.run([
+                sys.executable, str(TASK_WORKER / "scripts" / "definition_artifact.py"),
+                "execution-project", "--receipt", str(receipt_path),
+                "--evidence-batch", str(batch_path), "--state-root", tmp,
+            ], env={**os.environ, "STUDIO_VERIFICATION_CONTRACT": str(self.contract_path)},
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             with self.assertRaises(control.ExecutionControlError) as duplicated:
                 control.build_evidence_batch(**kwargs, children=[child, child])
             missing = control.build_evidence_batch(
@@ -755,32 +858,28 @@ class CanonicalContractTests(unittest.TestCase):
                     "evidence_digest": "sha256:" + "9" * 64,
                 }],
             )
+            with self.assertRaises(control.ExecutionControlError) as fabricated_projection:
+                control.project_receipts(
+                    receipt, None, tmp, self.contract,
+                    evidence_batch_request={
+                        key: value for key, value in kwargs.items()
+                        if key not in {"state_root", "contract"}
+                    } | {"children": [{
+                        **child, "evidence_id": "EV-missing",
+                        "evidence_digest": "sha256:" + "9" * 64,
+                    }]},
+                )
         self.assertEqual("pass", passed["result"])
         self.assertEqual(receipt["output_digest"], passed["children"][0]["output_digest"])
         self.assertEqual({"batch_digest": passed["digest"]}, projection["evidence_ref"])
+        self.assertEqual(2, fabricated.returncode, fabricated.stderr or fabricated.stdout)
+        self.assertEqual("evidence_batch_body_deprecated", json.loads(fabricated.stdout)["error_code"])
         self.assertEqual("evidence_batch_invalid", duplicated.exception.code)
         self.assertEqual("fail", missing["result"])
         self.assertEqual(["EV-missing"], missing["failed_evidence_refs"])
+        self.assertEqual("execution_projection_invalid", fabricated_projection.exception.code)
 
-    @staticmethod
-    def _review_status(candidate, confirmed_at="2026-07-15T00:00:00Z"):
-        return {
-            "phase": "approved", "active_actor": "none", "lock_since": None,
-            "next_actor": "worker", "target_mode": "diff", "target_nature": "code",
-            "target_ref": "task/economics", "base_ref": "base", "responding_to": "finding-1",
-            "round": 2, "round_type": "confirm", "flow_mode": "self",
-            "self_automation": "turnkey", "recording_mode": "fast",
-            "review_strength": "hard", "blocking_count": 0, "lease_id": "lease-1",
-            "reviewer_ref": "agent-1", "reviewed_ref": candidate,
-            "scope_digest": "sha256:" + "8" * 64,
-            "finding_digest": "sha256:" + "7" * 64,
-            "lease_started_at": "2026-07-14T23:59:00Z", "lease_updated_at": confirmed_at,
-            "lease_target_ref": "task/economics", "lease_base_ref": "base",
-            "lease_risk": "hard", "lease_expires_round": 4, "fresh_required": False,
-            "fresh_fallback_reason": "episode_start", "fresh_count": 1, "reuse_count": 1,
-        }
-
-    def test_final_candidate_projects_canonical_review_and_qa_only(self):
+    def test_final_qa_projection_resolves_only_canonical_task_worker_state(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo, permit, resolver, plan, fingerprint = self._live_execution_context(
                 tmp, purpose="integration-full", qa_mode="final",
@@ -797,29 +896,23 @@ class CanonicalContractTests(unittest.TestCase):
             )
             attempt = self._batch_child(receipt, evidence)
             value = {
-                "candidate_ref": permit["head"], "review_status": self._review_status(permit["head"]),
-                "state_root": tmp, "source_tree_digest": fingerprint["source_tree_digest"],
+                "candidate_ref": permit["head"], "state_root": tmp,
+                "source_tree_digest": fingerprint["source_tree_digest"],
                 "criteria_digest": permit["criteria_digest"], "attempts": [attempt],
             }
-            accepted = control.final_candidate_gate(value, self.contract)
-            arbitrary = control.final_candidate_gate({
-                **value,
-                "review_status": {
-                    "phase": "approved", "blocking_count": 0,
-                    "reviewed_ref": permit["head"],
-                },
-            }, self.contract)
+            accepted = control.final_qa_projection(value, self.contract)
             with self.assertRaises(control.ExecutionControlError) as duplicate:
-                control.final_candidate_gate({**value, "attempts": [attempt, attempt]}, self.contract)
+                control.final_qa_projection({**value, "attempts": [attempt, attempt]}, self.contract)
             (repo / "src.py").write_text("print('after-final')\n", encoding="utf-8")
-            changed_after_final = control.final_candidate_gate(value, self.contract)
+            with self.assertRaises(control.ExecutionControlError) as changed_after_final:
+                control.final_qa_projection(value, self.contract)
 
-        self.assertEqual("accept", accepted["action"])
-        self.assertEqual("review-confirmation-required", arbitrary["reason"])
-        self.assertEqual("final_candidate_invalid", duplicate.exception.code)
-        self.assertEqual("review-reconfirmation-required", changed_after_final["reason"])
+        self.assertEqual("pass", accepted["result"])
+        self.assertEqual(control.instance_digest(accepted), accepted["digest"])
+        self.assertEqual("final_qa_invalid", duplicate.exception.code)
+        self.assertEqual("final_qa_stale", changed_after_final.exception.code)
 
-    def test_failed_final_attempt_requires_then_accepts_explicit_reconfirmation(self):
+    def test_final_qa_projection_preserves_failed_attempt_before_one_pass(self):
         with tempfile.TemporaryDirectory() as tmp:
             _, permit, resolver, plan, fingerprint = self._live_execution_context(
                 tmp, purpose="integration-full", qa_mode="final",
@@ -840,11 +933,11 @@ class CanonicalContractTests(unittest.TestCase):
                 "evidence_id": "EV-failed", "evidence_digest": "sha256:" + "6" * 64,
             }
             base = {
-                "candidate_ref": permit["head"], "review_status": self._review_status(permit["head"]),
-                "state_root": tmp, "source_tree_digest": fingerprint["source_tree_digest"],
+                "candidate_ref": permit["head"], "state_root": tmp,
+                "source_tree_digest": fingerprint["source_tree_digest"],
                 "criteria_digest": permit["criteria_digest"], "attempts": [failed_attempt],
             }
-            needs_confirmation = control.final_candidate_gate(base, self.contract)
+            failed = control.final_qa_projection(base, self.contract)
 
             second_claim = control.claim_execution(
                 permit, tmp, claimed_by="worker", contract=self.contract,
@@ -861,14 +954,28 @@ class CanonicalContractTests(unittest.TestCase):
                 permit, passed_receipt["claim_id"], passed_receipt, tmp,
                 evidence=evidence, contract=self.contract,
             )
-            confirmed = control.final_candidate_gate({
+            confirmed = control.final_qa_projection({
                 **base,
-                "review_status": self._review_status(permit["head"], "2026-07-15T00:00:03Z"),
                 "attempts": [failed_attempt, self._batch_child(passed_receipt, evidence)],
             }, self.contract)
 
-        self.assertEqual("review-reconfirmation-required", needs_confirmation["reason"])
-        self.assertEqual("accept", confirmed["action"])
+        self.assertEqual("fail", failed["result"])
+        self.assertEqual("pass", confirmed["result"])
+        self.assertEqual(["fail", "pass"], [item["result"] for item in confirmed["attempts"]])
+
+    def test_task_worker_execution_control_imports_without_session_review_sibling(self):
+        with self.assertRaises(control.ExecutionControlError) as legacy:
+            control.evaluate_request({"final_candidate": {}}, self.contract)
+        with tempfile.TemporaryDirectory() as tmp:
+            standalone = Path(tmp, "execution_control.py")
+            standalone.write_bytes((TASK_WORKER / "scripts" / "execution_control.py").read_bytes())
+            spec = importlib.util.spec_from_file_location("standalone_execution_control", standalone)
+            self.assertIsNotNone(spec)
+            self.assertIsNotNone(spec.loader)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+        self.assertFalse(hasattr(module, "final_candidate_gate"))
+        self.assertEqual("final_candidate_provider_boundary_changed", legacy.exception.code)
 
     def test_completed_claim_rejects_a_second_physical_receipt(self):
         permit = self.contract["golden_cases"][0]["input"]["permit"]
@@ -932,6 +1039,7 @@ class CanonicalContractTests(unittest.TestCase):
                 permit, claim["claim_id"], receipt, tmp,
                 mutation_receipt=mutation_receipt, contract=self.contract,
             )
+            self._make_base_era_claim_fixture(tmp, claim["claim_id"])
             replayed = control.complete_execution(
                 permit, claim["claim_id"], receipt, tmp,
                 mutation_receipt=mutation_receipt, contract=self.contract,
@@ -973,6 +1081,7 @@ class CanonicalContractTests(unittest.TestCase):
                 permit, claimed["claim"]["claim_id"], receipt, tmp,
                 mutation_receipt=mutation_receipt, contract=self.contract,
             )
+            self._make_base_era_claim_fixture(tmp, claimed["claim"]["claim_id"])
             replayed = control.complete_execution(
                 permit, claimed["claim"]["claim_id"], receipt, tmp,
                 contract=self.contract,
