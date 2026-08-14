@@ -163,6 +163,83 @@ class TransactionCoordinatorTests(unittest.TestCase):
             self.assertNotIn("bundle", second)
             self.assertEqual(after_first, tree_digest(repo))
 
+        corruptions = {
+            "evil-owner": lambda repo: (
+                (repo / context_cli.ROOT_INDEX).write_text(
+                    (repo / context_cli.ROOT_INDEX).read_text(encoding="utf-8").replace(
+                        '"area":"snapshot","path":"context/snapshot/snapshot.index.md","owner":"context-core"',
+                        '"area":"snapshot","path":"context/snapshot/snapshot.index.md","owner":"evil-owner"',
+                    ),
+                    encoding="utf-8",
+                ),
+                (repo / "context/snapshot/snapshot.index.md").write_text(
+                    (repo / "context/snapshot/snapshot.index.md").read_text(encoding="utf-8").replace(
+                        'owner: "context-core"', 'owner: "evil-owner"'
+                    ),
+                    encoding="utf-8",
+                ),
+            ),
+            "wrong-schema": lambda repo: (repo / "context/snapshot/snapshot.index.md").write_text(
+                (repo / "context/snapshot/snapshot.index.md").read_text(encoding="utf-8").replace(
+                    'schema: "context-area-index/v1"', 'schema: "context-area-index/v2"'
+                ),
+                encoding="utf-8",
+            ),
+            "wrong-path": lambda repo: (repo / context_cli.ROOT_INDEX).write_text(
+                (repo / context_cli.ROOT_INDEX).read_text(encoding="utf-8").replace(
+                    'context/snapshot/snapshot.index.md', 'context/snapshot/other.index.md'
+                ),
+                encoding="utf-8",
+            ),
+            "wrong-authority": lambda repo: (
+                (repo / context_cli.ROOT_INDEX).write_text(
+                    (repo / context_cli.ROOT_INDEX).read_text(encoding="utf-8").replace(
+                        '"area":"snapshot","path":"context/snapshot/snapshot.index.md","owner":"context-core","claims":["snapshot"],"artifact_schema":"context-snapshot/v1","authority":"staging"',
+                        '"area":"snapshot","path":"context/snapshot/snapshot.index.md","owner":"context-core","claims":["snapshot"],"artifact_schema":"context-snapshot/v1","authority":"authoritative"',
+                    ),
+                    encoding="utf-8",
+                ),
+                (repo / "context/snapshot/snapshot.index.md").write_text(
+                    (repo / "context/snapshot/snapshot.index.md").read_text(encoding="utf-8").replace(
+                        'authority: "staging"', 'authority: "authoritative"'
+                    ),
+                    encoding="utf-8",
+                ),
+            ),
+            "wrong-artifact-schema": lambda repo: (
+                (repo / context_cli.ROOT_INDEX).write_text(
+                    (repo / context_cli.ROOT_INDEX).read_text(encoding="utf-8").replace(
+                        '"area":"snapshot","path":"context/snapshot/snapshot.index.md","owner":"context-core","claims":["snapshot"],"artifact_schema":"context-snapshot/v1"',
+                        '"area":"snapshot","path":"context/snapshot/snapshot.index.md","owner":"context-core","claims":["snapshot"],"artifact_schema":"context-evil/v1"',
+                    ),
+                    encoding="utf-8",
+                ),
+                (repo / "context/snapshot/snapshot.index.md").write_text(
+                    (repo / "context/snapshot/snapshot.index.md").read_text(encoding="utf-8").replace(
+                        'artifact_schema: "context-snapshot/v1"', 'artifact_schema: "context-evil/v1"'
+                    ),
+                    encoding="utf-8",
+                ),
+            ),
+            "noncanonical-generated-row": lambda repo: (repo / context_cli.ROOT_INDEX).write_text(
+                (repo / context_cli.ROOT_INDEX).read_text(encoding="utf-8").replace(
+                    " — Snapshot: session handoff staging ", " — Corrupted: session handoff staging "
+                ),
+                encoding="utf-8",
+            ),
+            "partial-index-set": lambda repo: (repo / "context/observation/observation.index.md").unlink(),
+        }
+        for label, corrupt in corruptions.items():
+            with self.subTest(corruption=label), git_repo() as temp:
+                repo = Path(temp)
+                initialize(repo)
+                corrupt(repo)
+                before = tree_digest(repo)
+                with self.assertRaises(context_cli.ContextError) as caught:
+                    context_cli.build_init_bundle(repo)
+                self.assertEqual("partial_core_init", caught.exception.code)
+                self.assertEqual(before, tree_digest(repo))
+
     def test_acceptance_05_rename_identity(self) -> None:
         with git_repo() as temp:
             repo = Path(temp)
@@ -233,6 +310,145 @@ class TransactionCoordinatorTests(unittest.TestCase):
                 context_cli.apply_bundle(repo, hidden, hidden["approval_digest"])
             self.assertEqual("plan_preview_mismatch", hidden_error.exception.code)
             self.assertEqual(before, tree_digest(repo))
+
+    def test_core_control_transitions_reject_forged_file_operations(self) -> None:
+        def forge_file_create(bundle: dict) -> dict:
+            forged = copy.deepcopy(bundle)
+            effect_id = "effect_escape"
+            material_id = "material_escape"
+            content = "forged core_control payload"
+            path = "outside/nested.txt"
+            forged["materials"].append({"material_id": material_id, "path": path, "content": content})
+            preview = forged["approval_material"]["preview"]
+            preview["artifacts"].append({"effect_id": effect_id, "path": path, "content": content})
+            preview["effects"].append(
+                {"effect_id": effect_id, "action": "create", "area": "observation", "id": "ctx_550e8400e29b41d4a716446655440099", "state": "current"}
+            )
+            operation = {
+                "op": "file_create",
+                "effect_id": effect_id,
+                "role": "artifact",
+                "area": "observation",
+                "path": path,
+                "before_sha256": None,
+                "after_sha256": context_cli.sha256_bytes(context_cli.file_bytes(content)),
+                "material": material_id,
+            }
+            operations = forged["approval_material"]["plan"]["operations"]
+            index_operation = next((item for item in operations if item["op"] == "index_rebuild"), None)
+            if index_operation is not None:
+                index_operation["derived_from"].append(effect_id)
+                operations.insert(0, operation)
+            else:
+                operations.append(operation)
+            forged["approval_digest"] = context_cli.canonical_digest(forged["approval_material"])
+            return forged
+
+        def area_register(repo: Path) -> dict:
+            descriptor = {
+                "schema": "context-owner-descriptor/v1",
+                "owner": "context-decision",
+                "kind": "decision",
+                "artifact_schema": "context-decision/v1",
+                "authority": "authoritative",
+            }
+            seed = context_cli._area_seed(
+                "decision",
+                "context-decision",
+                "context-decision/v1",
+                "authoritative",
+                "결정·취지·반려대안과 현재 유효성을 관리한다.",
+                projection_fields=("scope", "decision_key", "revisit_on"),
+            )
+            return context_cli.build_area_register_bundle(repo, descriptor, seed)
+
+        def index_fix(repo: Path) -> dict:
+            (repo / "context/observation/out-of-band.md").write_text(
+                context_cli.render_document(
+                    {
+                        "schema": "context-observation/v1",
+                        "id": "ctx_550e8400e29b41d4a716446655440098",
+                        "title": "Out-of-band observation",
+                        "summary": "Index repair fixture",
+                        "created_at": "2026-08-13T18:20:00+09:00",
+                        "captured_from": "workspace",
+                        "claim_fingerprint": context_cli.claim_fingerprint("observation", "", "Out-of-band observation"),
+                    },
+                    {"관찰": "Out-of-band observation", "근거": "integration fixture"},
+                ),
+                encoding="utf-8",
+            )
+            return context_cli.build_index_fix_bundle(repo)
+
+        cases = {
+            "core_init": (False, context_cli.build_init_bundle),
+            "area_register": (True, area_register),
+            "policy_install": (True, lambda repo: context_cli.build_policy_bundle(repo, "CLAUDE.md")),
+            "index_fix": (True, index_fix),
+        }
+        for transition, (initialized, build) in cases.items():
+            with self.subTest(transition=transition), git_repo() as temp:
+                repo = Path(temp)
+                if initialized:
+                    initialize(repo)
+                legitimate = build(repo)["bundle"]
+                before = tree_digest(repo)
+                variants = {"file-operation": forge_file_create(legitimate)}
+                descriptor = copy.deepcopy(legitimate)
+                descriptor["approval_material"]["plan"]["owner_descriptor"]["forged"] = True
+                variants["descriptor"] = descriptor
+                control = copy.deepcopy(legitimate)
+                control["approval_material"]["plan"]["control_input"]["forged"] = True
+                variants["control-input"] = control
+                effect = copy.deepcopy(legitimate)
+                if effect["approval_material"]["preview"]["effects"]:
+                    effect["approval_material"]["preview"]["effects"][0]["forged"] = True
+                else:
+                    effect["approval_material"]["preview"]["index_diffs"][0]["forged"] = True
+                variants["effect"] = effect
+                binding = copy.deepcopy(legitimate)
+                binding_control = binding["approval_material"]["plan"]["control_input"]
+                if transition in {"core_init", "area_register"}:
+                    first = next(iter(binding_control["seed_digests"]))
+                    binding_control["seed_digests"][first] = "sha256:" + "0" * 64
+                elif transition == "policy_install":
+                    binding_control["outside_bytes_sha256"] = "sha256:" + "0" * 64
+                else:
+                    binding_control["issue_digest"] = "sha256:" + "0" * 64
+                variants["control-binding"] = binding
+                coherent = copy.deepcopy(legitimate)
+                coherent_plan = coherent["approval_material"]["plan"]
+                coherent_operation = coherent_plan["operations"][-1]
+                if transition == "core_init":
+                    material = next(item for item in coherent["materials"] if item["path"] == context_cli.ROOT_INDEX)
+                    material["content"] = material["content"].replace("# Context", "# Forged Context", 1)
+                    digest = context_cli.sha256_bytes(context_cli.file_bytes(material["content"]))
+                    coherent_plan["control_input"]["seed_digests"][context_cli.ROOT_INDEX] = digest
+                    coherent_operation["after_sha256"][context_cli.ROOT_INDEX] = digest
+                elif transition == "area_register":
+                    material = next(item for item in coherent["materials"] if item["path"] == context_cli.ROOT_INDEX)
+                    material["content"] = material["content"].replace("# Context", "# Forged Context", 1)
+                    coherent_operation["after_sha256"][context_cli.ROOT_INDEX] = context_cli.sha256_bytes(
+                        context_cli.file_bytes(material["content"])
+                    )
+                elif transition == "policy_install":
+                    material = coherent["materials"][0]
+                    material["content"] = "forged outside\n\n" + material["content"]
+                    coherent_operation["after_sha256"] = context_cli.sha256_bytes(material["content"].encode("utf-8"))
+                    coherent["approval_material"]["preview"]["artifacts"][0]["content"] = material["content"]
+                else:
+                    issues = coherent["approval_material"]["preview"]["index_diffs"]
+                    issues[0]["forged"] = True
+                    coherent_plan["control_input"]["issue_digest"] = context_cli.canonical_digest(issues)
+                variants["coherent-forgery"] = coherent
+                for label, forged in variants.items():
+                    with self.subTest(transition=transition, forgery=label):
+                        forged["approval_digest"] = context_cli.canonical_digest(forged["approval_material"])
+                        with self.assertRaises(context_cli.ContextError) as caught:
+                            context_cli.apply_bundle(repo, forged, forged["approval_digest"])
+                        self.assertEqual("plan_preview_mismatch", caught.exception.code)
+                        self.assertEqual(before, tree_digest(repo))
+                        self.assertFalse((repo / "outside/nested.txt").exists())
 
     def test_acceptance_24_digest(self) -> None:
         with git_repo() as temp:

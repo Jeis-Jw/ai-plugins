@@ -2072,11 +2072,32 @@ def build_init_bundle(repo: pathlib.Path) -> dict[str, Any]:
     paths = [repo / ROOT_INDEX, repo / "context/snapshot/snapshot.index.md", repo / "context/observation/observation.index.md"]
     existing = [path.is_file() for path in paths]
     if all(existing):
-        _, areas = parse_root_index(paths[0].read_text(encoding="utf-8"))
-        parse_area_index(paths[1].read_text(encoding="utf-8"))
-        parse_area_index(paths[2].read_text(encoding="utf-8"))
-        if {row["area"] for row in areas}.issuperset(BUILTIN_AREAS):
-            return {"noop": True, "applied": False, "changed_paths": []}
+        try:
+            _, areas = parse_root_index(paths[0].read_text(encoding="utf-8"))
+            rows = {row["area"]: row for row in areas}
+            expected = {item[0]["area"]: item[0] for item in _builtin_area_specs()}
+            indexes = {
+                "snapshot": parse_area_index(paths[1].read_text(encoding="utf-8")),
+                "observation": parse_area_index(paths[2].read_text(encoding="utf-8")),
+            }
+            descriptors_match = all(
+                rows.get(area) == descriptor
+                and {
+                    "area": indexes[area].frontmatter["area"],
+                    "path": f"context/{area}/{area}.index.md",
+                    "owner": indexes[area].frontmatter["owner"],
+                    "claims": [area],
+                    "artifact_schema": indexes[area].frontmatter["artifact_schema"],
+                    "authority": indexes[area].frontmatter["authority"],
+                } == descriptor
+                for area, descriptor in expected.items()
+            )
+            integrity = refresh_repository(repo, strict=True)
+            if descriptors_match and integrity["ok"]:
+                return {"noop": True, "applied": False, "changed_paths": []}
+        except (ContextError, OSError, UnicodeError):
+            pass
+        raise ContextError("partial_core_init", "context root is partially initialized", exit_code=EXIT_CONFLICT)
     allowed_empty = {root_path, root_path / "snapshot", root_path / "observation", root_path / "observation/retired"}
     present_files = [path for path in root_path.rglob("*") if path.is_file()] if root_path.exists() else []
     present_nonempty = [path for path in root_path.rglob("*") if path.is_dir() and path not in allowed_empty and any(path.iterdir())] if root_path.exists() else []
@@ -2823,6 +2844,406 @@ def build_index_fix_bundle(repo: pathlib.Path) -> dict[str, Any]:
     return _bundle_result(preview, plan, [])
 
 
+def _core_control_error(message: str) -> None:
+    raise ContextError("plan_preview_mismatch", message, exit_code=EXIT_CONFLICT)
+
+
+def _require_exact_fields(value: Any, fields: set[str], label: str) -> None:
+    if not isinstance(value, dict) or set(value) != fields:
+        _core_control_error(f"{label} fields differ from the core control contract")
+
+
+def _valid_plan_id(value: Any) -> bool:
+    if not isinstance(value, str) or not re.fullmatch(r"plan_[0-9a-f]{32}", value):
+        return False
+    parsed = uuid.UUID(hex=value[5:])
+    return parsed.version == 4 and parsed.variant == uuid.RFC_4122
+
+
+def _validate_index_material(
+    operation: dict[str, Any],
+    by_id: dict[str, dict[str, Any]],
+    relative: str,
+    material_id: str,
+) -> None:
+    material = by_id.get(material_id)
+    if (
+        material is None
+        or set(material) != {"material_id", "path", "content"}
+        or material.get("path") != relative
+        or operation["after_sha256"].get(relative) != sha256_bytes(file_bytes(material.get("content", "")))
+    ):
+        _core_control_error("index material path or digest is not canonical")
+
+
+def _validate_core_init_control(
+    plan: dict[str, Any],
+    preview: dict[str, Any],
+    by_id: dict[str, dict[str, Any]],
+    operation: dict[str, Any],
+) -> None:
+    descriptor = {"owner": "context-core", "kind": "storage", "artifact_schema": PROTOCOL}
+    contents = {
+        ROOT_INDEX: render_root_index(_root_seed(), _builtin_area_specs()),
+        "context/snapshot/snapshot.index.md": _area_seed(
+            "snapshot", "context-core", "context-snapshot/v1", "staging", "session handoff staging",
+            search_terms=("handoff", "resume"),
+        ),
+        "context/observation/observation.index.md": _area_seed(
+            "observation", "context-core", "context-observation/v1", "evidence", "비권위 발견과 근거",
+            search_terms=("observation", "evidence"),
+        ),
+    }
+    material_ids = {
+        ROOT_INDEX: "seed_root",
+        "context/snapshot/snapshot.index.md": "seed_snapshot",
+        "context/observation/observation.index.md": "seed_observation",
+    }
+    control = plan["control_input"]
+    _require_exact_fields(control, {"schema", "transition", "seed_digests"}, "core_init control input")
+    expected_digests = {path: sha256_bytes(file_bytes(contents[path])) for path in sorted(contents)}
+    if (
+        plan["owner"] != "context-core"
+        or plan["owner_descriptor"] != descriptor
+        or control != {
+            "schema": "context-core-control/v1",
+            "transition": "core_init",
+            "seed_digests": expected_digests,
+        }
+        or set(by_id) != set(material_ids.values())
+        or set(operation) != {
+            "op", "derived_from", "areas", "include_root", "before_sha256", "after_sha256", "seed_materials",
+        }
+        or operation["op"] != "index_rebuild"
+        or operation["derived_from"] != ["effect_core_init"]
+        or operation["areas"] != ["observation", "snapshot"]
+        or operation["include_root"] is not True
+        or operation["before_sha256"] != {path: None for path in contents}
+        or operation["after_sha256"] != expected_digests
+        or operation["seed_materials"] != material_ids
+        or preview["owner"] != "context-core"
+        or preview["candidate_id"] is not None
+        or preview["artifacts"] != []
+        or preview["effects"] != [{
+            "effect_id": "effect_core_init", "action": "initialize_core", "paths": sorted(contents),
+        }]
+    ):
+        _core_control_error("core_init plan differs from its exact allowlist")
+    for relative, content in contents.items():
+        _validate_index_material(operation, by_id, relative, material_ids[relative])
+        if by_id[material_ids[relative]]["content"] != content:
+            _core_control_error("core_init seed content is not the canonical built-in seed")
+
+
+def _validate_area_register_control(
+    repo: pathlib.Path,
+    plan: dict[str, Any],
+    preview: dict[str, Any],
+    by_id: dict[str, dict[str, Any]],
+    operation: dict[str, Any],
+) -> None:
+    descriptor = plan["owner_descriptor"]
+    _require_exact_fields(
+        descriptor,
+        {"schema", "owner", "kind", "artifact_schema", "authority"},
+        "area_register owner descriptor",
+    )
+    owner = descriptor.get("owner")
+    area = descriptor.get("kind")
+    if (
+        descriptor.get("schema") != "context-owner-descriptor/v1"
+        or not all(isinstance(descriptor.get(key), str) and descriptor[key] for key in ("owner", "kind", "artifact_schema", "authority"))
+        or not AREA_NAME.fullmatch(str(area))
+    ):
+        _core_control_error("area_register owner descriptor is invalid")
+    area_path = f"context/{area}/{area}.index.md"
+    control = plan["control_input"]
+    _require_exact_fields(
+        control,
+        {"schema", "transition", "descriptor_digest", "seed_digests"},
+        "area_register control input",
+    )
+    if set(by_id) != {"material_root_index", "seed_area_index"}:
+        _core_control_error("area_register materials differ from the exact allowlist")
+    seed = by_id["seed_area_index"]
+    root_material = by_id["material_root_index"]
+    _require_exact_fields(seed, {"material_id", "path", "content"}, "area_register seed material")
+    _require_exact_fields(root_material, {"material_id", "path", "content"}, "area_register root material")
+    try:
+        seed_index = parse_area_index(seed["content"])
+        _, root_rows = parse_root_index(root_material["content"])
+    except ContextError as error:
+        raise ContextError("plan_preview_mismatch", "area_register material is not a valid canonical index", exit_code=EXIT_CONFLICT) from error
+    expected_row = {
+        "area": area,
+        "path": area_path,
+        "owner": owner,
+        "claims": [area],
+        "artifact_schema": descriptor["artifact_schema"],
+        "authority": descriptor["authority"],
+    }
+    metadata = seed_index.frontmatter
+    if (
+        seed_index.current
+        or seed_index.history
+        or (metadata["area"], metadata["owner"], metadata["artifact_schema"], metadata["authority"])
+        != (area, owner, descriptor["artifact_schema"], descriptor["authority"])
+        or [row for row in root_rows if row["area"] == area] != [expected_row]
+    ):
+        _core_control_error("area_register descriptor, seed, and root row differ")
+    specs: list[tuple[dict[str, Any], str, str]] = []
+    for row in root_rows:
+        index = seed_index if row["area"] == area else parse_area_index((repo / row["path"]).read_text(encoding="utf-8"))
+        fm = index.frontmatter
+        if (fm["area"], fm["owner"], fm["artifact_schema"], fm["authority"]) != (
+            row["area"], row["owner"], row["artifact_schema"], row["authority"],
+        ):
+            _core_control_error("area_register root and area metadata differ")
+        specs.append((row, _area_label(row["area"]), fm["summary"]))
+    if render_root_index(root_material["content"], specs) != root_material["content"]:
+        _core_control_error("area_register root generated bytes are not canonical")
+    current_root_digest = _digest_or_none(repo / ROOT_INDEX)
+    if current_root_digest == operation.get("before_sha256", {}).get(ROOT_INDEX):
+        current_root = (repo / ROOT_INDEX).read_text(encoding="utf-8")
+        _, current_rows = parse_root_index(current_root)
+        if (
+            root_rows != sorted([*current_rows, expected_row], key=lambda row: row["area"])
+            or root_material["content"] != render_root_index(current_root, specs)
+        ):
+            _core_control_error("area_register root material does not add exactly one area")
+    seed_digest = sha256_bytes(file_bytes(seed["content"]))
+    if (
+        plan["owner"] != owner
+        or control != {
+            "schema": "context-core-control/v1",
+            "transition": "area_register",
+            "descriptor_digest": canonical_digest(descriptor),
+            "seed_digests": {area_path: seed_digest},
+        }
+        or set(operation) != {
+            "op", "derived_from", "areas", "include_root", "before_sha256", "after_sha256", "seed_materials",
+        }
+        or operation["op"] != "index_rebuild"
+        or operation["derived_from"] != ["effect_register_area"]
+        or operation["areas"] != [area]
+        or operation["include_root"] is not True
+        or set(operation["before_sha256"]) != {ROOT_INDEX, area_path}
+        or operation["before_sha256"].get(area_path) is not None
+        or set(operation["after_sha256"]) != {ROOT_INDEX, area_path}
+        or operation["seed_materials"] != {area_path: "seed_area_index"}
+        or root_material["path"] != ROOT_INDEX
+        or seed["path"] != area_path
+        or preview["owner"] != owner
+        or preview["candidate_id"] is not None
+        or preview["artifacts"] != []
+        or preview["effects"] != [{
+            "effect_id": "effect_register_area", "action": "register_area", "area": area, "path": area_path,
+        }]
+    ):
+        _core_control_error("area_register plan differs from its exact allowlist")
+    _validate_index_material(operation, by_id, ROOT_INDEX, "material_root_index")
+    _validate_index_material(operation, by_id, area_path, "seed_area_index")
+
+
+def _validate_policy_control(
+    repo: pathlib.Path,
+    plan: dict[str, Any],
+    preview: dict[str, Any],
+    by_id: dict[str, dict[str, Any]],
+    operation: dict[str, Any],
+) -> None:
+    descriptor = {"owner": "context-core", "kind": "policy", "artifact_schema": "context-policy/v1"}
+    control = plan["control_input"]
+    _require_exact_fields(
+        control,
+        {"schema", "transition", "target", "before_sha256", "outside_bytes_sha256"},
+        "policy_install control input",
+    )
+    target = control.get("target")
+    if set(by_id) != {"material_policy"}:
+        _core_control_error("policy_install material differs from the exact allowlist")
+    material = by_id["material_policy"]
+    _require_exact_fields(material, {"material_id", "path", "content"}, "policy material")
+    content = material["content"]
+    newline = "\r\n" if "\r\n" in content else "\n"
+    if "\r\n" in content and "\n" in content.replace("\r\n", ""):
+        _core_control_error("policy material has mixed newlines")
+    expected_block = POLICY_BODY.replace("\n", newline)
+    start = content.find(POLICY_BEGIN)
+    end = content.find(POLICY_END, start) + len(POLICY_END)
+    if content.count(POLICY_BEGIN) != 1 or content.count(POLICY_END) != 1 or content[start:end] != expected_block:
+        _core_control_error("policy material managed block is not canonical")
+    current = _ensure_contained(repo, str(target)) if target in POLICY_TARGETS else repo
+    current_digest = _digest_or_none(current) if target in POLICY_TARGETS else None
+    if current_digest == operation.get("before_sha256"):
+        before = current.read_text(encoding="utf-8") if current_digest is not None else ""
+        outside = (
+            before[:before.find(POLICY_BEGIN)] + before[before.find(POLICY_END) + len(POLICY_END):]
+            if POLICY_BEGIN in before
+            else before
+        )
+        if control.get("outside_bytes_sha256") != sha256_bytes(outside.encode("utf-8")):
+            _core_control_error("policy control input does not bind marker-external bytes")
+        before_newline = "\r\n" if "\r\n" in before else "\n"
+        policy_body = POLICY_BODY.replace("\n", before_newline)
+        if POLICY_BEGIN in before:
+            before_start = before.index(POLICY_BEGIN)
+            before_end = before.index(POLICY_END, before_start) + len(POLICY_END)
+            expected_content = before[:before_start] + policy_body + before[before_end:]
+        elif before:
+            separator = "" if before.endswith(before_newline * 2) else (before_newline if before.endswith(before_newline) else before_newline * 2)
+            expected_content = before + separator + policy_body + before_newline
+        else:
+            expected_content = policy_body + before_newline
+        if content != expected_content:
+            _core_control_error("policy material changes marker-external bytes")
+    expected_op = "file_replace" if operation.get("before_sha256") is not None else "file_create"
+    if (
+        plan["owner"] != "context-core"
+        or plan["owner_descriptor"] != descriptor
+        or control.get("schema") != "context-core-control/v1"
+        or control.get("transition") != "policy_install"
+        or target not in POLICY_TARGETS
+        or control.get("before_sha256") != operation.get("before_sha256")
+        or set(operation) != {"op", "effect_id", "role", "path", "before_sha256", "after_sha256", "material"}
+        or operation["op"] != expected_op
+        or operation["effect_id"] != "effect_install_policy"
+        or operation["role"] != "policy"
+        or operation["path"] != target
+        or operation["material"] != "material_policy"
+        or operation["after_sha256"] != sha256_bytes(content.encode("utf-8"))
+        or material["path"] != target
+        or preview["owner"] != "context-core"
+        or preview["candidate_id"] is not None
+        or preview["artifacts"] != [{
+            "effect_id": "effect_install_policy", "path": target, "content": content,
+        }]
+        or preview["effects"] != [{
+            "effect_id": "effect_install_policy", "action": "install_policy", "path": target,
+        }]
+    ):
+        _core_control_error("policy_install plan differs from its exact allowlist")
+
+
+def _validate_index_fix_control(
+    repo: pathlib.Path,
+    plan: dict[str, Any],
+    preview: dict[str, Any],
+    by_id: dict[str, dict[str, Any]],
+    operation: dict[str, Any],
+) -> None:
+    descriptor = {"owner": "context-core", "kind": "storage", "artifact_schema": PROTOCOL}
+    control = plan["control_input"]
+    _require_exact_fields(control, {"schema", "transition", "issue_digest"}, "index_fix control input")
+    issues = preview.get("index_diffs")
+    areas = operation.get("areas")
+    expected_paths = {f"context/{area}/{area}.index.md" for area in areas} if isinstance(areas, list) else set()
+    if (
+        not isinstance(issues, list)
+        or not issues
+        or any(not isinstance(issue, dict) or issue.get("code") not in INDEX_FIXABLE_CODES for issue in issues)
+        or not isinstance(areas, list)
+        or not areas
+        or areas != sorted(set(areas))
+        or any(not AREA_NAME.fullmatch(str(area)) for area in areas)
+        or any(not any(issue.get("path", "").startswith(f"context/{area}/") for issue in issues) for area in areas)
+    ):
+        _core_control_error("index_fix issue and area set is invalid")
+    if (
+        plan["owner"] != "context-core"
+        or plan["owner_descriptor"] != descriptor
+        or control != {
+            "schema": "context-core-control/v1",
+            "transition": "index_fix",
+            "issue_digest": canonical_digest(issues),
+        }
+        or by_id
+        or set(operation) != {"op", "derived_from", "areas", "include_root", "before_sha256", "after_sha256"}
+        or operation["op"] != "index_rebuild"
+        or operation["derived_from"] != []
+        or operation["include_root"] is not False
+        or set(operation["before_sha256"]) != expected_paths
+        or set(operation["after_sha256"]) != expected_paths
+        or preview["owner"] != "context-core"
+        or preview["candidate_id"] is not None
+        or preview["artifacts"] != []
+        or preview["effects"] != []
+    ):
+        _core_control_error("index_fix plan differs from its exact allowlist")
+    current = {relative: _digest_or_none(repo / relative) for relative in expected_paths}
+    before = operation["before_sha256"]
+    after = operation["after_sha256"]
+    if any(current[path] not in {before[path], after[path]} for path in expected_paths):
+        _core_control_error("index_fix repository state differs from the approved transition")
+    if all(current[path] == before[path] for path in expected_paths):
+        actual_issues = refresh_repository(repo, strict=True)["issues"]
+        if issues != actual_issues:
+            _core_control_error("index_fix control input does not bind the current integrity issues")
+        _, catalog = _root_catalog(repo)
+        actual_areas = sorted({
+            row["area"]
+            for row in catalog
+            if any(issue.get("path", "").startswith(f"context/{row['area']}/") for issue in actual_issues)
+        })
+        if areas != actual_areas:
+            _core_control_error("index_fix area set differs from the current integrity issues")
+    for area in areas:
+        relative = f"context/{area}/{area}.index.md"
+        rendered = render_area_index_from_repository(repo, area, repair_rows=True)
+        if operation["after_sha256"][relative] != sha256_bytes(file_bytes(rendered)):
+            _core_control_error("index_fix after digest is not the deterministic repository projection")
+
+
+def _validate_core_control_bundle(
+    repo: pathlib.Path,
+    plan: dict[str, Any],
+    preview: dict[str, Any],
+    by_id: dict[str, dict[str, Any]],
+    non_index: list[dict[str, Any]],
+    index_operations: list[dict[str, Any]],
+) -> None:
+    _require_exact_fields(
+        plan,
+        {
+            "schema", "plan_id", "owner", "source_type", "transition", "owner_descriptor", "control_input",
+            "prior_bundle_digests", "read_preconditions", "operations",
+        },
+        "core control plan",
+    )
+    transition = plan.get("transition")
+    expected_preview_fields = {"schema", "owner", "candidate_id", "artifacts", "effects"}
+    if transition == "index_fix":
+        expected_preview_fields.add("index_diffs")
+    _require_exact_fields(preview, expected_preview_fields, "core control preview")
+    if (
+        plan.get("schema") != "context-mutation-plan/v1"
+        or plan.get("source_type") != "core_control"
+        or transition not in {"core_init", "area_register", "policy_install", "index_fix"}
+        or not _valid_plan_id(plan.get("plan_id"))
+        or plan.get("prior_bundle_digests") != []
+        or plan.get("read_preconditions") != []
+        or preview.get("schema") != "context-approval-preview/v1"
+        or not isinstance(preview.get("artifacts"), list)
+        or not isinstance(preview.get("effects"), list)
+        or any(set(material) != {"material_id", "path", "content"} for material in by_id.values())
+    ):
+        _core_control_error("core control envelope differs from the exact allowlist")
+    if transition == "policy_install":
+        if index_operations or len(non_index) != 1:
+            _core_control_error("policy_install permits exactly one policy file operation")
+        _validate_policy_control(repo, plan, preview, by_id, non_index[0])
+        return
+    if non_index or len(index_operations) != 1:
+        _core_control_error(f"{transition} permits exactly one index_rebuild operation")
+    operation = index_operations[0]
+    if transition == "core_init":
+        _validate_core_init_control(plan, preview, by_id, operation)
+    elif transition == "area_register":
+        _validate_area_register_control(repo, plan, preview, by_id, operation)
+    else:
+        _validate_index_fix_control(repo, plan, preview, by_id, operation)
+
+
 def _validate_bundle(repo: pathlib.Path, bundle: dict[str, Any], approved_digest: str) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
     if bundle.get("schema") != "context-mutation-bundle/v1":
         raise ContextError("bundle_invalid", "mutation bundle schema is invalid", exit_code=EXIT_CONFLICT)
@@ -3015,16 +3436,8 @@ def _validate_bundle(repo: pathlib.Path, bundle: dict[str, Any], approved_digest
                 raise ContextError("lifecycle_input_mismatch", "fallback import lifecycle and exact claim fingerprint differ", exit_code=EXIT_CONFLICT)
     elif plan.get("source_type") != "core_control":
         raise ContextError("bundle_invalid", "source_type is unsupported", exit_code=EXIT_CONFLICT)
-    elif plan.get("transition") == "policy_install":
-        control = plan.get("control_input", {})
-        operation = non_index[0]
-        if (
-            control.get("schema") != "context-core-control/v1"
-            or control.get("transition") != "policy_install"
-            or control.get("target") != operation.get("path")
-            or control.get("before_sha256") != operation.get("before_sha256")
-        ):
-            raise ContextError("plan_preview_mismatch", "policy control input differs from the physical operation", exit_code=EXIT_CONFLICT)
+    else:
+        _validate_core_control_bundle(repo, plan, preview, by_id, non_index, index_operations)
     return plan, by_id
 
 
