@@ -1458,10 +1458,9 @@ def build_parser() -> argparse.ArgumentParser:
     execution_claim.add_argument("--permit", required=True)
     execution_claim.add_argument("--state-root", default=".task-worker/local")
     execution_claim.add_argument("--claimed-by", required=True)
-    execution_claim.add_argument("--evidence")
     execution_claim.add_argument(
-        "--reuse-fingerprint",
-        help="transient task-worker.reuse-fingerprint/v1 JSON; required for physical evidence reuse",
+        "--reuse-resolver",
+        help="task-worker.reuse-resolver/v1 JSON; resolves live source pins at claim and completion",
     )
     execution_claim.add_argument("--profiles", required=True)
     execution_claim.add_argument("--impact-rules", required=True)
@@ -1477,15 +1476,12 @@ def build_parser() -> argparse.ArgumentParser:
     execution_complete.add_argument("--claim-id", required=True)
     execution_complete.add_argument("--receipt", required=True)
     execution_complete.add_argument("--evidence")
-    execution_complete.add_argument(
-        "--reuse-fingerprint",
-        help="the same transient reuse fingerprint used by execution-claim",
-    )
     execution_complete.add_argument("--mutation-receipt")
     execution_complete.add_argument("--state-root", default=".task-worker/local")
     execution_project = sub.add_parser("execution-project")
     execution_project.add_argument("--receipt", required=True)
     execution_project.add_argument("--evidence")
+    execution_project.add_argument("--evidence-batch")
     spend_claim = sub.add_parser("spend-claim")
     spend_claim.add_argument("--authorization", required=True)
     spend_claim.add_argument("--mutation", required=True)
@@ -1556,6 +1552,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                     "command_receipt": execution_control.RECEIPT_SCHEMA,
                     "verification_evidence": execution_control.EVIDENCE_SCHEMA,
                     "reuse_fingerprint": execution_control.REUSE_FINGERPRINT_SCHEMA,
+                    "reuse_resolver": execution_control.REUSE_RESOLVER_SCHEMA,
                     "verification_evidence_batch": execution_control.EVIDENCE_BATCH_SCHEMA,
                 },
                 "commands": [
@@ -1696,13 +1693,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                 full_qa_reason=json.loads(args.full_qa_reason) if args.full_qa_reason else None,
             )
             execution_control.validate_permit_policy(permit, policy_plan)
-            reuse_fingerprint = (
-                read_json(args.reuse_fingerprint) if args.reuse_fingerprint else None
-            )
-            if reuse_fingerprint is not None:
-                execution_control.validate_reuse_fingerprint_policy(
-                    reuse_fingerprint, permit, policy_plan,
-                )
+            reuse_resolver = read_json(args.reuse_resolver) if args.reuse_resolver else None
             capability_plan = execution_control.capability_plan(
                 permit["mission_id"], permit["required_capabilities"],
                 permit["environment_digest"], args.state_root,
@@ -1714,12 +1705,12 @@ def main(argv: Iterable[str] | None = None) -> int:
                     "ok": True,
                     "decision": execution_control.claim_execution(
                         permit, args.state_root, claimed_by=args.claimed_by,
-                        evidence=read_json(args.evidence) if args.evidence else None,
                         authorization=read_json(args.authorization) if args.authorization else None,
                         preflight_receipt=(
                             read_json(args.preflight_receipt) if args.preflight_receipt else None
                         ),
-                        reuse_fingerprint=reuse_fingerprint,
+                        reuse_resolver=reuse_resolver,
+                        policy_plan=policy_plan if reuse_resolver is not None else None,
                         contract=contract,
                     ),
                 }
@@ -1732,9 +1723,6 @@ def main(argv: Iterable[str] | None = None) -> int:
                     mutation_receipt=(
                         read_json(args.mutation_receipt) if args.mutation_receipt else None
                     ),
-                    reuse_fingerprint=(
-                        read_json(args.reuse_fingerprint) if args.reuse_fingerprint else None
-                    ),
                 ),
             }
         elif args.command == "execution-project":
@@ -1742,6 +1730,9 @@ def main(argv: Iterable[str] | None = None) -> int:
                 "ok": True,
                 "projection": execution_control.project_receipts(
                     read_json(args.receipt), read_json(args.evidence) if args.evidence else None,
+                    evidence_batch=(
+                        read_json(args.evidence_batch) if args.evidence_batch else None
+                    ),
                 ),
             }
         elif args.command == "spend-claim":

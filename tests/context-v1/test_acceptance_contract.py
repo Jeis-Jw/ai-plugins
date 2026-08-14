@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import ast
+import hashlib
+import importlib.util
 import json
 import re
+import sys
 import unittest
 from pathlib import Path
 
@@ -11,6 +14,39 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 REGISTRY = HERE / "acceptance-matrix.json"
 FORBIDDEN = {"skip", "skipped", "xfail", "pending", "todo"}
+PUBLIC_SURFACE_FIELDS = {
+    "kind", "selector", "observable_result", "write_policy", "availability",
+}
+
+
+def public_coverage_status(entries: list[dict]) -> str:
+    public = [entry for entry in entries if entry.get("coverage") == "public-surface"]
+    if not public or any(
+        (entry.get("public_surface") or {}).get("availability") != "available"
+        for entry in public
+    ):
+        return "unknown"
+    return "pass"
+
+
+def load_selected_test(selector: str) -> unittest.TestCase:
+    path_text, class_name, method_name = selector.split("::")
+    path = HERE.parents[1] / path_text
+    module_name = "acceptance_public_" + hashlib.sha256(selector.encode("utf-8")).hexdigest()
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"public selector unavailable: {selector}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    sys.path.insert(0, str(path.parent))
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.pop(0)
+    selected = getattr(module, class_name)(method_name)
+    if selected.countTestCases() != 1:
+        raise RuntimeError(f"public selector did not resolve exactly once: {selector}")
+    return selected
 
 
 class AcceptanceRegistryTests(unittest.TestCase):
@@ -60,6 +96,36 @@ class AcceptanceRegistryTests(unittest.TestCase):
                 if isinstance(node, ast.FunctionDef)
             }
             self.assertIn(method_name, methods, entry["selector"])
+
+    def test_public_surface_registry_executes_real_shipped_surfaces(self) -> None:
+        public = []
+        for entry in self.registry["entries"]:
+            self.assertIn(entry["coverage"], {"public-surface", "internal-invariant"})
+            if entry["coverage"] == "internal-invariant":
+                self.assertNotIn("public_surface", entry)
+                continue
+            surface = entry.get("public_surface")
+            self.assertIsInstance(surface, dict)
+            self.assertEqual(PUBLIC_SURFACE_FIELDS, set(surface))
+            self.assertIn(surface["kind"], {"cli", "skill", "adapter", "artifact-layout"})
+            self.assertIn(surface["write_policy"], {"read-only", "approval-gated", "none-before-ready"})
+            self.assertTrue(surface["observable_result"])
+            self.assertIn(surface["availability"], {"available", "unavailable"})
+            public.append(surface)
+
+        self.assertEqual("pass", public_coverage_status(self.registry["entries"]))
+        result = unittest.TestResult()
+        unittest.TestSuite(load_selected_test(item["selector"]) for item in public).run(result)
+        self.assertTrue(result.wasSuccessful(), result.errors + result.failures)
+
+    def test_public_surface_unavailable_is_unknown_and_internal_is_excluded(self) -> None:
+        entries = [
+            {"coverage": "internal-invariant"},
+            {"coverage": "public-surface", "public_surface": {"availability": "unavailable"}},
+        ]
+        self.assertEqual("unknown", public_coverage_status(entries))
+        entries[1]["public_surface"]["availability"] = "available"
+        self.assertEqual("pass", public_coverage_status(entries))
 
 
 if __name__ == "__main__":

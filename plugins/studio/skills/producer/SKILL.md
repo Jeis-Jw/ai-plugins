@@ -161,9 +161,10 @@ python3 "${STUDIO_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/mission_receipt.py" <subcom
 
 ## 소집
 
-1. decomposition 전에 완료 조건마다 executable selector를 확인한다. production public
-   criterion은 shipped CLI/skill/adapter/artifact layout을 실제 호출한 probe가 있어야 하며,
-   unavailable은 `unknown`으로 중단한다.
+1. production-public claim, major 변경, acceptance-registry 작업은 decomposition 전에 완료
+   조건마다 executable selector를 audit한다. shipped CLI/skill/adapter/artifact layout을 실제
+   호출한 probe가 없거나 unavailable이면 `unknown`으로 중단한다. 작은 internal 변경은 동일
+   criteria digest에 pin된 기존 registry mapping을 재사용한다.
 2. native work route면 미션을 독립 작업으로 나누고, configured work route면 그 command가
    반환한 ready action을 사용한다.
 3. `rules/casting.md`를 참고해 실제 할 일이 있는 역할만 선택한다.

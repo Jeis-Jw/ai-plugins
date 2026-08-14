@@ -1193,12 +1193,10 @@
         }
       },
       "expected": {
-        "action": "reuse-evidence",
+        "action": "claim",
         "error": null,
-        "evidence_refs": [
-          "EV-config"
-        ],
-        "physical_run_started": false
+        "permit_id": "permit-reuse",
+        "physical_key": "sha256:92949ce27788bcb1feb543718180b47411fd0c8e0ef833ebdb5c287ab21cce42"
       },
       "input_digest": "sha256:f483de2c57b08bb57916672bb9fb6d0fc61667e08cc623ad81f30e52257a099a"
     },
@@ -1266,8 +1264,8 @@
       "expected": {
         "action": "claim",
         "error": null,
-        "reason": "fresh_requirement_changed",
-        "physical_run_started": true
+        "permit_id": "permit-fresh",
+        "physical_key": "sha256:d5180c5f9617aff1994f00afa55f19ec2a27d541d84c1683dba2af93df9cd541"
       },
       "input_digest": "sha256:8ceaf139c9a1b3fce2b03d25e4aff4e363b408a1fd54a7266b6dec23cc6bc9a5"
     },
@@ -1537,5 +1535,5 @@
       "input_digest": "sha256:2d67e3136c6724cbfa5dc51bebb606f7eda2690758c54ad05179777c992fd1af"
     }
   ],
-  "digest": "sha256:7df570d1faaba445865c74fd6dffff73178f0102cd3a5728183abf6791ce2b65"
+  "digest": "sha256:ad4f7a721a2ad4278dc81c3413b70b0d4be0c68265ffccd62737725c2b907c0c"
 }

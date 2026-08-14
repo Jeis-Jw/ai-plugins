@@ -12,24 +12,25 @@ artifact node의 완료 조건, 실제 diff, 영향 경로를 기준으로 검�
 - 통합으로 새 상태가 생겼다면 leaf evidence와 별도로 integration gate를 수행한다.
 - finding 수정 후에는 무효화된 조건만 delta 검증한다.
 
-새 작업은 decomposition 전에 executable-criteria audit을 통과해야 한다. production public
-criterion은 shipped CLI/skill/adapter/artifact layout을 실제 호출한 selector가 필요하며,
-unavailable surface는 `unknown`이지 pass가 아니다. 개발 중에는 targeted/delta를 기본으로 하고
+production-public claim, major 변경, acceptance-registry 작업은 decomposition 전에
+executable-criteria audit을 통과해야 한다. shipped CLI/skill/adapter/artifact layout을 실제
+호출한 selector가 없거나 unavailable이면 `unknown`이다. 작은 internal 변경은 동일 criteria
+digest에 pin된 기존 registry mapping을 재사용한다. 개발 중에는 targeted/delta를 기본으로 하고
 full은 dependency/shared contract/uncertainty/independence reason이 있을 때만 선택한다.
 
 physical command 전에 canonical contract digest에 맞는 `execution-permit/v1`을 만들고 command profile·impact rule을 통과시킨 뒤 atomic claim을 획득한다. definition/node/cycle/unit은 attribution일 뿐 physical identity가 아니다. `claimed`가 아니면 명령을 시작하지 않는다. `reuse-evidence`면 physical command를 건너뛰고 반환된 evidence ref를 verify event에 연결한다.
 
-reuse를 요청할 때는 expanded relevant paths의 staged/unstaged/untracked bytes, mode, symlink,
-clean submodule을 canonicalize한 source tree pin과 criteria/path/dependency/profile/argv/tool/
-environment/public-surface pin을 `task-worker.reuse-fingerprint/v1`으로 만들고 claim과 complete에
-같은 파일을 전달한다. fingerprint가 없거나 source 상태가 unknown이면 physical reuse를 하지
-않는다.
+reuse를 요청할 때는 expanded relevant/dependency/public-surface paths와 exact selector를
+`task-worker.reuse-resolver/v1`으로 claim에 전달한다. claim은 staged/unstaged/untracked bytes,
+mode, symlink, clean submodule과 criteria/profile/argv/tool/environment를 live canonicalize해
+fingerprint를 보존하고 complete가 같은 resolver로 다시 계산한다. resolver가 없거나 source가
+unknown이면 physical reuse를 하지 않는다.
 
 ```bash
 python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py" execution-claim \
   --permit {PERMIT_JSON} --profiles {COMMAND_PROFILES_JSON} --impact-rules {IMPACT_RULES_JSON} \
   --changed-path {CHANGED_PATH} --cwd {RESOLVED_CWD} --environment '{"KEY":"resolved-value"}' \
-  --claimed-by {EXECUTOR_ID} --reuse-fingerprint {REUSE_FINGERPRINT_JSON} \
+  --claimed-by {EXECUTOR_ID} --reuse-resolver {REUSE_RESOLVER_JSON} \
   --state-root .task-worker/local
 ```
 
@@ -38,7 +39,7 @@ python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py
 ```bash
 python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py" execution-complete \
   --permit {PERMIT_JSON} --claim-id {CLAIM_ID} --receipt {COMMAND_RECEIPT_JSON} \
-  --evidence {VERIFICATION_EVIDENCE_JSON} --reuse-fingerprint {REUSE_FINGERPRINT_JSON} \
+  --evidence {VERIFICATION_EVIDENCE_JSON} \
   --state-root .task-worker/local
 ```
 

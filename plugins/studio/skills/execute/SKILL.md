@@ -39,9 +39,10 @@ command는 skill/plugin identifier다. shell 문자열로 실행하지 않는다
 
 ## 2. work 경로 선택
 
-route 선택과 decomposition 전에 완료 조건을 executable selector로 audit한다. production
-public criterion은 shipped CLI, skill, adapter 또는 artifact layout을 실제 호출한 probe가
-있어야 한다. unavailable surface는 통과로 추정하지 않고 `unknown`으로 중단한다.
+production-public claim, major 변경, acceptance-registry 작업은 route 선택과 decomposition 전에
+완료 조건을 executable selector로 audit한다. shipped CLI, skill, adapter 또는 artifact layout을
+실제 호출한 probe가 없거나 unavailable이면 `unknown`으로 중단한다. 작은 internal 변경은 동일
+criteria digest에 pin된 기존 registry mapping을 재사용한다.
 
 `activation:auto`에서는 다음 중 하나라도 실질적이면 configured work command를 선택한다.
 
