@@ -93,6 +93,44 @@ class WorkflowReceiptConformanceTests(unittest.TestCase):
                 self.assertEqual(codex_entries[name]["version"], codex["version"])
                 self.assertEqual(codex_entries[name]["description"], codex["description"])
 
+    def test_public_descriptions_expose_tool_selection_boundaries(self):
+        studio_execute = (
+            REPO / "plugins/studio/skills/execute/SKILL.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("name + description", studio_execute)
+        self.assertIn("SKILL.md", studio_execute)
+        for builtin_plugin in ("task-worker", "session-review", "task-github"):
+            self.assertNotIn(builtin_plugin, studio_execute)
+
+        worker_manifest = read_json(REPO / "plugins/task-worker/.codex-plugin/plugin.json")
+        worker_define = (
+            REPO / "plugins/task-worker/skills/define/SKILL.md"
+        ).read_text(encoding="utf-8").split("# define", 1)[0]
+        self.assertIn("standalone bounded", worker_manifest["description"])
+        self.assertIn("standalone bounded", worker_define)
+        self.assertIn("dependency", worker_define)
+
+        review_manifest = read_json(REPO / "plugins/session-review/.codex-plugin/plugin.json")
+        review_entry = (
+            REPO / "plugins/session-review/skills/request-review/SKILL.md"
+        ).read_text(encoding="utf-8").split("# request-review", 1)[0]
+        self.assertIn("same-agent self-check", review_manifest["description"])
+        self.assertIn("same-agent self-check", review_entry)
+
+        github_manifest = read_json(REPO / "plugins/task-github/.codex-plugin/plugin.json")
+        github_define = (
+            REPO / "plugins/task-github/skills/define/SKILL.md"
+        ).read_text(encoding="utf-8").split("# define", 1)[0]
+        self.assertIn("local-only", github_manifest["description"])
+        self.assertIn("GitHub Issue Tree", github_define)
+
+        for plugin in ("context-core", "context-decision"):
+            init_frontmatter = (
+                REPO / f"plugins/{plugin}/skills/init/SKILL.md"
+            ).read_text(encoding="utf-8").split("# ", 1)[0]
+            self.assertIn("명시적으로 요청", init_frontmatter)
+            self.assertIn("자동 실행하지 않는다", init_frontmatter)
+
 
 if __name__ == "__main__":
     unittest.main()

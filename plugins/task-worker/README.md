@@ -3,6 +3,13 @@
 외부 tracker·wiki·orchestrator와 무관하게 작업 정의, dependency planning, ready-set 병렬
 실행, 검증 evidence, 통합 gate, 재개 상태를 소유하는 provider-neutral 실행 플러그인이다.
 
+## 언제 쓰는가
+
+둘 이상의 실행 단위에 실제 dependency나 유의미한 ready-set 병렬성이 있거나, 별도 integration
+gate, cross-session resume, 외부 실행 handoff가 필요한 작업에 사용한다. standalone bounded
+작업과 대화 안에서 끝나는 질문·조사는 직접 수행한다. 위험도나 파일 수만으로 task-worker를
+선택하지 않는다.
+
 ## 핵심 계약
 
 - immutable `task-worker.definition/v1`과 stable node identity
@@ -126,8 +133,6 @@ python3 "${TASK_WORKER_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/definition_artifact.py
 공개 CLI는 `--state-root`만 사용하고 run ledger는 자동으로 `<state-root>/runs`에서 찾는다.
 기존 `--state-dir`은 이전 호출 호환성만 유지한다.
 
-task-worker는 standalone 단일 실행의 기본 도구가 아니다. 실제 dependency/ready-set 병렬성,
-integration gate 또는 명시적인 cross-session resume·외부 실행 handoff가 있을 때 정의한다.
 기존 graph가 하나의 node로 축소되는 경우는 지원하지만 별도 `single-run` 제품 경로를 만들지
 않는다.
 

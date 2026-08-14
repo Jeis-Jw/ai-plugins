@@ -1,7 +1,7 @@
 {
   "name": "studio",
   "version": "0.14.0",
-  "description": "Root Producer orchestrator with optional execution commands and role-specific model/effort policy.",
+  "description": "Description-driven root Producer that selects host-provided skills and coordinates role-based native crews.",
   "author": {
     "name": "Jinwuk-Lee",
     "url": "https://github.com/Jeis-Jw"
@@ -9,15 +9,15 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Studio",
-    "shortDescription": "Route missions and manage role-based native subagents.",
-    "longDescription": "Studio keeps the main Producer on the control plane, resolves optional work, review, and delivery commands plus provider- and role-specific model/effort policy, and dispatches native leaf crews without shipping another runtime or copying command state.",
+    "shortDescription": "Select suitable skills and manage role-based native subagents.",
+    "longDescription": "Studio keeps the main Producer on the control plane, compares mission needs with descriptions in the host-provided skill catalog, applies optional user routing and role-specific model/effort policy, and dispatches native leaf crews without embedding another plugin's workflow or state.",
     "developerName": "Jinwuk-Lee",
     "category": "Productivity",
     "capabilities": ["Agents", "Orchestration"],
     "defaultPrompt": [
-      "Use $execute in the root Producer session to route and run missions through configured optional commands.",
+      "Use $execute in the root Producer session to select skills from their public descriptions and run the mission.",
       "Use $producer to cast the smallest useful crew and keep orchestration out of leaf agents.",
-      "Resolve .studio.yml model/effort before every fresh spawn and reuse original handles for rework."
+      "Treat .studio.yml execution entries as user policy, then load and follow every selected SKILL.md in full."
     ]
   }
 }

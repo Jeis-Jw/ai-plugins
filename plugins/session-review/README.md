@@ -8,6 +8,13 @@ self-review require explicit user confirmation before completion; self turnkey
 can complete without a second confirmation because that consent is part of the
 initial profile.
 
+## When to use
+
+Use session-review when an addressable reviewer must remain independent across
+feedback rounds, or when the result needs an auditable approval gate. Use a
+normal same-agent check for simple bounded verification; recording overhead can
+be reduced with fast mode, but reviewer separation is never removed.
+
 The machine-readable source of truth is the first fenced `yaml` block inside
 the snapshot `## 현재 논의` section. Helper code lives in
 `scripts/session_review.py`; skills call it to enforce actor ownership, locks,

@@ -1,6 +1,6 @@
 ---
 name: request-review
-description: Worker starts or resumes a session-review loop, choosing separate/self flow and self-mode automation/recording profile. Use when the user says "리뷰 요청해", "session-review 시작", "이 작업 리뷰브랜치로 넘겨".
+description: Worker starts or resumes an addressable independent-review loop with separate or self flow and audit or fast recording. Use when reviewer continuity, feedback rounds, or an auditable approval gate matters and the user says "리뷰 요청해", "session-review 시작", "이 작업 리뷰브랜치로 넘겨". Do not use for a simple same-agent self-check.
 ---
 
 # request-review

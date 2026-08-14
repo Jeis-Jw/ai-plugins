@@ -1,6 +1,6 @@
 ---
 name: orchestrate
-description: GitHub Issue 트리를 컨테이너 이슈에서 시작해 ready 리프 실행, review-tool relay, conflict-agent, 브랜치트리 머지업, 사람 게이트 STOP까지 자동 구동한다.
+description: 이미 정의·투영된 GitHub Issue Tree 전체를 end-to-end로 진행해야 할 때 컨테이너 이슈에서 ready 리프 실행, review relay, conflict 처리, 브랜치트리 머지업과 사람 gate까지 구동한다. local-only work graph나 단일 Issue 실행에는 사용하지 않는다. "이슈트리 전체 실행해", "GitHub 작업 graph 오케스트레이션해" 요청에 사용한다.
 ---
 
 # orchestrate — Issue tree runner

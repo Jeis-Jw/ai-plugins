@@ -3,7 +3,7 @@ title: task-github 플러그인
 created_at: 2026-07-14
 summary: remote-free provider init 뒤 task-worker를 실행 엔진으로 사용하고 GitHub Issue tree·dependency·PR·merge·closeout을 projection/delivery adapter로 소유하는 설계 정본
 tags: [task-github, github, workflow, adapter, orchestration]
-verified_at: 2026-08-04
+verified_at: 2026-08-14
 affects_paths: [plugins/task-github/**]
 ---
 
@@ -12,6 +12,10 @@ affects_paths: [plugins/task-github/**]
 ### 설계 및 구현 상태
 
 이 문서는 task-worker 분리 이후 `task-github` 플러그인의 **아키텍처와 구현 상태 정본**이다. task-github 0.27.1은 task-worker 0.9.0을 실행 엔진으로 사용하며 다음 두 역할을 가진다. 0.27.0에서 review lease owner 개념을 `owner=studio` 전용에서 `owner=task-worker`가 아니면 모두 external인 opaque owner로 일반화했다(execute 기반 독립 오케스트레이션에 맞춘 provider-neutral화이며 task-worker 0.8.0과 짝을 이룬다). 0.27.1은 define SKILL 문서 보강만 한 patch다.
+
+선택 경계는 public plugin과 operation skill description에 노출한다. GitHub Issue Tree 기록이나
+PR·CI·review·merge·closeout transport가 필요한 작업에 사용하며, local-only 실행이나 일반
+상태 조회에는 provider adapter lifecycle을 붙이지 않는다.
 
 1. **GitHub provider adapter**: Issue tree·dependency·label·assignee·PR·CI·reviewDecision·merge·Issue close를 소유한다.
 2. **호환 facade**: 기존 `task-github:*` 사용자 명령을 유지하면서 내부 실행을 task-worker에 위임한다.

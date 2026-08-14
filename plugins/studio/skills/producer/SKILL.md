@@ -11,7 +11,7 @@ Producer는 메인 세션의 control plane이며 leaf crew가 아니다.
 ## 책임
 
 - 미션과 관찰 가능한 완료 조건 정리
-- 설정된 work/review/delivery command의 사용 여부 결정
+- host skill catalog의 공개 설명과 사용자 설정에 따른 work/review/delivery skill 선택
 - 필요한 최소 역할 선택
 - 역할별 작업·범위·기대 결과 작성
 - host subagent 생성
@@ -29,7 +29,8 @@ subagent에게 맡긴다.
   (mission receipt 재개 인덱스는 유일한 예외 — DEC-2026-07-30-235418, 아래 "미션 receipt" 절)
 - tool inventory capture나 별도 capability preflight
 - host agent id를 감싼 Studio session id나 lease 생성
-- task-worker, session-review, task-github, wiki의 상태 복제
+- 선택한 skill이나 plugin의 상태·schema·lifecycle 복제
+- plugin 이름을 근거로 용도를 추측하거나 특정 plugin의 사용 절차를 내장
 - 작업 가치와 무관한 고정 인원, round, 토론 의식
 - orchestration을 leaf crew에 위임하거나 leaf가 nested agent를 만들게 하는 것
 
@@ -114,20 +115,19 @@ Claude Code에서는 resolved `model`을 `Agent` 생성 인자에 전달한다. 
 ## 실행 라우팅
 
 실제 수행이 필요한 미션은 `$execute`를 메인 Producer 세션에서 적용한다. `.studio.yml`의
-`execute.work`, `execute.review`, `execute.delivery`는 optional command 후보일 뿐
-dependency 선언이 아니다.
+`execute.work`, `execute.review`, `execute.delivery`는 사용자가 지정할 수 있는 optional skill
+정책일 뿐 dependency나 Studio 내장 도구 목록이 아니다.
 
-- 미설정·비활성 route는 해당 command를 discovery/probe하지 않는다.
-- `auto` work route는 실제 dependency/parallel work graph, integration gate 또는 명시적인
-  cross-session resume·외부 handoff가 있을 때만 선택한다. 위험도·격리·review·일반 evidence
-  요구는 work route와 분리해 판단한다.
-- configured work command가 분해·ready planning·evidence·integration을 소유하면 Producer가
-  메인 세션에서 그 command를 실행하고 상태를 복제하지 않는다.
-- Producer가 ready action별 native subagent를 만들고 route의 model/effort를 적용한다.
+- 현재 host가 이미 제공한 skill catalog의 `name + description`만 discovery surface로 쓴다.
+- `.studio.yml`이 없으면 공개 description이 현재 필요와 맞는 skill을 정상 선택한다.
+- `auto` configured skill은 선호 후보, `always`는 사용자 exact 선택, `never`는 route 비활성이다.
+- 선택한 skill은 `SKILL.md`를 끝까지 읽고 그 skill이 소유한 precondition, negative trigger,
+  lifecycle, verification, closeout을 그대로 따른다.
+- Producer는 objective, scope, 완료 조건과 owner gate만 보존하고 선택한 skill의 상태나 절차를
+  복제하지 않는다.
 - leaf crew는 배정된 action만 수행한다. `execute`, 작업 재분해, orchestration, nested agent
   생성은 금지한다.
-- delivery는 operator가 `enabled:true`로 켠 경우에만 사용하며 work orchestration을 대체하지
-  않는다.
+- delivery는 operator가 명시적으로 활성화한 경우에만 사용한다.
 
 ## 미션 receipt — 쓰기 시점
 
@@ -146,7 +146,7 @@ python3 "${STUDIO_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/mission_receipt.py" <subcom
 | 이벤트 | 시점 | 명령 |
 |---|---|---|
 | 미션 착수 | objective·완료 조건·초기 lane 확정 직후 | `init <mission_id> --objective … [--done-when …]… [--lane LANE_ID=ROLE]…` |
-| lane 상태 전이 | agent 생성(dispatched)·결과 회수(returned)·리뷰 판정(reviewed)·완료(done)·실패(failed) 직후 | `lane <mission_id> <lane_id> --state <state> [--work-ref task-worker:<node_id>] [--agent-id <host_agent_id>] [--ready-next …]` |
+| lane 상태 전이 | agent 생성(dispatched)·결과 회수(returned)·리뷰 판정(reviewed)·완료(done)·실패(failed) 직후 | `lane <mission_id> <lane_id> --state <state> [--work-ref <skill-or-provider>:<opaque-ref>] [--agent-id <host_agent_id>] [--ready-next …]` |
 | owner gate 설정·해제 | owner 결정 대기가 생기거나 풀린 직후 | `gate <mission_id> --reason …` / `gate <mission_id> --clear` |
 | pause | 세션을 넘기며 미션을 일시중지할 때 | `pause <mission_id> [--done …] [--remaining …] [--blocker …] [--next-step …]` |
 | 완료 | 최종 보고 직후 | `close <mission_id>` |
@@ -167,8 +167,8 @@ python3 "${STUDIO_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/mission_receipt.py" <subcom
    조건마다 executable selector를 audit한다. shipped CLI/skill/adapter/artifact layout을 실제
    호출한 probe가 없거나 unavailable이면 `unknown`으로 중단한다. 작은 internal 변경은 동일
    criteria digest에 pin된 기존 registry mapping을 재사용한다.
-2. native work route면 미션을 독립 작업으로 나누고, configured work route면 그 command가
-   반환한 ready action을 사용한다.
+2. `$execute`가 선택한 skill이 있으면 그 full instructions가 반환한 작업 단위를 사용하고,
+   없으면 미션을 필요한 최소 native 작업으로 나눈다.
 3. `rules/casting.md`를 참고해 실제 할 일이 있는 역할만 선택한다.
 4. 각 역할의 model/effort 정책을 해석한다.
 5. 각 agent에게 다음을 한 번에 전달한다.
@@ -211,20 +211,15 @@ Producer는 agent를 대신해 결론을 만들지 않는다. 상충하는 결�
 blocking finding으로 받으며, finding은 원래 agent에게 전달한다. Studio가 review episode,
 permit, evidence ledger를 만들지 않는다.
 
-개발 QA는 targeted/delta가 기본이다. full은 dependency/shared contract, 영향 불확실성 또는
-독립 검증 때문에 필요할 때만 수행한다. 독립 hard review의 blocking finding을 수정한 뒤에는
-처음 hard review를 수행한 같은 addressable reviewer handle이 final candidate commit을
-확인해야 한다. 그 확인 뒤 frozen candidate에서 fresh final-grade root QA를 한 번 수행한다.
-final QA가 실패해 source/test/config가 바뀌면 같은 reviewer 확인과 final QA를 다시 거친다.
-
-같은 source tree와 command profile의 selector 결과는 task-worker가 보존한 child
-receipt/evidence ref, result, output digest와 coverage를 포함한 batch digest 하나로 전달한다.
-Studio mission receipt에는 evidence body나 provider lifecycle을 복사하지 않고 lane의 host
-handle과 optional work ref만 유지한다.
+QA와 review 강도는 미션 완료 조건, 사용자 정책, 선택한 skill의 공개 계약으로 정한다.
+Producer가 별도 freshness, evidence, approval lifecycle을 만들어 덧붙이지 않는다. 선택한
+skill이 canonical result나 evidence ref를 반환하면 그 참조만 전달하고 body나 provider
+lifecycle을 Studio mission receipt에 복사하지 않는다. receipt에는 lane의 host handle과
+optional work ref만 유지한다.
 
 work/review/delivery command 사용 여부와 orchestration은 `$execute`에 따라 Producer가
-결정한다. 담당 leaf agent에게 command 선택이나 orchestration을 넘기지 않는다. 장기 지식
-관리는 이 실행 경로와 독립적이며, 필요할 때 별도 `wiki-markdown` 흐름을 사용한다.
+결정한다. 담당 leaf agent에게 skill 선택이나 orchestration을 넘기지 않는다. 장기 지식
+관리는 이 실행 경로와 독립적이며, 그 목적을 공개 description에 명시한 별도 skill을 선택한다.
 
 ## Owner gate
 

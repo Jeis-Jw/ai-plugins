@@ -1,7 +1,7 @@
 {
   "name": "session-review",
   "version": "0.6.0",
-  "description": "Review-episode protocol that resumes valid context and reserves clean audit mode for independence-required edges.",
+  "description": "Independent worker/reviewer episode protocol for review continuity, feedback rounds, and auditable approval gates; not a simple same-agent self-check.",
   "author": {
     "name": "Jinwuk-Lee",
     "url": "https://github.com/Jeis-Jw"
@@ -9,8 +9,8 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Session Review",
-    "shortDescription": "Coordinate worker/reviewer review loops with audit or fast self-mode.",
-    "longDescription": "Runs an internal session-review protocol where a worker and reviewer converge code or document work using wiki snapshot audit mode or fast self-mode, parseable status blocks, lock enforcement, and profile-aware completion gates. Existing review episodes should be resumed when their target remains valid; clean audit context is reserved for independence-required reviews.",
+    "shortDescription": "Run independent, resumable worker/reviewer loops.",
+    "longDescription": "Use when an addressable reviewer must remain independent across feedback rounds or an auditable approval gate matters. The worker and reviewer converge code or document work using audit or fast recording, parseable status, lock enforcement, and profile-aware completion gates. Existing valid episodes are resumed; a simple same-agent self-check does not need this protocol.",
     "developerName": "Jinwuk-Lee",
     "category": "Productivity",
     "capabilities": ["Read", "Write", "Validation", "Workflow"],

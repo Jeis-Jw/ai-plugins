@@ -1,6 +1,6 @@
 ---
 name: reconcile
-description: context bundle의 bridge mismatch를 명시적으로 복구한다. 기본은 dry-run plan이고, --apply가 있을 때만 wiki CLI로 relate/complete/reopen을 실행한다.
+description: task-github status나 doctor가 wiki TASK↔GitHub bridge mismatch를 보고했고 사용자가 정합성 복구를 요청했을 때 reconcile plan을 만든다. 기본은 dry-run이며 명시적 --apply가 있을 때만 relate, complete 또는 reopen을 실행한다. 정상 linkage나 일반 상태 조회에는 사용하지 않는다.
 ---
 
 # reconcile — explicit mutation

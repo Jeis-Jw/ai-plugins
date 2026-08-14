@@ -13,6 +13,11 @@ affects_paths: [plugins/task-worker/**, plugins/task-github/**]
 
 이 문서는 `task-worker` 플러그인의 **아키텍처와 구현 상태 정본**이다. 2026-07-14에 0.1.0으로 독립 플러그인을 만들었고, 0.2.0에서 task-github 위임 전환, 0.3.0에서 설정·binding·resume·evidence 실행 계약, 0.4.0에서 단일 review owner permit, 0.5.0에서 canonical execution control, 0.6.0에서 안전한 workspace init·doctor, 0.7.0에서 merged-clean local cleanup receipt, 0.8.0에서 review owner permit을 `owner=task-worker`만 local이고 나머지는 opaque external owner인 generic 계약으로 일반화, 0.9.0에서 token telemetry probe/aggregate까지 완료했다.
 
+선택 경계는 public plugin/`define` description에 노출한다. 실제 dependency, 유의미한
+ready-set 병렬성, 별도 integration gate, cross-session resume 또는 외부 handoff가 필요한
+multi-unit work에 사용하며, standalone bounded 작업이나 대화 안에서 끝나는 요청의 기본
+wrapper로 사용하지 않는다.
+
 0.9.0이 독립적으로 소유하는 범위는 다음과 같다.
 
 - `task-worker.definition/v1` immutable DefinitionArtifact와 stable node id

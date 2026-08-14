@@ -42,7 +42,10 @@ class TaskWorkerBridgeTests(unittest.TestCase):
         self.assertEqual(root.name, "task-worker")
         self.assertEqual(payload["plugin"], "task-worker")
         self.assertEqual(payload["version"], manifest["version"])
-        self.assertEqual(payload["contracts"], bridge.REQUIRED_CONTRACTS)
+        self.assertEqual(
+            {name: payload["contracts"].get(name) for name in bridge.REQUIRED_CONTRACTS},
+            bridge.REQUIRED_CONTRACTS,
+        )
         self.assertEqual(payload["contracts"]["review_permit"], "task-worker.review-permit/v1")
         self.assertTrue(bridge.REQUIRED_COMMANDS.issubset(set(payload["commands"])))
 

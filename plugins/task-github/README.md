@@ -2,6 +2,12 @@
 
 `task-worker`를 실행 엔진으로 사용하는 GitHub provider adapter와 호환 facade다. 작업 트리를 GitHub Issue/dependency로 투영하고, label·assignee·PR·CI·review·merge·closeout을 소유한다. 기존 `task-github:*` 명령 표면과 Issue-first workflow는 유지하며, 같은 마켓플레이스의 **`wiki-markdown` 결정 그래프와 `task` 노드로 연계**한다.
 
+## 언제 쓰는가
+
+작업 graph를 GitHub Issue Tree로 추적하거나 PR·CI·review·merge·closeout transport가 필요할 때
+사용한다. local-only 실행이나 GitHub 기록·delivery가 필요 없는 작업에는 이 adapter를 붙이지
+않는다.
+
 실행 명령은 시작 시 `task-worker` capability와 contract schema를 점검한다. task-worker가 없거나 호환되지 않으면 부분 실행하지 않고 명시적으로 중단한다. init/setup/open/doctor 같은 local config·GitHub read·진단 기능에는 이 dependency를 강제하지 않는다.
 
 ## 빠른 시작

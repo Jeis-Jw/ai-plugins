@@ -1,6 +1,6 @@
 ---
 name: decision
-description: 명시적으로 따를 선택을 DEC owner result로 만들고 context-core coordinator에 전달한다.
+description: 사용자가 앞으로 따를 선택과 scope를 명시적으로 확정해 rationale·rejected alternatives까지 보존해야 할 때 DEC owner result로 만들고 context-core coordinator에 전달한다. 임시 선호나 미확정 논의에는 사용하지 않는다.
 ---
 
 # Decision

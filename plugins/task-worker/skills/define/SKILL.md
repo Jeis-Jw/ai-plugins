@@ -1,6 +1,6 @@
 ---
 name: define
-description: provider-neutral DefinitionArtifact로 작업을 정의하거나 revision을 만든다. 자동 과분해 없이 독립 책임, dependency, 병렬 이득, 검증 경계를 기준으로 work graph를 만든다. "task-worker:define", "작업 정의해줘", "로컬 작업 트리로 나눠줘" 요청에 사용한다.
+description: dependency, 유의미한 ready-set 병렬성, 별도 integration gate, cross-session resume 또는 외부 handoff가 필요한 multi-unit 작업을 provider-neutral DefinitionArtifact work graph로 정의하거나 revise한다. standalone bounded 작업이나 대화 안에서 끝나는 질문에는 사용하지 않는다. "task-worker:define", "작업 트리로 나눠줘", "복잡한 작업을 병렬 오케스트레이션해줘" 요청에 사용한다.
 ---
 
 # define

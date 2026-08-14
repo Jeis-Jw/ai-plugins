@@ -1,6 +1,6 @@
 ---
 name: define
-description: provider-neutral DefinitionArtifact로 업무를 정의하고, 선택 시 전체 트리를 GitHub Issue로 기록한다. 위키가 있으면 결정·취지를 잇는 task 노드를 연결한다. 자동 분해 금지 — 기준 없이 분해하지 않는다. "define", "이슈 만들어줘", "서브이슈 만들어줘", "define 10 도메인별로" 등의 요청에 실행하라.
+description: multi-unit 업무를 provider-neutral DefinitionArtifact로 정의하고 GitHub Issue Tree 기록·추적이 필요할 때 선택적으로 전체 graph를 투영한다. 위키가 있으면 결정·취지를 잇는 task 노드를 연결한다. standalone 직접 작업이나 GitHub 기록이 필요 없는 단순 요청에는 사용하지 않는다. "이슈트리 만들어줘", "서브이슈로 나눠줘", "GitHub에 작업 graph 기록해줘" 요청에 실행하라.
 ---
 
 # define — 업무 정의 (작업정의 task 노드 → DefinitionArtifact → 선택적 기록)

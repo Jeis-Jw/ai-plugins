@@ -1,6 +1,6 @@
 ---
 name: init
-description: exact compatible context-core를 확인하고 필요한 core bootstrap과 decision area 등록을 한 번에 완료한다.
+description: 사용자가 현재 repository의 context-decision 초기화나 bootstrap을 명시적으로 요청했을 때 exact compatible context-core를 확인하고 필요한 core bootstrap과 decision area 등록을 한 번에 완료한다. 일반 decision capture 중에는 자동 실행하지 않는다.
 ---
 
 # Init

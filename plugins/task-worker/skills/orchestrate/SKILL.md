@@ -1,6 +1,6 @@
 ---
 name: orchestrate
-description: task-worker work graph의 모든 ready leaf를 bounded parallel로 dispatch하고 각 lane의 검증·closeout 뒤 다음 ready set을 계산한다. GitHub나 Studio를 요구하지 않는다. "task-worker:orchestrate", "작업 트리 병렬 실행해", "ready 작업 전부 돌려" 요청에 사용한다.
+description: 이미 정의된 task-worker DefinitionArtifact나 binding의 ready graph 전체를 실행해야 할 때 모든 ready leaf를 bounded parallel로 dispatch하고 각 lane의 검증·closeout 뒤 다음 ready set과 integration candidate를 계산한다. standalone 작업을 새로 정의하는 진입점은 아니다. "task-worker:orchestrate", "작업 트리 병렬 실행해", "ready 작업 전부 돌려" 요청에 사용한다.
 ---
 
 # orchestrate

@@ -1,6 +1,6 @@
 ---
 name: wiki
-description: Manage an initialized AI-native project wiki as a durable-context provider for agents and other plugins. Use proactively when substantive work or discussion could depend on prior intent, decisions, lessons, or current state: recall the relevant graph once before deciding, then at semantic milestones deduplicate and propose durable capture. Also use for explicit record/history/state requests, observations, SSOT/runbooks, task bridge nodes, lifecycle changes, and integrity checks. Use the separate init skill for project setup. Filesystem-primary, deterministic CLI — minimal tokens to stay consistent.
+description: "Manage an initialized AI-native project wiki as a durable-context provider for agents and other plugins. Use proactively when substantive work or discussion could depend on prior intent, decisions, lessons, or current state: recall the relevant graph once before deciding, then at semantic milestones deduplicate and propose durable capture. Also use for explicit record/history/state requests, observations, SSOT/runbooks, task bridge nodes, lifecycle changes, and integrity checks. Use the separate init skill for project setup. Filesystem-primary, deterministic CLI — minimal tokens to stay consistent."
 ---
 
 # Wiki

@@ -10,20 +10,21 @@
 # configured strings and passes the resolved pair to the host; it does not claim
 # that every provider supports every combination.
 #
-# Commands are opaque skill/plugin identifiers, not shell strings. Studio only
-# checks a configured command after the route selects it.
+# Commands are host-catalog skill identifiers, not shell strings. The values
+# below are user-policy examples, not a built-in Studio plugin map. `auto` is a
+# preferred candidate whose public description must match the mission.
 
 execute:
   work:
-    command: task-worker
+    command: task-worker:define
     activation: auto
     fallback: native
   review:
-    command: session-review
+    command: session-review:request-review
     activation: auto
     fallback: native
   delivery:
-    command: task-github
+    command: task-github:done
     enabled: false
     fallback: skip
 

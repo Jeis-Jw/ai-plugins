@@ -1,6 +1,6 @@
 ---
 name: init
-description: 명시적 1회 호출로 canonical context-core seed를 안전하고 멱등하게 적용한다.
+description: 사용자가 현재 repository의 context-core 초기화나 bootstrap을 명시적으로 요청했을 때 canonical seed를 안전하고 멱등하게 적용한다. 일반 recall·capture 중에는 자동 실행하지 않는다.
 ---
 
 # Init

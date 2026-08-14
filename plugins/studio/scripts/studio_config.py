@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resolve Studio spawn and optional execution routing without owning a runtime.
+"""Resolve Studio spawn and optional skill policy without owning a runtime.
 
 The CLI intentionally owns only small, read-only policy contracts:
 
@@ -10,13 +10,15 @@ The CLI intentionally owns only small, read-only policy contracts:
       > defaults
       > host session inheritance
 
-    explicit route override
+    explicit skill-policy override
       > execute.<work|review|delivery>
-      > native/disabled
+      > host catalog selection/native/disabled
 
 Model and effort identifiers are provider-owned strings.  This helper validates
 their shape, not whether a particular host currently advertises them. Execution
-commands are opaque skill/plugin identifiers, never shell strings.
+Commands are user-supplied opaque skill identifiers, never shell strings. This
+helper never decides whether a skill fits a mission; the Producer compares the
+mission with descriptions from the host-provided skill catalog.
 """
 
 from __future__ import annotations
@@ -35,7 +37,6 @@ EXECUTE_KINDS = frozenset(("delivery", "review", "work"))
 EXECUTE_ACTIVATIONS = frozenset(("always", "auto", "never"))
 WORK_REVIEW_FALLBACKS = frozenset(("native", "stop"))
 DELIVERY_FALLBACKS = frozenset(("skip", "stop"))
-WORK_DECISION_SCHEMA = "studio.work-route-decision/v1"
 COMMAND_RE = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,127}$")
 CREW_ROLES = frozenset(
     (
@@ -150,7 +151,9 @@ def parse_yaml_subset(text: str) -> dict[str, Any]:
 def render_default_config() -> str:
     return """# .studio.yml — optional native subagent spawn and execution policy.
 # Studio keeps no runtime or workflow state here.
-# Unconfigured commands are not discovered or probed.
+# `command` is a user-selected skill identifier, not built-in Studio knowledge.
+# Unconfigured work/review routes use the host-provided skill catalog.
+# Studio never scans plugin files or probes an inventory of its own.
 # Resolution, most to least specific:
 #   explicit override > provider role > common role
 #   > provider defaults > common defaults > host session inheritance.
@@ -430,7 +433,7 @@ def resolve_execute_route(
             fallback_override,
             enabled_override,
         )
-    ) else ("config" if block else "native")
+    ) else ("config" if block else "default")
 
     if command is not None and not COMMAND_RE.fullmatch(command):
         raise ConfigError("invalid_route", "command override must be an opaque identifier")
@@ -462,9 +465,7 @@ def resolve_execute_route(
     if command_override is not None and activation_override is None:
         activation = "always"
     else:
-        activation = activation_override or configured_activation or (
-            "auto" if command is not None else "never"
-        )
+        activation = activation_override or configured_activation or "auto"
     if command_override is not None and fallback_override is None:
         fallback = "stop"
     else:
@@ -473,9 +474,9 @@ def resolve_execute_route(
         raise ConfigError("invalid_route", f"{kind} activation must be auto, always, or never")
     if fallback not in WORK_REVIEW_FALLBACKS:
         raise ConfigError("invalid_route", f"{kind} fallback must be native or stop")
-    if activation in {"auto", "always"} and command is None:
-        raise ConfigError("invalid_route", f"active {kind} route requires a command")
-    if command is None or activation == "never":
+    if activation == "always" and command is None:
+        raise ConfigError("invalid_route", f"always {kind} route requires a command")
+    if activation == "never":
         decision = "native"
         probe = "forbidden"
     elif activation == "always":
@@ -483,7 +484,7 @@ def resolve_execute_route(
         probe = "required"
     else:
         decision = "producer-decision"
-        probe = "after-producer-selection"
+        probe = "catalog-only"
     return {
         "kind": kind,
         "source": source,
@@ -493,69 +494,7 @@ def resolve_execute_route(
         "configured": command is not None,
         "decision": decision,
         "probe": probe,
-    }
-
-
-def select_work_route(
-    route: dict[str, Any],
-    *,
-    work_units: int,
-    dependency_graph: bool = False,
-    parallel_graph: bool = False,
-    integration_gate: bool = False,
-    cross_session_resume: bool = False,
-    external_handoff: bool = False,
-) -> dict[str, Any]:
-    """Resolve an auto work route from topology and execution lifecycle only.
-
-    Risk, reviewer independence, a preferred worktree, or generic evidence needs
-    belong to separate Studio decisions. They must not turn a bounded standalone
-    task into a task-worker graph.
-    """
-    if route.get("kind") != "work":
-        raise ConfigError("invalid_route", "work selection requires a work route")
-    if not isinstance(work_units, int) or isinstance(work_units, bool) or work_units < 1:
-        raise ConfigError("invalid_work_shape", "work_units must be a positive integer")
-
-    shape = {
-        "work_units": work_units,
-        "dependency_graph": bool(dependency_graph),
-        "parallel_graph": bool(parallel_graph),
-        "integration_gate": bool(integration_gate),
-        "cross_session_resume": bool(cross_session_resume),
-        "external_handoff": bool(external_handoff),
-    }
-    route_decision = route.get("decision")
-    if route_decision == "invoke-command":
-        decision = "invoke-command"
-        reasons = ["explicit-command-route"]
-    elif route_decision != "producer-decision":
-        decision = "native"
-        reasons = ["route-disabled-or-unconfigured"]
-    else:
-        reasons: list[str] = []
-        if work_units >= 2 and dependency_graph:
-            reasons.append("dependency-graph")
-        if work_units >= 2 and parallel_graph:
-            reasons.append("parallel-work-graph")
-        if integration_gate:
-            reasons.append("integration-gate")
-        if cross_session_resume:
-            reasons.append("cross-session-resume")
-        if external_handoff:
-            reasons.append("external-handoff")
-        decision = "invoke-command" if reasons else "native"
-        if not reasons:
-            reasons = ["bounded-direct-work"]
-
-    return {
-        "schema": WORK_DECISION_SCHEMA,
-        "decision": decision,
-        "probe": "required" if decision == "invoke-command" else "forbidden",
-        "command": route.get("command") if decision == "invoke-command" else None,
-        "fallback": route.get("fallback"),
-        "reason_codes": reasons,
-        "work_shape": shape,
+        "selection_basis": "skill-description",
     }
 
 
@@ -616,28 +555,6 @@ def command_route(args: argparse.Namespace) -> None:
     emit({"ok": True, "path": str(path), "present": present, "route": route})
 
 
-def command_select_work(args: argparse.Namespace) -> None:
-    path = Path(args.path)
-    present, config = load_config(path, missing_ok=True)
-    route = resolve_execute_route(
-        config,
-        kind="work",
-        command_override=args.route_command,
-        activation_override=args.activation,
-        fallback_override=args.fallback,
-    )
-    decision = select_work_route(
-        route,
-        work_units=args.work_units,
-        dependency_graph=args.dependency_graph,
-        parallel_graph=args.parallel_graph,
-        integration_gate=args.integration_gate,
-        cross_session_resume=args.cross_session_resume,
-        external_handoff=args.external_handoff,
-    )
-    emit({"ok": True, "path": str(path), "present": present, "route": route, "work": decision})
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subcommands = parser.add_subparsers(dest="command", required=True)
@@ -659,7 +576,7 @@ def build_parser() -> argparse.ArgumentParser:
     resolve.add_argument("--effort")
     resolve.set_defaults(handler=command_resolve)
 
-    route = subcommands.add_parser("route", help="resolve one optional execution command")
+    route = subcommands.add_parser("route", help="resolve one optional execution skill policy")
     route.add_argument("--path", default=CONFIG_PATH_DEFAULT)
     route.add_argument("--kind", choices=sorted(EXECUTE_KINDS), required=True)
     route.add_argument("--command", dest="route_command")
@@ -668,20 +585,6 @@ def build_parser() -> argparse.ArgumentParser:
     route.add_argument("--enabled", choices=("false", "true"))
     route.set_defaults(handler=command_route)
 
-    select_work = subcommands.add_parser(
-        "select-work", help="select native or configured work execution from work shape"
-    )
-    select_work.add_argument("--path", default=CONFIG_PATH_DEFAULT)
-    select_work.add_argument("--work-units", type=int, required=True)
-    select_work.add_argument("--dependency-graph", action="store_true")
-    select_work.add_argument("--parallel-graph", action="store_true")
-    select_work.add_argument("--integration-gate", action="store_true")
-    select_work.add_argument("--cross-session-resume", action="store_true")
-    select_work.add_argument("--external-handoff", action="store_true")
-    select_work.add_argument("--command", dest="route_command")
-    select_work.add_argument("--activation", choices=sorted(EXECUTE_ACTIVATIONS))
-    select_work.add_argument("--fallback", choices=sorted(WORK_REVIEW_FALLBACKS))
-    select_work.set_defaults(handler=command_select_work)
     return parser
 
 
@@ -698,7 +601,6 @@ def main(argv: list[str] | None = None) -> None:
             "config_read_failed": 4,
             "invalid_config": 6,
             "invalid_route": 6,
-            "invalid_work_shape": 6,
         }.get(error.code, 6)
         emit(
             {

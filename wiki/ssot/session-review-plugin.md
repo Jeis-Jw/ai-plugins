@@ -11,6 +11,11 @@ affects_paths: [plugins/session-review/**]
 
 session-review 0.6.0은 별도 persistent config를 만들지 않는다. `session-review:doctor`가 기존 단일 CLI facade에서 snapshot backend resolver, wiki vault, Git worktree/branch/HEAD/dirty 준비 상태를 read-only JSON으로 보고한다. `wiki-markdown`이 없을 때의 built-in backend는 정상 지원 상태이며, 잘못 지정한 `SESSION_REVIEW_WIKI_CLI` override는 fallback과 함께 경고한다.
 
+선택 경계는 public plugin/`request-review` description에 노출한다. addressable reviewer의
+독립성, feedback round continuity 또는 audit 가능한 approval gate가 필요할 때 사용하며,
+단순 same-agent self-check에는 사용하지 않는다. fast mode도 기록 비용만 줄이고 reviewer
+분리는 유지한다.
+
 세 계층으로 분리된다.
 
 ### 3계층

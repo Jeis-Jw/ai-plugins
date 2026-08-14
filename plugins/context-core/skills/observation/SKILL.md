@@ -1,6 +1,6 @@
 ---
 name: observation
-description: 재사용 가능한 발견과 근거를 비권위 OBS로 preview, 조회, 교정, 재검증, 무효화, supersede 또는 폐기한다.
+description: 작업 중 발견한 사실·근거·시행착오가 이후에도 재사용될 가치가 있지만 authoritative decision은 아닐 때 비권위 OBS로 preview, 조회, 교정, 재검증, 무효화, supersede 또는 폐기한다.
 ---
 
 # Observation

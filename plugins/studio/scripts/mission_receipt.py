@@ -38,7 +38,7 @@ TOP_FIELDS = frozenset((
 ))
 LANE_FIELDS = frozenset(("lane_id", "role", "work_ref", "agent_id", "state", "updated_at"))
 ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
-WORK_REF_RE = re.compile(r"task-worker:.+")
+WORK_REF_RE = re.compile(r"[a-z0-9][a-z0-9._:-]{0,127}:.{1,512}")
 
 EXIT_BY_CODE = {
     "usage": 2,
@@ -100,7 +100,7 @@ def _validate_lane(lane: Any) -> None:
             _fail(f"lane.{field} must be a non-empty string")
     if lane["work_ref"] is not None and (
             not isinstance(lane["work_ref"], str) or not WORK_REF_RE.fullmatch(lane["work_ref"])):
-        _fail("lane.work_ref must be null or 'task-worker:<node_id>'")
+        _fail("lane.work_ref must be null or '<skill-or-provider>:<opaque-ref>'")
     if lane["agent_id"] is not None and (not isinstance(lane["agent_id"], str) or not lane["agent_id"]):
         _fail("lane.agent_id must be null or a non-empty string")
     if lane["state"] not in LANE_STATES:
@@ -306,7 +306,10 @@ def cmd_lane(args: argparse.Namespace) -> None:
     receipt = load_receipt(args.mission_id)
     require_open(receipt)
     if args.work_ref is not None and not WORK_REF_RE.fullmatch(args.work_ref):
-        raise ReceiptError("usage", f"--work-ref must look like task-worker:<node_id>: {args.work_ref!r}")
+        raise ReceiptError(
+            "usage",
+            f"--work-ref must look like <skill-or-provider>:<opaque-ref>: {args.work_ref!r}",
+        )
     now = now_utc()
     lane = next((item for item in receipt["lanes"] if item["lane_id"] == args.lane_id), None)
     if lane is None:
@@ -401,7 +404,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_lane.add_argument("lane_id")
     p_lane.add_argument("--state", required=True, choices=sorted(LANE_STATES))
     p_lane.add_argument("--role", help="신규 lane을 추가할 때만 지정")
-    p_lane.add_argument("--work-ref", dest="work_ref", help="task-worker:<node_id>")
+    p_lane.add_argument(
+        "--work-ref", dest="work_ref", help="<skill-or-provider>:<opaque-ref>"
+    )
     p_lane.add_argument("--agent-id", dest="agent_id", help="host agent id")
     p_lane.add_argument("--ready-next", action="append", dest="ready_next",
                         help="지정 시 목록 교체, 빈 문자열 1개면 비움")

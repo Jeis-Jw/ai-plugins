@@ -1,7 +1,7 @@
 {
   "name": "task-worker",
   "version": "0.9.0",
-  "description": "Provider-neutral work graphs with parallel ready sets, integration gates, and opaque external review ownership.",
+  "description": "Provider-neutral work graphs for multi-unit dependency, parallel, integration-gated, or resumable execution; not a default wrapper for standalone bounded work.",
   "author": {
     "name": "Jinwuk-Lee",
     "url": "https://github.com/Jeis-Jw"
@@ -9,8 +9,8 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Task Worker",
-    "shortDescription": "Decompose, run, and verify provider-neutral work graphs.",
-    "longDescription": "Defines immutable work graphs, plans every ready leaf and integration candidate from local or provider snapshots, isolates local runs in stable worktrees, and records digest-pinned verification evidence. Exact review leases use opaque owner/provider identifiers so external orchestrators remain optional and independent.",
+    "shortDescription": "Orchestrate complex multi-unit work graphs.",
+    "longDescription": "Use when work benefits from explicit dependencies, meaningful ready-set parallelism, separate integration gates, cross-session resume, or external handoff. It defines immutable work graphs, isolates runs in stable worktrees, and records digest-pinned verification evidence. Standalone bounded work should normally run directly, while external reviewers remain optional and independent.",
     "developerName": "Jinwuk-Lee",
     "category": "Productivity",
     "capabilities": [
@@ -19,7 +19,7 @@
       "Workflow"
     ],
     "defaultPrompt": [
-      "Use $define to create or revise an immutable provider-neutral work graph.",
+      "Use $define only when a multi-unit graph or durable execution lifecycle has material value; do not wrap standalone bounded work.",
       "Use $orchestrate to dispatch every ready leaf in parallel-safe worktrees while preserving integration gates.",
       "Resume by definition or provider alias and reuse only digest-valid verification evidence."
     ]

@@ -16,6 +16,8 @@ Studio 0.14.0은 owner의 미션을 역할별 작업으로 나누고, 현재 hos
 optional work/review/delivery command 해석과 root Producer 전용 독립 실행 경로
 (`$execute`)를 추가했으며, 0.14.0에서 mission receipt·cockpit을 추가했다. Studio는
 별도 agent runtime, 결정 권한을 갖는 상태 저장소, control plane service를 두지 않는다.
+2026-08-14 최신 계약에서 execute command는 Studio 내장 도구 지식이 아니라 사용자가 지정한
+skill policy로 한정했고, 일반 선택은 host가 제공한 skill catalog의 공개 description을 따른다.
 유일한 영속 상태는 재개 인덱스인 mission receipt(`.studio/receipt/<mission_id>.json`,
 `studio.mission-receipt/v1`) 하나다
 ([[DEC-2026-07-30-235418-studio-mission-receipt를-상태-저장소-금지의-예외-재개-인덱스로-둔다]]).
@@ -47,34 +49,26 @@ Host가 제공하지 않는 기능을 Studio가 흉내 내지 않는다. 실제 
 ## Execute 기반 독립 오케스트레이션 (0.13.0)
 
 `studio:execute`는 root Producer 세션 전용 진입점이다. leaf crew로 호출되면 재분해하지
-않고 원래 Producer에게 반환한다. `.studio.yml`의 `execute.work|review|delivery`를
-`scripts/studio_config.py route`로 해석해 command를 결정하며, Studio는 여전히 command
-runtime이나 상태 저장소를 만들지 않는다.
+않고 원래 Producer에게 반환한다. Studio가 읽는 discovery surface는 host가 이미 제공한
+skill catalog의 `name + description`뿐이다. plugin directory scan, 별도 inventory capture,
+이름 기반 용도 추정은 하지 않는다.
 
-- `decision:native|skip` / `invoke-command` / `producer-decision` 세 갈래로 discovery
-  여부를 정하고, 실행 override(기본 `activation:always`, `fallback:stop`)가 config보다
-  우선한다.
-- work는 `activation:auto`에서 둘 이상의 unit에 실제 dependency/ready-set 병렬성이 있거나,
-  integration gate, cross-session resume 또는 외부 실행 handoff가 필요할 때만 configured
-  command(예: `task-worker`)를 선택한다. 단일 bounded 작업은 위험도, 독립 review, 선호
-  worktree, 일반 evidence pin만으로 task-worker에 진입하지 않고 native로 실행한다.
-  configured 경로에서는 command가 분해·ready planning을 소유하고 Producer는 미션
-  경계·완료 조건만 보존하며, leaf crew는 자기 lane(`start→run→verify→done`)만 수행하고
-  재분해·orchestration·nested subagent 생성을 하지 않는다.
-- review는 독립성 요구·major blast radius·보안/데이터/배포 gate가 있을 때만 configured
-  review command를 선택한다. external handoff는 review 완료로 간주하지 않으며 approved
-  verdict와 요구 evidence 확인 전에는 closeout하지 않는다.
-- delivery는 `enabled:true`일 때만 configured command를 사용한다. Producer가 자동
-  활성화하지 않으며, 꺼져 있으면 command를 조회하지 않고 local 결과로 끝낸다.
-
-command는 shell 문자열이 아니라 opaque skill/plugin identifier다.
+- route가 미설정이면 work/review는 공개 description으로 정상 선택하고 delivery는 skip한다.
+- `.studio.yml execute.*.command`는 shell이 아니라 사용자가 지정한 skill identifier다.
+- `activation:auto`는 description match가 필요한 선호 후보, `always`는 exact 사용자 선택,
+  `never`는 route 비활성이다.
+- 선택 뒤 full `SKILL.md`를 읽고 그 skill의 precondition, negative trigger, lifecycle,
+  verification과 closeout을 따른다.
+- Studio는 특정 작업 형태에 어떤 plugin을 쓰는지 hard-code하거나 선택한 skill의 CLI 순서,
+  state, evidence schema, 완료 판정을 복제하지 않는다.
+- delivery는 외부 변경 gate이므로 `enabled:true` 또는 명시적 실행 override가 있을 때만 쓴다.
 
 ## Studio가 소유하는 것
 
 - mission의 objective, 완료 조건, 제약, owner gate
 - 역할·persona와 작업의 대응
 - host subagent 호출
-- optional work/review/delivery command 선택(라우팅)과 root orchestration
+- 공개 description과 사용자 policy 기반 work/review/delivery skill 선택 및 root orchestration
 - owner·crew·reviewer 사이 메시지 relay
 - 같은 host agent id를 사용한 feedback과 rework routing
 - 결과 회수와 최종 보고
@@ -92,12 +86,12 @@ database, broker를 정본으로 만들지 않는다.
 - agent process, model runtime, sandbox, 인증, 권한, tool inventory
 - Codex/Claude CLI, app-server, reducer, workflow runner
 - provider capability snapshot, fallback runtime, agent lease
-- command permit, verification evidence, token·비용 계측
+- 선택한 skill의 command permit, verification evidence, token·비용 계측
 - worktree, CI, GitHub Issue/PR, wiki knowledge lifecycle
 
-구현·worktree·검증은 `task-worker`, GitHub delivery는 `task-github`, review workflow는
-`session-review`, 장기 지식은 `wiki-markdown`이 각자 소유한다. Producer는 필요한 agent에게
-해당 플러그인을 사용하도록 지시할 뿐 상태와 계약을 복제하지 않는다.
+각 전문 plugin/skill은 자신이 무엇을 하고 언제 쓰이는지를 frontmatter description에
+공개한다. Producer는 그 설명이 현재 미션과 맞는 경우에만 선택하며, 선택한 skill이 자신의
+상태와 계약을 소유한다.
 
 ## 수명주기
 
@@ -130,10 +124,12 @@ mission 정리
 ## 구성
 
 - `skills/producer/SKILL.md`: host-native orchestration 규약 (mission receipt 쓰기 시점 포함)
-- `skills/execute/SKILL.md` + `scripts/studio_config.py`: optional work/review/delivery
-  command 해석(`route`)과 provider×role model/effort spawn policy 해석(`resolve`/
-  `validate`/`scaffold`) — 읽기 전용 결정 helper, 상태를 갖지 않음
-- `skills/cockpit/SKILL.md` + `scripts/cockpit.py`: 고정 4소스(task-worker/session-review/task-github/studio) read-only 상태 집계 (`studio.cockpit/v1`, 상태 변경 없음)
+- `skills/execute/SKILL.md` + `scripts/studio_config.py`: description 기반 skill 선택,
+  optional 사용자 policy 해석(`route`), provider×role model/effort spawn policy 해석
+  (`resolve`/`validate`/`scaffold`) — helper는 적합성을 판정하지 않고 상태를 갖지 않음
+- `skills/cockpit/SKILL.md` + `scripts/cockpit.py`: 그 skill 자체의 공개 description에 명시된
+  고정 4소스 read-only 집계 (`studio.cockpit/v1`). Producer의 일반 skill 선택 지식과는
+  분리된 opt-in integration skill이며 상태를 변경하지 않음
 - `crew/*.md`: host-independent role prompt
 - `rules/casting.md`: 최소 cast 기본값
 - `templates/mission.md`: 선택적 mission 양식

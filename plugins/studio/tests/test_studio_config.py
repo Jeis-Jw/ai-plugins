@@ -143,13 +143,18 @@ roles:
         )
         self.assertFalse(profile["configured"])
 
-    def test_missing_execute_routes_never_probe_optional_commands(self) -> None:
-        for kind, decision in (("work", "native"), ("review", "native"), ("delivery", "skip")):
+    def test_missing_work_and_review_routes_use_host_catalog_only(self) -> None:
+        for kind in ("work", "review"):
             with self.subTest(kind=kind):
                 route = studio_config.resolve_execute_route({}, kind=kind)
-                self.assertEqual(route["decision"], decision)
-                self.assertEqual(route["probe"], "forbidden")
+                self.assertEqual(route["decision"], "producer-decision")
+                self.assertEqual(route["probe"], "catalog-only")
                 self.assertFalse(route["configured"])
+                self.assertEqual(route["selection_basis"], "skill-description")
+
+        delivery = studio_config.resolve_execute_route({}, kind="delivery")
+        self.assertEqual(delivery["decision"], "skip")
+        self.assertEqual(delivery["probe"], "forbidden")
 
     def test_auto_work_and_review_defer_selection_to_producer(self) -> None:
         config = studio_config.parse_yaml_subset(
@@ -169,51 +174,39 @@ execute:
         work = studio_config.resolve_execute_route(config, kind="work")
         review = studio_config.resolve_execute_route(config, kind="review")
         self.assertEqual(work["decision"], "producer-decision")
-        self.assertEqual(work["probe"], "after-producer-selection")
+        self.assertEqual(work["probe"], "catalog-only")
+        self.assertEqual(work["selection_basis"], "skill-description")
         self.assertEqual(review["decision"], "invoke-command")
         self.assertEqual(review["probe"], "required")
 
-    def test_auto_work_requires_a_real_graph_or_durable_lifecycle(self) -> None:
+    def test_auto_route_is_only_a_preferred_catalog_candidate(self) -> None:
         config = studio_config.parse_yaml_subset(
             """
 execute:
   work:
-    command: task-worker
+    command: future-worker:define
     activation: auto
     fallback: native
 """
         )
         route = studio_config.resolve_execute_route(config, kind="work")
+        self.assertEqual(route["decision"], "producer-decision")
+        self.assertEqual(route["command"], "future-worker:define")
+        self.assertEqual(route["probe"], "catalog-only")
 
-        bounded = studio_config.select_work_route(route, work_units=1)
-        multiple_but_unstructured = studio_config.select_work_route(route, work_units=3)
-        dependency_graph = studio_config.select_work_route(
-            route, work_units=2, dependency_graph=True
+    def test_never_route_disables_catalog_selection(self) -> None:
+        config = studio_config.parse_yaml_subset(
+            """
+execute:
+  work:
+    command: future-worker:define
+    activation: never
+    fallback: native
+"""
         )
-        resumable = studio_config.select_work_route(
-            route, work_units=1, cross_session_resume=True
-        )
-
-        self.assertEqual(bounded["decision"], "native")
-        self.assertEqual(bounded["reason_codes"], ["bounded-direct-work"])
-        self.assertEqual(multiple_but_unstructured["decision"], "native")
-        self.assertEqual(dependency_graph["decision"], "invoke-command")
-        self.assertEqual(dependency_graph["reason_codes"], ["dependency-graph"])
-        self.assertEqual(resumable["decision"], "invoke-command")
-        self.assertEqual(resumable["reason_codes"], ["cross-session-resume"])
-
-    def test_explicit_work_route_still_honors_operator_intent(self) -> None:
-        route = studio_config.resolve_execute_route(
-            {}, kind="work", command_override="task-worker"
-        )
-        decision = studio_config.select_work_route(route, work_units=1)
-        self.assertEqual(decision["decision"], "invoke-command")
-        self.assertEqual(decision["reason_codes"], ["explicit-command-route"])
-
-    def test_invalid_work_shape_fails_closed(self) -> None:
-        route = studio_config.resolve_execute_route({}, kind="work")
-        with self.assertRaisesRegex(studio_config.ConfigError, "positive integer"):
-            studio_config.select_work_route(route, work_units=0)
+        route = studio_config.resolve_execute_route(config, kind="work")
+        self.assertEqual(route["decision"], "native")
+        self.assertEqual(route["probe"], "forbidden")
 
     def test_delivery_requires_explicit_operator_enable(self) -> None:
         config = studio_config.parse_yaml_subset(
@@ -335,22 +328,25 @@ execute:
             self.assertEqual(route_payload["decision"], "invoke-command")
             self.assertEqual(route_payload["fallback"], "stop")
 
-            selected = self.run_cli(
-                "select-work",
-                "--path",
-                str(path),
-                "--work-units",
-                "2",
-                "--dependency-graph",
-                "--command",
-                "task-worker",
-                "--activation",
-                "auto",
-            )
-            self.assertEqual(selected.returncode, 0, selected.stderr)
-            selected_payload = json.loads(selected.stdout)["work"]
-            self.assertEqual(selected_payload["decision"], "invoke-command")
-            self.assertEqual(selected_payload["reason_codes"], ["dependency-graph"])
+
+    def test_selection_surfaces_have_no_builtin_workflow_plugin_map(self) -> None:
+        surfaces = (
+            PLUGIN / "skills" / "producer" / "SKILL.md",
+            PLUGIN / "skills" / "execute" / "SKILL.md",
+            PLUGIN / "scripts" / "studio_config.py",
+            PLUGIN / ".codex-plugin" / "plugin.json",
+            PLUGIN / ".claude-plugin" / "plugin.json",
+        )
+        forbidden = ("task-worker", "session-review", "task-github")
+        for surface in surfaces:
+            text = surface.read_text(encoding="utf-8")
+            with self.subTest(surface=surface.name):
+                for identifier in forbidden:
+                    self.assertNotIn(identifier, text)
+
+        help_result = self.run_cli("--help")
+        self.assertEqual(help_result.returncode, 0, help_result.stderr)
+        self.assertNotIn("select-work", help_result.stdout)
 
     def test_cli_rejects_invalid_config_with_stable_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

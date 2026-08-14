@@ -58,7 +58,7 @@ class MissionReceiptTests(unittest.TestCase):
 
         dispatched = self.run_cli(
             "lane", "m1", "dev-1", "--state", "dispatched",
-            "--work-ref", "task-worker:node-7", "--agent-id", "agent-42",
+            "--work-ref", "future-work-skill:node-7", "--agent-id", "agent-42",
             "--ready-next", "리뷰 lane 소집")
         self.assertEqual(dispatched.returncode, 0, dispatched.stderr)
 
@@ -85,7 +85,7 @@ class MissionReceiptTests(unittest.TestCase):
         lane = receipt["lanes"][0]
         self.assertEqual(set(lane), LANE_FIELDS)
         self.assertEqual(lane["state"], "done")
-        self.assertEqual(lane["work_ref"], "task-worker:node-7")
+        self.assertEqual(lane["work_ref"], "future-work-skill:node-7")
         self.assertEqual(lane["agent_id"], "agent-42")
 
     # ② 미허용 필드 주입 → exit 2 + 파일 무변경 (fail-closed)
@@ -199,7 +199,7 @@ class MissionReceiptTests(unittest.TestCase):
 
         before = self.receipt_path().read_bytes()
         bad_ref = self.run_cli("lane", "m1", "dev-1", "--state", "dispatched",
-                               "--work-ref", "github:pr-1")
+                               "--work-ref", "missing-prefix")
         self.assertEqual(bad_ref.returncode, 2)
         self.assertEqual(json.loads(bad_ref.stdout)["error_code"], "usage")
         unknown = self.run_cli("lane", "m1", "ghost", "--state", "dispatched")
