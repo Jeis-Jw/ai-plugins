@@ -1480,6 +1480,7 @@ def build_parser() -> argparse.ArgumentParser:
     execution_complete.add_argument("--receipt", required=True)
     execution_complete.add_argument("--evidence")
     execution_complete.add_argument("--mutation-receipt")
+    execution_complete.add_argument("--reuse-fingerprint", help=argparse.SUPPRESS)
     execution_complete.add_argument("--state-root", default=".task-worker/local")
     execution_project = sub.add_parser("execution-project")
     execution_project.add_argument("--receipt", required=True)
@@ -1726,6 +1727,11 @@ def main(argv: Iterable[str] | None = None) -> int:
                     ),
                 }
         elif args.command == "execution-complete":
+            if args.reuse_fingerprint:
+                raise execution_control.ExecutionControlError(
+                    "reuse_fingerprint_deprecated",
+                    "caller-authored --reuse-fingerprint is unsafe; completion uses claimed live pins",
+                )
             payload = {
                 "ok": True,
                 "completion": execution_control.complete_execution(

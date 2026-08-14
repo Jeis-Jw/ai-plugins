@@ -116,6 +116,8 @@ def _combine_final_candidate(
     if not isinstance(attempts, list):
         raise ValueError("qa_projection attempts must be a list")
     passed = []
+    failure_after_confirmation = False
+    pass_before_confirmation = False
     for attempt in attempts:
         if not isinstance(attempt, dict) or set(attempt) != {
             "receipt_ref", "evidence_ref", "result", "started_at", "finished_at",
@@ -135,7 +137,7 @@ def _combine_final_candidate(
             if attempt["evidence_ref"] is not None:
                 raise ValueError("failed QA attempt cannot claim passing evidence")
             if finished >= confirmed_at:
-                return {"action": "reject", "reason": "review-reconfirmation-required"}
+                failure_after_confirmation = True
             continue
         evidence_ref = attempt["evidence_ref"]
         if not isinstance(evidence_ref, dict) or set(evidence_ref) != {"evidence_id", "digest"}:
@@ -144,8 +146,12 @@ def _combine_final_candidate(
             raise ValueError("qa_projection evidence_id must be non-empty")
         _digest(evidence_ref["digest"], "evidence_ref.digest")
         if started <= confirmed_at:
-            return {"action": "reject", "reason": "fresh-final-root-qa-required"}
+            pass_before_confirmation = True
         passed.append(attempt)
+    if failure_after_confirmation:
+        return {"action": "reject", "reason": "review-reconfirmation-required"}
+    if pass_before_confirmation:
+        return {"action": "reject", "reason": "fresh-final-root-qa-required"}
     if qa_projection.get("result") != "pass" or len(passed) != 1:
         return {"action": "reject", "reason": "final-root-qa-required"}
     result: dict[str, Any] = {

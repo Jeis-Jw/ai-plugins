@@ -8,7 +8,6 @@ import fnmatch
 import hashlib
 import json
 import os
-import shutil
 import stat
 import subprocess
 import tempfile
@@ -587,33 +586,79 @@ def resolve_tool_identity(repo: Path, command: dict[str, Any]) -> dict[str, Any]
     """Pin the trusted profile executable without running its argv or version output."""
     command_digest(command)
     executable = command["executable"]
+    if not executable or "\0" in executable:
+        raise ExecutionControlError("tool_identity_unknown", "profile executable is invalid")
+    command_cwd = Path(command["cwd"])
+    if command_cwd.is_absolute() or ".." in command_cwd.parts:
+        raise ExecutionControlError("tool_identity_unknown", "physical command cwd escapes repository")
+    try:
+        physical_cwd = (repo / command_cwd).resolve(strict=True)
+        physical_cwd.relative_to(repo)
+    except (OSError, ValueError) as exc:
+        raise ExecutionControlError(
+            "tool_identity_unknown", "physical command cwd is unavailable or escapes repository",
+        ) from exc
+    if not physical_cwd.is_dir():
+        raise ExecutionControlError("tool_identity_unknown", "physical command cwd is not a directory")
+
+    confined_lookup = False
     requested = Path(executable)
     if requested.is_absolute():
         located = requested
     elif "/" in executable:
-        located = repo / requested
-        try:
-            located.resolve(strict=False).relative_to(repo)
-        except ValueError as exc:
-            raise ExecutionControlError(
-                "tool_identity_unknown", "relative tool executable escapes repository",
-            ) from exc
+        located = physical_cwd / requested
+        confined_lookup = True
     else:
-        selected_path = command["environment"].get("PATH") or os.environ.get("PATH")
-        found = shutil.which(executable, path=selected_path)
-        if found is None:
+        selected_path = command["environment"].get("PATH")
+        if selected_path is None:
+            selected_path = os.environ.get("PATH", os.defpath)
+        if "\0" in selected_path:
+            raise ExecutionControlError("tool_identity_unknown", "selected PATH is invalid")
+        located = None
+        for entry in selected_path.split(os.pathsep):
+            base = Path(entry) if entry else Path(".")
+            relative_entry = not base.is_absolute()
+            if relative_entry:
+                base = physical_cwd / base
+                try:
+                    base.resolve(strict=False).relative_to(repo)
+                except ValueError as exc:
+                    raise ExecutionControlError(
+                        "tool_identity_unknown", "relative PATH entry escapes repository",
+                    ) from exc
+            candidate = base / executable
+            try:
+                metadata = candidate.stat()
+            except OSError:
+                continue
+            if stat.S_ISREG(metadata.st_mode) and os.access(candidate, os.X_OK):
+                located = candidate
+                confined_lookup = relative_entry
+                break
+        if located is None:
             raise ExecutionControlError("tool_identity_unknown", "profile executable is unavailable")
-        located = Path(found)
-    if not located.is_absolute():
-        located = located.resolve(strict=False)
+    located = Path(os.path.abspath(located))
     try:
         requested_stat = located.lstat()
         resolved = located.resolve(strict=True)
         resolved_stat = resolved.stat()
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         raise ExecutionControlError(
             "tool_identity_unknown", "profile executable cannot be resolved",
         ) from exc
+    try:
+        located.relative_to(repo)
+        located_in_repo = True
+    except ValueError:
+        located_in_repo = False
+    if confined_lookup or located_in_repo:
+        try:
+            located.relative_to(repo)
+            resolved.relative_to(repo)
+        except ValueError as exc:
+            raise ExecutionControlError(
+                "tool_identity_unknown", "relative tool executable escapes repository",
+            ) from exc
     if not stat.S_ISREG(resolved_stat.st_mode) or not os.access(resolved, os.X_OK):
         raise ExecutionControlError(
             "tool_identity_unknown", "profile executable must resolve to an executable regular file",
@@ -854,109 +899,163 @@ def final_qa_projection(
 ) -> dict[str, Any]:
     """Project task-worker-owned final QA receipts; review belongs to Studio."""
     contract = contract or load_contract()
+    expected_fields = {"candidate_ref", "state_root", "source_tree_digest", "criteria_digest"}
+    if not isinstance(value, dict) or set(value) != expected_fields:
+        raise ExecutionControlError("final_qa_invalid", "final QA request fields differ")
     candidate = value.get("candidate_ref")
     if not isinstance(candidate, str) or not candidate:
         raise ExecutionControlError("final_qa_invalid", "candidate_ref must be non-empty")
     source_digest = _require_tagged_digest(value.get("source_tree_digest"), "source_tree_digest")
     criteria_digest = _require_tagged_digest(value.get("criteria_digest"), "criteria_digest")
-    attempts = value.get("attempts") or []
-    if not isinstance(attempts, list):
-        raise ExecutionControlError("final_qa_invalid", "attempts must be a list")
-    attempt_fields = ("receipt_id", "receipt_digest", "evidence_id", "evidence_digest")
-    if any(not isinstance(item, dict) or set(item) != set(attempt_fields) for item in attempts):
-        raise ExecutionControlError("final_qa_invalid", "final attempt fields differ")
     state_root = Path(value.get("state_root") or "")
     if not state_root.is_absolute():
         raise ExecutionControlError("final_qa_invalid", "state_root must be absolute")
-    refs = [
-        (item["receipt_id"], item["receipt_digest"], item["evidence_id"], item["evidence_digest"])
-        for item in attempts
-    ]
-    if any(not isinstance(value, str) or not value for ref in refs for value in ref):
-        raise ExecutionControlError("final_qa_invalid", "final attempt refs must be non-empty")
-    for _, receipt_digest, _, evidence_digest in refs:
-        _require_tagged_digest(receipt_digest, "receipt_digest")
-        _require_tagged_digest(evidence_digest, "evidence_digest")
-    for index, field in enumerate(attempt_fields):
-        values = [ref[index] for ref in refs]
-        if len(values) != len(set(values)):
-            raise ExecutionControlError("final_qa_invalid", f"duplicate final attempt {field}")
     root = state_root / "execution-control"
     projected_attempts: list[dict[str, Any]] = []
-    for receipt_id, receipt_digest, evidence_id, evidence_digest in refs:
-        receipt_path = _object_file(root / "receipts", receipt_id)
-        if not receipt_path.exists():
-            raise ExecutionControlError("final_qa_invalid", "stored final receipt is missing")
-        receipt = _read(receipt_path)
-        validate_instance(receipt, "command-receipt", contract)
-        if receipt.get("digest") != receipt_digest or receipt.get("receipt_id") != receipt_id:
-            raise ExecutionControlError("final_qa_invalid", "stored final receipt differs")
-        _, _, claim = _find_claim(root, receipt["claim_id"])
-        stored_preimage = claim.get("reuse_preimage") or {}
-        fingerprint = stored_preimage.get("fingerprint") or {}
-        permit_path = _object_file(root / "permits", claim["permit_id"])
-        if not permit_path.exists():
-            raise ExecutionControlError("final_qa_invalid", "stored final permit is missing")
-        stored_permit = _read(permit_path)
-        validate_instance(stored_permit, "execution-permit", contract)
+    seen_claims: set[str] = set()
+    seen_receipts: set[str] = set()
+    seen_evidence: set[str] = set()
+    for execution_path in sorted((root / "executions").glob("*.json")):
+        execution = _read(execution_path)
         if (
-            claim.get("claim_id") != receipt.get("claim_id")
-            or claim.get("permit_id") != receipt.get("permit_id")
-            or stored_permit.get("permit_id") != receipt.get("permit_id")
-            or claim.get("permit_digest") != stored_permit.get("digest")
-            or claim.get("receipt_ref") != receipt_id
-            or claim.get("state") != ("succeeded" if receipt.get("result") == "pass" else "failed")
-            or receipt.get("head") != candidate or receipt.get("purpose") != "integration-full"
-            or receipt.get("target") != "repository" or not receipt.get("fresh_requirement_id")
-            or stored_permit.get("qa_mode") != "final"
-            or stored_permit.get("criteria_digest") != criteria_digest
-            or fingerprint.get("source_tree_digest") != source_digest
-            or fingerprint.get("criteria_digest") != criteria_digest
+            execution.get("schema") != EXECUTION_STATE_SCHEMA
+            or not isinstance(execution.get("claims"), list)
         ):
-            raise ExecutionControlError("final_qa_invalid", "final receipt pins differ")
-        started_at = _timestamp(receipt.get("started_at"))
-        finished_at = _timestamp(receipt.get("finished_at"))
-        if started_at is None or finished_at is None or finished_at < started_at:
-            raise ExecutionControlError("final_qa_invalid", "final receipt timestamps differ")
-        if receipt["result"] != "pass":
+            raise ExecutionControlError("final_qa_invalid", "execution state is not canonical")
+        for claim in execution["claims"]:
+            claim_id = claim.get("claim_id")
+            permit_id = claim.get("permit_id")
+            if not isinstance(claim_id, str) or not isinstance(permit_id, str):
+                raise ExecutionControlError("final_qa_invalid", "execution claim refs are invalid")
+            permit_path = _object_file(root / "permits", permit_id)
+            if not permit_path.exists():
+                raise ExecutionControlError("final_qa_invalid", "stored execution permit is missing")
+            stored_permit = _read(permit_path)
+            validate_instance(stored_permit, "execution-permit", contract)
+            if not (
+                stored_permit.get("head") == candidate
+                and stored_permit.get("purpose") == "integration-full"
+                and stored_permit.get("target") == "repository"
+                and stored_permit.get("qa_mode") == "final"
+                and stored_permit.get("criteria_digest") == criteria_digest
+            ):
+                continue
+            stored_preimage = claim.get("reuse_preimage")
+            if not isinstance(stored_preimage, dict):
+                raise ExecutionControlError("final_qa_invalid", "final QA source preimage is missing")
+            fingerprint = stored_preimage.get("fingerprint")
+            try:
+                validate_reuse_fingerprint_policy(fingerprint, stored_permit)
+            except ExecutionControlError as exc:
+                raise ExecutionControlError("final_qa_invalid", "final QA fingerprint differs") from exc
+            if fingerprint.get("criteria_digest") != criteria_digest:
+                raise ExecutionControlError("final_qa_invalid", "final QA criteria pin differs")
+            if fingerprint.get("source_tree_digest") != source_digest:
+                continue
+            if claim_id in seen_claims:
+                raise ExecutionControlError("final_qa_invalid", "duplicate final QA claim")
+            seen_claims.add(claim_id)
+            if claim.get("state") == "claimed":
+                raise ExecutionControlError("final_qa_incomplete", "matching final QA is still active")
+            if claim.get("state") not in {"succeeded", "failed"}:
+                raise ExecutionControlError("final_qa_invalid", "final QA claim state differs")
+            receipt_id = claim.get("receipt_ref")
+            if not isinstance(receipt_id, str) or not receipt_id or receipt_id in seen_receipts:
+                raise ExecutionControlError("final_qa_invalid", "final QA receipt ref is invalid or duplicated")
+            seen_receipts.add(receipt_id)
+            expected_key = physical_identity(stored_permit, fingerprint)
+            if (
+                execution.get("physical_key") != expected_key
+                or claim.get("physical_key") != expected_key
+                or execution_path.name != expected_key.removeprefix("sha256:") + ".json"
+            ):
+                raise ExecutionControlError("final_qa_invalid", "final QA execution identity differs")
+            receipt_path = _object_file(root / "receipts", receipt_id)
+            if not receipt_path.exists():
+                raise ExecutionControlError("final_qa_invalid", "stored final receipt is missing")
+            receipt = _read(receipt_path)
+            validate_instance(receipt, "command-receipt", contract)
+            if receipt.get("receipt_id") != receipt_id:
+                raise ExecutionControlError("final_qa_invalid", "stored final receipt differs")
+            if (
+                claim.get("claim_id") != receipt.get("claim_id")
+                or claim.get("permit_id") != receipt.get("permit_id")
+                or stored_permit.get("permit_id") != receipt.get("permit_id")
+                or claim.get("permit_digest") != stored_permit.get("digest")
+                or claim.get("receipt_ref") != receipt_id
+                or claim.get("state") != ("succeeded" if receipt.get("result") == "pass" else "failed")
+                or receipt.get("head") != candidate or receipt.get("purpose") != "integration-full"
+                or receipt.get("target") != "repository" or not receipt.get("fresh_requirement_id")
+                or stored_permit.get("qa_mode") != "final"
+                or stored_permit.get("criteria_digest") != criteria_digest
+                or fingerprint.get("source_tree_digest") != source_digest
+                or fingerprint.get("criteria_digest") != criteria_digest
+            ):
+                raise ExecutionControlError("final_qa_invalid", "final receipt pins differ")
+            for receipt_field, permit_field in (
+                ("profile_id", "command_profile_id"), ("purpose", "purpose"),
+                ("target", "target"), ("head", "head"),
+                ("command_digest", "command_digest"),
+                ("environment_digest", "environment_digest"),
+                ("tool_version", "tool_version"),
+                ("fresh_requirement_id", "fresh_requirement_id"),
+            ):
+                if receipt.get(receipt_field) != stored_permit.get(permit_field):
+                    raise ExecutionControlError("final_qa_invalid", "final receipt identity differs")
+            started_at = _timestamp(receipt.get("started_at"))
+            finished_at = _timestamp(receipt.get("finished_at"))
+            if started_at is None or finished_at is None or finished_at < started_at:
+                raise ExecutionControlError("final_qa_invalid", "final receipt timestamps differ")
+            if receipt["result"] != "pass":
+                if claim.get("evidence_refs"):
+                    raise ExecutionControlError("final_qa_invalid", "failed final QA claimed evidence")
+                projected_attempts.append({
+                    "receipt_ref": {"receipt_id": receipt_id, "digest": receipt["digest"]},
+                    "evidence_ref": None, "result": receipt["result"],
+                    "started_at": receipt["started_at"], "finished_at": receipt["finished_at"],
+                })
+                continue
+            try:
+                _, live_preimage = resolve_reuse_fingerprint(
+                    stored_permit,
+                    {
+                        "command": stored_preimage.get("command"),
+                        "command_profile_digest": stored_preimage.get("command_profile_digest"),
+                    },
+                    stored_preimage.get("resolver"),
+                )
+            except (OSError, ExecutionControlError) as exc:
+                raise ExecutionControlError("final_qa_stale", "live final QA pins are unavailable") from exc
+            if live_preimage != stored_preimage:
+                raise ExecutionControlError("final_qa_stale", "live final QA pins changed")
+            evidence_refs = claim.get("evidence_refs") or []
+            if len(evidence_refs) != 1 or evidence_refs[0] in seen_evidence:
+                raise ExecutionControlError("final_qa_invalid", "final QA evidence ref is invalid or duplicated")
+            evidence_id = evidence_refs[0]
+            seen_evidence.add(evidence_id)
+            evidence_path = _object_file(root / "evidence", evidence_id)
+            if not evidence_path.exists():
+                raise ExecutionControlError("final_qa_invalid", "stored final evidence is missing")
+            evidence = _read(evidence_path)
+            validate_instance(evidence, "verification-evidence", contract)
+            if (
+                evidence.get("evidence_id") != evidence_id
+                or evidence.get("source_receipt_id") != receipt_id or evidence.get("result") != "pass"
+                or claim.get("evidence_refs") != [evidence_id]
+                or evidence.get("criteria_digest") != criteria_digest
+                or evidence.get("surface_digest") != fingerprint.get("digest")
+                or not evidence_applicable(stored_permit, evidence, reuse_fingerprint=fingerprint)
+            ):
+                raise ExecutionControlError("final_qa_invalid", "stored final evidence differs")
             projected_attempts.append({
-                "receipt_ref": {"receipt_id": receipt_id, "digest": receipt_digest},
-                "evidence_ref": None, "result": receipt["result"],
-                "started_at": receipt["started_at"], "finished_at": receipt["finished_at"],
+                "receipt_ref": {"receipt_id": receipt_id, "digest": receipt["digest"]},
+                "evidence_ref": {"evidence_id": evidence_id, "digest": evidence["digest"]},
+                "result": "pass", "started_at": receipt["started_at"],
+                "finished_at": receipt["finished_at"],
             })
-            continue
-        try:
-            _, live_preimage = resolve_reuse_fingerprint(
-                stored_permit,
-                {
-                    "command": stored_preimage.get("command"),
-                    "command_profile_digest": stored_preimage.get("command_profile_digest"),
-                },
-                stored_preimage.get("resolver"),
-            )
-        except (OSError, ExecutionControlError) as exc:
-            raise ExecutionControlError("final_qa_stale", "live final QA pins are unavailable") from exc
-        if live_preimage != stored_preimage:
-            raise ExecutionControlError("final_qa_stale", "live final QA pins changed")
-        evidence_path = _object_file(root / "evidence", evidence_id)
-        if not evidence_path.exists():
-            raise ExecutionControlError("final_qa_invalid", "stored final evidence is missing")
-        evidence = _read(evidence_path)
-        validate_instance(evidence, "verification-evidence", contract)
-        if (
-            evidence.get("evidence_id") != evidence_id or evidence.get("digest") != evidence_digest
-            or evidence.get("source_receipt_id") != receipt_id or evidence.get("result") != "pass"
-            or claim.get("evidence_refs") != [evidence_id]
-            or evidence.get("criteria_digest") != criteria_digest
-            or evidence.get("surface_digest") != fingerprint.get("digest")
-        ):
-            raise ExecutionControlError("final_qa_invalid", "stored final evidence differs")
-        projected_attempts.append({
-            "receipt_ref": {"receipt_id": receipt_id, "digest": receipt_digest},
-            "evidence_ref": {"evidence_id": evidence_id, "digest": evidence_digest},
-            "result": "pass", "started_at": receipt["started_at"],
-            "finished_at": receipt["finished_at"],
-        })
+    projected_attempts.sort(key=lambda item: (
+        _timestamp(item["started_at"]), item["receipt_ref"]["receipt_id"],
+    ))
     passed = [item for item in projected_attempts if item["result"] == "pass"]
     projection: dict[str, Any] = {
         "schema": FINAL_QA_PROJECTION_SCHEMA,

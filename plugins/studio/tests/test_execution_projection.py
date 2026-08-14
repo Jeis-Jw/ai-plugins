@@ -59,7 +59,11 @@ class ExecutionProjectionTests(unittest.TestCase):
 
     def project(self, review, qa, reviewer="agent-1"):
         return projection.project_final_candidate(
-            review, {"final_qa": {"canonical_refs": True}}, reviewer,
+            review, {"final_qa": {
+                "candidate_ref": self.candidate, "state_root": "/state",
+                "source_tree_digest": "sha256:" + "3" * 64,
+                "criteria_digest": "sha256:" + "4" * 64,
+            }}, reviewer,
             task_worker_projector=lambda request: qa,
         )
 
@@ -84,6 +88,12 @@ class ExecutionProjectionTests(unittest.TestCase):
         result = self.project(self.review(), qa)
         self.assertEqual("review-reconfirmation-required", result["reason"])
 
+        stale_pass = self.attempt(
+            "pass", started="2026-07-15T00:00:01Z", finished="2026-07-15T00:00:02Z",
+        )
+        mixed = self.project(self.review(), self.qa([stale_pass, failed_after]))
+        self.assertEqual("review-reconfirmation-required", mixed["reason"])
+
         failed_before = self.attempt(
             "fail", started="2026-07-15T00:00:01Z", finished="2026-07-15T00:00:02Z",
         )
@@ -101,7 +111,11 @@ class ExecutionProjectionTests(unittest.TestCase):
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
         accepted = module.project_final_candidate(
-            self.review(), {"final_qa": {"canonical_refs": True}}, "agent-1",
+            self.review(), {"final_qa": {
+                "candidate_ref": self.candidate, "state_root": "/state",
+                "source_tree_digest": "sha256:" + "3" * 64,
+                "criteria_digest": "sha256:" + "4" * 64,
+            }}, "agent-1",
             task_worker_projector=lambda request: self.qa(),
         )
         self.assertEqual("accept", accepted["action"])

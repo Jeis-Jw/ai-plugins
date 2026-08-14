@@ -101,12 +101,12 @@ class CanonicalContractTests(unittest.TestCase):
         profile["digest"] = control.instance_digest(profile)
         return profile
 
-    def _command(self, profile=None):
+    def _command(self, profile=None, *, cwd="plugins/task-worker"):
         profile = profile or self._profile()
         return {
             "executable": profile["executable"],
             "args": profile["args"],
-            "cwd": "plugins/task-worker",
+            "cwd": cwd,
             "environment": {"PYTHONPATH": "plugins/task-worker"},
         }
 
@@ -158,7 +158,7 @@ class CanonicalContractTests(unittest.TestCase):
                 "executable": str(runner), "args": ["selector-1", "selector-2"],
             })
         profile = self._profile(**profile_overrides)
-        command = self._command(profile)
+        command = self._command(profile, cwd=".")
         permit = dict(self.contract["golden_cases"][0]["input"]["permit"])
         permit.update({
             "permit_id": "permit-" + purpose,
@@ -482,9 +482,21 @@ class CanonicalContractTests(unittest.TestCase):
                 "--reuse-fingerprint", str(paths["fingerprint"]),
             ], env={**os.environ, "STUDIO_VERIFICATION_CONTRACT": str(self.contract_path)},
                 text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            complete_result = subprocess.run([
+                sys.executable, str(TASK_WORKER / "scripts" / "definition_artifact.py"),
+                "execution-complete", "--permit", str(paths["permit"]),
+                "--claim-id", "legacy-claim", "--receipt", str(paths["fingerprint"]),
+                "--reuse-fingerprint", str(paths["fingerprint"]),
+                "--state-root", str(root / "state"),
+            ], env={**os.environ, "STUDIO_VERIFICATION_CONTRACT": str(self.contract_path)},
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
         self.assertEqual(2, result.returncode, result.stderr or result.stdout)
         self.assertEqual("reuse_fingerprint_deprecated", json.loads(result.stdout)["error_code"])
+        self.assertEqual(2, complete_result.returncode, complete_result.stderr or complete_result.stdout)
+        self.assertEqual(
+            "reuse_fingerprint_deprecated", json.loads(complete_result.stdout)["error_code"],
+        )
 
     def test_cli_paid_mutation_requires_atomic_gate_and_completion_receipt(self):
         profile = self._profile()
@@ -777,6 +789,41 @@ class CanonicalContractTests(unittest.TestCase):
                 )
         self.assertEqual("reuse_pin_stale", stale.exception.code)
 
+    def test_tool_identity_resolves_relative_executable_and_path_from_physical_command_cwd(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp, "repo")
+            tools = repo / "tools"
+            tools.mkdir(parents=True)
+            runner = tools / "runner"
+            runner.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            runner.chmod(0o755)
+            controller = Path(tmp, "controller")
+            controller.mkdir()
+            commands = (
+                {"executable": "./runner", "args": [], "cwd": "tools", "environment": {}},
+                {"executable": "runner", "args": [], "cwd": "tools", "environment": {"PATH": ""}},
+                {"executable": "runner", "args": [], "cwd": ".", "environment": {"PATH": "tools"}},
+            )
+            previous = Path.cwd()
+            try:
+                os.chdir(controller)
+                identities = [control.resolve_tool_identity(repo.resolve(), command) for command in commands]
+            finally:
+                os.chdir(previous)
+            escaping = {
+                "executable": "runner", "args": [], "cwd": ".",
+                "environment": {"PATH": "../../outside"},
+            }
+            with self.assertRaises(control.ExecutionControlError) as escaped:
+                control.resolve_tool_identity(repo.resolve(), escaping)
+
+        self.assertEqual(
+            ["repo:tools/runner"] * 3,
+            [identity["resolved_path"] for identity in identities],
+        )
+        self.assertEqual(1, len({identity["content_digest"] for identity in identities}))
+        self.assertEqual("tool_identity_unknown", escaped.exception.code)
+
     def test_development_fingerprint_reuses_across_fresh_labels_but_final_does_not(self):
         permit = dict(self.contract["golden_cases"][0]["input"]["permit"])
         permit.update({"head": "sha256:" + "a" * 64, "fresh_requirement_id": "dev-1"})
@@ -894,22 +941,21 @@ class CanonicalContractTests(unittest.TestCase):
                 permit, receipt["claim_id"], receipt, tmp,
                 evidence=evidence, contract=self.contract,
             )
-            attempt = self._batch_child(receipt, evidence)
             value = {
                 "candidate_ref": permit["head"], "state_root": tmp,
                 "source_tree_digest": fingerprint["source_tree_digest"],
-                "criteria_digest": permit["criteria_digest"], "attempts": [attempt],
+                "criteria_digest": permit["criteria_digest"],
             }
             accepted = control.final_qa_projection(value, self.contract)
-            with self.assertRaises(control.ExecutionControlError) as duplicate:
-                control.final_qa_projection({**value, "attempts": [attempt, attempt]}, self.contract)
+            with self.assertRaises(control.ExecutionControlError) as caller_attempts:
+                control.final_qa_projection({**value, "attempts": []}, self.contract)
             (repo / "src.py").write_text("print('after-final')\n", encoding="utf-8")
             with self.assertRaises(control.ExecutionControlError) as changed_after_final:
                 control.final_qa_projection(value, self.contract)
 
         self.assertEqual("pass", accepted["result"])
         self.assertEqual(control.instance_digest(accepted), accepted["digest"])
-        self.assertEqual("final_qa_invalid", duplicate.exception.code)
+        self.assertEqual("final_qa_invalid", caller_attempts.exception.code)
         self.assertEqual("final_qa_stale", changed_after_final.exception.code)
 
     def test_final_qa_projection_preserves_failed_attempt_before_one_pass(self):
@@ -928,14 +974,10 @@ class CanonicalContractTests(unittest.TestCase):
             control.complete_execution(
                 permit, failed_receipt["claim_id"], failed_receipt, tmp, contract=self.contract,
             )
-            failed_attempt = {
-                "receipt_id": failed_receipt["receipt_id"], "receipt_digest": failed_receipt["digest"],
-                "evidence_id": "EV-failed", "evidence_digest": "sha256:" + "6" * 64,
-            }
             base = {
                 "candidate_ref": permit["head"], "state_root": tmp,
                 "source_tree_digest": fingerprint["source_tree_digest"],
-                "criteria_digest": permit["criteria_digest"], "attempts": [failed_attempt],
+                "criteria_digest": permit["criteria_digest"],
             }
             failed = control.final_qa_projection(base, self.contract)
 
@@ -954,14 +996,16 @@ class CanonicalContractTests(unittest.TestCase):
                 permit, passed_receipt["claim_id"], passed_receipt, tmp,
                 evidence=evidence, contract=self.contract,
             )
-            confirmed = control.final_qa_projection({
-                **base,
-                "attempts": [failed_attempt, self._batch_child(passed_receipt, evidence)],
-            }, self.contract)
+            confirmed = control.final_qa_projection(base, self.contract)
+            with self.assertRaises(control.ExecutionControlError) as omitted_failure:
+                control.final_qa_projection({
+                    **base, "attempts": [self._batch_child(passed_receipt, evidence)],
+                }, self.contract)
 
         self.assertEqual("fail", failed["result"])
         self.assertEqual("pass", confirmed["result"])
         self.assertEqual(["fail", "pass"], [item["result"] for item in confirmed["attempts"]])
+        self.assertEqual("final_qa_invalid", omitted_failure.exception.code)
 
     def test_task_worker_execution_control_imports_without_session_review_sibling(self):
         with self.assertRaises(control.ExecutionControlError) as legacy:

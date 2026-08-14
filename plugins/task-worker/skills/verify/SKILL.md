@@ -53,6 +53,8 @@ fail이다. batch는 projection일 뿐 새 ledger가 아니며 integration evide
 reviewer 확인과 final QA를 다시 수행한다.
 
 task-worker는 immutable permit/claim/receipt/evidence에서 final QA projection만 검증한다.
+final QA attempt 목록은 caller가 제출하지 않고 candidate/source/criteria에 맞는 completed claim
+전체를 기존 execution-control store에서 직접 도출한다.
 session-review 상태와의 확인 순서 합성은 Studio의 stateless projection이 소유하며 task-worker가
 다른 provider plugin을 import하거나 review 상태를 복제하지 않는다.
 
