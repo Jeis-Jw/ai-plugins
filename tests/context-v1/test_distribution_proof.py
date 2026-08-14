@@ -6,6 +6,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -196,6 +197,19 @@ class DistributionProofTests(unittest.TestCase):
                 owner_skill = "context" if name == "context-core" else "decision"
                 for relative in ("skills/init/SKILL.md", f"skills/{owner_skill}/SKILL.md"):
                     self.assertTrue((cached / relative).is_file())
+                if name == "context-decision":
+                    loaded_skill = cached / "skills/init/SKILL.md"
+                    sibling_entrypoint = loaded_skill.parent / "scripts/decision_init.py"
+                    environment = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+                    environment.pop("CLAUDE_PLUGIN_ROOT", None)
+                    resolved = subprocess.run(
+                        [sys.executable, str(sibling_entrypoint), "--help"],
+                        cwd=temp,
+                        env=environment,
+                        text=True,
+                        capture_output=True,
+                    )
+                    self.assertEqual(0, resolved.returncode, resolved.stdout + resolved.stderr)
 
         self.assertTrue((ROOT / "plugins/context-core/skills/context/SKILL.md").is_file())
         self.assertTrue((ROOT / "plugins/context-decision/skills/decision/SKILL.md").is_file())

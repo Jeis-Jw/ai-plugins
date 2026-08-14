@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -129,6 +130,30 @@ class PluginContractTests(unittest.TestCase):
         self.assertIn("context_cli.py bootstrap", init)
         self.assertIn("decision_init.py", init)
         self.assertIn("한 번만", init)
+
+    def test_loaded_init_skill_resolves_sibling_entrypoint_without_claude_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            installed = root / "installed-context-decision"
+            unrelated_cwd = root / "repository"
+            shutil.copytree(ROOT / "plugins/context-decision", installed)
+            unrelated_cwd.mkdir()
+            loaded_skill = installed / "skills/init/SKILL.md"
+            entrypoint = loaded_skill.parent / "scripts/decision_init.py"
+            environment = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+            environment.pop("CLAUDE_PLUGIN_ROOT", None)
+            completed = subprocess.run(
+                [sys.executable, str(entrypoint), "--help"],
+                cwd=unrelated_cwd,
+                env=environment,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
+            self.assertIn("decision_init.py", completed.stdout)
+            init = loaded_skill.read_text(encoding="utf-8")
+            self.assertIn('${INIT_SKILL_FILE%/SKILL.md}/scripts/decision_init.py', init)
+            self.assertIn("loaded skill catalog", init)
 
     def test_public_cli_runs_exact_six_state_preflight_before_init(self) -> None:
         fixtures = ROOT / "tests/context-v1/fixtures/host-inventory"

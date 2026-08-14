@@ -5,16 +5,20 @@ description: exact compatible context-core를 확인하고 필요한 core bootst
 
 # Init
 
-먼저 context-core 설치와 `context-common/v1` compatibility를 확인한다. host가 exact plugin inventory, read-only doctor receipt, active installed core의 public `context_cli.py` 경로를 준비한 뒤 아래 orchestration entrypoint를 **한 번만** 호출한다.
+먼저 context-core 설치와 `context-common/v1` compatibility를 확인한다. host가 exact plugin inventory, read-only doctor receipt, active installed core의 public `context_cli.py` 경로를 준비한다. host/skill catalog가 이 loaded `SKILL.md`의 actual absolute path를 제공하면, 그 파일의 sibling `scripts/decision_init.py`를 resolve해 orchestration entrypoint를 **한 번만** 호출한다. cwd, plugin cache 탐색 또는 `$CLAUDE_PLUGIN_ROOT`를 Codex 경로 fallback으로 사용하지 않는다.
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/skills/init/scripts/decision_init.py" \
+INIT_SKILL_FILE="/absolute/path/from-loaded-skill-catalog/plugins/context-decision/skills/init/SKILL.md"
+INIT_ENTRYPOINT="${INIT_SKILL_FILE%/SKILL.md}/scripts/decision_init.py"
+python3 "$INIT_ENTRYPOINT" \
   --host <codex|claude-code> \
   --core-inventory @file \
   --core-doctor @file \
   --core-cli /absolute/active-installed/context-core/skills/context/scripts/context_cli.py \
   --json
 ```
+
+Claude Code에서는 host가 제공한 plugin root를 알고 있을 때만 `INIT_SKILL_FILE="${CLAUDE_PLUGIN_ROOT}/skills/init/SKILL.md"`를 optional route로 사용할 수 있다. Codex에서는 반드시 loaded skill catalog의 absolute `SKILL.md` path를 사용한다.
 
 - missing/source mismatch/disabled/incompatible이면 repository와 host configuration write 0으로 중단하고 exact marketplace/plugin/source와 수동 install/enable/update, reload·재시도 안내를 반환한다.
 - partial/invalid이면 자동 repair하지 않고 issue/path와 수동 복구 안내를 반환한다.
