@@ -119,6 +119,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"@{descriptor}",
                 "--index-seed",
                 f"@{seed}",
+                "--host",
+                args.host,
                 "--json",
             ]
         )

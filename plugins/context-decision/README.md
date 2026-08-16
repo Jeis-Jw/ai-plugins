@@ -9,7 +9,7 @@
 1. 사용자가 provider marketplace에서 exact core를 원하는 scope에 직접 설치·활성화합니다.
 2. host를 reload하거나 새 session을 엽니다.
 3. `$context-decision:init`을 한 번 호출합니다.
-4. exact core repository가 absent이면 installed core public bootstrap이 core seed를 먼저 적용하고 decision area를 이어서 등록합니다. ready 재호출은 모두 noop입니다.
+4. installed core public bootstrap이 필요한 core seed와 decision area를 적용하고, 현재 host의 `AGENTS.md` 또는 `CLAUDE.md`에 context 운영지침 managed block을 설치합니다. ready 재호출은 모두 noop입니다.
 
 `context-decision`은 marketplace add, install, enable, update 또는 host configuration 변경을 자동 실행하지 않습니다. Manifest에도 dependency나 implicit/default install metadata가 없고 core 구현을 내장하지 않습니다. `schema`와 `capabilities`만 core 없이 확인할 수 있으며, 그 밖의 repository operation은 identity → source → enabled → protocol → read-only core doctor `repository_state` 순서의 preflight를 먼저 통과해야 합니다. Init만 `repository_state=absent`를 installed core public bootstrap으로 넘깁니다.
 
@@ -28,6 +28,16 @@ Host는 `schema`/`capabilities`를 제외한 모든 CLI 호출에 `--host`, `--c
 
 ## Product flow
 
-결정이 확정되면 한 번의 grouped proposal에서 `결정`, `취지`, `반려대안`, lifecycle과 digest를 확인합니다. 승인된 final bundle은 `context-core` coordinator만 적용합니다. 이후 brief는 세 핵심 section을 함께 복원하고, 새 결정이 같은 slot을 supersede하면 이전 DEC를 history로 이동해 더는 따르지 않도록 표시합니다.
+대화가 선택으로 수렴하거나 기존 선택을 바꾸려 하면 `check`가 먼저 관련 Current DEC의 실제 `결정`, `취지`, `반려대안`을 bounded input으로 제공합니다. agent는 이를 새 후보와 비교해 다음 중 하나로 판정합니다.
+
+- `same`: 기존 결정을 재사용하고 중복 기록하지 않음
+- `supporting`: 기존 결정을 유지하고 재사용 가치가 있는 새 근거만 OBS 후보로 제안
+- `rationale_changed`: 결론 전에 취지 변화와 영향을 알리고 유지·변경 의도를 확인
+- `conflict`: 양립하지 않는 내용을 결론 전에 알리고 유지·supersede 의도를 확인
+- `new`: 조회된 범위 안에서 관련 기존 결정을 찾지 못함
+
+이 비교는 실제 본문을 대상으로 하며 문자열 hash나 지문을 의미 동일성의 근거로 사용하지 않습니다. 결정이 확정되면 원래 대화의 답을 먼저 마친 뒤 기록할지 한 번 묻고, 승인된 final bundle만 `context-core` coordinator가 적용합니다. 이후 brief는 세 핵심 section을 함께 복원하고, 새 결정이 같은 slot을 supersede하면 이전 DEC를 history로 이동해 더는 따르지 않도록 표시합니다.
+
+`init`이 설치하는 managed policy가 scoped recall, 사전 비교, 변화 알림, semantic milestone의 grouped capture 제안을 매 대화에서 유도합니다. 이는 agent 운영지침이지 background daemon이나 runtime hook은 아닙니다. 사용자 확인 없는 durable write는 계속 금지됩니다.
 
 기존 `wiki/` 자동 migration은 제공하지 않습니다. PCMS는 조직 권한·승인 workflow·cross-project search·policy·audit·conflict queue의 control-plane 경계이며, 이 local plugin은 결정 기록과 recall 자체에 집중합니다.

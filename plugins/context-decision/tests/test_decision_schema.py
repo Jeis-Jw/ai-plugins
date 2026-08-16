@@ -188,6 +188,13 @@ def bundle(result: dict, *, validation: dict | None = None, priors: list[str] | 
 
 
 class DecisionSchemaTests(unittest.TestCase):
+    def test_removed_fingerprint_fields_fail_closed(self) -> None:
+        content = claim_result()["artifact_drafts"][0]["content"]
+        for field in ("claim_fingerprint", "source_claim_fingerprint"):
+            with self.subTest(field=field), self.assertRaises(decision_cli.DecisionError) as caught:
+                decision_cli.parse_document(content.replace("schema: \"context-decision/v1\"\n", f"schema: \"context-decision/v1\"\n{field}: \"sha256:{'0' * 24}\"\n", 1))
+            self.assertEqual("schema_removed_field", caught.exception.code)
+
     def test_acceptance_25_sections(self) -> None:
         valid = candidate()
         result = claim_result(valid)

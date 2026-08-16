@@ -23,6 +23,7 @@ EXIT_INTEGRITY = 6
 PROTOCOL = "context-common/v1"
 DECISION_INDEX = "context/decision/decision.index.md"
 MAX_BRIEF_BYTES = 8 * 1024
+MAX_CHECK_BYTES = 24 * 1024
 PLACEHOLDERS = {"...", "TODO", "TBD", "해당 없음"}
 ID_RE = re.compile(r"^ctx_[0-9a-f]{32}$")
 LOCAL_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,79}$")
@@ -30,6 +31,15 @@ FIELD_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 ENTRY_RE = re.compile(r"^.*<!-- context-entry (\{.*\}) -->$")
 CORE_SECTIONS = ("결정", "취지", "반려대안")
 ALL_SECTIONS = CORE_SECTIONS + ("근거와 제약", "트레이드오프", "재평가 조건")
+REMOVED_FINGERPRINT_FIELDS = {"claim_fingerprint", "source_claim_fingerprint"}
+SEMANTIC_RELATIONS = ("new", "same", "supporting", "rationale_changed", "conflict")
+RELATION_ACTIONS = {
+    "new": "결정이 확정되면 capture 여부를 묻는다.",
+    "same": "새 DEC를 만들지 않고 기존 DEC를 인용한다.",
+    "supporting": "결정 변경 없이 새 근거라면 OBS capture 여부를 검토한다.",
+    "rationale_changed": "기존 취지를 유지할지 successor DEC로 바꿀지 사용자에게 묻는다.",
+    "conflict": "충돌하는 Current DEC와 차이를 먼저 알리고 유지·수정·supersede 여부를 묻는다.",
+}
 REQUIRED_PLUGIN = {
     "marketplace": "jeis-ai-plugins",
     "plugin": "context-core",
@@ -193,12 +203,6 @@ def scopes_overlap(left: str, right: str) -> bool:
     return is_ancestor_scope(left, right) or is_ancestor_scope(right, left)
 
 
-def claim_fingerprint(scope: str, claim: str) -> str:
-    raw = f"decision\n{canonical_scope(scope)}\n{claim}"
-    normalized = " ".join(normalized_key(raw).split())
-    return "sha256:" + hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24]
-
-
 def natural_filename(title: str) -> str:
     title = nfc(title.strip())
     output: list[str] = []
@@ -310,12 +314,12 @@ def parse_document(text: str) -> tuple[dict[str, Any], dict[str, str]]:
 
 DECISION_KEY_ORDER = (
     "schema", "id", "title", "summary", "created_at", "updated_at", "captured_from", "source_refs", "tags",
-    "search_terms", "claim_fingerprint", "scope", "decision_key", "revisit_when", "revisit_on", "relations",
+    "search_terms", "scope", "decision_key", "revisit_when", "revisit_on", "relations",
     "supersedes", "superseded_by", "retired_at", "retired_reason", "retirement_note",
 )
 OBSERVATION_KEY_ORDER = (
     "schema", "id", "title", "summary", "created_at", "updated_at", "captured_from", "source_refs", "tags",
-    "search_terms", "claim_fingerprint", "kind_hint", "source_claim_fingerprint", "verified_at", "affects_paths",
+    "search_terms", "kind_hint", "verified_at", "affects_paths",
     "relations", "supersedes", "superseded_by", "retired_at", "retired_reason", "retirement_note",
 )
 
@@ -357,13 +361,24 @@ def parse_observation_document(text: str) -> tuple[dict[str, Any], dict[str, str
             raise DecisionError("section_schema_error", "observation content before sections is invalid")
     if current is not None:
         sections[current] = "\n".join(buffer).strip()
-    if frontmatter.get("schema") != "context-observation/v1" or not all(frontmatter.get(key) for key in ("id", "title", "summary", "created_at", "captured_from", "claim_fingerprint")) or not all(sections.get(key) for key in ("관찰", "근거")):
+    removed = sorted(REMOVED_FINGERPRINT_FIELDS & set(frontmatter))
+    if removed:
+        raise DecisionError(
+            "schema_removed_field",
+            "claim fingerprint fields were removed; migrate the artifact before using this protocol",
+            {"fields": removed},
+            EXIT_CONFLICT,
+        )
+    if frontmatter.get("schema") != "context-observation/v1" or not all(frontmatter.get(key) for key in ("id", "title", "summary", "created_at", "captured_from")) or not all(sections.get(key) for key in ("관찰", "근거")):
         raise DecisionError("schema_invalid", "fallback observation is incomplete", exit_code=EXIT_CONFLICT)
     require_context_id(frontmatter["id"])
     return frontmatter, sections
 
 
 def render_observation_document(frontmatter: dict[str, Any], sections: dict[str, str]) -> str:
+    removed = sorted(REMOVED_FINGERPRINT_FIELDS & set(frontmatter))
+    if removed:
+        raise DecisionError("schema_removed_field", "claim fingerprint fields are not renderable", {"fields": removed}, EXIT_CONFLICT)
     ordered = [key for key in OBSERVATION_KEY_ORDER if key in frontmatter]
     ordered.extend(sorted(set(frontmatter) - set(ordered)))
     lines = ["---"] + [f"{key}: {json.dumps(frontmatter[key], ensure_ascii=False, separators=(',', ':'))}" for key in ordered] + ["---", ""]
@@ -374,7 +389,15 @@ def render_observation_document(frontmatter: dict[str, Any], sections: dict[str,
 
 
 def validate_decision_document(frontmatter: dict[str, Any], sections: dict[str, str]) -> None:
-    required = ("schema", "id", "title", "summary", "created_at", "captured_from", "scope", "decision_key", "claim_fingerprint")
+    removed = sorted(REMOVED_FINGERPRINT_FIELDS & set(frontmatter))
+    if removed:
+        raise DecisionError(
+            "schema_removed_field",
+            "claim fingerprint fields were removed; migrate the artifact before using this protocol",
+            {"fields": removed},
+            EXIT_CONFLICT,
+        )
+    required = ("schema", "id", "title", "summary", "created_at", "captured_from", "scope", "decision_key")
     missing = [field for field in required if field not in frontmatter]
     if missing or frontmatter.get("schema") != "context-decision/v1":
         raise DecisionError("schema_invalid", "decision frontmatter is incomplete", {"missing": missing})
@@ -394,9 +417,6 @@ def validate_decision_document(frontmatter: dict[str, Any], sections: dict[str, 
         raise DecisionError("slot_invalid", "stored scope and decision_key must already be canonical")
     if "verified_at" in frontmatter or "status" in frontmatter:
         raise DecisionError("schema_invalid", "DEC forbids verified_at and status")
-    expected_fingerprint = claim_fingerprint(frontmatter["scope"], sections.get("결정", ""))
-    if frontmatter["claim_fingerprint"] != expected_fingerprint:
-        raise DecisionError("claim_fingerprint_mismatch", "claim fingerprint does not match the DEC primary claim", exit_code=EXIT_CONFLICT)
     for name in CORE_SECTIONS:
         content = sections.get(name, "").strip()
         if not content or content in PLACEHOLDERS:
@@ -436,6 +456,7 @@ def decision_capability() -> dict[str, Any]:
         "artifact_schema": "context-decision/v1",
         "authority": "authoritative",
         "claim_surface": {"type": "agent_skill", "name": "context-decision:decision", "operation": "claim"},
+        "comparison_surface": {"type": "cli", "command": "decision_cli.py check"},
         "batch_validation_surface": {"type": "cli", "command": "decision_cli.py batch validate"},
         "claim_rule": "현재 또는 미래 행동을 지배하는 명시적 선택이며 scope와 따를 의사가 있다",
         "claim_assertions": ["explicit_choice", "scope_identified", "commitment_present"],
@@ -472,7 +493,7 @@ def schema_result() -> dict[str, Any]:
         "physical_write": False,
         "required_plugin": REQUIRED_PLUGIN,
         "core_sections": list(CORE_SECTIONS),
-        "commands": ["init", "schema", "capabilities", "candidate prepare", "draft", "capture", "search", "read", "brief", "conflicts", "supersede", "import-fallback", "withdraw", "annotate", "revisit", "batch validate", "plan validate"],
+        "commands": ["init", "schema", "capabilities", "candidate prepare", "check", "draft", "capture", "search", "read", "brief", "conflicts", "supersede", "import-fallback", "withdraw", "annotate", "revisit", "batch validate", "plan validate"],
     }
 
 
@@ -617,7 +638,6 @@ def _draft_from_candidate(
         "summary": candidate["summary"].strip(),
         "created_at": created_at,
         "captured_from": candidate["captured_from"],
-        "claim_fingerprint": claim_fingerprint(scope, decision),
         "scope": scope,
         "decision_key": key,
     }
@@ -700,8 +720,7 @@ def build_claim_result(
             "content": content,
             "semantic_projection": {
                 "kind": "decision",
-                "primary_claim": frontmatter["claim_fingerprint"] and parse_document(content)[1]["결정"],
-                "claim_fingerprint": frontmatter["claim_fingerprint"],
+                "primary_claim": parse_document(content)[1]["결정"],
                 "supporting_context": [parse_document(content)[1]["취지"]],
             },
         }],
@@ -817,7 +836,14 @@ def validate_owner_result(result: dict[str, Any]) -> None:
         projection = draft.get("semantic_projection")
         expected_kind = "observation" if is_observation else "decision"
         primary_section = "관찰" if is_observation else "결정"
-        if not isinstance(projection, dict) or projection.get("kind") != expected_kind or projection.get("primary_claim") != sections[primary_section] or projection.get("claim_fingerprint") != frontmatter["claim_fingerprint"]:
+        if (
+            not isinstance(projection, dict)
+            or set(projection) != {"kind", "primary_claim", "supporting_context"}
+            or projection.get("kind") != expected_kind
+            or projection.get("primary_claim") != sections[primary_section]
+            or not isinstance(projection.get("supporting_context"), list)
+            or len(projection["supporting_context"]) > 4
+        ):
             raise DecisionError("plan_preview_mismatch", "draft semantic projection is invalid", exit_code=EXIT_CONFLICT)
         (observation_drafts if is_observation else draft_by_id)[draft["effect_id"]] = (frontmatter, sections, draft)
     for operation in operations:
@@ -851,12 +877,11 @@ def validate_owner_result(result: dict[str, Any]) -> None:
         if (
             "/retired/" not in obs_draft["path"]
             or obs.get("kind_hint") != "decision"
-            or obs.get("source_claim_fingerprint") != dec.get("claim_fingerprint")
             or obs.get("retired_reason") != "superseded"
             or obs.get("superseded_by") != dec.get("id")
             or obs.get("id") not in dec.get("supersedes", [])
         ):
-            raise DecisionError("lifecycle_invalid", "fallback import fingerprint or reciprocal lifecycle is invalid", exit_code=EXIT_CONFLICT)
+            raise DecisionError("lifecycle_invalid", "fallback import reciprocal lifecycle is invalid", exit_code=EXIT_CONFLICT)
 
 
 def _extract_generated_block(text: str, block: str) -> list[str]:
@@ -1090,7 +1115,7 @@ def validate_batch(repo: pathlib.Path, owner_result: dict[str, Any], prior_bundl
         owner = _owner_result_from_bundle(bundle)
         _overlay_owner_result(state, owner)
         prior_digests.append(bundle["approval_digest"])
-    frontmatter, _, _ = _primary_draft(owner_result)
+    frontmatter, sections, _ = _primary_draft(owner_result)
     transition = owner_result["transition"]
     target_ids = {target.get("id") for target in _input_map(owner_result).get("mutation_request", {}).get("value", {}).get("targets", [])}
     predecessor: dict[str, Any] | None = None
@@ -1105,9 +1130,6 @@ def validate_batch(repo: pathlib.Path, owner_result: dict[str, Any], prior_bundl
             raise DecisionError("decision_slot_conflict", "slot already has a current DEC", {"current": [item["id"] for item in same_slot]}, EXIT_CONFLICT)
     if transition == "decision_supersede" and predecessor and (frontmatter["scope"], frontmatter["decision_key"]) != (predecessor["frontmatter"]["scope"], predecessor["frontmatter"]["decision_key"]):
         raise DecisionError("successor_slot_mismatch", "successor must use the exact predecessor slot", exit_code=EXIT_CONFLICT)
-    duplicates = [record for record in state.values() if record["id"] not in target_ids and record["frontmatter"]["claim_fingerprint"] == frontmatter["claim_fingerprint"]]
-    if transition in {"capture", "decision_supersede", "decision_fallback_import"} and duplicates:
-        raise DecisionError("duplicate_claim", "current DEC has the same claim fingerprint", {"current": [item["id"] for item in duplicates]}, EXIT_CONFLICT)
     overlaps = [
         record for record in state.values()
         if record["id"] not in target_ids
@@ -1134,7 +1156,8 @@ def validate_batch(repo: pathlib.Path, owner_result: dict[str, Any], prior_bundl
     facts = {
         "scope": frontmatter["scope"],
         "decision_key": frontmatter["decision_key"],
-        "claim_fingerprint": frontmatter["claim_fingerprint"],
+        "primary_claim": sections["결정"],
+        "rationale": sections["취지"],
         "acknowledged_conflicts": acknowledged,
     }
     receipt = {
@@ -1159,7 +1182,13 @@ def find_current(repo: pathlib.Path, identifier: str) -> dict[str, Any]:
     return record
 
 
-def _mutation_request(transition: str, requested_changes: dict[str, Any], targets: Sequence[dict[str, str]], successor_digest: str | None) -> dict[str, Any]:
+def _mutation_request(
+    transition: str,
+    requested_changes: dict[str, Any],
+    targets: Sequence[dict[str, str]],
+    successor_digest: str | None,
+    successor_artifact_sha256: str | None = None,
+) -> dict[str, Any]:
     value = {
         "schema": "context-domain-mutation-input/v1",
         "transition": transition,
@@ -1168,6 +1197,7 @@ def _mutation_request(transition: str, requested_changes: dict[str, Any], target
         "requested_changes": requested_changes,
         "targets": sorted(targets, key=lambda item: item["path"]),
         "successor_owner_result_digest": successor_digest,
+        "successor_artifact_sha256": successor_artifact_sha256,
     }
     if len(canonical_json(value).encode("utf-8")) > 8 * 1024:
         raise DecisionError("mutation_request_too_large", "mutation request exceeds 8 KiB", exit_code=EXIT_CONFLICT)
@@ -1217,8 +1247,8 @@ def build_supersede_result(
         "semantic_inputs": claim["semantic_inputs"] + [_semantic_input("mutation_request", request)],
         "semantic_attestations": claim["semantic_attestations"],
         "artifact_drafts": [
-            {"effect_id": old_effect, "path": old_history, "content": old_content, "semantic_projection": {"kind": "decision", "primary_claim": predecessor["sections"]["결정"], "claim_fingerprint": old_fm["claim_fingerprint"], "supporting_context": [predecessor["sections"]["취지"]]}},
-            {"effect_id": new_effect, "path": new_path, "content": new_content, "semantic_projection": {"kind": "decision", "primary_claim": new_sections["결정"], "claim_fingerprint": new_fm["claim_fingerprint"], "supporting_context": [new_sections["취지"]]}},
+            {"effect_id": old_effect, "path": old_history, "content": old_content, "semantic_projection": {"kind": "decision", "primary_claim": predecessor["sections"]["결정"], "supporting_context": [predecessor["sections"]["취지"]]}},
+            {"effect_id": new_effect, "path": new_path, "content": new_content, "semantic_projection": {"kind": "decision", "primary_claim": new_sections["결정"], "supporting_context": [new_sections["취지"]]}},
         ],
         "effects": [
             {"effect_id": old_effect, "action": "retire", "area": "decision", "id": predecessor_id, "state": "history", "reason": "superseded", "successor": new_fm["id"]},
@@ -1275,8 +1305,8 @@ def build_fallback_import_result(
         or predecessor.get("kind") != "observation"
         or successor.get("kind") != "decision"
         or set(lifecycle_input) != {"schema", "operation", "transition", "owner", "predecessor", "successor", "source_candidate_digest"}
-        or set(predecessor) != {"id", "kind", "path", "primary_claim", "claim_fingerprint", "supporting_context"}
-        or set(successor) != {"id", "kind", "path", "primary_claim", "claim_fingerprint", "supporting_context"}
+        or set(predecessor) != {"id", "kind", "path", "primary_claim", "artifact_sha256", "supporting_context"}
+        or set(successor) != {"id", "kind", "path", "primary_claim", "artifact_sha256", "supporting_context"}
     ):
         raise DecisionError("lifecycle_input_mismatch", "fallback lifecycle envelope is invalid", exit_code=EXIT_CONFLICT)
     predecessor_path = pathlib.PurePosixPath(str(predecessor.get("path", "")))
@@ -1300,11 +1330,10 @@ def build_fallback_import_result(
         raise DecisionError("lifecycle_input_mismatch", "lifecycle ids or paths differ from artifact drafts", exit_code=EXIT_CONFLICT)
     if (
         predecessor.get("primary_claim") != obs_sections["관찰"]
-        or predecessor.get("claim_fingerprint") != obs_fm["claim_fingerprint"]
+        or predecessor.get("artifact_sha256") != bytes_digest(source_bytes)
         or successor.get("primary_claim") != dec_sections["결정"]
-        or successor.get("claim_fingerprint") != dec_fm["claim_fingerprint"]
+        or successor.get("artifact_sha256") != file_digest(dec_draft["content"])
         or obs_fm.get("kind_hint") != "decision"
-        or obs_fm.get("source_claim_fingerprint") != dec_fm["claim_fingerprint"]
         or not isinstance(predecessor.get("supporting_context"), list)
         or not isinstance(successor.get("supporting_context"), list)
         or len(predecessor["supporting_context"]) > 4
@@ -1312,7 +1341,7 @@ def build_fallback_import_result(
         or predecessor["supporting_context"] != [line[2:].strip() for line in obs_sections["근거"].splitlines() if line.startswith("- ")][:4]
         or successor["supporting_context"] != [dec_sections["취지"]]
     ):
-        raise DecisionError("fallback_fingerprint_mismatch", "fallback exact claim fingerprint or semantic projection differs", exit_code=EXIT_CONFLICT)
+        raise DecisionError("fallback_semantic_input_mismatch", "fallback artifact identity or semantic projection differs", exit_code=EXIT_CONFLICT)
     if predecessor_id in dec_fm.get("relations", {}).get("informed_by", []):
         raise DecisionError("fallback_relation_conflict", "fallback import must use lifecycle edges, not informed_by", exit_code=EXIT_CONFLICT)
     timestamp = _validate_timestamp(retired_at or now_rfc3339(), "retired_at")
@@ -1338,6 +1367,7 @@ def build_fallback_import_result(
         {"predecessor": predecessor_id, "successor": dec_fm["id"], "acknowledged_conflicts": acknowledgements},
         [target],
         canonical_digest(successor_result),
+        file_digest(dec_draft["content"]),
     )
     result = {
         "schema": "context-owner-result/v1",
@@ -1349,8 +1379,8 @@ def build_fallback_import_result(
         "semantic_inputs": successor_result["semantic_inputs"] + [_semantic_input("same_claim", lifecycle_input), _semantic_input("mutation_request", request)],
         "semantic_attestations": successor_result["semantic_attestations"] + [lifecycle_attestation],
         "artifact_drafts": [
-            {"effect_id": obs_effect, "path": obs_history, "content": obs_content, "semantic_projection": {"kind": "observation", "primary_claim": obs_sections["관찰"], "claim_fingerprint": obs_fm["claim_fingerprint"], "supporting_context": [obs_sections["근거"]]}},
-            {"effect_id": dec_effect, "path": dec_draft["path"], "content": dec_content, "semantic_projection": {"kind": "decision", "primary_claim": dec_sections["결정"], "claim_fingerprint": dec_fm["claim_fingerprint"], "supporting_context": [dec_sections["취지"]]}},
+            {"effect_id": obs_effect, "path": obs_history, "content": obs_content, "semantic_projection": {"kind": "observation", "primary_claim": obs_sections["관찰"], "supporting_context": [obs_sections["근거"]]}},
+            {"effect_id": dec_effect, "path": dec_draft["path"], "content": dec_content, "semantic_projection": {"kind": "decision", "primary_claim": dec_sections["결정"], "supporting_context": [dec_sections["취지"]]}},
         ],
         "effects": [
             {"effect_id": obs_effect, "action": "retire", "area": "observation", "id": predecessor_id, "state": "history", "reason": "superseded", "successor": dec_fm["id"]},
@@ -1385,7 +1415,7 @@ def build_withdraw_result(repo: pathlib.Path, identifier: str, reason: str, *, r
         "schema": "context-owner-result/v1", "result_type": "mutation", "transition": "decision_withdraw",
         "owner": "context-decision", "target_kind": "decision", "capability_digest": canonical_digest(decision_capability()),
         "semantic_inputs": [_semantic_input("mutation_request", request)], "semantic_attestations": [],
-        "artifact_drafts": [{"effect_id": effect, "path": path, "content": content, "semantic_projection": {"kind": "decision", "primary_claim": record["sections"]["결정"], "claim_fingerprint": frontmatter["claim_fingerprint"], "supporting_context": [record["sections"]["취지"]]}}],
+        "artifact_drafts": [{"effect_id": effect, "path": path, "content": content, "semantic_projection": {"kind": "decision", "primary_claim": record["sections"]["결정"], "supporting_context": [record["sections"]["취지"]]}}],
         "effects": [{"effect_id": effect, "action": "retire", "area": "decision", "id": identifier, "state": "history", "reason": "withdrawn"}],
         "proposed_plan": {"schema": "context-owner-plan/v1", "transition": "decision_withdraw", "read_preconditions": [], "operations": [{"op": "move", "effect_id": effect, "area": "decision", "id": identifier, "from_path": record["path"], "to_path": path}]},
     }
@@ -1423,7 +1453,7 @@ def build_annotate_result(
         "schema": "context-owner-result/v1", "result_type": "mutation", "transition": "decision_annotate",
         "owner": "context-decision", "target_kind": "decision", "capability_digest": canonical_digest(decision_capability()),
         "semantic_inputs": [_semantic_input("mutation_request", request)], "semantic_attestations": [],
-        "artifact_drafts": [{"effect_id": effect, "path": record["path"], "content": content, "semantic_projection": {"kind": "decision", "primary_claim": record["sections"]["결정"], "claim_fingerprint": frontmatter["claim_fingerprint"], "supporting_context": [record["sections"]["취지"]]}}],
+        "artifact_drafts": [{"effect_id": effect, "path": record["path"], "content": content, "semantic_projection": {"kind": "decision", "primary_claim": record["sections"]["결정"], "supporting_context": [record["sections"]["취지"]]}}],
         "effects": [{"effect_id": effect, "action": "replace", "area": "decision", "id": identifier, "state": "current"}],
         "proposed_plan": {"schema": "context-owner-plan/v1", "transition": "decision_annotate", "read_preconditions": [], "operations": [{"op": "replace", "effect_id": effect, "area": "decision", "id": identifier, "path": record["path"]}]},
     }
@@ -1538,12 +1568,180 @@ def brief_decisions(
     return {"items": items, "returned": len(items), "omitted": omitted, "truncated": omitted > 0, "max_bytes": max_bytes}
 
 
+def _comparison_tokens(*values: str) -> set[str]:
+    text = normalized_key(" ".join(value for value in values if value))
+    return {
+        token
+        for token in re.findall(r"[^\W_]+", text, flags=re.UNICODE)
+        if len(token) >= 2 and not token.isdecimal()
+    }
+
+
+def prepare_decision_check(
+    repo: pathlib.Path,
+    *,
+    statement: str,
+    scope: str,
+    decision_key: str,
+    rationale: str = "",
+    query: str = "",
+    limit: int = 8,
+) -> dict[str, Any]:
+    """Prepare bounded, actual-body input for agent semantic comparison."""
+
+    if not 1 <= limit <= 12:
+        raise DecisionError("usage_invalid", "check limit must be in 1..12")
+    statement = _bounded_string(statement, "statement", 1200)
+    rationale = rationale.strip()
+    query = query.strip()
+    if rationale:
+        rationale = _bounded_string(rationale, "rationale", 1200)
+    if query:
+        query = _bounded_string(query, "query", 280)
+    scope = canonical_scope(scope)
+    decision_key = canonical_decision_key(decision_key)
+    _, current_rows, _ = _index(repo)
+    tokens = _comparison_tokens(statement, rationale, query, scope, decision_key)
+
+    ranked: list[tuple[int, list[str], dict[str, Any]]] = []
+    mandatory_ids: set[str] = set()
+    for row in current_rows:
+        row_scope = row.get("scope")
+        row_key = row.get("decision_key")
+        score = 0
+        reasons: list[str] = []
+        if (row_scope, row_key) == (scope, decision_key):
+            score += 100
+            reasons.append("exact_slot")
+            mandatory_ids.add(row["id"])
+        elif row_key == decision_key and isinstance(row_scope, str) and scopes_overlap(row_scope, scope):
+            score += 80
+            reasons.append("scope_overlap")
+            mandatory_ids.add(row["id"])
+        elif row_key == decision_key:
+            score += 40
+            reasons.append("same_decision_key")
+        elif isinstance(row_scope, str) and scopes_overlap(row_scope, scope):
+            score += 20
+            reasons.append("related_scope")
+        haystack = normalized_key(
+            " ".join(
+                str(row.get(field, ""))
+                for field in ("id", "title", "summary", "path", "scope", "decision_key")
+            )
+            + " "
+            + " ".join(str(term) for term in row.get("terms", []))
+        )
+        hits = sorted(token for token in tokens if token in haystack)
+        if hits:
+            score += min(len(hits), 8)
+            reasons.append("lexical:" + ",".join(hits[:4]))
+        ranked.append((score, reasons, row))
+
+    if len(mandatory_ids) > limit:
+        raise DecisionError(
+            "comparison_too_broad",
+            "exact-slot and scope-overlap decisions exceed the check limit",
+            {"required": len(mandatory_ids), "limit": limit},
+            EXIT_CONFLICT,
+        )
+    ranked.sort(key=lambda item: (-item[0], str(item[2].get("path", "")), item[2]["id"]))
+    if len(ranked) <= limit:
+        selected = ranked
+    else:
+        selected = [item for item in ranked if item[2]["id"] in mandatory_ids]
+        selected_ids = {item[2]["id"] for item in selected}
+        for item in ranked:
+            if len(selected) >= limit:
+                break
+            if item[2]["id"] in selected_ids:
+                continue
+            reasons = item[1] or ["bounded_sample"]
+            selected.append((item[0], reasons, item[2]))
+            selected_ids.add(item[2]["id"])
+
+    proposal = {
+        "statement": statement,
+        "rationale": rationale or None,
+        "scope": scope,
+        "decision_key": decision_key,
+        "query": query or None,
+    }
+    current: list[dict[str, Any]] = []
+    omitted_ids: list[str] = []
+    for _, reasons, row in selected:
+        record = _record(repo, row)
+        item = {
+            "id": record["id"],
+            "path": record["path"],
+            "sha256": record["sha256"],
+            "title": record["frontmatter"]["title"],
+            "summary": record["frontmatter"]["summary"],
+            "scope": record["frontmatter"]["scope"],
+            "decision_key": record["frontmatter"]["decision_key"],
+            "sections": {name: record["sections"][name] for name in CORE_SECTIONS},
+            "retrieval_reasons": reasons or ["full_current_set"],
+        }
+        candidate_input = {"schema": "context-decision-comparison-input/v1", "proposal": proposal, "current": [*current, item]}
+        if len(canonical_json(candidate_input).encode("utf-8")) > MAX_CHECK_BYTES:
+            if record["id"] in mandatory_ids:
+                raise DecisionError(
+                    "comparison_too_large",
+                    "exact-slot or scope-overlap decision bodies exceed the check byte limit",
+                    {"id": record["id"], "max_bytes": MAX_CHECK_BYTES},
+                    EXIT_CONFLICT,
+                )
+            omitted_ids.append(record["id"])
+            continue
+        current.append(item)
+
+    comparison_input = {
+        "schema": "context-decision-comparison-input/v1",
+        "proposal": proposal,
+        "current": current,
+    }
+    exact = [item for item in current if (item["scope"], item["decision_key"]) == (scope, decision_key)]
+    overlap = [
+        item
+        for item in current
+        if item["decision_key"] == decision_key
+        and item["scope"] != scope
+        and scopes_overlap(item["scope"], scope)
+    ]
+    selected_ids = {item["id"] for item in current}
+    omitted_ids.extend(row["id"] for _, _, row in ranked if row["id"] not in selected_ids and row["id"] not in omitted_ids)
+    return {
+        "schema": "context-decision-check/v1",
+        "comparison_input": comparison_input,
+        "input_digest": canonical_digest(comparison_input),
+        "deterministic": {
+            "exact_slot": [{key: item[key] for key in ("id", "path", "sha256")} for item in exact],
+            "scope_overlap": [{key: item[key] for key in ("id", "path", "sha256")} for item in overlap],
+        },
+        "assessment_contract": {
+            "relations": list(SEMANTIC_RELATIONS),
+            "required_fields": ["relation", "related_ids", "reason"],
+            "actions": dict(RELATION_ACTIONS),
+            "rule": "각 Current DEC의 실제 결정·취지·반려대안을 proposal과 비교한다. 문장 유사도나 hash를 의미 판정으로 사용하지 않는다.",
+        },
+        "retrieval": {
+            "total_current": len(current_rows),
+            "returned": len(current),
+            "omitted": len(omitted_ids),
+            "omitted_ids": omitted_ids,
+            "full_current_set": len(omitted_ids) == 0,
+            "bounded": True,
+        },
+        "warning": "relation=new는 조회된 Current 집합 안에서만 유효하며 전역 무충돌 증명이 아니다.",
+        "physical_write": False,
+    }
+
+
 def conflict_candidates(
     repo: pathlib.Path,
     scope: str,
     decision_key: str,
     *,
-    candidate_fingerprint: str | None = None,
     prior_bundles: Sequence[dict[str, Any]] = (),
 ) -> dict[str, Any]:
     scope = canonical_scope(scope)
@@ -1553,7 +1751,6 @@ def conflict_candidates(
         _overlay_owner_result(state, _owner_result_from_bundle(bundle))
     exact = []
     overlaps = []
-    duplicates = []
     for record in state.values():
         fm = record["frontmatter"]
         item = {"id": record["id"], "path": record["path"], "scope": fm["scope"], "decision_key": fm["decision_key"], "sha256": record["sha256"]}
@@ -1561,10 +1758,8 @@ def conflict_candidates(
             exact.append(item)
         elif fm["decision_key"] == key and scopes_overlap(fm["scope"], scope):
             overlaps.append(item)
-        if candidate_fingerprint and fm["claim_fingerprint"] == candidate_fingerprint:
-            duplicates.append(item)
     keyfn = lambda item: (item["path"], item["id"])
-    return {"scope": scope, "decision_key": key, "exact_slot": sorted(exact, key=keyfn), "overlap": sorted(overlaps, key=keyfn), "duplicates": sorted(duplicates, key=keyfn)}
+    return {"scope": scope, "decision_key": key, "exact_slot": sorted(exact, key=keyfn), "overlap": sorted(overlaps, key=keyfn)}
 
 
 def revisit_decisions(repo: pathlib.Path, *, identifiers: Sequence[str] = (), due: bool = False, as_of: str | None = None) -> dict[str, Any]:
@@ -1839,6 +2034,14 @@ def build_parser() -> argparse.ArgumentParser:
     prepare = candidate_sub.add_parser("prepare")
     _add_capture_arguments(prepare)
     prepare.add_argument("--json", action="store_true")
+    check = sub.add_parser("check")
+    check.add_argument("--statement", required=True)
+    check.add_argument("--scope", required=True)
+    check.add_argument("--decision-key", required=True)
+    check.add_argument("--rationale", default="")
+    check.add_argument("--query", default="")
+    check.add_argument("--limit", type=int, default=8)
+    check.add_argument("--json", action="store_true")
     draft = sub.add_parser("draft")
     draft.add_argument("--candidate", required=True)
     draft.add_argument("--attestation", required=True)
@@ -1873,7 +2076,6 @@ def build_parser() -> argparse.ArgumentParser:
     conflicts = sub.add_parser("conflicts")
     conflicts.add_argument("--scope", required=True)
     conflicts.add_argument("--decision-key", required=True)
-    conflicts.add_argument("--candidate")
     conflicts.add_argument("--json", action="store_true")
     supersede = sub.add_parser("supersede")
     supersede.add_argument("--id", required=True)
@@ -1917,7 +2119,7 @@ def build_parser() -> argparse.ArgumentParser:
     plan_validate.add_argument("--plan-bundle", required=True)
     plan_validate.add_argument("--json", action="store_true")
     for operational in (
-        init, prepare, draft, capture, search, read, brief, conflicts, supersede,
+        init, prepare, check, draft, capture, search, read, brief, conflicts, supersede,
         fallback, withdraw, annotate, revisit, validate, plan_validate,
     ):
         _add_preflight_arguments(operational)
@@ -1938,6 +2140,16 @@ def dispatch(args: argparse.Namespace) -> dict[str, Any]:
         candidate = _load_json_argument(args.candidate, allow_stdin=True)
         return build_claim_result(candidate, _load_json_argument(args.attestation))
     repo = repository_root()
+    if args.command == "check":
+        return prepare_decision_check(
+            repo,
+            statement=args.statement,
+            scope=args.scope,
+            decision_key=args.decision_key,
+            rationale=args.rationale,
+            query=args.query,
+            limit=args.limit,
+        )
     if args.command == "capture":
         candidate = _load_json_argument(args.candidate, allow_stdin=True)
         if args.decline_reason is not None:
@@ -1952,12 +2164,7 @@ def dispatch(args: argparse.Namespace) -> dict[str, Any]:
     if args.command == "brief":
         return brief_decisions(repo, query=args.query, identifiers=args.id or (), include_history=args.include_history, max_bytes=args.max_bytes)
     if args.command == "conflicts":
-        fingerprint = None
-        if args.candidate:
-            candidate = _load_json_argument(args.candidate, allow_stdin=True)
-            scope, _, values = validate_candidate(candidate)
-            fingerprint = claim_fingerprint(scope, values["decision"])
-        return conflict_candidates(repo, args.scope, args.decision_key, candidate_fingerprint=fingerprint)
+        return conflict_candidates(repo, args.scope, args.decision_key)
     if args.command == "supersede":
         return build_supersede_result(repo, args.id, _load_json_argument(args.successor_candidate, allow_stdin=True), _load_json_argument(args.attestation), acknowledged_conflicts=args.ack_conflicts)
     if args.command == "import-fallback":

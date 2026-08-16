@@ -59,7 +59,13 @@ class MutationPlanTests(unittest.TestCase):
             self.assertEqual(decision_cli.bytes_digest(base), receipt["base_area_index_sha256"])
             self.assertEqual(decision_cli.canonical_digest(result), receipt["owner_result_digest"])
             self.assertEqual(
-                {"scope": "project/auth", "decision_key": "session-owner", "claim_fingerprint": decision_cli.claim_fingerprint("project/auth", "인증 세션은 BFF가 소유한다."), "acknowledged_conflicts": []},
+                {
+                    "scope": "project/auth",
+                    "decision_key": "session-owner",
+                    "primary_claim": "인증 세션은 BFF가 소유한다.",
+                    "rationale": "브라우저별 cookie 차이를 서버 경계 안으로 모은다.",
+                    "acknowledged_conflicts": [],
+                },
                 receipt["validated_facts"],
             )
             bundle = helpers.bundle(result, validation=receipt)

@@ -30,7 +30,7 @@ Direct surface는 2단계다. `candidate prepare`는 caller가 명시한 UUIDv4 
 
 `scope`는 trim → NFKC+casefold → leading/trailing slash 제거 → segment별 non-alnum run을 `-`로 변환한다. empty segment, `.`/`..`, segment 40자 초과, 8 segment 초과와 전체 160자 초과는 실패한다. `decision_key`는 같은 변환을 사용하고 `/`, empty와 80자 초과를 거부한다. ancestor는 canonical segment 배열의 strict prefix이며 문자열 prefix나 equality가 아니다.
 
-Current에는 `(scope, decision_key)`당 DEC가 최대 하나다. 동일 fingerprint는 `duplicate_claim`이다. 같은 key의 ancestor/descendant scope는 overlap conflict이며 모든 conflict ID에 대한 acknowledgement와 `{id,path,sha256}` exact read precondition이 있어야 한다.
+Current에는 `(scope, decision_key)`당 DEC가 최대 하나다. 같은 key의 ancestor/descendant scope는 overlap conflict이며 모든 conflict ID에 대한 acknowledgement와 `{id,path,sha256}` exact read precondition이 있어야 한다. 의미상 동일한 결정은 fingerprint로 판정하지 않는다. 사전 `check`가 제공한 실제 본문을 agent가 비교하고 `same`이면 기존 DEC를 재사용한다.
 
 ## Owner result와 lifecycle
 
@@ -38,21 +38,21 @@ capture는 one current draft/effect/create operation을 반환한다. ID와 `cre
 
 - `supersede`: successor candidate가 predecessor의 canonical scope/key를 명시적으로 그대로 가져야 한다. 한 owner result에 old changed-move History draft와 new Current create draft를 포함하고 `old.superseded_by == new.id`, `new.supersedes == [old.id]`를 지킨다. History path는 `<stem>--<old-id12>.md`다.
 - `withdraw`: old를 `retired_reason:"withdrawn"`과 `retirement_note`가 있는 History draft로 만들며 successor가 없다.
-- `annotate`: title, summary, tags, search terms, source refs만 제자리 correction하고 결정 section, slot, fingerprint와 ID는 보존한다.
+- `annotate`: title, summary, tags, search terms, source refs만 제자리 correction하고 결정 section, slot과 ID는 보존한다.
 - `revisit`: due warning과 review proposal만 반환하며 state를 바꾸지 않는다.
 
-일반 evidence OBS는 active인 채 DEC `relations.informed_by`로 연결한다. decision-like fallback OBS import는 `kind_hint:decision`, exact source fingerprint, claim + `same_claim` attestation과 cross-owner single coordinator plan을 요구하며 일반 evidence relation과 혼용하지 않는다.
+일반 evidence OBS는 active인 채 DEC `relations.informed_by`로 연결한다. decision-like fallback OBS import는 `kind_hint:decision`, source artifact의 exact id·path·SHA-256·actual claim, `same_claim` attestation과 cross-owner single coordinator plan을 요구하며 일반 evidence relation과 혼용하지 않는다.
 
 ## Same-batch validation
 
-`batch validate`는 physical `decision.index.md`의 exact SHA-256를 base로 사용한다. 전달된 prior same-area final bundle을 proposal order대로 overlay한다. 각 bundle의 `plan.prior_bundle_digests`는 앞선 exact digest 목록과 같아야 한다. virtual Current에 slot, duplicate fingerprint, overlap acknowledgement/read precondition과 lifecycle predecessor current 여부를 적용한다.
+`batch validate`는 physical `decision.index.md`의 exact SHA-256를 base로 사용한다. 전달된 prior same-area final bundle을 proposal order대로 overlay한다. 각 bundle의 `plan.prior_bundle_digests`는 앞선 exact digest 목록과 같아야 한다. virtual Current에 slot, overlap acknowledgement/read precondition과 lifecycle predecessor current 여부를 적용한다.
 
 성공 receipt는 다음을 결박한다.
 
 - `owner_result_digest`
 - `base_area_index_sha256`
 - ordered `prior_same_area_bundle_digests`
-- canonical `scope`, `decision_key`, recalculated `claim_fingerprint`, acknowledged conflicts
+- canonical `scope`, `decision_key`, actual `primary_claim`, `rationale`, acknowledged conflicts
 - 자기 field를 제외한 `receipt_digest`
 
 Receipt 없는 final owner plan이나 altered receipt는 `plan validate`에서 실패한다.
@@ -61,7 +61,11 @@ Receipt 없는 final owner plan이나 altered receipt는 `plan validate`에서 �
 
 `search`는 `decision.index.md` metadata만 읽는다. `read`와 `brief`는 선택된 DEC만 연다. brief는 `결정`, `취지`, `반려대안`만 포함하고 최대 8 KiB다. 낮은 순위 item을 통째로 제외하며 section 중간 절단은 하지 않는다. History에는 항상 `do_not_follow:true`와 lifecycle reason을 붙인다.
 
-`init`은 production preflight가 ready 또는 absent일 때 `context-owner-descriptor/v1`, complete empty decision index seed, descriptor/seed digest와 installed core `bootstrap` 요청을 반환한다. Init skill은 `decision_init.py` entrypoint 한 번으로 preflight와 active installed core의 public `context_cli.py bootstrap` 호출을 순서대로 수행한다. 이 core surface가 absent core init과 decision area registration을 coordinator로 적용하며 phase result를 반환한다. ready 재호출은 noop이고, exact fixed write prefix만 중간 실패 재시도에서 남은 index write로 수렴한다. decision CLI 자체는 root/area/index를 만들거나 수정하지 않는다.
+`check --statement ... --scope ... --decision-key ...`는 새 선택을 확정하거나 기록하기 전에 사용한다. exact slot과 scope overlap은 반드시 포함하고, 나머지는 bounded ranking으로 선택해 실제 Current DEC의 세 핵심 section과 `{id,path,sha256}`를 `context-decision-comparison-input/v1`으로 반환한다. agent는 `new|same|supporting|rationale_changed|conflict` 중 하나와 근거·관련 ID를 제시한다. `new`는 반환된 집합 안의 판정이며 전역 무충돌 증명이 아니다. 이 operation은 read-only이고 지문·문장 유사도로 의미를 확정하지 않는다.
+
+`init`은 production preflight가 ready 또는 absent일 때 `context-owner-descriptor/v1`, complete empty decision index seed, descriptor/seed digest와 installed core `bootstrap` 요청을 반환한다. Init skill은 `decision_init.py` entrypoint 한 번으로 preflight와 active installed core의 public `context_cli.py bootstrap --host <host>` 호출을 순서대로 수행한다. 이 core surface가 absent core init, decision area registration과 host별 managed operating policy installation을 coordinator로 적용하며 phase result를 반환한다. ready 재호출은 noop이고, exact fixed write prefix만 중간 실패 재시도에서 남은 write로 수렴한다. decision CLI 자체는 root/area/index/policy를 만들거나 수정하지 않는다.
+
+`claim_fingerprint`와 `source_claim_fingerprint`는 schema에서 제거됐다. legacy input에 남아 있으면 `schema_removed_field`로 실패하며 조용히 무시하지 않는다.
 
 ## Output and errors
 

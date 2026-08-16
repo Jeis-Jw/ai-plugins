@@ -133,7 +133,7 @@ class DecisionLifecycleTests(unittest.TestCase):
             self.assertEqual(1, history_search["returned"])
             self.assertTrue(history_search["items"][0]["do_not_follow"])
 
-    def test_annotate_preserves_semantic_sections_slot_and_fingerprint(self) -> None:
+    def test_annotate_preserves_semantic_sections_and_slot(self) -> None:
         with helpers.git_repo() as temp:
             repo = helpers.Path(temp)
             current = helpers.claim_result()
@@ -143,7 +143,11 @@ class DecisionLifecycleTests(unittest.TestCase):
             result = decision_cli.build_annotate_result(repo, before_fm["id"], summary="운영 경계를 BFF에 둔다.", tags=["auth", "bff"])
             after_fm, after_sections = decision_cli.parse_document(result["artifact_drafts"][0]["content"])
             self.assertEqual(before_sections, after_sections)
-            self.assertEqual((before_fm["scope"], before_fm["decision_key"], before_fm["claim_fingerprint"]), (after_fm["scope"], after_fm["decision_key"], after_fm["claim_fingerprint"]))
+            self.assertEqual(
+                (before_fm["scope"], before_fm["decision_key"]),
+                (after_fm["scope"], after_fm["decision_key"]),
+            )
+            self.assertNotIn("claim_fingerprint", after_fm)
 
 
 if __name__ == "__main__":

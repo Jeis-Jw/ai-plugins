@@ -5,7 +5,6 @@ title: "{{title}}"
 summary: "{{summary}}"
 created_at: "{{created_at}}"
 captured_from: "{{captured_from}}"
-claim_fingerprint: "{{claim_fingerprint}}"
 scope: "{{scope}}"
 decision_key: "{{decision_key}}"
 ---

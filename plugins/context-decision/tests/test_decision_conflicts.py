@@ -43,19 +43,31 @@ class DecisionConflictTests(unittest.TestCase):
                 decision_cli.validate_batch(repo, second, [first_bundle])
             self.assertEqual("decision_slot_conflict", virtual.exception.code)
 
-    def test_duplicate_fingerprint_is_independent_of_decision_key(self) -> None:
+    def test_same_meaning_is_compared_from_actual_bodies_not_hash_gated(self) -> None:
         with helpers.git_repo() as temp:
             repo = helpers.Path(temp)
             existing = helpers.claim_result()
             helpers.write_decision_area(repo, current=[draft_pair(existing)])
-            duplicate_value = helpers.candidate(
+            related_value = helpers.candidate(
                 key="auth-owner-alias",
+                decision="로그인 세션의 책임 경계는 backend-for-frontend에 둔다.",
                 candidate_id="cand_550e8400e29b41d4a716446655440001",
             )
-            duplicate = helpers.claim_result(duplicate_value, identifier="ctx_550e8400e29b41d4a716446655440001")
-            with self.assertRaises(decision_cli.DecisionError) as caught:
-                decision_cli.validate_batch(repo, duplicate)
-            self.assertEqual("duplicate_claim", caught.exception.code)
+            related = helpers.claim_result(related_value, identifier="ctx_550e8400e29b41d4a716446655440001")
+            receipt = decision_cli.validate_batch(repo, related)
+            self.assertEqual(related_value["claim"], receipt["validated_facts"]["primary_claim"])
+
+            check = decision_cli.prepare_decision_check(
+                repo,
+                statement=related_value["claim"],
+                rationale=related_value["owner_inputs"]["decision"]["rationale"],
+                scope=related_value["scope_hint"],
+                decision_key=related_value["owner_inputs"]["decision"]["decision_key"],
+            )
+            self.assertEqual(["ctx_550e8400e29b41d4a716446655440000"], [item["id"] for item in check["comparison_input"]["current"]])
+            self.assertEqual("인증 세션은 BFF가 소유한다.", check["comparison_input"]["current"][0]["sections"]["결정"])
+            self.assertEqual(list(decision_cli.SEMANTIC_RELATIONS), check["assessment_contract"]["relations"])
+            self.assertFalse(check["physical_write"])
 
     def test_acceptance_27_scope_overlap(self) -> None:
         with helpers.git_repo() as temp:
