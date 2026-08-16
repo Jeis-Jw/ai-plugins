@@ -195,6 +195,12 @@ class DecisionSchemaTests(unittest.TestCase):
                 decision_cli.parse_document(content.replace("schema: \"context-decision/v1\"\n", f"schema: \"context-decision/v1\"\n{field}: \"sha256:{'0' * 24}\"\n", 1))
             self.assertEqual("schema_removed_field", caught.exception.code)
 
+            legacy_candidate = candidate()
+            legacy_candidate[field] = "sha256:" + "0" * 24
+            with self.assertRaises(decision_cli.DecisionError) as candidate_error:
+                decision_cli.validate_candidate(legacy_candidate)
+            self.assertEqual("schema_removed_field", candidate_error.exception.code)
+
     def test_acceptance_25_sections(self) -> None:
         valid = candidate()
         result = claim_result(valid)

@@ -25,7 +25,7 @@ EXIT_NOT_FOUND = 3
 EXIT_AMBIGUOUS = 4
 EXIT_CONFLICT = 5
 EXIT_INTEGRITY = 6
-PROTOCOL = "context-common/v1"
+PROTOCOL = "context-common/v2"
 MAX_STAGE1_BYTES = 4 * 1024
 MAX_SECTION_ITEM_BYTES = 2 * 1024
 MAX_RECALL_BATCH_BYTES = 8 * 1024
@@ -1234,6 +1234,14 @@ def validate_candidate_batch(batch: Any, capabilities: Any) -> list[dict[str, An
     for candidate in candidates:
         if not isinstance(candidate, dict) or candidate.get("schema") != "context-capture-candidate/v1" or required - set(candidate):
             raise ContextError("candidate_invalid", "candidate envelope is incomplete", exit_code=EXIT_CONFLICT)
+        removed = sorted(REMOVED_FINGERPRINT_FIELDS & set(candidate))
+        if removed:
+            raise ContextError(
+                "schema_removed_field",
+                "claim fingerprint fields were removed from capture candidates",
+                {"fields": removed},
+                EXIT_CONFLICT,
+            )
         identifier = candidate.get("candidate_id")
         claim_key = candidate.get("claim_key")
         if not isinstance(identifier, str) or not re.fullmatch(r"cand_[0-9a-f]{32}", identifier):
@@ -2157,7 +2165,7 @@ def build_init_bundle(repo: pathlib.Path) -> dict[str, Any]:
     effect_id = "effect_core_init"
     plan = {
         "schema": "context-mutation-plan/v1", "plan_id": new_plan_id(), "owner": "context-core", "source_type": "core_control",
-        "transition": "core_init", "owner_descriptor": {"owner": "context-core", "kind": "storage", "artifact_schema": "context-common/v1"},
+        "transition": "core_init", "owner_descriptor": {"owner": "context-core", "kind": "storage", "artifact_schema": PROTOCOL},
         "control_input": {"schema": "context-core-control/v1", "transition": "core_init", "seed_digests": {path: sha256_bytes(file_bytes(contents[path])) for path in sorted(contents)}},
         "prior_bundle_digests": [], "read_preconditions": [],
         "operations": [{"op": "index_rebuild", "derived_from": [effect_id], "areas": ["observation", "snapshot"], "include_root": True, "before_sha256": before, "after_sha256": after, "seed_materials": material_ids}],
@@ -2314,6 +2322,7 @@ def bootstrap_repository(
         raise _bootstrap_phase_error(error, "bootstrap_verify", phases) from error
 
     try:
+        policy_bundle = build_policy_bundle(repo, policy_target)
         if policy_bundle.get("noop") is True:
             policy_status = "noop"
             policy_changed: list[str] = []
@@ -2498,10 +2507,25 @@ def build_policy_bundle(repo: pathlib.Path, target: str) -> dict[str, Any]:
     if path.is_symlink() or (path.exists() and not path.is_file()):
         raise ContextError("policy_file_unsupported", "policy target must be a regular root file", {"target": target}, EXIT_CONFLICT)
     before_bytes: bytes | None = path.read_bytes() if path.exists() else None
-    before = before_bytes.decode("utf-8") if before_bytes is not None else ""
+    try:
+        before = before_bytes.decode("utf-8") if before_bytes is not None else ""
+    except UnicodeDecodeError as error:
+        raise ContextError(
+            "policy_file_unsupported",
+            "policy target must be valid UTF-8",
+            {"target": target},
+            EXIT_CONFLICT,
+        ) from error
     if "\r\n" in before and before.replace("\r\n", "").find("\n") >= 0:
         raise ContextError("policy_file_unsupported", "mixed newlines are not supported", {"target": target}, EXIT_CONFLICT)
-    if before.count(POLICY_BEGIN) != before.count(POLICY_END) or before.count(POLICY_BEGIN) > 1:
+    if (
+        before.count(POLICY_BEGIN) != before.count(POLICY_END)
+        or before.count(POLICY_BEGIN) > 1
+        or (
+            POLICY_BEGIN in before
+            and before.find(POLICY_END) < before.find(POLICY_BEGIN)
+        )
+    ):
         raise ContextError("policy_marker_invalid", "policy marker must be absent or one balanced pair", {"target": target}, EXIT_CONFLICT)
     newline = "\r\n" if "\r\n" in before else "\n"
     policy_body = POLICY_BODY.replace("\n", newline)
@@ -3793,11 +3817,11 @@ def _atomic_write(path: pathlib.Path, content: str) -> None:
     _atomic_write_bytes(path, file_bytes(content))
 
 
-def _atomic_write_bytes(path: pathlib.Path, content: bytes) -> None:
+def _atomic_write_bytes(path: pathlib.Path, content: bytes, *, mode: int = 0o600) -> None:
     path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
     fd, temp_path = tempfile.mkstemp(prefix=".context-", dir=path.parent)
     try:
-        os.fchmod(fd, 0o600)
+        os.fchmod(fd, mode)
         with os.fdopen(fd, "wb") as handle:
             handle.write(content)
             handle.flush()
@@ -3832,7 +3856,8 @@ def _apply_file_operation(repo: pathlib.Path, operation: dict[str, Any], materia
         content = materials[operation["material"]]["content"]
         if operation.get("role") == "policy":
             path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
-            _atomic_write_bytes(path, content.encode("utf-8"))
+            mode = path.stat().st_mode & 0o777 if path.exists() else 0o644
+            _atomic_write_bytes(path, content.encode("utf-8"), mode=mode)
         else:
             _atomic_write(path, content)
         changed.append(operation["path"])

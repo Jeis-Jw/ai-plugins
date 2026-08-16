@@ -9,7 +9,7 @@
 3. `$context-core:init`을 한 번 호출하면 canonical storage seed와 활성 host의 관리형 운영지침을 core coordinator가 적용합니다.
 4. 반환된 `doctor.repository_state: ready`, `policy.target`과 phase result를 확인합니다. ready 재호출은 noop입니다.
 
-`schema`와 `capabilities`는 repository root 없이 확인할 수 있습니다. `doctor`는 read-only이며 `context-common/v1`과 `repository_state`를 보고합니다. 저장소가 아직 초기화되지 않은 read operation은 dependency 오류가 아닌 `context_root_missing`으로 실패합니다. `init`은 absent에서 fixed root/SNAP/OBS seed와 `codex → AGENTS.md`, `claude-code → CLAUDE.md` 관리형 block만 직접 적용합니다. marker 밖 bytes를 보존하고 직전 fixed bundle이 남긴 exact canonical write prefix만 재개하며, 그 밖의 partial/invalid는 자동 repair하지 않습니다.
+`schema`와 `capabilities`는 repository root 없이 확인할 수 있습니다. `doctor`는 read-only이며 `context-common/v2`와 `repository_state`를 보고합니다. 저장소가 아직 초기화되지 않은 read operation은 dependency 오류가 아닌 `context_root_missing`으로 실패합니다. `init`은 absent에서 fixed root/SNAP/OBS seed와 `codex → AGENTS.md`, `claude-code → CLAUDE.md` 관리형 block만 직접 적용합니다. marker 밖 bytes와 기존 파일 mode를 보존하고 직전 fixed bundle이 남긴 exact canonical write prefix만 재개하며, 그 밖의 partial/invalid는 자동 repair하지 않습니다.
 
 ## 제품 흐름
 
@@ -21,4 +21,4 @@
 
 기존 `wiki/`를 자동 migration하지 않습니다. Obsidian은 repository root를 vault로 열 때의 선택적 view일 뿐 runtime dependency가 아닙니다. PCMS는 조직 권한·승인 queue·cross-project search·정책·감사 같은 control-plane 범위를 담당하며, 이 local plugin은 그 기능을 제한해 판매하는 제품이 아닙니다.
 
-0.2.0은 의미 판정에 쓰던 `claim_fingerprint`와 `source_claim_fingerprint`를 제거한 breaking release입니다. 이 field가 남은 0.1.x artifact는 조용히 무시하지 않고 `schema_removed_field`로 중단합니다. 기존 record는 별도의 검토·승인된 bounded migration에서 field를 제거한 뒤 derived index를 rebuild해야 합니다.
+0.2.0은 의미 판정에 쓰던 `claim_fingerprint`와 `source_claim_fingerprint`를 제거한 breaking release입니다. 혼합 설치를 호환으로 오판하지 않도록 wire/storage handshake를 `context-common/v2`로 올렸습니다. 이 field가 남은 0.1.x artifact는 조용히 무시하지 않고 `schema_removed_field`로 중단합니다. 기존 record는 별도의 검토·승인된 bounded migration에서 field를 제거한 뒤 derived index를 rebuild해야 합니다.

@@ -13,7 +13,7 @@ affects_paths: [plugins/context-decision/**]
 
 ### 의존성과 소유 범위
 
-`context-decision`은 [[context-core-plugin]]의 `context-common/v1` 저장·ID·index·recall 계약에 manual hard-depend한다. 요구 distribution identity는 `marketplace: jeis-ai-plugins`, `plugin: context-core`, selector `context-core@jeis-ai-plugins`, marketplace source `Jeis-Jw/ai-plugins`다. host-native dependency, 자동 설치·활성화·업데이트와 내장 core는 사용하지 않는다. exact core가 준비되지 않았거나 repository root가 초기화되지 않았으면 fail-closed하고 묵시적으로 다른 저장소를 만들지 않는다.
+`context-decision`은 [[context-core-plugin]]의 `context-common/v2` 저장·ID·index·recall 계약에 manual hard-depend한다. 요구 distribution identity는 `marketplace: jeis-ai-plugins`, `plugin: context-core`, selector `context-core@jeis-ai-plugins`, marketplace source `Jeis-Jw/ai-plugins`다. host-native dependency, 자동 설치·활성화·업데이트와 내장 core는 사용하지 않는다. exact core가 준비되지 않았거나 repository root가 초기화되지 않았으면 fail-closed하고 묵시적으로 다른 저장소를 만들지 않는다.
 
 semantic 소유 범위:
 
@@ -75,7 +75,7 @@ decision CLI는 filesystem을 직접 쓰지 않는다. 자기 area와 허용된 
 
 1. host의 plugin inventory에서 exact `marketplace=jeis-ai-plugins`, `plugin=context-core`를 찾는다. plugin cache path를 직접 탐색하거나 동명 plugin을 marketplace 구분 없이 수락하지 않는다.
 2. exact plugin이 현재 scope에서 enabled/available인지 확인한다.
-3. host가 노출한 core capability와 `context_cli.py doctor --json` receipt에서 `context-common/v1` 호환성을 확인한다.
+3. host가 노출한 core capability와 `context_cli.py doctor --json` receipt에서 `context-common/v2` 호환성을 확인한다.
 4. repository state를 확인한다. 일반 operation은 `ready`를 요구하고, init은 `absent`를 installed core bootstrap-required state로 수락한다.
 
 missing/source mismatch/disabled/incompatible/partial preflight 실패는 repository filesystem과 host configuration 모두 write 0이다. context-decision은 install, enable, update 또는 marketplace add를 실행하지 않는다. Exact compatible core가 installed/enabled이고 repository가 absent일 때만 그 core의 public bootstrap surface를 init orchestration으로 호출한다.
@@ -85,7 +85,7 @@ missing/source mismatch/disabled/incompatible/partial preflight 실패는 reposi
 | `core_missing` | exact `context-core@jeis-ai-plugins` 미설치 | provider marketplace `jeis-ai-plugins`의 plugin `context-core`를 사용자가 직접 설치 |
 | `core_source_mismatch` | 다른 marketplace의 동명 core만 존재 | source `Jeis-Jw/ai-plugins`의 exact marketplace/plugin 좌표를 표시하고 중단 |
 | `core_disabled` | exact core가 설치됐지만 현재 scope에서 비활성 | 사용자가 직접 올바른 scope에서 활성화 |
-| `core_incompatible` | exact core가 `context-common/v1`을 제공하지 않음 | 사용자가 exact core를 호환 버전으로 직접 업데이트 |
+| `core_incompatible` | exact core가 `context-common/v2`를 제공하지 않음 | 사용자가 exact core를 호환 버전으로 직접 업데이트 |
 | `core_uninitialized` | plugin은 준비됐지만 repository state가 `absent` | 같은 `context-decision:init` 호출에서 installed core bootstrap 뒤 area 등록 계속 |
 | `partial_core_init` | repository state가 `partial` 또는 invalid | core doctor/repair 안내 후 중단; decision이 덮어쓰지 않음 |
 
@@ -98,7 +98,7 @@ missing/source mismatch/disabled/incompatible/partial preflight 실패는 reposi
   "selector": "context-core@jeis-ai-plugins",
   "source": "Jeis-Jw/ai-plugins",
   "provider": "Jinwuk-Lee (Jeis-Jw)",
-  "required_protocol": "context-common/v1"
+  "required_protocol": "context-common/v2"
 }
 ```
 
@@ -201,7 +201,7 @@ field type과 length semantics는 context-core capability 계약의 `string|stri
 
 ### 결정 전 비교
 
-대화가 선택으로 수렴하거나 기존 선택을 바꾸려 하면 claim보다 먼저 `check`를 호출한다. exact slot과 scope overlap DEC는 반드시 포함하고 나머지는 index metadata·query를 이용해 최대 12개, 24 KiB 안에서 관련 Current DEC를 고른다. 결과는 각 DEC의 actual `결정`, `취지`, `반려대안`과 `{id,path,sha256}`를 담는다. agent는 이 input만 보고 `new | same | supporting | rationale_changed | conflict`와 related IDs·근거를 만든다.
+대화가 선택으로 수렴하거나 기존 선택을 바꾸려 하면 claim보다 먼저 `check`를 호출한다. exact slot과 scope overlap DEC는 반드시 포함하고 나머지는 index metadata·query를 이용해 최대 12개, comparison input 24 KiB 안에서 관련 Current DEC를 고른다. 전체 result는 32 KiB이며 omitted ID는 최대 8개 sample과 exact count만 반환한다. 결과는 각 DEC의 actual `결정`, `취지`, `반려대안`과 `{id,path,sha256}`를 담는다. agent는 이 input만 보고 `new | same | supporting | rationale_changed | conflict`와 related IDs·근거를 만든다.
 
 - `same`: 기존 DEC를 인용하고 새 DEC를 만들지 않는다.
 - `supporting`: DEC를 유지하고 오래 재사용할 새 근거만 OBS 후보로 고려한다.
@@ -345,7 +345,7 @@ core-only fallback OBS를 DEC로 import하려면 `kind_hint: decision`, OBS와 D
 
 ### Init·packaging gate
 
-`init`은 위 manual dependency preflight를 먼저 수행한다. missing/source mismatch/disabled/incompatible/partial이면 owner descriptor나 index seed를 만들지 않고 structured error와 수동 next action만 반환한다. exact core가 ready 또는 absent이면 owner descriptor와 complete `decision.index.md` seed를 생성하고 installed core의 public `bootstrap` surface에 전달한다. core coordinator가 absent core seed를 먼저 적용하고 `context/decision/`, decision index와 root area entry를 등록한다. 두 phase는 `applied|noop|failed`와 changed paths를 반환한다. coordinator가 남긴 exact canonical root-row prefix만 재시도에서 area index write를 계속하며, 동일 descriptor/index가 이미 valid면 noop이다. descriptor의 owner/authority/artifact_schema 등 canonical fields가 다르거나 임의 partial content/다른 owner claim이면 write 0 fail-closed다.
+`init`은 위 manual dependency preflight를 먼저 수행한다. missing/source mismatch/disabled/incompatible/partial이면 owner descriptor나 index seed를 만들지 않고 structured error와 수동 next action만 반환한다. exact core가 ready 또는 absent이면 owner descriptor와 complete `decision.index.md` seed를 생성하고 installed core의 public `bootstrap` surface에 host와 함께 전달한다. core coordinator가 absent core seed를 먼저 적용하고 `context/decision/`, decision index와 root area entry를 등록한 뒤 `codex → AGENTS.md`, `claude-code → CLAUDE.md` managed policy를 설치한다. public init plan과 실제 result는 `core_init`, `area_register`, `policy_install` 세 phase를 동일하게 노출한다. 각 phase는 `applied|noop|failed`와 changed paths를 반환한다. coordinator가 남긴 exact canonical root-row prefix만 재시도에서 area index write를 계속하며, 동일 descriptor/index/policy가 이미 valid면 noop이다. descriptor의 owner/authority/artifact_schema 등 canonical fields가 다르거나 임의 partial content/다른 owner claim이면 write 0 fail-closed다.
 
 두 host의 `.claude-plugin/plugin.json`과 `.codex-plugin/plugin.json`에는 plugin dependency metadata를 넣지 않는다. marketplace entry도 context-decision 설치를 이유로 context-core를 `INSTALLED_BY_DEFAULT` 처리하지 않는다. README와 init error는 provider marketplace `jeis-ai-plugins`, plugin `context-core`, source `Jeis-Jw/ai-plugins`를 정확히 표시하되 marketplace 추가·plugin 설치·활성화·업데이트를 실행하지 않는다. host별 command/GUI 안내는 distribution adapter가 현재 host surface에 맞춰 render하며 scope 선택은 사용자에게 남긴다.
 

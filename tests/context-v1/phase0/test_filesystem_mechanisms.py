@@ -79,7 +79,7 @@ class IndexAndPathContractTests(unittest.TestCase):
 
 @unittest.skipUnless(
     sys.platform == "darwin" or sys.platform.startswith("linux"),
-    "context-common/v1 supports fcntl only on macOS/Linux",
+    "context-common/v2 supports fcntl only on macOS/Linux",
 )
 class FilesystemMechanismTests(unittest.TestCase):
     def test_root_lock_path_and_parent_mode_are_deterministic(self):

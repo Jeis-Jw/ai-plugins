@@ -35,12 +35,12 @@
             "plugin": "context-core",
             "source": "Other/context-core",
             "enabled": true,
-            "protocols": ["context-common/v1"]
+            "protocols": ["context-common/v2"]
           }
         ]
       },
       "doctor": {
-        "supported_protocols": ["context-common/v1"],
+        "supported_protocols": ["context-common/v2"],
         "repository_state": "ready",
         "issues": []
       },
@@ -50,7 +50,7 @@
         "plugin": "context-core",
         "source": "Other/context-core",
         "enabled": true,
-        "protocol": "context-common/v1",
+        "protocol": "context-common/v2",
         "repository_state": "ready"
       },
       "expected_rendered": {
@@ -74,12 +74,12 @@
             "plugin": "context-core",
             "source": "Jeis-Jw/ai-plugins",
             "enabled": false,
-            "protocols": ["context-common/v1"]
+            "protocols": ["context-common/v2"]
           }
         ]
       },
       "doctor": {
-        "supported_protocols": ["context-common/v1"],
+        "supported_protocols": ["context-common/v2"],
         "repository_state": "ready",
         "issues": []
       },
@@ -89,7 +89,7 @@
         "plugin": "context-core",
         "source": "Jeis-Jw/ai-plugins",
         "enabled": false,
-        "protocol": "context-common/v1",
+        "protocol": "context-common/v2",
         "repository_state": "ready"
       },
       "expected_rendered": {
@@ -112,12 +112,12 @@
             "plugin": "context-core",
             "source": "Jeis-Jw/ai-plugins",
             "enabled": true,
-            "protocols": ["context-common/v2"]
+            "protocols": ["context-common/v1"]
           }
         ]
       },
       "doctor": {
-        "supported_protocols": ["context-common/v2"],
+        "supported_protocols": ["context-common/v1"],
         "repository_state": "ready",
         "issues": []
       },
@@ -127,15 +127,15 @@
         "plugin": "context-core",
         "source": "Jeis-Jw/ai-plugins",
         "enabled": true,
-        "protocol": "context-common/v2",
+        "protocol": "context-common/v1",
         "repository_state": "ready"
       },
       "expected_rendered": {
         "code": "core_incompatible",
         "host": "claude-code",
-        "message": "exact context-core가 context-common/v1 handshake를 통과하지 못했다.",
+        "message": "exact context-core가 context-common/v2 handshake를 통과하지 못했다.",
         "manual_actions": [
-          "exact context-core@jeis-ai-plugins를 context-common/v1 호환 버전으로 사용자가 직접 업데이트한다.",
+          "exact context-core@jeis-ai-plugins를 context-common/v2 호환 버전으로 사용자가 직접 업데이트한다.",
           "host reload 또는 새 session 뒤 context-decision:init을 다시 실행한다."
         ]
       }
@@ -150,12 +150,12 @@
             "plugin": "context-core",
             "source": "Jeis-Jw/ai-plugins",
             "enabled": true,
-            "protocols": ["context-common/v1"]
+            "protocols": ["context-common/v2"]
           }
         ]
       },
       "doctor": {
-        "supported_protocols": ["context-common/v1"],
+        "supported_protocols": ["context-common/v2"],
         "repository_state": "absent",
         "issues": ["context_root_missing"]
       },
@@ -165,7 +165,7 @@
         "plugin": "context-core",
         "source": "Jeis-Jw/ai-plugins",
         "enabled": true,
-        "protocol": "context-common/v1",
+        "protocol": "context-common/v2",
         "repository_state": "absent"
       },
       "expected_rendered": {
@@ -188,12 +188,12 @@
             "plugin": "context-core",
             "source": "Jeis-Jw/ai-plugins",
             "enabled": true,
-            "protocols": ["context-common/v1"]
+            "protocols": ["context-common/v2"]
           }
         ]
       },
       "doctor": {
-        "supported_protocols": ["context-common/v1"],
+        "supported_protocols": ["context-common/v2"],
         "repository_state": "partial",
         "issues": ["missing_area_index"]
       },
@@ -203,7 +203,7 @@
         "plugin": "context-core",
         "source": "Jeis-Jw/ai-plugins",
         "enabled": true,
-        "protocol": "context-common/v1",
+        "protocol": "context-common/v2",
         "repository_state": "partial"
       },
       "expected_rendered": {
@@ -227,12 +227,12 @@
             "plugin": "context-core",
             "source": "Jeis-Jw/ai-plugins",
             "enabled": true,
-            "protocols": ["context-common/v1"]
+            "protocols": ["context-common/v2"]
           }
         ]
       },
       "doctor": {
-        "supported_protocols": ["context-common/v1"],
+        "supported_protocols": ["context-common/v2"],
         "repository_state": "ready",
         "issues": []
       },
@@ -242,7 +242,7 @@
         "plugin": "context-core",
         "source": "Jeis-Jw/ai-plugins",
         "enabled": true,
-        "protocol": "context-common/v1",
+        "protocol": "context-common/v2",
         "repository_state": "ready"
       },
       "expected_rendered": {

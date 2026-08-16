@@ -10,7 +10,7 @@
   "interface": {
     "displayName": "Context Core",
     "shortDescription": "Recall prior context and suggest durable capture safely.",
-    "longDescription": "Installs a managed conversational workflow for scoped recall, actual-body comparison, conflict notification, and approval-gated capture; stores handoffs and evidence as Markdown and remains the only physical writer for context-common/v1 owners.",
+    "longDescription": "Installs a managed conversational workflow for scoped recall, actual-body comparison, conflict notification, and approval-gated capture; stores handoffs and evidence as Markdown and remains the only physical writer for context-common/v2 owners.",
     "developerName": "Jinwuk-Lee",
     "category": "Productivity",
     "capabilities": ["Read", "Write", "Validation"],

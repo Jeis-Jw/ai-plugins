@@ -30,8 +30,13 @@ class MutationPlanTests(unittest.TestCase):
             self.assertEqual(decision_cli.canonical_digest(result["owner_descriptor"]), result["descriptor_digest"])
             self.assertEqual(decision_cli.file_digest(result["index_seed"]), result["index_seed_sha256"])
             self.assertEqual({"owner": "context-core", "operation": "bootstrap", "index_path": "context/decision/decision.index.md"}, result["registration"])
-            self.assertEqual(["ready", "pending"], [phase["status"] for phase in result["phases"]])
+            self.assertEqual(
+                [("core_init", "ready"), ("area_register", "pending"), ("policy_install", "pending")],
+                [(phase["phase"], phase["status"]) for phase in result["phases"]],
+            )
             self.assertEqual("apply_if_absent", result["bootstrap"]["core_init"])
+            self.assertEqual("active_host", result["bootstrap"]["host"])
+            self.assertEqual("active_host", result["bootstrap"]["policy_install"])
             self.assertNotIn("context.index.md", result["index_seed"])
             decision_cli.parse_decision_index(result["index_seed"])
 
@@ -43,7 +48,7 @@ class MutationPlanTests(unittest.TestCase):
                 "selector": "context-core@jeis-ai-plugins",
                 "source": "Jeis-Jw/ai-plugins",
                 "provider": "Jinwuk-Lee (Jeis-Jw)",
-                "required_protocol": "context-common/v1",
+                "required_protocol": "context-common/v2",
             },
             decision_cli.REQUIRED_PLUGIN,
         )

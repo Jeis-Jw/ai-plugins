@@ -20,10 +20,12 @@ EXIT_NOT_FOUND = 3
 EXIT_AMBIGUOUS = 4
 EXIT_CONFLICT = 5
 EXIT_INTEGRITY = 6
-PROTOCOL = "context-common/v1"
+PROTOCOL = "context-common/v2"
 DECISION_INDEX = "context/decision/decision.index.md"
 MAX_BRIEF_BYTES = 8 * 1024
 MAX_CHECK_BYTES = 24 * 1024
+MAX_CHECK_RESULT_BYTES = 32 * 1024
+MAX_OMITTED_ID_SAMPLE = 8
 PLACEHOLDERS = {"...", "TODO", "TBD", "해당 없음"}
 ID_RE = re.compile(r"^ctx_[0-9a-f]{32}$")
 LOCAL_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,79}$")
@@ -53,7 +55,7 @@ PREFLIGHT_MESSAGES = {
     "core_missing": "exact context-core가 현재 host inventory에 없다.",
     "core_source_mismatch": "동명 core의 marketplace 또는 source가 요구 좌표와 다르다.",
     "core_disabled": "exact context-core가 현재 scope에서 비활성이다.",
-    "core_incompatible": "exact context-core가 context-common/v1 handshake를 통과하지 못했다.",
+    "core_incompatible": "exact context-core가 context-common/v2 handshake를 통과하지 못했다.",
     "core_uninitialized": "exact core는 준비됐고 repository bootstrap이 필요하다.",
     "partial_core_init": "repository context root가 partial 또는 invalid 상태다.",
     "ready": "exact context-core와 repository가 준비됐다.",
@@ -515,6 +517,14 @@ def validate_candidate(candidate: dict[str, Any]) -> tuple[str, str, dict[str, A
     missing = required - set(candidate)
     if candidate.get("schema") != "context-capture-candidate/v1" or missing:
         raise DecisionError("candidate_invalid", "candidate envelope is incomplete", {"missing": sorted(missing)})
+    removed = sorted(REMOVED_FINGERPRINT_FIELDS & set(candidate))
+    if removed:
+        raise DecisionError(
+            "schema_removed_field",
+            "claim fingerprint fields were removed from capture candidates",
+            {"fields": removed},
+            EXIT_CONFLICT,
+        )
     candidate_id = candidate.get("candidate_id")
     if not _valid_candidate_id(candidate_id):
         raise DecisionError("candidate_invalid", "candidate_id must be cand_ plus lowercase UUIDv4 hex")
@@ -961,6 +971,8 @@ def build_init_plan(preflight: dict[str, Any] | None = None) -> dict[str, Any]:
     seed = decision_index_seed()
     parse_decision_index(seed)
     core_state = "ready" if preflight is None else preflight["observed"]["repository_state"]
+    host = None if preflight is None else preflight.get("host")
+    policy_target = {"codex": "AGENTS.md", "claude-code": "CLAUDE.md"}.get(host, "active_host")
     return {
         "schema": "context-decision-init-plan/v1",
         "required_plugin": dict(REQUIRED_PLUGIN),
@@ -972,13 +984,16 @@ def build_init_plan(preflight: dict[str, Any] | None = None) -> dict[str, Any]:
         "bootstrap": {
             "owner": "context-core",
             "operation": "bootstrap",
+            "host": host or "active_host",
             "core_init": "apply_if_absent",
             "area_register": "context-decision",
+            "policy_install": policy_target,
             "index_path": DECISION_INDEX,
         },
         "phases": [
             {"phase": "core_init", "status": "pending" if core_state == "absent" else "ready"},
             {"phase": "area_register", "status": "pending"},
+            {"phase": "policy_install", "status": "pending", "target": policy_target},
         ],
         "registration": {"owner": "context-core", "operation": "bootstrap", "index_path": DECISION_INDEX},
         "applied": False,
@@ -1668,7 +1683,6 @@ def prepare_decision_check(
         "query": query or None,
     }
     current: list[dict[str, Any]] = []
-    omitted_ids: list[str] = []
     for _, reasons, row in selected:
         record = _record(repo, row)
         item = {
@@ -1691,7 +1705,6 @@ def prepare_decision_check(
                     {"id": record["id"], "max_bytes": MAX_CHECK_BYTES},
                     EXIT_CONFLICT,
                 )
-            omitted_ids.append(record["id"])
             continue
         current.append(item)
 
@@ -1709,8 +1722,11 @@ def prepare_decision_check(
         and scopes_overlap(item["scope"], scope)
     ]
     selected_ids = {item["id"] for item in current}
-    omitted_ids.extend(row["id"] for _, _, row in ranked if row["id"] not in selected_ids and row["id"] not in omitted_ids)
-    return {
+    omitted_count = len(current_rows) - len(current)
+    omitted_id_sample = [
+        row["id"] for _, _, row in ranked if row["id"] not in selected_ids
+    ][:MAX_OMITTED_ID_SAMPLE]
+    result = {
         "schema": "context-decision-check/v1",
         "comparison_input": comparison_input,
         "input_digest": canonical_digest(comparison_input),
@@ -1727,14 +1743,24 @@ def prepare_decision_check(
         "retrieval": {
             "total_current": len(current_rows),
             "returned": len(current),
-            "omitted": len(omitted_ids),
-            "omitted_ids": omitted_ids,
-            "full_current_set": len(omitted_ids) == 0,
+            "omitted": omitted_count,
+            "omitted_id_sample": omitted_id_sample,
+            "omitted_id_sample_truncated": omitted_count > len(omitted_id_sample),
+            "full_current_set": omitted_count == 0,
             "bounded": True,
         },
         "warning": "relation=new는 조회된 Current 집합 안에서만 유효하며 전역 무충돌 증명이 아니다.",
         "physical_write": False,
     }
+    result_bytes = len(canonical_json(result).encode("utf-8"))
+    if result_bytes > MAX_CHECK_RESULT_BYTES:
+        raise DecisionError(
+            "comparison_too_large",
+            "decision check result exceeds the fixed output byte limit",
+            {"result_bytes": result_bytes, "max_bytes": MAX_CHECK_RESULT_BYTES},
+            EXIT_CONFLICT,
+        )
+    return result
 
 
 def conflict_candidates(

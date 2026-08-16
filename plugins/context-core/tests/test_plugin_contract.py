@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 PLUGIN = Path(__file__).resolve().parents[1]
@@ -36,6 +37,7 @@ class PluginContractTests(unittest.TestCase):
             target = repo / "CLAUDE.md"
             outside = "# Existing policy\n\nKeep this text.\n"
             target.write_text(outside, encoding="utf-8")
+            target.chmod(0o644)
 
             first = context_cli.bootstrap_repository(repo, host="claude-code")
 
@@ -43,11 +45,35 @@ class PluginContractTests(unittest.TestCase):
             self.assertEqual("CLAUDE.md", first["policy"]["target"])
             self.assertTrue(target.read_text(encoding="utf-8").startswith(outside))
             self.assertIn(context_cli.POLICY_BODY, target.read_text(encoding="utf-8"))
+            self.assertEqual(0o644, target.stat().st_mode & 0o777)
             self.assertFalse((repo / "AGENTS.md").exists())
 
             second = context_cli.bootstrap_repository(repo, host="claude-code")
             self.assertTrue(second["noop"])
             self.assertTrue(second["policy"]["noop"])
+
+            original_build_init = context_cli.build_init_bundle
+
+            def mutate_policy_during_core_phase(current_repo):
+                target.write_text("# Concurrent replacement\n", encoding="utf-8")
+                return original_build_init(current_repo)
+
+            with mock.patch.object(context_cli, "build_init_bundle", side_effect=mutate_policy_during_core_phase):
+                repaired = context_cli.bootstrap_repository(repo, host="claude-code")
+            self.assertTrue(repaired["policy"]["applied"])
+            self.assertIn(context_cli.POLICY_BODY, target.read_text(encoding="utf-8"))
+            self.assertTrue(target.read_text(encoding="utf-8").startswith("# Concurrent replacement\n"))
+            self.assertEqual(0o644, target.stat().st_mode & 0o777)
+
+    def test_policy_create_uses_readable_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp)
+            subprocess.run(["git", "init", "-q", temp], check=True)
+
+            context_cli.bootstrap_repository(repo, host="codex")
+
+            target = repo / "AGENTS.md"
+            self.assertEqual(0o644, target.stat().st_mode & 0o777)
 
     def test_acceptance_34_policy_install(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -88,6 +114,28 @@ class PluginContractTests(unittest.TestCase):
             with self.assertRaises(context_cli.ContextError):
                 context_cli.bootstrap_repository(repo, host="claude-code")
             self.assertEqual(before, tree_digest(repo))
+            self.assertFalse((repo / "context").exists())
+
+            reversed_markers = context_cli.POLICY_END + "\n" + context_cli.POLICY_BEGIN + "\n"
+            (repo / "CLAUDE.md").write_text(reversed_markers, encoding="utf-8")
+            with self.assertRaises(context_cli.ContextError) as reversed_error:
+                context_cli.build_policy_bundle(repo, "CLAUDE.md")
+            self.assertEqual("policy_marker_invalid", reversed_error.exception.code)
+
+    def test_init_rejects_non_utf8_policy_before_storage_write(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp)
+            subprocess.run(["git", "init", "-q", temp], check=True)
+            target = repo / "AGENTS.md"
+            original = b"\xff\xfe\x00existing"
+            target.write_bytes(original)
+
+            with self.assertRaises(context_cli.ContextError) as failure:
+                context_cli.bootstrap_repository(repo, host="codex")
+
+            self.assertEqual("policy_file_unsupported", failure.exception.code)
+            self.assertEqual("policy_preflight", failure.exception.details["phases"][0]["phase"])
+            self.assertEqual(original, target.read_bytes())
             self.assertFalse((repo / "context").exists())
 
 

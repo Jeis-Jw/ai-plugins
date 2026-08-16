@@ -15,7 +15,7 @@
     "category": "Productivity",
     "capabilities": ["Read", "Validation"],
     "defaultPrompt": [
-      "Before any repository operation, require the exact installed and enabled context-core@jeis-ai-plugins source, context-common/v1 protocol, and a compatible doctor receipt.",
+      "Before any repository operation, require the exact installed and enabled context-core@jeis-ai-plugins source, context-common/v2 protocol, and a compatible doctor receipt.",
       "For an explicitly invoked $context-decision:init only, accept doctor repository_state=ready or absent; delegate fixed core and decision seeds plus the active host name to context-core so the same call reaches decision ready and installs the managed policy.",
       "When discussion converges on or changes a choice, use $context-decision:decision to compare actual Current bodies before concluding; report rationale changes or conflicts and only capture an explicit accepted choice with scope and commitment.",
       "Never install, enable, or update plugins, probe plugin caches, or embed context-core; fixed init policy installation is allowed, while all non-init durable mutations remain exact-digest approval gated through the context-core coordinator."

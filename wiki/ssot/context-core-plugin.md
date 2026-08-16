@@ -199,7 +199,7 @@ error JSON은 `{"ok":false,"error":{"code":"...","message":"...","details":{...}
 {
   "schema": "context-core-doctor/v1",
   "owner": "context-core",
-  "supported_protocols": ["context-common/v1"],
+  "supported_protocols": ["context-common/v2"],
   "repository_state": "ready",
   "root": "context/",
   "issues": []
@@ -293,35 +293,37 @@ OBS capture는 claim/evidence가 placeholder 또는 비어 있으면 실패한�
 
 ### Init과 policy
 
-`context_cli.py init`은 storage-only `transition: core_init` final bundle을 만들고 같은 명시적 호출에서 coordinator로 적용한다. repository에 `context/`가 전혀 없으면 directory 자체는 operation이 아니며 apply가 file parent를 `mkdir(mode=0755, parents=True, exist_ok=True)`로 만들고 built-in complete root/SNAP/OBS index seed material을 canonical generator에 전달한다. 생성 가능한 parent는 exact `context/`, `context/snapshot/`, `context/observation/`, `context/observation/retired/` allowlist뿐이고 non-directory/symlink 충돌은 실패한다. index file apply 전에 crash해 생긴 빈 allowlist directory는 재실행에서 absent와 동등하게 취급한다. 세 index가 모두 valid v1이면 `noop:true`로 끝난다. fixed bundle의 정렬된 write 순서와 bytes가 일치하는 exact canonical prefix만 남은 index write를 재개한다. 그 밖의 일부 index, extra content, schema/owner 차이는 `partial_core_init`로 실패해 doctor 결과와 수동 repair를 요구하며 임의 overwrite하지 않는다. schema major upgrade는 별도 migration 결정 없이는 수행하지 않는다.
+`context_cli.py init --host codex|claude-code`은 한 번의 명시적 호출에서 fixed `core_init`과 활성 host의 `policy_install`을 coordinator로 적용한다. repository에 `context/`가 전혀 없으면 directory 자체는 operation이 아니며 apply가 file parent를 `mkdir(mode=0755, parents=True, exist_ok=True)`로 만들고 built-in complete root/SNAP/OBS index seed material을 canonical generator에 전달한다. 생성 가능한 parent는 exact `context/`, `context/snapshot/`, `context/observation/`, `context/observation/retired/` allowlist뿐이고 non-directory/symlink 충돌은 실패한다. index file apply 전에 crash해 생긴 빈 allowlist directory는 재실행에서 absent와 동등하게 취급한다. 세 index가 모두 valid v1이고 managed policy가 최신이면 전체 `noop:true`로 끝난다. fixed bundle의 정렬된 write 순서와 bytes가 일치하는 exact canonical prefix만 남은 index write를 재개한다. 그 밖의 일부 index, extra content, schema/owner 차이는 `partial_core_init`로 실패해 doctor 결과와 수동 repair를 요구하며 임의 overwrite하지 않는다. schema major upgrade는 별도 migration 결정 없이는 수행하지 않는다.
 
 1. repository root의 `context/`, SNAP, OBS area와 세 semantic index의 `index_rebuild(include_root:true)`를 preview한다.
 2. 기존 사람 작성 index 설명과 일반 artifact를 보존한다.
 3. 이미 root catalog에 등록된 addon area는 보존하되 addon 파일을 변경하지 않는다. 등록되지 않은 임의 폴더를 자동 claim하지 않는다.
-4. runtime hook, session ledger와 activity heuristic은 만들지 않는다.
+4. 활성 host mapping은 `codex → AGENTS.md`, `claude-code → CLAUDE.md`로 고정하고 runtime hook, session ledger와 activity heuristic은 만들지 않는다.
 
-user-facing `context-core:init` skill은 storage bootstrap만 적용하며 agent policy를 자동 설치하지 않는다. Codex `AGENTS.md` 또는 Claude Code `CLAUDE.md` policy는 사용자가 별도로 명시했을 때만 기존 `policy preview`와 exact digest approval 경로로 설치한다.
+user-facing `context-core:init`은 사용자의 명시적 init 의도를 fixed storage bootstrap과 canonical managed policy 설치 둘에 한정해 해석한다. policy target과 bytes를 storage write 전에 preflight하고 non-UTF-8, mixed newline, symlink, 비정상 marker는 structured write-zero error로 중단한다. core/area phase 후 policy bundle을 다시 계산해 noop TOCTOU를 막는다. 기존 target은 marker 밖 bytes와 file mode를 보존하고 신규 target은 `0644`로 생성한다.
 
 `policy preview`는 exact repository-root basename 두 개만 받고 symlink는 거부한다. target이 없으면 `file_create`, 있으면 exact before digest의 `file_replace(role:"policy")` plan을 만든다. policy plan은 `transition: policy_install`, `owner_descriptor`는 built-in `context-core/policy` descriptor, effect action은 `install_policy`, `area`는 생략한다. marker는 정확히 한 쌍만 허용하고, marker 밖 UTF-8 bytes를 보존한다. 기존 file이 UTF-8이 아니거나 mixed newline이면 `policy_file_unsupported`로 실패해 수동 설치를 안내한다.
 
 ```markdown
 <!-- BEGIN context-core-policy (managed by context-core) -->
-## Shared context policy
+## Durable context workflow
 
-- Substantive work에서 이전 결정·관찰·handoff가 판단을 바꿀 수 있으면 scoped index-first recall을 한 번 수행한다.
-- Primary 요청과 답변을 먼저 끝낸다. semantic milestone 또는 closeout당 durable candidate audit은 최대 한 번만 수행한다.
-- Candidate가 있을 때만 complete artifact preview를 한 grouped proposal로 보여준다. 승인 전에는 context artifact나 index를 쓰지 않는다.
+- Substantive work나 결정 수렴 전에 이전 맥락이 판단을 바꿀 수 있으면 Current context를 scoped index-first로 한 번 recall한다.
+- 설치된 semantic owner가 있으면 후보와 관련 Current artifact의 실제 본문·scope·rationale를 비교한다. hash나 fingerprint로 의미 동일성 또는 충돌을 판정하지 않는다.
+- 기존 결정과의 conflict 또는 rationale change가 보이면 결론 전에 관련 artifact와 차이를 알리고 유지·수정·supersede 중 무엇인지 확인한다.
+- Primary 요청과 답변을 먼저 끝낸다. semantic milestone 또는 closeout당 durable candidate audit은 최대 한 번 수행하고, 재사용 가치가 있는 후보가 있을 때만 grouped capture를 제안한다.
 - Current DEC는 authoritative, OBS는 non-authoritative evidence, SNAP은 resume staging으로 취급한다.
+- 사용자의 명시 승인 전에는 context artifact나 index를 쓰지 않는다.
 <!-- END context-core-policy (managed by context-core) -->
 ```
 
-marker가 없으면 file 끝에 blank line 두 개를 경계로 block을 append하고, 한 쌍이면 block bytes만 replace한다. 두 쌍 이상·unbalanced marker는 실패한다. approval preview는 target, action과 위 managed block 전체를 보여주고 final plan/material digest는 marker 밖 보존 bytes까지 결박한다. `transition: policy_install`만 `context/` 밖의 exact 두 target과 `role:"policy"`를 허용한다. rollback은 Git restore 또는 새 policy preview이며 apply 중 crash는 일반 file operation resume 규칙을 따른다.
+marker가 없으면 file 끝에 blank line 두 개를 경계로 block을 append하고, 한 쌍이면 block bytes만 replace한다. 두 쌍 이상·unbalanced·END-before-BEGIN marker는 실패한다. approval preview는 target, action과 위 managed block 전체를 보여주고 final plan/material digest는 marker 밖 보존 bytes까지 결박한다. `transition: policy_install`만 `context/` 밖의 exact 두 target과 `role:"policy"`를 허용한다. rollback은 Git restore 또는 새 policy preview이며 apply 중 crash는 일반 file operation resume 규칙을 따른다.
 
-addon init은 root index를 직접 수정하지 않는다. `context-decision:init`처럼 owner descriptor와 complete area index seed를 만든 뒤 public `bootstrap --descriptor --index-seed`를 호출한다. 이 surface는 core init을 먼저 완료하고 fixed area-register plan만 coordinator로 적용한다. seed bytes와 generated output digest는 final plan에 결박되며 absent index를 seed 없이 추측 생성하지 않는다. root row write 뒤 interruption은 exact descriptor/schema/owner/kind/artifact_schema/authority와 canonical generated bytes가 모두 일치할 때만 남은 area index write를 재개한다. existing descriptor/index metadata가 다르거나 임의 partial content가 있으면 write 0으로 실패한다.
+addon init은 root index를 직접 수정하지 않는다. `context-decision:init`처럼 owner descriptor와 complete area index seed를 만든 뒤 public `bootstrap --descriptor --index-seed --host`를 호출한다. 이 surface는 `core_init`, fixed `area_register`, host `policy_install`을 coordinator로 순서대로 적용한다. seed bytes와 generated output digest는 final plan에 결박되며 absent index를 seed 없이 추측 생성하지 않는다. root row write 뒤 interruption은 exact descriptor/schema/owner/kind/artifact_schema/authority와 canonical generated bytes가 모두 일치할 때만 남은 area index write를 재개한다. existing descriptor/index metadata가 다르거나 임의 partial content가 있으면 write 0으로 실패한다.
 
 ### Coordinator와 승인 경계
 
-semantic owner는 schema·domain lifecycle을 검증하고 fully rendered after-content, effect와 proposed plan을 반환한다. context-core preview가 current byte precondition과 index rebuild를 붙인 final bundle을 만들고 coordinator만 root lock 아래 document/index를 실제 변경한다. cross-owner transition은 protocol allowlist에 있는 plan만 허용하며 v1에서는 `decision_fallback_import` 하나다.
+semantic owner는 schema·domain lifecycle을 검증하고 fully rendered after-content, effect와 proposed plan을 반환한다. context-core preview가 current byte precondition과 index rebuild를 붙인 final bundle을 만들고 coordinator만 root lock 아래 document/index를 실제 변경한다. cross-owner transition은 protocol allowlist에 있는 plan만 허용하며 현재 계약에서는 `decision_fallback_import` 하나다.
 
 capture audit의 claim result는 [[context-capture-routing]]의 complete artifact preview를 포함해야 한다. rename·annotate·reverify·invalidate·supersede·discard·index fix도 durable mutation이므로 사용자가 현재 요청에서 exact action·target·새 값과 lifecycle effect를 모두 명시했거나 preview digest를 승인한 경우에만 `transaction apply`할 수 있다. agent의 autonomous maintenance는 preview까지만 허용한다.
 

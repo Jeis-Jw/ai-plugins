@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
 import test_decision_schema as helpers
 
@@ -103,6 +104,60 @@ class DecisionConflictTests(unittest.TestCase):
             cli_result = helpers.json.loads(completed.stdout)["result"]
             self.assertEqual("context-decision-check/v1", cli_result["schema"])
             self.assertEqual(check["comparison_input"]["current"][0]["id"], cli_result["comparison_input"]["current"][0]["id"])
+
+    def test_check_response_is_bounded_for_large_current_index(self) -> None:
+        rows = [
+            {
+                "id": f"ctx_{number:032x}",
+                "path": f"context/decision/record-{number:05d}.md",
+                "title": f"decision {number}",
+                "summary": "unrelated current decision",
+                "scope": f"project/area-{number}",
+                "decision_key": f"slot-{number}",
+                "terms": [],
+            }
+            for number in range(5000)
+        ]
+
+        def record(_repo, row):
+            return {
+                "id": row["id"],
+                "path": row["path"],
+                "sha256": "sha256:" + "a" * 64,
+                "frontmatter": {
+                    "title": row["title"],
+                    "summary": row["summary"],
+                    "scope": row["scope"],
+                    "decision_key": row["decision_key"],
+                },
+                "sections": {
+                    "결정": "bounded decision body",
+                    "취지": "bounded rationale",
+                    "반려대안": "bounded alternative",
+                },
+            }
+
+        with (
+            mock.patch.object(decision_cli, "_index", return_value=("index", rows, [])),
+            mock.patch.object(decision_cli, "_record", side_effect=record),
+        ):
+            result = decision_cli.prepare_decision_check(
+                helpers.Path("."),
+                statement="new unrelated decision",
+                scope="project/new-area",
+                decision_key="new-slot",
+            )
+
+        retrieval = result["retrieval"]
+        self.assertEqual(5000, retrieval["total_current"])
+        self.assertEqual(8, retrieval["returned"])
+        self.assertEqual(4992, retrieval["omitted"])
+        self.assertEqual(decision_cli.MAX_OMITTED_ID_SAMPLE, len(retrieval["omitted_id_sample"]))
+        self.assertTrue(retrieval["omitted_id_sample_truncated"])
+        self.assertLessEqual(
+            len(decision_cli.canonical_json(result).encode("utf-8")),
+            decision_cli.MAX_CHECK_RESULT_BYTES,
+        )
 
     def test_acceptance_27_scope_overlap(self) -> None:
         with helpers.git_repo() as temp:

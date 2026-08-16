@@ -227,7 +227,7 @@ class DistributionProofTests(unittest.TestCase):
         self.assertIn("--core-cli", init_skill)
         for token in (
             "context-core@jeis-ai-plugins",
-            "context-common/v1",
+            "context-common/v2",
             "repository_state=ready or absent",
             "managed policy",
             "compare actual Current bodies",

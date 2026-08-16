@@ -5,7 +5,7 @@ description: 사용자가 현재 repository의 context-decision 초기화나 boo
 
 # Init
 
-먼저 context-core 설치와 `context-common/v1` compatibility를 확인한다. host가 exact plugin inventory, read-only doctor receipt, active installed core의 public `context_cli.py` 경로를 준비한다. host/skill catalog가 이 loaded `SKILL.md`의 actual absolute path를 제공하면, 그 파일의 sibling `scripts/decision_init.py`를 resolve해 orchestration entrypoint를 **한 번만** 호출한다. cwd, plugin cache 탐색 또는 `$CLAUDE_PLUGIN_ROOT`를 Codex 경로 fallback으로 사용하지 않는다.
+먼저 context-core 설치와 `context-common/v2` compatibility를 확인한다. host가 exact plugin inventory, read-only doctor receipt, active installed core의 public `context_cli.py` 경로를 준비한다. host/skill catalog가 이 loaded `SKILL.md`의 actual absolute path를 제공하면, 그 파일의 sibling `scripts/decision_init.py`를 resolve해 orchestration entrypoint를 **한 번만** 호출한다. cwd, plugin cache 탐색 또는 `$CLAUDE_PLUGIN_ROOT`를 Codex 경로 fallback으로 사용하지 않는다.
 
 ```bash
 INIT_SKILL_FILE="/absolute/path/from-loaded-skill-catalog/plugins/context-decision/skills/init/SKILL.md"

@@ -4,7 +4,7 @@
 
 ## Manual hard dependency
 
-요구 좌표는 marketplace `jeis-ai-plugins`, plugin `context-core`, selector `context-core@jeis-ai-plugins`, source `Jeis-Jw/ai-plugins`, protocol `context-common/v1`입니다. 동명 plugin이나 다른 marketplace source는 대체하지 못합니다.
+요구 좌표는 marketplace `jeis-ai-plugins`, plugin `context-core`, selector `context-core@jeis-ai-plugins`, source `Jeis-Jw/ai-plugins`, protocol `context-common/v2`입니다. 동명 plugin이나 다른 marketplace source는 대체하지 못합니다.
 
 1. 사용자가 provider marketplace에서 exact core를 원하는 scope에 직접 설치·활성화합니다.
 2. host를 reload하거나 새 session을 엽니다.
@@ -18,7 +18,7 @@
 - `core_missing`: source `Jeis-Jw/ai-plugins`의 `context-core@jeis-ai-plugins`를 사용자가 선택한 scope에 직접 설치하고 reload 또는 새 session 뒤 `context-decision:init`을 재시도합니다.
 - `core_source_mismatch`: source `Jeis-Jw/ai-plugins`의 exact selector를 사용자가 선택한 scope에 직접 설치하고 다른 marketplace의 동명 plugin을 사용하지 않습니다. reload 또는 새 session 뒤 `context-decision:init`을 재시도합니다.
 - `core_disabled`: source `Jeis-Jw/ai-plugins`의 exact core를 사용자가 선택한 올바른 scope에서 직접 활성화하고 reload 또는 새 session 뒤 `context-decision:init`을 재시도합니다.
-- `core_incompatible`: source `Jeis-Jw/ai-plugins`의 exact core를 사용자가 선택한 scope에서 `context-common/v1` 호환 버전으로 직접 업데이트하고 reload 또는 새 session 뒤 `context-decision:init`을 재시도합니다.
+- `core_incompatible`: source `Jeis-Jw/ai-plugins`의 exact core를 사용자가 선택한 scope에서 `context-common/v2` 호환 버전으로 직접 업데이트하고 reload 또는 새 session 뒤 `context-decision:init`을 재시도합니다.
 - `core_uninitialized`: plugin 설치 문제가 아닙니다. installed `context-core` public `bootstrap` surface가 같은 호출에서 core seed와 decision area를 순서대로 적용합니다. 별도 core init 호출은 필요하지 않습니다.
 - `partial_core_init`: source `Jeis-Jw/ai-plugins`의 exact core와 사용자가 선택한 scope를 유지하고 core doctor의 issue/path를 확인합니다. 승인된 수동 repair로 `repository_state=ready`를 만든 뒤 reload 또는 새 session에서 `context-decision:init`을 재시도합니다.
 
@@ -42,4 +42,4 @@ Host는 `schema`/`capabilities`를 제외한 모든 CLI 호출에 `--host`, `--c
 
 기존 `wiki/` 자동 migration은 제공하지 않습니다. PCMS는 조직 권한·승인 workflow·cross-project search·policy·audit·conflict queue의 control-plane 경계이며, 이 local plugin은 결정 기록과 recall 자체에 집중합니다.
 
-0.2.0은 `claim_fingerprint`와 `source_claim_fingerprint`를 제거한 breaking release입니다. 구형 artifact에 이 field가 남아 있으면 `schema_removed_field`로 중단하며 자동 삭제하거나 의미상 동일한 것으로 간주하지 않습니다. 기존 record는 별도의 검토·승인된 bounded migration 뒤 derived index를 rebuild해야 합니다.
+0.2.0은 `claim_fingerprint`와 `source_claim_fingerprint`를 제거한 breaking release입니다. 혼합 설치는 `context-common/v2` handshake에서 fail-closed합니다. 구형 artifact에 이 field가 남아 있으면 `schema_removed_field`로 중단하며 자동 삭제하거나 의미상 동일한 것으로 간주하지 않습니다. 기존 record는 별도의 검토·승인된 bounded migration 뒤 derived index를 rebuild해야 합니다.

@@ -186,6 +186,15 @@ class PluginContractTests(unittest.TestCase):
                         self.assertEqual("context-decision-init-plan/v1", payload["result"]["schema"])
                         self.assertEqual(case["doctor"]["repository_state"], payload["result"]["core_repository_state"])
                         self.assertEqual("bootstrap", payload["result"]["bootstrap"]["operation"])
+                        self.assertEqual(case["host"], payload["result"]["bootstrap"]["host"])
+                        self.assertEqual(
+                            "AGENTS.md" if case["host"] == "codex" else "CLAUDE.md",
+                            payload["result"]["bootstrap"]["policy_install"],
+                        )
+                        self.assertEqual(
+                            ["core_init", "area_register", "policy_install"],
+                            [phase["phase"] for phase in payload["result"]["phases"]],
+                        )
                     else:
                         self.assertEqual(5, completed.returncode, completed.stdout + completed.stderr)
                         self.assertFalse(payload["ok"])

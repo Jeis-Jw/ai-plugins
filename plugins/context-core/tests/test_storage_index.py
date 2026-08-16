@@ -121,6 +121,30 @@ class StorageIndexTests(unittest.TestCase):
                 )
             self.assertEqual("schema_removed_field", caught.exception.code)
 
+            candidate = {
+                "schema": "context-capture-candidate/v1",
+                "candidate_id": "cand_550e8400e29b41d4a716446655440000",
+                "claim_key": "legacy-field",
+                "title": "구형 후보",
+                "claim": "구형 의미 지문 field가 있는 후보",
+                "summary": "제거된 field를 조용히 수락하지 않는다.",
+                "captured_from": "manual",
+                "requested_kind": "observation",
+                "specialized_kinds": ["observation"],
+                "fallback_kind": None,
+                "evidence": ["migration fixture"],
+                "owner_inputs": {
+                    "observation": {
+                        "observation": "구형 의미 지문 field가 있는 후보",
+                        "evidence": ["migration fixture"],
+                    }
+                },
+                field: "sha256:" + "0" * 24,
+            }
+            with self.assertRaises(context_cli.ContextError) as candidate_error:
+                context_cli.validate_candidate_batch([candidate], context_cli.capabilities_result())
+            self.assertEqual("schema_removed_field", candidate_error.exception.code)
+
     def test_acceptance_03_natural_filename_and_id(self) -> None:
         self.assertEqual("인증-세션-BFF.md", context_cli.natural_filename(" 인증 세션 / BFF "))
         identifier = context_cli.new_context_id()

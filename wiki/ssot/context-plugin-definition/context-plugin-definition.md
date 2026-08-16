@@ -43,7 +43,7 @@ affects_paths: [plugins/context-core/**, plugins/context-decision/**]
 
 ### Distribution dependency boundary
 
-v1의 exact core distribution identity는 `marketplace: jeis-ai-plugins`, `plugin: context-core`, selector `context-core@jeis-ai-plugins`, source `Jeis-Jw/ai-plugins`다. `context-decision`을 비롯한 addon은 이 좌표의 core가 현재 scope에서 enabled이고 `context-common/v1` compatible인지 확인한 뒤에만 동작한다. 다른 marketplace의 동명 plugin은 충족으로 간주하지 않는다.
+0.2.0의 exact core distribution identity는 `marketplace: jeis-ai-plugins`, `plugin: context-core`, selector `context-core@jeis-ai-plugins`, source `Jeis-Jw/ai-plugins`다. `context-decision`을 비롯한 addon은 이 좌표의 core가 현재 scope에서 enabled이고 `context-common/v2` compatible인지 확인한 뒤에만 동작한다. 다른 marketplace의 동명 plugin은 충족으로 간주하지 않는다.
 
 Plugin install/enable/update와 marketplace add는 사용자 환경 mutation이고 repository init은 project mutation이므로 분리한다. addon은 host 환경 mutation을 자동 수행하지 않는다. exact core 부재·source mismatch·disabled·incompatible이면 정확한 provider marketplace와 수동 next action을 보여주고 write 0으로 중단한다. exact compatible core가 installed/enabled지만 project root가 absent이면 명시적 addon init 호출이 installed core의 public bootstrap surface로 repository init을 먼저 완료하고 같은 호출의 area registration을 계속한다. partial/invalid는 자동 repair하지 않는다. 정적 `schema`/`capabilities` discovery만 core 없이 허용한다.
 
@@ -105,7 +105,7 @@ context-core storage coordinator
 
 ## 계약 진화
 
-공통 envelope와 index 문법은 `context-common/v1`, candidate는 `context-capture-candidate/v1`로 versioning한다. plugin 0.2.0은 의미 판정용 claim 지문을 제거한 0.x breaking release이며 legacy artifact의 제거된 field를 조용히 수락하지 않는다. v1 필드 추가는 reader가 모르는 필드를 무시할 수 있을 때만 호환이다. 필드 의미 변경, ID/ref 형식 변경, generated block 문법 변경은 새 major schema가 필요하다.
+공통 wire/storage handshake는 `context-common/v2`, candidate envelope는 `context-capture-candidate/v1`로 독립 versioning한다. plugin 0.2.0은 의미 판정용 claim 지문을 제거한 0.x breaking release이므로 `context-common/v1`과 혼합 설치를 호환으로 간주하지 않는다. legacy artifact의 제거된 field도 조용히 수락하지 않는다. 같은 protocol major의 필드 추가는 reader가 모르는 필드를 무시할 수 있을 때만 호환이다. 필드 의미 변경, ID/ref 형식 변경, generated block 문법 변경은 새 major schema가 필요하다.
 
 두 번째 실제 addon이 구현되기 전에는 generic SDK를 추출하지 않는다. 그 시점에 현재 decision owner와 새 owner의 공통 부분만 공통 계약으로 승격한다.
 

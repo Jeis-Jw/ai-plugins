@@ -1,4 +1,4 @@
-# context-common/v1 storage kernel
+# context-common/v2 storage kernel
 
 이 문서는 `context-core` Phase 1 구현이 제공하는 host-independent 경계를 요약한다. 제품 의미와 lifecycle의 정본은 repository의 승인된 context v1 SSOT이며, 이 파일은 CLI 근처의 구현 참조다.
 

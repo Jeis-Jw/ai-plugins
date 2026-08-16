@@ -749,7 +749,7 @@ class TransactionCoordinatorTests(unittest.TestCase):
             self.assertEqual(0, completed.returncode, completed.stderr)
             result = json.loads(completed.stdout)
             self.assertTrue(result["ok"])
-            self.assertEqual("context-common/v1", result["result"]["protocol"])
+            self.assertEqual("context-common/v2", result["result"]["protocol"])
             self.assertNotIn("--root", completed.stdout)
 
 
