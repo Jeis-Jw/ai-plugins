@@ -54,12 +54,12 @@ OWNER_RESULT_FIELDS = {
 }
 COMMON_KEY_ORDER = (
     "schema", "id", "title", "summary", "created_at", "updated_at", "captured_from", "source_refs", "tags",
-    "search_terms", "claim_fingerprint",
+    "search_terms",
 )
 ADDITIVE_KEY_ORDER = {
     "context-snapshot/v1": ("anchors",),
     "context-observation/v1": (
-        "kind_hint", "source_claim_fingerprint", "verified_at", "affects_paths", "relations", "supersedes",
+        "kind_hint", "verified_at", "affects_paths", "relations", "supersedes",
         "superseded_by", "retired_at", "retired_reason", "retirement_note",
     ),
     "context-decision/v1": (
@@ -83,14 +83,18 @@ ENTRY_ROW = re.compile(r"^.*<!-- context-entry (\{.*\}) -->$")
 POLICY_BEGIN = "<!-- BEGIN context-core-policy (managed by context-core) -->"
 POLICY_END = "<!-- END context-core-policy (managed by context-core) -->"
 POLICY_BODY = """<!-- BEGIN context-core-policy (managed by context-core) -->
-## Shared context policy
+## Durable context workflow
 
-- Substantive work에서 이전 결정·관찰·handoff가 판단을 바꿀 수 있으면 scoped index-first recall을 한 번 수행한다.
-- Primary 요청과 답변을 먼저 끝낸다. semantic milestone 또는 closeout당 durable candidate audit은 최대 한 번만 수행한다.
-- Candidate가 있을 때만 complete artifact preview를 한 grouped proposal로 보여준다. 승인 전에는 context artifact나 index를 쓰지 않는다.
+- Substantive work나 결정 수렴 전에 이전 맥락이 판단을 바꿀 수 있으면 Current context를 scoped index-first로 한 번 recall한다.
+- 설치된 semantic owner가 있으면 후보와 관련 Current artifact의 실제 본문·scope·rationale를 비교한다. hash나 fingerprint로 의미 동일성 또는 충돌을 판정하지 않는다.
+- 기존 결정과의 conflict 또는 rationale change가 보이면 결론 전에 관련 artifact와 차이를 알리고 유지·수정·supersede 중 무엇인지 확인한다.
+- Primary 요청과 답변을 먼저 끝낸다. semantic milestone 또는 closeout당 durable candidate audit은 최대 한 번 수행하고, 재사용 가치가 있는 후보가 있을 때만 grouped capture를 제안한다.
 - Current DEC는 authoritative, OBS는 non-authoritative evidence, SNAP은 resume staging으로 취급한다.
+- 사용자의 명시 승인 전에는 context artifact나 index를 쓰지 않는다.
 <!-- END context-core-policy (managed by context-core) -->"""
 POLICY_TARGETS = {"AGENTS.md", "CLAUDE.md"}
+POLICY_HOST_TARGETS = {"codex": "AGENTS.md", "claude-code": "CLAUDE.md"}
+REMOVED_FINGERPRINT_FIELDS = {"claim_fingerprint", "source_claim_fingerprint"}
 
 
 class ContextError(Exception):
@@ -316,12 +320,6 @@ def resolve_artifact_path(repo: pathlib.Path, area: str, filename: str, *, exist
     return candidate
 
 
-def claim_fingerprint(kind: str, scope: str, claim: str) -> str:
-    raw = f"{kind}\n{scope}\n{claim}"
-    normalized = " ".join(unicodedata.normalize("NFKC", raw).casefold().split())
-    return "sha256:" + hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24]
-
-
 def _newline_normalized(text: str) -> str:
     if text.startswith("\ufeff"):
         raise ContextError("frontmatter_unsupported", "UTF-8 BOM is not supported")
@@ -402,6 +400,14 @@ def _string_list(value: Any, field: str, *, required: bool = False, maximum: int
 
 
 def _validate_common_document(frontmatter: dict[str, Any]) -> None:
+    removed = sorted(REMOVED_FINGERPRINT_FIELDS & set(frontmatter))
+    if removed:
+        raise ContextError(
+            "schema_removed_field",
+            "claim fingerprint fields were removed; migrate the artifact before using this protocol",
+            {"fields": removed},
+            EXIT_CONFLICT,
+        )
     required = ("schema", "id", "title", "summary", "created_at", "captured_from")
     missing = [key for key in required if key not in frontmatter]
     if missing:
@@ -438,9 +444,6 @@ def _validate_common_document(frontmatter: dict[str, Any]) -> None:
     if schema == "context-observation/v1":
         if frontmatter.get("kind_hint") not in {None, "decision"}:
             raise ContextError("schema_invalid", "observation kind_hint is invalid")
-        fingerprint = frontmatter.get("claim_fingerprint")
-        if fingerprint is not None and (not isinstance(fingerprint, str) or not re.fullmatch(r"sha256:[0-9a-f]{24}", fingerprint)):
-            raise ContextError("schema_invalid", "observation claim_fingerprint is invalid")
         if frontmatter.get("retired_reason") not in {None, "invalidated", "superseded"}:
             raise ContextError("lifecycle_invalid", "observation retired_reason is invalid")
         if frontmatter.get("retired_reason") == "invalidated" and not _substantive(frontmatter.get("retirement_note")):
@@ -463,9 +466,6 @@ def _validate_common_document(frontmatter: dict[str, Any]) -> None:
             or frontmatter["decision_key"] != _canonical_decision_key(frontmatter["decision_key"])
         ):
             raise ContextError("schema_invalid", "decision slot fields must already be canonical")
-        fingerprint = frontmatter.get("claim_fingerprint")
-        if not isinstance(fingerprint, str) or not re.fullmatch(r"sha256:[0-9a-f]{24}", fingerprint):
-            raise ContextError("schema_invalid", "decision claim_fingerprint is invalid")
         if "supersedes" in frontmatter:
             for identifier in _string_list(frontmatter["supersedes"], "supersedes", maximum=12, item_maximum=36):
                 _require_context_id(identifier, "supersedes")
@@ -1524,13 +1524,8 @@ def _validate_claim_draft(kind: str, candidate: dict[str, Any], draft: dict[str,
         primary = owner_inputs["observation"]
         expected = {"관찰": primary, "근거": owner_inputs["evidence"]}
         optional = (("impact", "영향"), ("current_handling", "현재 처리"), ("followup_conditions", "후속 조건"))
-        if frontmatter.get("claim_fingerprint") != claim_fingerprint("observation", "", primary):
-            raise ContextError("claim_result_mismatch", "observation fingerprint differs from embedded candidate", exit_code=EXIT_CONFLICT)
         if frontmatter.get("kind_hint") != candidate.get("kind_hint"):
             raise ContextError("claim_result_mismatch", "observation kind_hint differs from embedded candidate", exit_code=EXIT_CONFLICT)
-        expected_source = claim_fingerprint("decision", candidate.get("scope_hint", ""), candidate["claim"]) if candidate.get("kind_hint") == "decision" else None
-        if frontmatter.get("source_claim_fingerprint") != expected_source:
-            raise ContextError("claim_result_mismatch", "observation source fingerprint differs from embedded candidate", exit_code=EXIT_CONFLICT)
     for field, section in optional:
         value = owner_inputs.get(field)
         if value:
@@ -1588,10 +1583,8 @@ def draft_owner_result(
         optional_sections = (("decided", "정해진 것"), ("refs", "참조"), ("capture_candidates", "capture 후보"))
     else:
         primary_claim = owner_inputs["observation"]
-        frontmatter["claim_fingerprint"] = claim_fingerprint("observation", "", primary_claim)
         if candidate.get("kind_hint") == "decision":
             frontmatter["kind_hint"] = "decision"
-            frontmatter["source_claim_fingerprint"] = claim_fingerprint("decision", candidate.get("scope_hint", ""), candidate["claim"])
         sections = {"관찰": primary_claim, "근거": _list_section(owner_inputs["evidence"])}
         optional_sections = (("impact", "영향"), ("current_handling", "현재 처리"), ("followup_conditions", "후속 조건"))
     for field, section in optional_sections:
@@ -1604,7 +1597,6 @@ def draft_owner_result(
     projection = {
         "kind": kind,
         "primary_claim": next(iter(sections.values())),
-        "claim_fingerprint": frontmatter.get("claim_fingerprint"),
         "supporting_context": supporting,
     }
     return {
@@ -1752,7 +1744,7 @@ def validate_owner_result(result: dict[str, Any], capability: dict[str, Any] | N
     for draft in drafts:
         document = parse_document(draft.get("content", ""))
         projection = draft.get("semantic_projection")
-        if not isinstance(projection, dict) or set(projection) != {"kind", "primary_claim", "claim_fingerprint", "supporting_context"}:
+        if not isinstance(projection, dict) or set(projection) != {"kind", "primary_claim", "supporting_context"}:
             raise ContextError("owner_result_invalid", "draft semantic projection is invalid", exit_code=EXIT_CONFLICT)
         draft_kind = {
             "context-snapshot/v1": "snapshot",
@@ -1770,7 +1762,6 @@ def validate_owner_result(result: dict[str, Any], capability: dict[str, Any] | N
             primary_name is None
             or projection["kind"] != draft_kind
             or projection["primary_claim"] != document.sections[primary_name]
-            or projection["claim_fingerprint"] != document.frontmatter.get("claim_fingerprint")
             or not isinstance(projection["supporting_context"], list)
             or len(projection["supporting_context"]) > 4
         ):
@@ -1845,7 +1836,6 @@ def _semantic_projection(kind: str, document: Document) -> dict[str, Any]:
     return {
         "kind": kind,
         "primary_claim": document.sections[primary_name],
-        "claim_fingerprint": document.frontmatter.get("claim_fingerprint"),
         "supporting_context": supporting,
     }
 
@@ -1858,6 +1848,7 @@ def _mutation_request(
     repo: pathlib.Path,
     *,
     successor_owner_result_digest: str | None = None,
+    successor_artifact_sha256: str | None = None,
 ) -> dict[str, Any]:
     return {
         "schema": "context-domain-mutation-input/v1",
@@ -1877,6 +1868,7 @@ def _mutation_request(
             key=lambda item: item["path"],
         ),
         "successor_owner_result_digest": successor_owner_result_digest,
+        "successor_artifact_sha256": successor_artifact_sha256,
     }
 
 
@@ -2217,16 +2209,30 @@ def _pending_area_resume_bundle(
     return result if result.get("resume_prefix") is True else None
 
 
+def _policy_target_for_host(host: str | None) -> str:
+    target = POLICY_HOST_TARGETS.get(host or "")
+    if target is None:
+        raise ContextError(
+            "host_invalid",
+            "explicit init requires host=codex or host=claude-code",
+            {"host": host},
+            EXIT_CONFLICT,
+        )
+    return target
+
+
 def bootstrap_repository(
     repo: pathlib.Path,
     descriptor: dict[str, Any] | None = None,
     index_seed: str | None = None,
+    *,
+    host: str | None = None,
 ) -> dict[str, Any]:
-    """Apply only fixed init seeds through the core coordinator.
+    """Apply fixed init seeds and the active host's managed policy.
 
-    An explicit init call is the approval source for these two allowlisted
-    transitions. User-content mutations and optional policy installation stay
-    on the ordinary exact-digest approval path.
+    An explicit init call authorizes only core_init, area_register, and the
+    canonical policy_install block. User-content mutations stay on the ordinary
+    exact-digest approval path.
     """
 
     if (descriptor is None) != (index_seed is None):
@@ -2237,6 +2243,11 @@ def bootstrap_repository(
         )
     phases: list[dict[str, Any]] = []
     changed_paths: list[str] = []
+    try:
+        policy_target = _policy_target_for_host(host)
+        policy_bundle = build_policy_bundle(repo, policy_target)
+    except ContextError as error:
+        raise _bootstrap_phase_error(error, "policy_preflight", phases) from error
     area_resume = (
         _pending_area_resume_bundle(repo, descriptor, index_seed)
         if descriptor is not None and index_seed is not None
@@ -2302,6 +2313,24 @@ def bootstrap_repository(
         )
         raise _bootstrap_phase_error(error, "bootstrap_verify", phases) from error
 
+    try:
+        if policy_bundle.get("noop") is True:
+            policy_status = "noop"
+            policy_changed: list[str] = []
+        else:
+            applied = apply_bundle(
+                repo,
+                policy_bundle["bundle"],
+                policy_bundle["approval_digest"],
+                approval_source="explicit_init",
+            )
+            policy_status = "applied"
+            policy_changed = applied["changed_paths"]
+            changed_paths.extend(policy_changed)
+        phases.append({"phase": "policy_install", "status": policy_status, "changed_paths": policy_changed})
+    except ContextError as error:
+        raise _bootstrap_phase_error(error, "policy_install", phases) from error
+
     return {
         "schema": "context-core-bootstrap-result/v1",
         "applied": any(phase["status"] == "applied" for phase in phases),
@@ -2309,7 +2338,12 @@ def bootstrap_repository(
         "phases": phases,
         "changed_paths": sorted(set(changed_paths)),
         "doctor": doctor,
-        "policy": {"requested": False, "applied": False},
+        "policy": {
+            "requested": True,
+            "target": policy_target,
+            "applied": policy_status == "applied",
+            "noop": policy_status == "noop",
+        },
     }
 
 
@@ -2776,7 +2810,7 @@ def build_rename_bundle(repo: pathlib.Path, identifier: str, filename: str) -> d
         "capability_digest": canonical_digest(capability),
         "semantic_inputs": [{"operation": "mutation_request", "input_schema": request["schema"], "input_digest": request_digest, "value": request}],
         "semantic_attestations": [],
-        "artifact_drafts": [{"effect_id": effect_id, "path": relative_destination, "content": render_document(document.frontmatter, document.sections), "semantic_projection": {"kind": area, "primary_claim": next(iter(document.sections.values())), "claim_fingerprint": document.frontmatter.get("claim_fingerprint"), "supporting_context": []}}],
+        "artifact_drafts": [{"effect_id": effect_id, "path": relative_destination, "content": render_document(document.frontmatter, document.sections), "semantic_projection": {"kind": area, "primary_claim": next(iter(document.sections.values())), "supporting_context": []}}],
         "effects": [{"effect_id": effect_id, "action": "rename", "area": area, "id": identifier, "state": "history" if "/retired/" in relative_source else "current"}],
         "proposed_plan": {"schema": "context-owner-plan/v1", "transition": "rename", "operations": [{"op": "move", "effect_id": effect_id, "area": area, "id": identifier, "from_path": relative_source, "to_path": relative_destination}]},
     }
@@ -2980,9 +3014,8 @@ def prepare_lifecycle_input(repo: pathlib.Path, transition: str, predecessor_id:
     successor_document = parse_document(successor_draft["content"])
     projection = successor_draft["semantic_projection"]
     claim_input = next(item for item in successor_result["semantic_inputs"] if item["operation"] == "claim")
-    if transition == "decision_fallback_import":
-        if predecessor.frontmatter.get("kind_hint") != "decision" or predecessor.frontmatter.get("source_claim_fingerprint") != successor_document.frontmatter.get("claim_fingerprint"):
-            raise ContextError("fallback_fingerprint_mismatch", "decision-like OBS source fingerprint must equal the DEC claim fingerprint", exit_code=EXIT_CONFLICT)
+    if transition == "decision_fallback_import" and predecessor.frontmatter.get("kind_hint") != "decision":
+        raise ContextError("fallback_source_invalid", "fallback import requires a decision-like observation", exit_code=EXIT_CONFLICT)
     value = {
         "schema": "context-lifecycle-semantic-input/v1",
         "operation": "same_claim",
@@ -2993,7 +3026,7 @@ def prepare_lifecycle_input(repo: pathlib.Path, transition: str, predecessor_id:
             "kind": "observation",
             "path": predecessor_path.relative_to(repo).as_posix(),
             "primary_claim": predecessor.sections["관찰"],
-            "claim_fingerprint": predecessor.frontmatter["claim_fingerprint"],
+            "artifact_sha256": sha256_bytes(predecessor_path.read_bytes()),
             "supporting_context": _semantic_projection("observation", predecessor)["supporting_context"],
         },
         "successor": {
@@ -3001,7 +3034,7 @@ def prepare_lifecycle_input(repo: pathlib.Path, transition: str, predecessor_id:
             "kind": expected_kind,
             "path": successor_draft["path"],
             "primary_claim": projection["primary_claim"],
-            "claim_fingerprint": projection["claim_fingerprint"],
+            "artifact_sha256": sha256_bytes(file_bytes(successor_draft["content"])),
             "supporting_context": projection["supporting_context"],
         },
         "source_candidate_digest": claim_input["input_digest"],
@@ -3059,6 +3092,7 @@ def build_observation_supersede_bundle(
         [(predecessor_path, predecessor)],
         repo,
         successor_owner_result_digest=successor_result_digest,
+        successor_artifact_sha256=sha256_bytes(file_bytes(successor_draft["content"])),
     )
     retire_effect = "effect_retire_observation"
     create_effect = "effect_create_observation"
@@ -3683,11 +3717,12 @@ def _validate_bundle(repo: pathlib.Path, bundle: dict[str, Any], approved_digest
                 or lifecycle["predecessor"]["id"] != predecessor_id
                 or lifecycle["predecessor"]["path"] != predecessor_target.get("path")
                 or lifecycle["predecessor"]["primary_claim"] != retired.sections["관찰"]
-                or lifecycle["predecessor"]["claim_fingerprint"] != retired.frontmatter["claim_fingerprint"]
+                or lifecycle["predecessor"]["artifact_sha256"] != predecessor_target.get("sha256")
                 or lifecycle["successor"]["id"] != successor_id
                 or lifecycle["successor"]["path"] != drafts[create_effects[0]["effect_id"]]["path"]
                 or lifecycle["successor"]["primary_claim"] != created.sections["관찰"]
-                or lifecycle["successor"]["claim_fingerprint"] != created.frontmatter["claim_fingerprint"]
+                or lifecycle["successor"]["artifact_sha256"] != request.get("successor_artifact_sha256")
+                or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(request.get("successor_artifact_sha256")))
                 or request["requested_changes"].get("predecessor") != predecessor_id
                 or request["requested_changes"].get("successor") != successor_id
                 or retired.frontmatter.get("superseded_by") != successor_id
@@ -3713,17 +3748,19 @@ def _validate_bundle(repo: pathlib.Path, bundle: dict[str, Any], approved_digest
                 or lifecycle.get("predecessor", {}).get("id") != retired.frontmatter["id"]
                 or lifecycle.get("predecessor", {}).get("path") != target.get("path")
                 or lifecycle.get("predecessor", {}).get("primary_claim") != retired.sections["관찰"]
+                or lifecycle.get("predecessor", {}).get("artifact_sha256") != target.get("sha256")
                 or lifecycle.get("successor", {}).get("id") != created.frontmatter["id"]
                 or lifecycle.get("successor", {}).get("path") != drafts[dec_effects[0]["effect_id"]]["path"]
                 or lifecycle.get("successor", {}).get("primary_claim") != created.sections["결정"]
+                or lifecycle.get("successor", {}).get("artifact_sha256") != request.get("successor_artifact_sha256")
                 or retired.frontmatter.get("kind_hint") != "decision"
-                or retired.frontmatter.get("source_claim_fingerprint") != created.frontmatter.get("claim_fingerprint")
                 or retired.frontmatter.get("superseded_by") != created.frontmatter["id"]
                 or retired.frontmatter["id"] not in created.frontmatter.get("supersedes", [])
                 or retired.frontmatter["id"] in created.frontmatter.get("relations", {}).get("informed_by", [])
                 or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(request.get("successor_owner_result_digest")))
+                or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(request.get("successor_artifact_sha256")))
             ):
-                raise ContextError("lifecycle_input_mismatch", "fallback import lifecycle and exact claim fingerprint differ", exit_code=EXIT_CONFLICT)
+                raise ContextError("lifecycle_input_mismatch", "fallback import lifecycle and attested artifact inputs differ", exit_code=EXIT_CONFLICT)
     elif plan.get("source_type") != "core_control":
         raise ContextError("bundle_invalid", "source_type is unsupported", exit_code=EXIT_CONFLICT)
     else:
@@ -3879,10 +3916,10 @@ def apply_bundle(repo: pathlib.Path, bundle: dict[str, Any], approved_digest: st
     if approval_source not in {"user", "explicit_init"}:
         raise ContextError("approval_required", "autonomous audit or maintenance cannot apply a durable mutation", exit_code=EXIT_CONFLICT)
     plan, materials = _validate_bundle(repo, bundle, approved_digest)
-    if approval_source == "explicit_init" and plan["transition"] not in {"core_init", "area_register"}:
+    if approval_source == "explicit_init" and plan["transition"] not in {"core_init", "area_register", "policy_install"}:
         raise ContextError(
             "approval_required",
-            "explicit init authorizes only fixed core_init and area_register transitions",
+            "explicit init authorizes only fixed core_init, area_register, and policy_install transitions",
             exit_code=EXIT_CONFLICT,
         )
     changed: list[str] = []
@@ -4054,7 +4091,6 @@ def refresh_repository(repo: pathlib.Path, *, strict: bool = False) -> dict[str,
                     predecessor[1].get("schema") == "context-observation/v1"
                     and frontmatter.get("schema") == "context-decision/v1"
                     and predecessor[1].get("kind_hint") == "decision"
-                    and predecessor[1].get("source_claim_fingerprint") == frontmatter.get("claim_fingerprint")
                 )
                 if not allowed_fallback:
                     issues.append({"code": "illegal_cross_kind_predecessor", "path": path, "id": identifier, "target": predecessor_id})
@@ -4204,12 +4240,16 @@ def _body_to_items(value: str) -> list[str]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="context_cli.py")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("schema", "capabilities", "doctor", "init"):
+    for name in ("schema", "capabilities", "doctor"):
         command = sub.add_parser(name)
         command.add_argument("--json", action="store_true")
+    init = sub.add_parser("init")
+    init.add_argument("--host", choices=tuple(POLICY_HOST_TARGETS), required=True)
+    init.add_argument("--json", action="store_true")
     bootstrap = sub.add_parser("bootstrap")
     bootstrap.add_argument("--descriptor", required=True)
     bootstrap.add_argument("--index-seed", required=True)
+    bootstrap.add_argument("--host", choices=tuple(POLICY_HOST_TARGETS), required=True)
     bootstrap.add_argument("--json", action="store_true")
     draft = sub.add_parser("draft")
     draft.add_argument("--kind", choices=BUILTIN_AREAS, required=True)
@@ -4390,12 +4430,13 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
     if args.command == "doctor":
         return doctor_repository(repo)
     if args.command == "init":
-        return bootstrap_repository(repo)
+        return bootstrap_repository(repo, host=args.host)
     if args.command == "bootstrap":
         return bootstrap_repository(
             repo,
             _load_json_argument(args.descriptor, allow_stdin=True),
             _load_text_argument(args.index_seed),
+            host=args.host,
         )
     if args.command == "draft":
         candidate = _load_json_argument(args.candidate, allow_stdin=True)

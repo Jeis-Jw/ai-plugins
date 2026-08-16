@@ -119,7 +119,8 @@ class ObservationTests(unittest.TestCase):
             context_cli.apply_bundle(repo, preview["bundle"], preview["approval_digest"])
             after = context_cli.observation_read(repo, identifier)
             self.assertEqual(before["sections"], after["sections"])
-            self.assertEqual(before["artifact"]["claim_fingerprint"], after["artifact"]["claim_fingerprint"])
+            self.assertNotIn("claim_fingerprint", before["artifact"])
+            self.assertNotIn("claim_fingerprint", after["artifact"])
             self.assertEqual("교정 제목", after["artifact"]["title"])
 
     def test_acceptance_14_invalidate(self) -> None:
@@ -229,7 +230,8 @@ class ObservationTests(unittest.TestCase):
             result = context_cli.observation_read(repo, identifier)
             self.assertEqual("decision", result["artifact"]["kind_hint"])
             self.assertEqual("evidence", result["authority"])
-            self.assertNotEqual(result["artifact"]["source_claim_fingerprint"], result["artifact"]["claim_fingerprint"])
+            self.assertNotIn("claim_fingerprint", result["artifact"])
+            self.assertNotIn("source_claim_fingerprint", result["artifact"])
             self.assertFalse((repo / "context/decision").exists())
 
 

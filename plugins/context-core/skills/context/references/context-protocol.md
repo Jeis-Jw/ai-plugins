@@ -8,6 +8,7 @@
 - Markdown artifact가 정본이고 `context.index.md`와 `<area>.index.md`는 deterministic projection이다.
 - artifact ID는 `ctx_` + lowercase UUIDv4 hex 32자다. filename, title, path와 lifecycle이 ID를 바꾸지 않는다.
 - frontmatter는 `KEY: JSON_VALUE` 한 줄 형식의 JSON-compatible YAML subset이고, document body는 schema별 fixed H2 section 순서를 사용한다.
+- `claim_fingerprint`와 `source_claim_fingerprint`는 protocol에서 제거됐다. 신규 artifact와 semantic projection은 이를 출력하거나 요구하지 않으며 legacy field가 남은 artifact는 `schema_removed_field`로 fail-closed한다.
 
 ## Read 경계
 
@@ -31,6 +32,8 @@
 - exit 2 usage/schema/filename, 3 root/artifact missing, 4 ambiguous read, 5 owner/path/lifecycle conflict, 6 integrity/index failure
 - `schema`와 `capabilities`는 repository root 없이 동작한다.
 
-`init`은 명시적 호출 하나로 absent root의 canonical root/SNAP/OBS index seed를 final bundle에 고정하고 core coordinator로 적용한다. valid root면 `phases[core_init].status=noop`이고 filesystem diff는 0이다. 직전 fixed init bundle이 write 순서대로 남긴 exact canonical prefix만 같은 bundle의 남은 index를 재개하며, 그 밖의 partial 또는 invalid root는 overwrite하지 않고 `partial_core_init`으로 중단한다. 결과는 structured phase와 post-apply doctor receipt를 포함한다.
+`init --host codex|claude-code`은 명시적 호출 하나로 absent root의 canonical root/SNAP/OBS index seed와 활성 host의 관리형 policy block을 적용한다. host mapping은 `codex → AGENTS.md`, `claude-code → CLAUDE.md`다. policy target과 marker를 storage write 전에 preflight하고 managed marker 밖 bytes를 보존한다. valid root와 최신 block이면 `core_init`과 `policy_install`이 noop이다. 직전 fixed init bundle이 write 순서대로 남긴 exact canonical prefix만 같은 bundle의 남은 index를 재개하며, 그 밖의 partial 또는 invalid root는 overwrite하지 않고 `partial_core_init`으로 중단한다. 결과는 structured phase와 post-apply doctor receipt를 포함한다.
 
-`bootstrap --descriptor @file --index-seed @file`은 addon init용 public surface다. 같은 호출에서 core init을 먼저 완료한 뒤 empty area seed를 `area_register`로 적용한다. 중간 실패는 완료/실패 phase를 반환하며, root area row만 쓴 exact descriptor-bound prefix는 재시도에서 남은 area index를 적용해 수렴한다. descriptor schema/owner/kind/artifact_schema/authority 또는 existing area index metadata가 다르면 noop이 아니라 write 0 fail-closed다. 이 explicit-init authority는 `core_init|area_register` transition에만 허용되고 일반 artifact/index/policy mutation에는 사용할 수 없다. agent policy는 별도 `policy preview`와 exact digest approval 없이는 설치하지 않는다.
+`bootstrap --descriptor @file --index-seed @file --host codex|claude-code`은 addon init용 public surface다. 같은 호출에서 core init을 먼저 완료한 뒤 empty area seed를 `area_register`로 적용하고 동일한 host policy를 설치한다. 중간 실패는 완료/실패 phase를 반환하며, root area row만 쓴 exact descriptor-bound prefix는 재시도에서 남은 area index를 적용해 수렴한다. descriptor schema/owner/kind/artifact_schema/authority 또는 existing area index metadata가 다르면 noop이 아니라 write 0 fail-closed다. 이 explicit-init authority는 fixed `core_init|area_register|policy_install` transition에만 허용되고 일반 artifact/index mutation에는 사용할 수 없다.
+
+Lifecycle semantic input은 predecessor와 successor의 실제 primary claim, bounded supporting context, artifact SHA-256, path/id와 source candidate digest를 포함한다. `same_claim` attestation은 두 primary claim을 직접 가리켜야 하며 hash-derived claim identity를 대신 사용하지 않는다.

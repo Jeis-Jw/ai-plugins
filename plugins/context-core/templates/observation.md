@@ -5,7 +5,6 @@ title: "관찰 제목"
 summary: "재사용할 수 있는 발견과 근거의 요약"
 created_at: "2000-01-01T00:00:00+00:00"
 captured_from: "manual"
-claim_fingerprint: "sha256:000000000000000000000000"
 ---
 
 ## 관찰

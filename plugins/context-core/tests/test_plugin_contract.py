@@ -29,6 +29,26 @@ def tree_digest(root: Path) -> str:
 
 
 class PluginContractTests(unittest.TestCase):
+    def test_explicit_init_installs_active_host_policy_and_preserves_external_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp)
+            subprocess.run(["git", "init", "-q", temp], check=True)
+            target = repo / "CLAUDE.md"
+            outside = "# Existing policy\n\nKeep this text.\n"
+            target.write_text(outside, encoding="utf-8")
+
+            first = context_cli.bootstrap_repository(repo, host="claude-code")
+
+            self.assertTrue(first["policy"]["applied"])
+            self.assertEqual("CLAUDE.md", first["policy"]["target"])
+            self.assertTrue(target.read_text(encoding="utf-8").startswith(outside))
+            self.assertIn(context_cli.POLICY_BODY, target.read_text(encoding="utf-8"))
+            self.assertFalse((repo / "AGENTS.md").exists())
+
+            second = context_cli.bootstrap_repository(repo, host="claude-code")
+            self.assertTrue(second["noop"])
+            self.assertTrue(second["policy"]["noop"])
+
     def test_acceptance_34_policy_install(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             repo = Path(temp)
@@ -64,8 +84,11 @@ class PluginContractTests(unittest.TestCase):
             with self.assertRaises(context_cli.ContextError):
                 context_cli.build_policy_bundle(repo, "docs/AGENTS.md")
             (repo / "CLAUDE.md").write_text(context_cli.POLICY_BEGIN + "\n", encoding="utf-8")
+            before = tree_digest(repo)
             with self.assertRaises(context_cli.ContextError):
-                context_cli.build_policy_bundle(repo, "CLAUDE.md")
+                context_cli.bootstrap_repository(repo, host="claude-code")
+            self.assertEqual(before, tree_digest(repo))
+            self.assertFalse((repo / "context").exists())
 
 
 if __name__ == "__main__":

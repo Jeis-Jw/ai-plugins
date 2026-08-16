@@ -46,7 +46,6 @@ def observation(
             "captured_from": "workspace",
             "tags": ["auth"],
             "search_terms": ["cookie"],
-            "claim_fingerprint": context_cli.claim_fingerprint("observation", "", title),
         },
         {"관찰": title, "근거": "workspace fixture evidence"},
     )
@@ -66,11 +65,6 @@ def artifact(
         "summary": "strict integrity negative fixture",
         "created_at": "2026-08-13T18:20:00+09:00",
         "captured_from": "workspace",
-        "claim_fingerprint": context_cli.claim_fingerprint(
-            "decision" if schema == "context-decision/v1" else "observation",
-            "project/auth" if schema == "context-decision/v1" else "",
-            title,
-        ),
     }
     if schema == "context-decision/v1":
         frontmatter.update({"scope": "project/auth", "decision_key": "session-owner"})
@@ -115,6 +109,18 @@ def strict_codes(repo: Path) -> set[str]:
 
 
 class StorageIndexTests(unittest.TestCase):
+    def test_removed_fingerprint_fields_fail_closed(self) -> None:
+        for field in ("claim_fingerprint", "source_claim_fingerprint"):
+            with self.subTest(field=field), self.assertRaises(context_cli.ContextError) as caught:
+                context_cli.parse_document(
+                    artifact(
+                        "context-observation/v1",
+                        "ctx_550e8400e29b41d4a716446655440000",
+                        extra={field: "sha256:" + "0" * 24},
+                    )
+                )
+            self.assertEqual("schema_removed_field", caught.exception.code)
+
     def test_acceptance_03_natural_filename_and_id(self) -> None:
         self.assertEqual("인증-세션-BFF.md", context_cli.natural_filename(" 인증 세션 / BFF "))
         identifier = context_cli.new_context_id()

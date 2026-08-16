@@ -63,7 +63,6 @@ def observation_owner_result(identifier: str = "ctx_550e8400e29b41d4a71644665544
         "owner_inputs": {"observation": {"observation": "Safari에서 cookie 전달이 차단된다.", "evidence": ["integration fixture"]}},
     }
     input_digest = context_cli.canonical_digest(candidate)
-    fingerprint = context_cli.claim_fingerprint("observation", "", candidate["claim"])
     content = context_cli.render_document(
         {
             "schema": "context-observation/v1",
@@ -72,7 +71,6 @@ def observation_owner_result(identifier: str = "ctx_550e8400e29b41d4a71644665544
             "summary": candidate["summary"],
             "created_at": "2026-08-13T18:20:00+09:00",
             "captured_from": "workspace",
-            "claim_fingerprint": fingerprint,
         },
         {"관찰": candidate["claim"], "근거": "integration fixture"},
     )
@@ -101,7 +99,7 @@ def observation_owner_result(identifier: str = "ctx_550e8400e29b41d4a71644665544
             "effect_id": "effect_create_observation",
             "path": "context/observation/Cookie-전달-관찰.md",
             "content": content,
-            "semantic_projection": {"kind": "observation", "primary_claim": candidate["claim"], "claim_fingerprint": fingerprint, "supporting_context": ["integration fixture"]},
+            "semantic_projection": {"kind": "observation", "primary_claim": candidate["claim"], "supporting_context": ["integration fixture"]},
         }],
         "effects": [{"effect_id": "effect_create_observation", "action": "create", "area": "observation", "id": identifier, "state": "current"}],
         "proposed_plan": {"schema": "context-owner-plan/v1", "transition": "capture", "operations": [{"op": "create", "effect_id": "effect_create_observation", "area": "observation", "path": "context/observation/Cookie-전달-관찰.md"}]},
@@ -157,7 +155,7 @@ class TransactionCoordinatorTests(unittest.TestCase):
             keep.write_text("preserve existing repository content\n", encoding="utf-8")
             before = tree_digest(repo)
             completed = subprocess.run(
-                [sys.executable, str(CLI_PATH), "init", "--json"],
+                [sys.executable, str(CLI_PATH), "init", "--host", "codex", "--json"],
                 cwd=repo,
                 text=True,
                 capture_output=True,
@@ -166,7 +164,10 @@ class TransactionCoordinatorTests(unittest.TestCase):
             first = json.loads(completed.stdout)["result"]
             self.assertEqual("applied", first["phases"][0]["status"])
             self.assertEqual("ready", first["doctor"]["repository_state"])
-            self.assertEqual({"requested": False, "applied": False}, first["policy"])
+            self.assertEqual(
+                {"requested": True, "target": "AGENTS.md", "applied": True, "noop": False},
+                first["policy"],
+            )
             self.assertEqual("preserve existing repository content\n", keep.read_text(encoding="utf-8"))
             self.assertNotEqual(before, tree_digest(repo))
 
@@ -174,7 +175,7 @@ class TransactionCoordinatorTests(unittest.TestCase):
             context_cli.apply_bundle(repo, capture["bundle"], capture["approval_digest"])
             after_user_content = tree_digest(repo)
             repeated = subprocess.run(
-                [sys.executable, str(CLI_PATH), "init", "--json"],
+                [sys.executable, str(CLI_PATH), "init", "--host", "codex", "--json"],
                 cwd=repo,
                 text=True,
                 capture_output=True,
@@ -182,9 +183,12 @@ class TransactionCoordinatorTests(unittest.TestCase):
             self.assertEqual(0, repeated.returncode, repeated.stdout + repeated.stderr)
             second = json.loads(repeated.stdout)["result"]
             self.assertTrue(second["noop"])
-            self.assertEqual("noop", second["phases"][0]["status"])
+            self.assertEqual(
+                [("core_init", "noop"), ("policy_install", "noop")],
+                [(phase["phase"], phase["status"]) for phase in second["phases"]],
+            )
             self.assertEqual(after_user_content, tree_digest(repo))
-            self.assertFalse((repo / "AGENTS.md").exists())
+            self.assertIn(context_cli.POLICY_BODY, (repo / "AGENTS.md").read_text(encoding="utf-8"))
             self.assertFalse((repo / "CLAUDE.md").exists())
 
         corruptions = {
@@ -260,7 +264,7 @@ class TransactionCoordinatorTests(unittest.TestCase):
                 corrupt(repo)
                 before = tree_digest(repo)
                 with self.assertRaises(context_cli.ContextError) as caught:
-                    context_cli.bootstrap_repository(repo)
+                    context_cli.bootstrap_repository(repo, host="codex")
                 self.assertEqual("partial_core_init", caught.exception.code)
                 self.assertEqual("failed", caught.exception.details["phases"][-1]["status"])
                 self.assertEqual(before, tree_digest(repo))
@@ -283,13 +287,13 @@ class TransactionCoordinatorTests(unittest.TestCase):
             context_cli._atomic_write = interrupt_after_first_write
             try:
                 with self.assertRaisesRegex(RuntimeError, "first core index"):
-                    context_cli.bootstrap_repository(repo)
+                    context_cli.bootstrap_repository(repo, host="codex")
             finally:
                 context_cli._atomic_write = original
 
             self.assertTrue((repo / context_cli.ROOT_INDEX).is_file())
             self.assertFalse((repo / "context/observation/observation.index.md").exists())
-            resumed = context_cli.bootstrap_repository(repo)
+            resumed = context_cli.bootstrap_repository(repo, host="codex")
             self.assertEqual("applied", resumed["phases"][0]["status"])
             self.assertEqual("ready", resumed["doctor"]["repository_state"])
             self.assertEqual("preserve\n", keep.read_text(encoding="utf-8"))
@@ -300,7 +304,7 @@ class TransactionCoordinatorTests(unittest.TestCase):
             (repo / "context/unexpected").mkdir(parents=True)
             before = tree_digest(repo)
             with self.assertRaises(context_cli.ContextError) as caught:
-                context_cli.bootstrap_repository(repo)
+                context_cli.bootstrap_repository(repo, host="codex")
             self.assertEqual("partial_core_init", caught.exception.code)
             self.assertEqual(before, tree_digest(repo))
 
@@ -322,16 +326,16 @@ class TransactionCoordinatorTests(unittest.TestCase):
             context_cli._atomic_write = interrupt_after_root_write
             try:
                 with self.assertRaisesRegex(RuntimeError, "area root index"):
-                    context_cli.bootstrap_repository(repo, plan["owner_descriptor"], plan["index_seed"])
+                    context_cli.bootstrap_repository(repo, plan["owner_descriptor"], plan["index_seed"], host="codex")
             finally:
                 context_cli._atomic_write = original
 
             _, rows = context_cli.parse_root_index((repo / context_cli.ROOT_INDEX).read_text(encoding="utf-8"))
             self.assertIn("decision", {row["area"] for row in rows})
             self.assertFalse((repo / "context/decision/decision.index.md").exists())
-            resumed = context_cli.bootstrap_repository(repo, plan["owner_descriptor"], plan["index_seed"])
+            resumed = context_cli.bootstrap_repository(repo, plan["owner_descriptor"], plan["index_seed"], host="codex")
             self.assertEqual(
-                [("core_init", "noop"), ("area_register", "applied")],
+                [("core_init", "noop"), ("area_register", "applied"), ("policy_install", "applied")],
                 [(phase["phase"], phase["status"]) for phase in resumed["phases"]],
             )
             self.assertEqual("ready", resumed["doctor"]["repository_state"])
@@ -341,7 +345,7 @@ class TransactionCoordinatorTests(unittest.TestCase):
             repo = Path(temp)
             initialize(repo)
             plan = decision_cli.build_init_plan()
-            context_cli.bootstrap_repository(repo, plan["owner_descriptor"], plan["index_seed"])
+            context_cli.bootstrap_repository(repo, plan["owner_descriptor"], plan["index_seed"], host="codex")
             incompatible = dict(plan["owner_descriptor"], artifact_schema="context-decision/v2")
             incompatible_seed = plan["index_seed"].replace(
                 'artifact_schema: "context-decision/v1"',
@@ -349,7 +353,7 @@ class TransactionCoordinatorTests(unittest.TestCase):
             )
             before = tree_digest(repo)
             with self.assertRaises(context_cli.ContextError) as caught:
-                context_cli.bootstrap_repository(repo, incompatible, incompatible_seed)
+                context_cli.bootstrap_repository(repo, incompatible, incompatible_seed, host="codex")
             self.assertEqual("owner_descriptor_conflict", caught.exception.code)
             self.assertEqual("area_register", caught.exception.details["phases"][-1]["phase"])
             self.assertEqual(before, tree_digest(repo))
@@ -486,7 +490,6 @@ class TransactionCoordinatorTests(unittest.TestCase):
                         "summary": "Index repair fixture",
                         "created_at": "2026-08-13T18:20:00+09:00",
                         "captured_from": "workspace",
-                        "claim_fingerprint": context_cli.claim_fingerprint("observation", "", "Out-of-band observation"),
                     },
                     {"관찰": "Out-of-band observation", "근거": "integration fixture"},
                 ),
@@ -718,9 +721,6 @@ class TransactionCoordinatorTests(unittest.TestCase):
                         "summary": "Index repair must derive this row from the document.",
                         "created_at": "2026-08-13T18:21:00+09:00",
                         "captured_from": "workspace",
-                        "claim_fingerprint": context_cli.claim_fingerprint(
-                            "observation", "", "Out-of-band observation"
-                        ),
                     },
                     {"관찰": "Out-of-band observation", "근거": "integration fixture"},
                 ),
