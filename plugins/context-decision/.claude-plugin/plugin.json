@@ -1,5 +1,5 @@
 {
   "name": "context-decision",
-  "version": "0.1.2",
-  "description": "Decision continuity for preserving the chosen direction, rationale, rejected alternatives, and superseded history."
+  "version": "0.2.0",
+  "description": "Decision continuity with pre-decision body comparison, rationale-change and conflict notices, and approval-gated capture."
 }

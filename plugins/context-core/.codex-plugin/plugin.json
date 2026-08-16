@@ -1,7 +1,7 @@
 {
   "name": "context-core",
-  "version": "0.1.2",
-  "description": "Lightweight shared-context runtime for approved handoffs, evidence, recall, and coordinated writes.",
+  "version": "0.2.0",
+  "description": "Proactive scoped recall and approval-gated context capture with coordinated writes.",
   "author": {
     "name": "Jinwuk-Lee",
     "url": "https://github.com/Jeis-Jw"
@@ -9,15 +9,15 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Context Core",
-    "shortDescription": "Resume work and preserve reusable evidence safely.",
-    "longDescription": "Stores approved session handoffs and non-authoritative observations as Markdown, narrows recall through deterministic semantic indexes, and acts as the only physical writer for context-common/v1 artifact owners.",
+    "shortDescription": "Recall prior context and suggest durable capture safely.",
+    "longDescription": "Installs a managed conversational workflow for scoped recall, actual-body comparison, conflict notification, and approval-gated capture; stores handoffs and evidence as Markdown and remains the only physical writer for context-common/v1 owners.",
     "developerName": "Jinwuk-Lee",
     "category": "Productivity",
     "capabilities": ["Read", "Write", "Validation"],
     "defaultPrompt": [
       "Use $context-core:context for one scoped index-first recall when prior handoff, evidence, or decisions may change the work.",
-      "Use $context-core:init only when the user asks to initialize the repository context root or its auto-loaded policy block.",
-      "Finish the primary task first, audit at most once per semantic milestone, and write only an exact approved final bundle through the context-core coordinator."
+      "Use $context-core:init only when the user asks to initialize the repository context root; that explicit call also installs or updates the active host's managed policy block.",
+      "Before substantive decisions, compare actual Current bodies and rationale, report conflicts or intent changes first, then finish the primary task and offer at most one approval-gated capture at a semantic milestone."
     ]
   }
 }

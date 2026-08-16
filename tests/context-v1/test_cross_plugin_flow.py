@@ -270,11 +270,14 @@ class CrossPluginFlowTests(unittest.TestCase):
             result = json.loads(completed.stdout)["result"]
             self.assertEqual("context-decision-init-result/v1", result["schema"])
             self.assertEqual("absent", result["core_repository_state_before"])
-            self.assertEqual(["applied", "applied"], [phase["status"] for phase in result["phases"]])
+            self.assertEqual(
+                [("core_init", "applied"), ("area_register", "applied"), ("policy_install", "applied")],
+                [(phase["phase"], phase["status"]) for phase in result["phases"]],
+            )
             self.assertEqual("ready", result["doctor"]["repository_state"])
             self.assertTrue((repo / "context/decision/decision.index.md").is_file())
             self.assertEqual("preserve\n", (repo / "keep.txt").read_text(encoding="utf-8"))
-            self.assertFalse((repo / "AGENTS.md").exists())
+            self.assertIn(context_cli.POLICY_BODY, (repo / "AGENTS.md").read_text(encoding="utf-8"))
             self.assertFalse((repo / "CLAUDE.md").exists())
 
             repeated = run_cli(
@@ -292,7 +295,7 @@ class CrossPluginFlowTests(unittest.TestCase):
             )
             self.assertEqual(0, repeated.returncode, repeated.stdout + repeated.stderr)
             self.assertEqual(
-                ["noop", "noop"],
+                ["noop", "noop", "noop"],
                 [phase["status"] for phase in json.loads(repeated.stdout)["result"]["phases"]],
             )
 
@@ -318,6 +321,8 @@ class CrossPluginFlowTests(unittest.TestCase):
                 f"@{descriptor}",
                 "--index-seed",
                 f"@{invalid_seed}",
+                "--host",
+                "codex",
                 "--json",
             )
             self.assertEqual(5, failed.returncode, failed.stdout + failed.stderr)
@@ -338,13 +343,16 @@ class CrossPluginFlowTests(unittest.TestCase):
                 f"@{descriptor}",
                 "--index-seed",
                 f"@{valid_seed}",
+                "--host",
+                "codex",
                 "--json",
             )
             self.assertEqual(0, retried.returncode, retried.stdout + retried.stderr)
             self.assertEqual(
-                [("core_init", "noop"), ("area_register", "applied")],
+                [("core_init", "noop"), ("area_register", "applied"), ("policy_install", "applied")],
                 [(phase["phase"], phase["status"]) for phase in json.loads(retried.stdout)["result"]["phases"]],
             )
+            self.assertIn(context_cli.POLICY_BODY, (repo / "AGENTS.md").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

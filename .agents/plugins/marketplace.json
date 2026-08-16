@@ -53,16 +53,16 @@
     {
       "name": "context-core",
       "source": { "source": "local", "path": "./plugins/context-core" },
-      "version": "0.1.2",
-      "description": "Approved handoffs, evidence observations, index-first recall, and single-coordinator context writes.",
+      "version": "0.2.0",
+      "description": "Proactive scoped recall, actual-body comparison, approval-gated capture suggestions, and coordinated context writes.",
       "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
       "category": "Productivity"
     },
     {
       "name": "context-decision",
       "source": { "source": "local", "path": "./plugins/context-decision" },
-      "version": "0.1.2",
-      "description": "Decision continuity with rationale, rejected alternatives, and superseded history.",
+      "version": "0.2.0",
+      "description": "Decision continuity with actual-body comparison, rationale-change and conflict notices, and superseded history.",
       "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
       "category": "Productivity"
     }

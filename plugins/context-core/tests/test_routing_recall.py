@@ -130,12 +130,12 @@ class RoutingRecallTests(unittest.TestCase):
         self.assertEqual(0, routed["alternate_runtime_count"])
         self.assertEqual(before, declined)
 
-    def test_malformed_candidate_and_duplicate_claim_fail_closed(self) -> None:
+    def test_malformed_candidate_and_duplicate_candidate_claim_fail_closed(self) -> None:
         first = candidate("cand_550e8400e29b41d4a716446655440000", "same", specialized=[], fallback="observation")
         second = candidate("cand_123e4567e89b42d3a456426614174000", "same", specialized=[], fallback="observation")
         with self.assertRaises(context_cli.ContextError) as caught:
             context_cli.route_candidates([first, second], context_cli.capabilities_result(), [])
-        self.assertEqual("duplicate_claim", caught.exception.code)
+        self.assertEqual("duplicate_candidate_claim", caught.exception.code)
 
         oversized = copy.deepcopy(first)
         oversized["owner_inputs"]["observation"]["observation"] = "가" * 2100

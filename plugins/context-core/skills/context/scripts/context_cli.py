@@ -1244,7 +1244,7 @@ def validate_candidate_batch(batch: Any, capabilities: Any) -> list[dict[str, An
             raise ContextError("candidate_invalid", "candidate_id is duplicated", {"candidate_id": identifier}, EXIT_CONFLICT)
         normalized_claim = normalized_key(candidate.get("claim", "").strip())
         if claim_key in claim_keys or normalized_claim in semantic_claims:
-            raise ContextError("duplicate_claim", "one semantic claim may appear only once in an audit batch", {"claim_key": claim_key}, EXIT_CONFLICT)
+            raise ContextError("duplicate_candidate_claim", "one exact candidate claim may appear only once in an audit batch", {"claim_key": claim_key}, EXIT_CONFLICT)
         candidate_ids.add(identifier)
         claim_keys.add(claim_key)
         semantic_claims.add(normalized_claim)
@@ -1375,7 +1375,7 @@ def route_candidates(batch: Any, capabilities: Any, claim_results: Any) -> dict[
         routes.append({"candidate_id": candidate["candidate_id"], "claim_key": candidate["claim_key"], "status": "skipped", "reason": "no_owner_claim"})
     return {
         "schema": "context-route-result/v1", "routes": routes,
-        "conflicts": [item for item in routes if item["status"] in {"owner_conflict", "duplicate_claim"}],
+        "conflicts": [item for item in routes if item["status"] == "owner_conflict"],
         "skipped": [item for item in routes if item["status"] == "skipped"],
         "router_owner_process_invocations": 0, "cache_probe_count": 0, "alternate_runtime_count": 0,
     }

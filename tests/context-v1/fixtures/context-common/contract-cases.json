@@ -1,7 +1,7 @@
 {
   "schema": "context-common-acceptance-corpus/v1",
   "cases": {
-    "init_idempotent": {"input": "one explicit core init call, second init", "expected": ["doctor_ready", "second_diff_zero", "human_description_preserved", "policy_not_installed"]},
+    "init_idempotent": {"input": "one explicit core init call, second init", "expected": ["doctor_ready", "second_diff_zero", "human_description_preserved", "host_policy_installed"]},
     "decision_core_missing": {"input": "decision init without exact core", "expected": ["core_missing", "manual_exact_provider_action", "write_zero"]},
     "natural_filename": {"input": "capture title without filename", "expected": ["no_type_prefix", "no_timestamp", "uuid_v4_context_id"]},
     "path_collision": {"input": "NFKC+casefold-equivalent basename", "expected": ["path_exists", "no_overwrite", "no_suffix"]},
@@ -32,7 +32,7 @@
     "decision_withdraw": {"input": "withdraw exact current decision", "expected": ["history_without_successor", "excluded_from_current_recall"]},
     "revisit_due": {"input": "due revisit condition", "expected": ["warning_or_proposal_only", "write_zero"]},
     "evidence_observation_to_decision": {"input": "decision informed by evidence observation", "expected": ["observation_stays_active", "informed_by_edge"]},
-    "fallback_observation_to_decision": {"input": "fallback OBS exact fingerprint import", "expected": ["claim_and_same_claim_attested", "single_coordinator_plan", "observation_superseded"]},
+    "fallback_observation_to_decision": {"input": "fallback OBS actual-claim and artifact-identity import", "expected": ["claim_and_same_claim_attested", "single_coordinator_plan", "observation_superseded"]},
     "addon_init": {"input": "decision descriptor and hashed complete seed", "expected": ["decision_direct_root_write_zero", "area_register_index_rebuild"]},
     "policy_install": {"input": "managed block preview for root policy", "expected": ["outside_bytes_preserved", "allowlist_and_digest_verified"]},
     "frontmatter_grammar": {"input": "JSON-compatible YAML valid and invalid corpus", "expected": ["canonical_roundtrip", "unknown_additive_preserved", "duplicate_and_unsupported_fail"]},
@@ -45,6 +45,8 @@
     "repository_absent": {"input": "exact core ready with absent context root", "expected": ["core_uninitialized", "installed_core_bootstrap", "decision_ready_same_call"]},
     "decision_init_bootstrap": {"input": "decision init with exact compatible installed core and absent repository", "expected": ["core_ready", "decision_ready", "retry_noop", "sole_writer"]},
     "bootstrap_phase_retry": {"input": "core phase succeeds before area phase failure", "expected": ["structured_phases", "retry_converges", "user_content_preserved"]},
-    "distribution_manifests": {"input": "Claude, Codex and marketplace manifests", "expected": ["dependency_fields_zero", "implicit_install_policy_zero"]}
+    "distribution_manifests": {"input": "Claude, Codex and marketplace manifests", "expected": ["dependency_fields_zero", "implicit_install_policy_zero"]},
+    "pre_decision_semantic_check": {"input": "paraphrased candidate and related Current DEC", "expected": ["actual_core_sections", "five_relation_contract", "write_zero"]},
+    "removed_claim_identity_field": {"input": "legacy claim identity field on OBS or DEC", "expected": ["schema_removed_field", "silent_accept_zero"]}
   }
 }

@@ -78,7 +78,7 @@ class AcceptanceRegistryTests(unittest.TestCase):
     def test_registry_contains_each_acceptance_id_exactly_once(self) -> None:
         entries = self.registry["entries"]
         ids = [entry["id"] for entry in entries]
-        self.assertEqual(list(range(1, 46)), sorted(ids))
+        self.assertEqual(list(range(1, 48)), sorted(ids))
         self.assertEqual(len(ids), len(set(ids)))
         self.assertEqual("context-v1-acceptance-registry/v1", self.registry["schema"])
 

@@ -3,13 +3,13 @@ title: context-core 플러그인
 created_at: 2026-08-13
 summary: session handoff SNAP, 비권위 evidence OBS, semantic area catalog, index-first recall, 단일 capture audit·routing·grouped approval을 소유하는 가벼운 공통 context runtime의 구현 정본.
 tags: [context-core, plugin, snapshot, observation, recall, ssot]
-verified_at: 2026-08-13
+verified_at: 2026-08-17
 affects_paths: [plugins/context-core/**]
 ---
 
 ## 현재 상태
 
-`context-core` v1은 **설계 확정, 구현 전**이다. 기존 `wiki-markdown`의 snapshot/observation/index/recall 경험을 참고하지만 별도 plugin과 storage root로 새로 구현하며 자동 migration이나 호환성을 약속하지 않는다.
+`context-core` 0.2.0은 구현되어 deterministic test와 교차 플러그인 fixture로 검증한다. 기존 `wiki-markdown`의 snapshot/observation/index/recall 경험을 참고하지만 별도 plugin과 storage root를 사용하며 자동 migration이나 호환성을 약속하지 않는다.
 
 ### 소유 범위
 
@@ -36,7 +36,7 @@ affects_paths: [plugins/context-core/**]
 
 OBS는 core의 generic 미분류 쓰레기통이 아니라 **발견·근거라는 자체 의미를 가진 built-in semantic owner**다. core는 addon schema를 import하지 않는다.
 
-### 계획 source layout
+### Source layout
 
 ```text
 plugins/context-core/
@@ -80,8 +80,9 @@ skill은 primary 사용자 요청을 먼저 수행한다. audit 결과가 없으
 ### CLI surface
 
 ```text
-context_cli.py init [--json]
-context_cli.py bootstrap --descriptor @file --index-seed @file [--json]
+context_cli.py init --host codex|claude-code [--json]
+context_cli.py bootstrap --descriptor @file --index-seed @file
+                         --host codex|claude-code [--json]
 context_cli.py doctor [--json]
 context_cli.py schema [--json]
 context_cli.py capabilities [--json]
@@ -151,13 +152,13 @@ context_cli.py refresh [--level integrity|hygiene|all] [--strict]
                        [--fix index] [--json]
 ```
 
-repository root의 `context/`가 유일한 v1 storage root이며 CLI에 `--root`는 없다. core-owned domain mutation과 init/area/policy 명령은 내부 final `context-mutation-bundle/v1` 검증을 통과한다. 명시적 `init`과 addon init의 `bootstrap`만 fixed `core_init|area_register` bundle을 coordinator로 즉시 적용하고, 나머지는 exact digest 승인 뒤 `transaction apply`한다. addon owner result는 명시적으로 `transaction preview`에 전달한다. create ID와 `created_at`은 owner/core preview에서 한 번 생성되고 final bundle에 고정된다. caller는 final **동일 bundle object**를 보관해 `transaction apply --plan-bundle @file --approved-digest DIGEST`에 넘긴다. JSON whitespace 재직렬화는 허용하지만 apply 시 timestamp/ID/path/artifact content를 재생성하지 않는다.
+repository root의 `context/`가 유일한 v1 storage root이며 CLI에 `--root`는 없다. core-owned domain mutation과 init/area/policy 명령은 내부 final `context-mutation-bundle/v1` 검증을 통과한다. 명시적 `init`과 addon init의 `bootstrap`만 fixed `core_init|area_register|policy_install` bundle을 coordinator로 즉시 적용하고, 나머지는 exact digest 승인 뒤 `transaction apply`한다. addon owner result는 명시적으로 `transaction preview`에 전달한다. create ID와 `created_at`은 owner/core preview에서 한 번 생성되고 final bundle에 고정된다. caller는 final **동일 bundle object**를 보관해 `transaction apply --plan-bundle @file --approved-digest DIGEST`에 넘긴다. JSON whitespace 재직렬화는 허용하지만 apply 시 timestamp/ID/path/artifact content를 재생성하지 않는다.
 
 `snapshot save`는 create-only다. `snapshot update`는 기본 full replacement이므로 세 필수 section을 모두 요구하고, `--merge`일 때만 지정한 section·metadata를 부분 변경한다. repeatable list flag는 full replacement에서 해당 list 전체를 대체하고 merge에서 하나라도 주어졌을 때 전체를 대체한다. full replacement에서 생략한 optional list는 empty, merge에서 생략한 list는 unchanged다. list를 명시적으로 비우려면 `--clear anchors|tags|search_terms|source_refs`를 사용하며 required body list는 clear할 수 없다. `observation supersede`는 successor result를 검증해 new OBS create와 old OBS retirement를 하나의 plan으로 만든다. 이미 존재하는 successor ID만 연결하는 비원자 명령은 없다.
 
 `--successor-result`는 observation owner skill+`context_cli.py draft --kind observation`이 만든 complete claim result를 받으며 새 ID와 created_at이 고정된 artifact draft를 포함해야 한다. 먼저 `lifecycle prepare`가 current old artifact와 successor result의 owner-validated projection만으로 exact `context-lifecycle-semantic-input/v1`을 만든다. host는 그 object를 observation owner skill의 `same_claim` operation에 그대로 전달한다. supersede 명령은 successor result의 embedded claim input/attestation, byte-identical `--lifecycle-input`과 그 digest를 가리키는 `--lifecycle-attestation`을 검증해 두 lifecycle effect가 든 mutation variant를 내부 구성하고 `transaction preview`를 거친 final bundle을 반환한다. apply 전까지 세 단계 모두 filesystem write 0이다.
 
-`lifecycle prepare`는 predecessor current bytes의 ID·path·primary claim/fingerprint와 successor result의 `semantic_projection`을 대조한다. 지원 transition 외에는 실패하고 semantic equality를 스스로 판정하지 않는다. 반환 input 전체가 attestation과 mutation result에 그대로 embedded되며 caller가 내용을 재작성하면 digest mismatch다.
+`lifecycle prepare`는 predecessor current bytes의 ID·path·SHA-256·실제 primary claim과 successor result의 같은 artifact identity·`semantic_projection`을 대조한다. 지원 transition 외에는 실패하고 semantic equality를 스스로 판정하지 않는다. 반환 input 전체가 attestation과 mutation result에 그대로 embedded되며 caller가 내용을 재작성하면 digest mismatch다.
 
 `observation invalidate --reason`은 enum state `retired_reason:"invalidated"`와 free-text `retirement_note`로 분리해 persist한다.
 
@@ -173,7 +174,7 @@ JSON success envelope은 `{"ok":true,"result":{...}}`다.
 - `list/search/recall`: `items`, `returned`, `omitted`, `truncated`, `index_fallback`, `warnings`
 - `load/read`: exact `artifact` metadata, 요청한 `sections`, authority/freshness와 `truncated`
 - `lifecycle prepare`: exact `context-lifecycle-semantic-input/v1`, input digest, `applied:false`
-- `init`/`bootstrap`: `context-core-bootstrap-result/v1`, ordered `applied|noop` phase, changed paths, post-apply doctor와 policy-not-requested receipt
+- `init`/`bootstrap`: `context-core-bootstrap-result/v1`, ordered `core_init|area_register|policy_install`의 `applied|noop` phase, changed paths, post-apply doctor와 host policy receipt
 - 일반 core domain mutation/`area register`/policy/index fix와 `transaction preview`: complete final `bundle`, `approval_preview`, `approval_digest`, `applied:false`
 - `transaction apply`: `applied:true`, `plan_id`, `approval_digest`, `changed_paths`, `index_paths`, `warnings`
 
@@ -218,7 +219,7 @@ SNAP의 lifecycle과 load authority는 [[context-artifact-lifecycle]]을 따른�
 
 ### OBS schema
 
-frontmatter는 공통 envelope에 optional `kind_hint`, `source_claim_fingerprint`, `verified_at`, `affects_paths`, `relations.related`, `claim_fingerprint`를 추가한다. `kind_hint: decision` fallback은 candidate의 original decision-like claim fingerprint를 `source_claim_fingerprint`에 복사하고 OBS 자체의 진술 fingerprint와 구분한다. fixed body section은 다음과 같다.
+frontmatter는 공통 envelope에 optional `kind_hint`, `verified_at`, `affects_paths`, `relations.related`를 추가한다. `kind_hint: decision` fallback도 실제 `관찰` 본문과 source artifact identity로 비교하며 별도 claim 지문을 저장하지 않는다. fixed body section은 다음과 같다.
 
 - 필수: `관찰`, `근거`
 - 선택: `영향`, `현재 처리`, `후속 조건`

@@ -3,7 +3,7 @@ title: SNAP OBS DEC artifact lifecycle 계약
 created_at: 2026-08-13
 summary: SNAP은 현재 handoff staging으로 제자리 갱신 후 discard하고, OBS와 DEC는 의미 불변 record로서 domain별 retire reason과 supersede edge를 갖는 v1 상태 전이 계약.
 tags: [context-core, context-decision, snapshot, observation, decision, lifecycle, ssot]
-verified_at: 2026-08-13
+verified_at: 2026-08-17
 affects_paths: [plugins/context-core/**, plugins/context-decision/**]
 ---
 
@@ -159,7 +159,7 @@ core-only fallback OBS에서 DEC로 넘어갈 때 다음 조건을 모두 만족
 
 1. OBS에 `kind_hint: decision`이 있다.
 2. DEC capture가 별도 사용자 승인을 받았다.
-3. OBS `source_claim_fingerprint`와 새 DEC의 `claim_fingerprint`가 exact match하고 [[context-capture-routing]]의 bounded old/new input에 대한 owner skill의 `same_claim` attestation 및 preview 승인이 있다.
+3. OBS와 새 DEC의 exact id·path·artifact SHA-256·actual primary claim이 [[context-capture-routing]]의 bounded old/new input에 결박되고, owner skill의 actual-body `same_claim` attestation 및 preview 승인이 있다.
 4. 새 DEC가 원 OBS를 predecessor로 기록한다.
 
 전환의 semantic 검증과 DEC draft 생성은 context-decision owner가 수행한다. OBS retire를 포함한 물리적 변경은 [[context-storage-retrieval]]의 context-core coordinator가 root lock 아래 하나의 `decision_fallback_import` plan으로 적용한다. owner가 서로의 파일을 직접 수정하지 않는다.

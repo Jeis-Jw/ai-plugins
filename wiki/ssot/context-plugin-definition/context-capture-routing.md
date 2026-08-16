@@ -3,11 +3,15 @@ title: 컨텍스트 capture routing과 bounded recall 계약
 created_at: 2026-08-13
 summary: 현재 대화를 milestone당 한 번 감사해 bounded ephemeral candidate를 만들고 설치된 semantic owner로 중복 없이 routing한 뒤 grouped approval 후에만 기록하는 provider-neutral v1 계약.
 tags: [context-core, capture, routing, approval, recall, token-efficiency, ssot]
-verified_at: 2026-08-13
+verified_at: 2026-08-17
 affects_paths: [plugins/context-core/**, plugins/context-decision/**]
 ---
 
 ## 현재 상태
+
+### Recall and compare before capture
+
+Substantive 판단이나 결정 수렴에서 과거 맥락이 결론을 바꿀 수 있으면 capture audit보다 먼저 관련 Current context를 scoped recall한다. decision 후보는 `context-decision check`가 관련 Current DEC의 actual `결정`·`취지`·`반려대안`을 bounded input으로 만들고, owner agent가 `new|same|supporting|rationale_changed|conflict`를 판정한다. 취지 변경이나 충돌은 결론 전에 알린다. 같은 scope에서는 recall 결과를 재사용하고 scope·evidence·anchor가 바뀔 때만 갱신한다.
 
 ### Audit timing
 
@@ -44,7 +48,6 @@ auditor는 host agent의 bounded semantic extraction 단계다. candidate 생성
   "source_refs": ["conversation:codex/<task-id>"],
   "evidence": ["사용자가 최종 합의로 명시한 문장"],
   "tags": ["auth"],
-  "claim_fingerprint": "sha256:0123456789abcdef01234567",
   "owner_inputs": {
     "decision": {
       "decision": "인증 세션은 BFF가 소유한다.",
@@ -71,7 +74,6 @@ auditor는 host agent의 bounded semantic extraction 단계다. candidate 생성
 - `fallback_kind`: `observation | snapshot | null`. specialized owner가 모두 decline/부재한 뒤 호출할 core kind이며 auditor가 해당 owner input을 함께 제공한다.
 - `scope_hint`: owner가 검증·정규화할 입력. decision specialized kind에서는 필수, 그 밖에는 생략한다.
 - `evidence`: 분류에 필요한 짧은 근거만 포함; transcript 전체 금지
-- `claim_fingerprint`: auditor가 공통 fingerprint 알고리즘으로 만든 optional `sha256:<24hex>` routing hint. owner가 final primary claim과 canonical scope에서 다시 계산하며 semantic equality의 완전한 증명은 아니다.
 - `owner_inputs`: capability가 선언한 `draft_fields`만 담는 bounded opaque map. core router는 내용을 해석하지 않고 해당 owner에게만 전달한다.
 
 auditor는 capability를 먼저 읽고 현재 대화를 **한 번만** 판독해 owner draft에 필요한 내용을 candidate에 넣는다. DEC의 결정·취지·반려대안, SNAP의 현재 맥락·열린 항목·다음 단계처럼 영속 문서의 핵심 section을 candidate 밖에서 승인 후 새로 만들 수 없다. owner가 필수 input이 부족하다고 판단하면 `decline` 또는 `needs_clarification`을 반환하며 transcript를 다시 읽지 않는다.
@@ -95,7 +97,7 @@ auditor는 capability를 먼저 읽고 현재 대화를 **한 번만** 판독해
     "kind": "observation",
     "path": "context/observation/합의-기록.md",
     "primary_claim": "인증 세션은 BFF가 소유하기로 합의했다.",
-    "claim_fingerprint": "sha256:0123456789abcdef01234567",
+    "artifact_sha256": "sha256:...",
     "supporting_context": ["사용자가 최종 합의로 명시한 문장"]
   },
   "successor": {
@@ -103,14 +105,14 @@ auditor는 capability를 먼저 읽고 현재 대화를 **한 번만** 판독해
     "kind": "decision",
     "path": "context/decision/인증-세션은-bff가-소유한다.md",
     "primary_claim": "인증 세션은 BFF가 소유한다.",
-    "claim_fingerprint": "sha256:0123456789abcdef01234567",
+    "artifact_sha256": "sha256:...",
     "supporting_context": ["브라우저별 cookie 차이를 서버 경계 안으로 모은다."]
   },
   "source_candidate_digest": "sha256:..."
 }
 ```
 
-필수 key는 예시와 같고 `source_candidate_digest`만 manual lifecycle에서 JSON null일 수 있다. successor가 claim result에서 왔으면 이 값은 embedded `operation:"claim"` input digest와 exact match해야 한다. `transition`은 `observation_supersede | decision_fallback_import`다. `primary_claim`은 OBS의 `## 관찰`, DEC의 `## 결정` 전문이며 `supporting_context`는 owner가 정한 핵심 근거/취지 projection 최대 4개·각 500 codepoint다. 전체 canonical JSON은 4 KiB 이하이며 path는 repository-relative canonical path다. core/owner CLI가 artifact ID·kind·path·fingerprint와 successor result의 owner-validated semantic projection 일치를 구조적으로 검증한 뒤 owner skill에 전달한다.
+필수 key는 예시와 같고 `source_candidate_digest`만 manual lifecycle에서 JSON null일 수 있다. successor가 claim result에서 왔으면 이 값은 embedded `operation:"claim"` input digest와 exact match해야 한다. `transition`은 `observation_supersede | decision_fallback_import`다. `primary_claim`은 OBS의 `## 관찰`, DEC의 `## 결정` 전문이며 `artifact_sha256`은 해당 exact artifact bytes를 결박한다. `supporting_context`는 owner가 정한 핵심 근거/취지 projection 최대 4개·각 500 codepoint다. 전체 canonical JSON은 4 KiB 이하이며 path는 repository-relative canonical path다. core/owner CLI가 artifact ID·kind·path·SHA-256·actual claim과 successor result의 owner-validated semantic projection 일치를 구조적으로 검증한 뒤 owner skill에 전달한다.
 
 ### Semantic owner capability
 
@@ -189,7 +191,6 @@ owner는 transcript가 아닌 candidate만 받아 다음 descriptor와 결과를
         "source_refs": ["conversation:codex/<task-id>"],
         "evidence": ["사용자가 최종 합의로 명시한 문장"],
         "tags": ["auth"],
-        "claim_fingerprint": "sha256:0123456789abcdef01234567",
         "owner_inputs": {
           "decision": {
             "decision": "인증 세션은 BFF가 소유한다.",
@@ -223,7 +224,7 @@ owner는 transcript가 아닌 candidate만 받아 다음 descriptor와 결과를
       "effect_id":"effect_create_dec",
       "path":"context/decision/인증-세션은-bff가-소유한다.md",
       "content":"---\nschema: \"context-decision/v1\"\n...\n---\n\n## 결정\n...",
-      "semantic_projection":{"kind":"decision","primary_claim":"인증 세션은 BFF가 소유한다.","claim_fingerprint":"sha256:0123456789abcdef01234567","supporting_context":["브라우저별 cookie 차이를 서버 경계 안으로 모은다."]}
+      "semantic_projection":{"kind":"decision","primary_claim":"인증 세션은 BFF가 소유한다.","supporting_context":["브라우저별 cookie 차이를 서버 경계 안으로 모은다."]}
     }
   ],
   "effects": [
@@ -239,9 +240,9 @@ owner는 transcript가 아닌 candidate만 받아 다음 descriptor와 결과를
 - `result_type:"mutation"`: `decision`, `candidate_id`를 금지하고 domain transition, normalized `mutation_request` input, 필요한 predecessor/successor input과 complete after-content/effect/plan을 가진다. `snapshot_update`, `observation_annotate|reverify|invalidate|supersede`, `decision_annotate|supersede|withdraw`, `decision_fallback_import`, `rename`, `discard`만 v1 transition이다.
 - 모든 result는 `owner,target_kind,capability_digest,semantic_inputs,semantic_attestations,artifact_drafts,effects,proposed_plan` key를 가진다. absent collection은 빈 array다. result의 canonical digest를 `owner_result_digest`라 부르며 object 안에는 넣지 않는다.
 
-`mutation_request` input value는 `context-domain-mutation-input/v1`이며 `transition,owner,target_kind,requested_changes,targets,successor_owner_result_digest`를 fixed key로 가진다. `targets`는 `{id,path,sha256}`의 path ASC array, `requested_changes`는 CLI가 정규화한 bounded JSON object, successor가 없으면 digest는 null이다. 전체는 8 KiB 이하이고 현재 artifact exact bytes 및 explicit user values와 대조한다. 이 input은 의미 attestation을 요구하지 않지만 승인 뒤 target/action/value를 바꿀 수 없게 owner result에 결박한다.
+`mutation_request` input value는 `context-domain-mutation-input/v1`이며 `transition,owner,target_kind,requested_changes,targets,successor_owner_result_digest,successor_artifact_sha256`를 fixed key로 가진다. `targets`는 `{id,path,sha256}`의 path ASC array, `requested_changes`는 CLI가 정규화한 bounded JSON object, successor가 없으면 두 successor 값은 null이다. 전체는 8 KiB 이하이고 현재 artifact exact bytes 및 explicit user values와 대조한다. 이 input은 의미 attestation을 요구하지 않지만 승인 뒤 target/action/value를 바꿀 수 없게 owner result에 결박한다.
 
-각 artifact draft는 `effect_id,path,content,semantic_projection`을 가진다. projection은 `kind,primary_claim,claim_fingerprint,supporting_context` fixed shape이며 supporting context는 최대 4개·각 500 codepoint다. domain owner CLI는 projection과 자기 draft schema/body 일치를 검증한다. core는 공통 fingerprint/path만 검증하고 addon section 의미를 추측하지 않는다. `lifecycle prepare`는 이 projection 외의 addon body를 읽지 않는다.
+각 artifact draft는 `effect_id,path,content,semantic_projection`을 가진다. projection은 `kind,primary_claim,supporting_context` fixed shape이며 supporting context는 최대 4개·각 500 codepoint다. domain owner CLI는 projection과 자기 draft schema/body 일치를 검증한다. core는 exact artifact bytes/path와 projection shape를 검증하되 addon section 의미를 추측하지 않는다. `lifecycle prepare`는 actual primary claim과 이 projection 외의 addon body를 읽지 않는다.
 
 v1 capture 최종 분류는 `claim | decline | needs_clarification`이다. semantic 판단은 descriptor의 `claim_surface` 또는 `lifecycle_operations.<operation>.surface`인 **owner agent skill**이 bounded input만 보고 수행한다. stdlib-only CLI는 attestation의 schema·input digest·JSON pointer 존재·required assertion이 모두 true인지 검증하고 document를 render할 뿐 idea와 accepted choice 또는 same-claim 의미를 스스로 판정하지 않는다. confidence score 경쟁, generic registry framework와 owner가 transcript를 다시 읽는 호출은 넣지 않는다.
 
@@ -284,7 +285,7 @@ route JSON success result는 다음 fixed projection이다.
 }
 ```
 
-`status`는 `proposed | needs_clarification | owner_unavailable | owner_conflict | duplicate_claim | skipped`다. proposed만 exact owner-result digest를 가지며 이 digest는 `context-owner-result/v1` 전체의 canonical JSON SHA-256이다. host는 digest가 맞는 claim variant만 transaction preview로 넘긴다. 같은 candidate ID는 routes/conflicts/skipped 전체에서 정확히 한 번만 나타난다.
+`status`는 `proposed | needs_clarification | owner_unavailable | owner_conflict | skipped`다. proposed만 exact owner-result digest를 가지며 이 digest는 `context-owner-result/v1` 전체의 canonical JSON SHA-256이다. host는 digest가 맞는 claim variant만 transaction preview로 넘긴다. 같은 candidate ID는 routes/conflicts/skipped 전체에서 정확히 한 번만 나타난다.
 
 ### Routing priority
 
@@ -303,7 +304,7 @@ route JSON success result는 다음 fixed projection이다.
    └─ skipped, 기록 제안 없음
 ```
 
-둘 이상의 specialized owner가 같은 `claim_key`를 claim하면 파일을 쓰지 않고 `owner_conflict`로 사용자에게 type 선택을 요청한다. 같은 owner 안에서 기존 artifact와 동일 fingerprint가 확인되면 `duplicate_claim`으로 새 capture를 막고 기존 문서를 제시한다. top-level `kind_hint`가 fallback OBS frontmatter의 유일한 정본이며 `owner_inputs.observation` 안에는 같은 field를 둘 수 없다.
+둘 이상의 specialized owner가 같은 `claim_key`를 claim하면 파일을 쓰지 않고 `owner_conflict`로 사용자에게 type 선택을 요청한다. 한 audit batch 안의 같은 `claim_key` 또는 normalized exact claim 중복은 `duplicate_candidate_claim`로 fail-closed한다. 저장된 artifact와 의미가 같은지는 이 gate가 판정하지 않으며 actual body comparison 결과 `same`이면 owner가 기존 문서를 제시하고 새 capture를 만들지 않는다. top-level `kind_hint`가 fallback OBS frontmatter의 유일한 정본이며 `owner_inputs.observation` 안에는 같은 field를 둘 수 없다.
 
 `requested_kind`는 owner 선택을 강제할 뿐 schema·semantic validation을 우회하지 않는다. 예를 들어 사용자가 fact를 DEC로 요청해도 decision owner가 accepted choice로 검증하지 못하면 권위 DEC를 만들지 않는다.
 

@@ -149,10 +149,15 @@ class DistributionProofTests(unittest.TestCase):
                 "context_cli_distribution_direct_init",
                 ROOT / "plugins/context-core/skills/context/scripts/context_cli.py",
             )
-            initialized = context_cli.bootstrap_repository(repo)
-            self.assertEqual("applied", initialized["phases"][0]["status"])
+            initialized = context_cli.bootstrap_repository(repo, host=case["host"])
+            self.assertEqual(
+                [("core_init", "applied"), ("policy_install", "applied")],
+                [(phase["phase"], phase["status"]) for phase in initialized["phases"]],
+            )
             self.assertEqual("ready", initialized["doctor"]["repository_state"])
-            self.assertEqual({"requested": False, "applied": False}, initialized["policy"])
+            self.assertEqual("AGENTS.md", initialized["policy"]["target"])
+            self.assertTrue(initialized["policy"]["applied"])
+            self.assertIn(context_cli.POLICY_BODY, (repo / "AGENTS.md").read_text(encoding="utf-8"))
             self.assertEqual("keep\n", (repo / "keep.txt").read_text(encoding="utf-8"))
             self.assertEqual(before[1], digest_tree(host))
 
@@ -179,7 +184,7 @@ class DistributionProofTests(unittest.TestCase):
             root = ROOT / "plugins" / name
             claude = read_json(root / ".claude-plugin/plugin.json")
             codex = read_json(root / ".codex-plugin/plugin.json")
-            self.assertEqual("0.1.2", claude["version"])
+            self.assertEqual("0.2.0", claude["version"])
             self.assertEqual(claude["version"], codex["version"])
             self.assertEqual(claude["version"], claude_entries[name]["version"])
             self.assertEqual(claude["version"], codex_entries[name]["version"])
@@ -224,8 +229,9 @@ class DistributionProofTests(unittest.TestCase):
             "context-core@jeis-ai-plugins",
             "context-common/v1",
             "repository_state=ready or absent",
-            "same call",
-            "Never install, enable, or update",
+            "managed policy",
+            "compare actual Current bodies",
+            "Never install, enable, or update plugins",
             "context-core coordinator",
         ):
             self.assertIn(token, default_prompt)

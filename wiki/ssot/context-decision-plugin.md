@@ -3,13 +3,13 @@ title: context-decision 플러그인
 created_at: 2026-08-13
 summary: 결정·취지·반려대안을 하나의 권위 record로 보존하고 scope·decision key·conflict·supersede·withdraw·revisit와 결정 전용 recall을 소유하는 공개 제품의 구현 정본.
 tags: [context-decision, plugin, decision, rationale, supersede, ssot]
-verified_at: 2026-08-13
+verified_at: 2026-08-17
 affects_paths: [plugins/context-decision/**]
 ---
 
 ## 현재 상태
 
-`context-decision` v1은 **설계 확정, 구현 전**이다. 공개 제품의 전면은 범용 memory가 아니라 프로젝트·조직에서 “무엇을 왜 결정했고, 무엇을 반려했으며, 지금도 무엇을 따라야 하는가”를 복원하는 decision continuity다.
+`context-decision` 0.2.0은 구현되어 deterministic test와 교차 플러그인 fixture로 검증한다. 공개 제품의 전면은 범용 memory가 아니라 프로젝트·조직에서 “무엇을 왜 결정했고, 무엇을 반려했으며, 지금도 무엇을 따라야 하는가”를 복원하는 decision continuity다.
 
 ### 의존성과 소유 범위
 
@@ -23,6 +23,7 @@ semantic 소유 범위:
 - `{결정 + 취지 + 반려대안}` 원자 단위
 - `scope`, `decision_key`, current slot exclusivity
 - conflict candidate, supersede, withdraw, revisit
+- 새 선택과 Current DEC 실제 본문의 사전 비교 및 취지 변경·충돌 알림
 - decision search, brief와 history
 - decision artifact·index의 validated draft와 mutation plan
 
@@ -63,8 +64,8 @@ decision CLI는 filesystem을 직접 쓰지 않는다. 자기 area와 허용된 
 
 | skill | 역할 |
 |---|---|
-| `context-decision:init` | exact core를 확인하고 필요한 core bootstrap과 decision area/index를 한 호출로 멱등 등록 |
-| `context-decision:decision` | candidate claim, capture, search/brief, conflict, supersede/withdraw/revisit |
+| `context-decision:init` | exact core를 확인하고 core/decision area와 host managed policy를 한 호출로 멱등 적용 |
+| `context-decision:decision` | 결정 수렴·변경 시 사전 본문 비교, capture 제안, search/brief, supersede/withdraw/revisit |
 
 직접 decision skill을 호출할 수 있지만, 일반 대화 closeout audit에서는 context-core가 만든 candidate만 받아 원문을 재판독하지 않는다.
 
@@ -101,7 +102,7 @@ missing/source mismatch/disabled/incompatible/partial preflight 실패는 reposi
 }
 ```
 
-missing/source mismatch/disabled/incompatible의 사람용 안내는 현재 host에 맞는 수동 설치·활성화·업데이트 방법, reload 또는 새 session, 마지막 `context-decision:init` 재실행 순서를 보여준다. scope는 사용자가 선택하며 command를 자동 실행 가능한 confirmation으로 제안하지 않는다. `core_uninitialized`는 host 설정을 바꾸지 않고 repository bootstrap phase로 진행한다.
+missing/source mismatch/disabled/incompatible의 사람용 안내는 현재 host에 맞는 수동 설치·활성화·업데이트 방법, reload 또는 새 session, 마지막 `context-decision:init` 재실행 순서를 보여준다. scope는 사용자가 선택하며 command를 자동 실행 가능한 confirmation으로 제안하지 않는다. `core_uninitialized`는 host 설정을 바꾸지 않고 repository bootstrap phase로 진행한다. 명시적 init은 현재 host 이름도 core bootstrap에 넘겨 `codex → AGENTS.md`, `claude-code → CLAUDE.md` managed policy를 적용한다.
 
 ### CLI surface
 
@@ -109,22 +110,23 @@ missing/source mismatch/disabled/incompatible의 사람용 안내는 현재 host
 decision_cli.py init [--json]
 decision_cli.py schema [--json]
 decision_cli.py capabilities [--json]
+decision_cli.py candidate prepare --candidate-id UUID --title TEXT --summary TEXT
+                         --scope SCOPE --decision-key KEY --captured-from SOURCE
+                         --commitment-evidence TEXT --sec-decision BODY
+                         --sec-rationale BODY --sec-alternatives BODY [--json]
+decision_cli.py check --statement BODY --scope SCOPE --decision-key KEY
+                      [--rationale BODY] [--query TEXT] [--limit N] [--json]
 decision_cli.py draft --candidate @file|@- --attestation @file [--json]
-
-decision_cli.py capture --title TEXT --summary TEXT --scope SCOPE --decision-key KEY
-                        --captured-from conversation|workspace|manual|import
-                        --attestation @file
-                        --sec-decision BODY --sec-rationale BODY --sec-alternatives BODY
-                        [--sec-constraints BODY] [--sec-tradeoffs BODY] [--sec-revisit BODY]
-                        [--revisit-on YYYY-MM-DD] [--source-ref REF]... [--tag TAG]...
-                        [--informed-by ID]...
+decision_cli.py capture --candidate @file|@-
+                        (--attestation @file | --decline-reason TEXT |
+                         --needs-clarification-reason TEXT)
                         [--ack-conflicts ID]... [--json]
 decision_cli.py search [--query TEXT] [--scope SCOPE] [--decision-key KEY]
                        [--include-history] [--limit N] [--json]
 decision_cli.py read --id ID [--section NAME]... [--max-bytes N] [--json]
 decision_cli.py brief --query TEXT [--include-history] [--max-bytes N] [--json]
 decision_cli.py brief --id ID [--id ID]... [--include-history] [--max-bytes N] [--json]
-decision_cli.py conflicts --scope SCOPE --decision-key KEY [--candidate @file] [--json]
+decision_cli.py conflicts --scope SCOPE --decision-key KEY [--json]
 decision_cli.py supersede --id OLD --successor-candidate @file|@- --attestation @file
                           [--ack-conflicts ID]... [--json]
 decision_cli.py import-fallback --id OBS --successor-result @file|@-
@@ -141,9 +143,11 @@ decision_cli.py batch validate --owner-result @file|@-
 decision_cli.py plan validate --plan-bundle @file|@- [--json]
 ```
 
-`init`은 owner descriptor와 decision area index seed를, `draft`·새 slot의 `capture`는 claim variant를, `supersede`·`import-fallback`·`withdraw`·`annotate`는 mutation variant의 complete `context-owner-result/v1`을 반환할 뿐 write하지 않는다. existing slot 대체는 `capture` option이 아니라 반드시 `supersede --id OLD`를 사용한다. context-decision init skill은 `decision_init.py` entrypoint 한 번으로 preflight 결과를 installed core의 public `context_cli.py bootstrap`에 넘겨 fixed core/area seed를 coordinator로 적용한다. 일반 mutation result와 `batch validate` receipt는 `context_cli.py transaction preview`에 넘겨 grouped approval에 포함하고 승인 뒤 `transaction apply`에 위임한다. rename·discard·index refresh는 decision owner의 plan validation을 거쳐 context-core 공통 명령을 사용한다. body `@file`/`@-`, JSON error와 exit code는 context-core 공통 계약을 따른다.
+`schema`와 `capabilities`를 제외한 각 command에는 공통 preflight 인자 `--host`, `--core-inventory @file`, `--core-doctor @file`을 전달한다.
 
-JSON success output은 context-core envelope을 따른다. owner skill과 `draft`·domain mutation이 합성한 결과는 discriminated `context-owner-result/v1`, `batch validate`는 `context-owner-validation-receipt/v1`, `search`는 index projection `items`, `read`는 exact DEC와 요청 section, `brief`는 bounded DEC core section projection, `conflicts/revisit`는 read-only candidate/warning 목록을 반환한다. final bundle/digest는 core `transaction preview`가 만든다. `[--flag VALUE]...`는 repeatable option이다.
+`init`은 owner descriptor와 decision area index seed를, `draft`·새 slot의 `capture`는 claim variant를, `supersede`·`import-fallback`·`withdraw`·`annotate`는 mutation variant의 complete `context-owner-result/v1`을 반환할 뿐 write하지 않는다. `check`도 실제 Current 본문을 읽어 비교 input만 만들며 write하지 않는다. existing slot 대체는 `capture` option이 아니라 반드시 `supersede --id OLD`를 사용한다. context-decision init skill은 `decision_init.py` entrypoint 한 번으로 preflight 결과와 host를 installed core의 public `context_cli.py bootstrap`에 넘겨 fixed core/area seed와 managed policy를 coordinator로 적용한다. 일반 mutation result와 `batch validate` receipt는 `context_cli.py transaction preview`에 넘겨 grouped approval에 포함하고 승인 뒤 `transaction apply`에 위임한다. rename·discard·index refresh는 decision owner의 plan validation을 거쳐 context-core 공통 명령을 사용한다. body `@file`/`@-`, JSON error와 exit code는 context-core 공통 계약을 따른다.
+
+JSON success output은 context-core envelope을 따른다. owner skill과 `draft`·domain mutation이 합성한 결과는 discriminated `context-owner-result/v1`, `check`는 `context-decision-check/v1`, `batch validate`는 `context-owner-validation-receipt/v1`, `search`는 index projection `items`, `read`는 exact DEC와 요청 section, `brief`는 bounded DEC core section projection, `conflicts/revisit`는 read-only candidate/warning 목록을 반환한다. final bundle/digest는 core `transaction preview`가 만든다. `[--flag VALUE]...`는 repeatable option이다.
 
 ### Capability와 claim rule
 
@@ -155,6 +159,7 @@ JSON success output은 context-core envelope을 따른다. owner skill과 `draft
   "artifact_schema": "context-decision/v1",
   "authority": "authoritative",
   "claim_surface": {"type":"agent_skill","name":"context-decision:decision","operation":"claim"},
+  "comparison_surface": {"type":"cli","command":"decision_cli.py check"},
   "batch_validation_surface": {"type":"cli","command":"decision_cli.py batch validate"},
   "claim_rule": "현재 또는 미래 행동을 지배하는 명시적 선택이며 scope와 따를 의사가 있다",
   "claim_assertions": ["explicit_choice","scope_identified","commitment_present"],
@@ -192,7 +197,19 @@ field type과 length semantics는 context-core capability 계약의 `string|stri
 
 아이디어, 질문, 미합의 제안, 사실 발견, 단순 선호는 claim하지 않는다. 이들은 OBS 또는 skip 대상이다. 명시적 `requested_kind: decision`도 이 검증을 우회하지 않는다. 결정 후보의 근거가 부족하면 owner는 `decline`하거나 `needs_clarification`을 반환하고 권위 DEC를 만들지 않는다.
 
-`context-decision:decision` skill이 candidate common fields와 `owner_inputs.decision`만 읽어 claim/decline/clarification과 semantic attestation을 만든다. common fields 중 `title,summary,captured_from,scope_hint,source_refs,tags,claim`이 DEC envelope·scope·fingerprint의 입력이다. `decision_cli.py draft`는 attestation과 field/schema를 결정적으로 검증해 exact candidate를 semantic input으로 embedded하고 DEC의 모든 필수 section, path/ID, conflict/lifecycle effect를 포함한 claim variant `context-owner-result/v1`을 render한다. ID와 `created_at`은 이 preview 때 한 번 생성되며 final bundle에 고정된다. skill과 CLI 모두 원문 transcript를 읽거나 승인 뒤 취지·반려대안을 보충할 수 없다.
+`context-decision:decision` skill이 candidate common fields와 `owner_inputs.decision`만 읽어 claim/decline/clarification과 semantic attestation을 만든다. common fields 중 `title,summary,captured_from,scope_hint,source_refs,tags,claim`이 DEC envelope과 scope의 입력이다. `decision_cli.py draft`는 attestation과 field/schema를 결정적으로 검증해 exact candidate를 semantic input으로 embedded하고 DEC의 모든 필수 section, path/ID, conflict/lifecycle effect를 포함한 claim variant `context-owner-result/v1`을 render한다. ID와 `created_at`은 이 preview 때 한 번 생성되며 final bundle에 고정된다. skill과 CLI 모두 원문 transcript를 읽거나 승인 뒤 취지·반려대안을 보충할 수 없다.
+
+### 결정 전 비교
+
+대화가 선택으로 수렴하거나 기존 선택을 바꾸려 하면 claim보다 먼저 `check`를 호출한다. exact slot과 scope overlap DEC는 반드시 포함하고 나머지는 index metadata·query를 이용해 최대 12개, 24 KiB 안에서 관련 Current DEC를 고른다. 결과는 각 DEC의 actual `결정`, `취지`, `반려대안`과 `{id,path,sha256}`를 담는다. agent는 이 input만 보고 `new | same | supporting | rationale_changed | conflict`와 related IDs·근거를 만든다.
+
+- `same`: 기존 DEC를 인용하고 새 DEC를 만들지 않는다.
+- `supporting`: DEC를 유지하고 오래 재사용할 새 근거만 OBS 후보로 고려한다.
+- `rationale_changed`: 바뀐 취지와 영향을 결론 전에 알리고 유지·변경을 확인한다.
+- `conflict`: 양립하지 않는 Current DEC와 차이를 결론 전에 알리고 유지·supersede를 확인한다.
+- `new`: 조회된 bounded 집합에서 관련 Current DEC를 찾지 못했다는 뜻이며 전역 무충돌 증명이 아니다.
+
+문장 hash나 표면 유사도는 의미 판정으로 사용하지 않는다. 결정이 명시적으로 확정된 semantic milestone에서만 원 답변 뒤 기록 여부를 한 번 묻고, 승인 전 write는 0이다.
 
 direct `capture`도 flags를 complete `context-capture-candidate/v1`로 정규화한다. `requested_kind:"decision"`, `specialized_kinds:["decision"]`, `fallback_kind:null`, `claim_key:"direct"`, 새 candidate ID와 `owner_inputs.decision`을 사용해 exact object를 claim semantic input으로 embed한 뒤 `--attestation` pointer를 검증한다. raw CLI가 accepted choice 의미를 발명하지 않는다.
 
@@ -211,7 +228,6 @@ decision_key: "session-owner"
 source_refs: ["file:src/auth/session.ts"]
 tags: ["auth","BFF"]
 search_terms: ["OAuth callback","session cookie"]
-claim_fingerprint: "sha256:0123456789abcdef01234567"
 revisit_when: ["브라우저가 first-party cookie도 차단할 때"]
 revisit_on: "2027-02-01"
 relations: {"informed_by":["ctx_..."]}
@@ -273,8 +289,7 @@ CLI가 결정할 수 있는 v1 conflict는 좁게 유지한다.
 
 1. exact `(scope, decision_key)` current가 존재하면 hard conflict다. 새 `capture`는 항상 `decision_slot_conflict`로 실패하며 기존 DEC를 `supersede --id OLD`로 명시해야 한다.
 2. 같은 `decision_key`이며 scope가 ancestor/descendant 관계면 `conflict_candidates`로 반환한다. apply에는 `--ack-conflicts` 또는 명시적 supersede가 필요하다. 승인 preview는 acknowledged ID를 표시하고 plan `read_preconditions`에 각 conflict의 exact current path/content digest를 넣는다. apply 시 하나라도 바뀌거나 새 overlap conflict가 생기면 `conflict_set_changed`로 재-preview를 요구한다.
-3. fingerprint가 동일하면 `duplicate_claim`으로 새 capture를 막고 기존 DEC를 반환한다.
-4. 다른 key 사이의 semantic contradiction은 CLI가 추측하지 않는다. owner skill이 index 검색 후보를 사용자에게 제시한다.
+3. 같은 뜻의 다른 표현과 다른 key 사이의 semantic contradiction은 deterministic slot gate가 추측하지 않는다. `check`가 실제 Current 본문을 제공하고 owner skill이 `same|supporting|rationale_changed|conflict|new`를 판정한다.
 
 conflict 후보가 있다는 사실만으로 자동 supersede하지 않는다.
 
@@ -290,7 +305,7 @@ DEC의 의미 변경은 새 artifact 생성이다. 자세한 전이는 [[context
 - TASK·SSOT 생성: DEC 유지
 - metadata correction: 의미를 바꾸지 않는 범위에서 제자리 수정
 
-core-only fallback OBS를 DEC로 import하려면 `kind_hint: decision`, OBS `source_claim_fingerprint`와 DEC fingerprint exact match, [[context-capture-routing]]의 bounded old/new lifecycle input에 대한 owner skill의 `same_claim` attestation과 별도 승인이 필수다. 먼저 DEC claim result를 만들고 core `lifecycle prepare --transition decision_fallback_import`로 exact input을 만든 뒤, 그 input을 decision owner skill의 `same_claim` operation에 전달한다. `import-fallback`은 DEC claim result, lifecycle input과 attestation을 검증해 mutation variant의 owner result를 만든다. 이 결과는 DEC candidate의 embedded `claim` input/attestation과 lifecycle `same_claim` input/attestation을 모두 포함한다. decision owner는 OBS after-content까지 직접 쓰지 않고 `decision_fallback_import` cross-owner plan을 만든다. core coordinator가 OBS retire와 DEC create를 root lock 아래 함께 적용한다. 일반 evidence OBS는 retire하지 않고 `informed_by`로 연결한다.
+core-only fallback OBS를 DEC로 import하려면 `kind_hint: decision`, OBS와 DEC의 exact id·path·artifact SHA-256·actual primary claim, [[context-capture-routing]]의 bounded old/new lifecycle input에 대한 owner skill의 `same_claim` attestation과 별도 승인이 필수다. 먼저 DEC claim result를 만들고 core `lifecycle prepare --transition decision_fallback_import`로 exact input을 만든 뒤, 그 input을 decision owner skill의 `same_claim` operation에 전달한다. `import-fallback`은 DEC claim result, lifecycle input과 attestation을 검증해 mutation variant의 owner result를 만든다. 이 결과는 DEC candidate의 embedded `claim` input/attestation과 lifecycle `same_claim` input/attestation을 모두 포함한다. decision owner는 OBS after-content까지 직접 쓰지 않고 `decision_fallback_import` cross-owner plan을 만든다. core coordinator가 OBS retire와 DEC create를 root lock 아래 함께 적용한다. 일반 evidence OBS는 retire하지 않고 `informed_by`로 연결한다.
 
 ### Same-batch domain validation
 
@@ -306,13 +321,13 @@ core-only fallback OBS를 DEC로 import하려면 `kind_hint: decision`, OBS `sou
   "owner_result_digest": "sha256:...",
   "base_area_index_sha256": "sha256:...",
   "prior_same_area_bundle_digests": ["sha256:..."],
-  "validated_facts": {"scope":"project/auth","decision_key":"session-owner","claim_fingerprint":"sha256:0123456789abcdef01234567","acknowledged_conflicts":[]},
+  "validated_facts": {"scope":"project/auth","decision_key":"session-owner","primary_claim":"인증 세션은 BFF가 소유한다.","rationale":"cookie lifecycle을 서버 경계로 모은다.","acknowledged_conflicts":[]},
   "status": "valid",
   "receipt_digest": "sha256:..."
 }
 ```
 
-`base_area_index_sha256`는 grouped preview 시작 시 physical `decision.index.md`의 exact digest이며 batch 내 모든 DEC receipt에서 같다. `prior_same_area_bundle_digests`를 그 base 위에 proposal order로 overlay해 이 result 직전 virtual Current set을 만든다. `receipt_digest`는 자기 field를 제외한 object의 canonical SHA-256이다. `validated_facts` key order는 예시 그대로이며 값은 owner result draft에서 다시 계산한다. validator는 virtual Current set에 exact slot·ancestor/descendant conflict·duplicate fingerprint·supersede predecessor 상태를 적용한다. exact slot 중복, 승인되지 않은 overlap, 이미 앞 bundle에서 retire된 predecessor면 receipt를 만들지 않고 domain error를 반환한다. core `transaction preview`는 capability가 이 surface를 선언한 owner result에 receipt를 필수로 요구하고 result digest, batch base index, 모든 앞선 same-area bundle digest의 **exact ordered list**와 receipt digest를 구조적으로 검증해 final plan에 포함한다. apply는 이를 approval material과 current/prior precondition으로 다시 검증한다. 따라서 같은 grouped approval 안의 두 DEC도 base filesystem만 보고 독립 통과할 수 없다.
+`base_area_index_sha256`는 grouped preview 시작 시 physical `decision.index.md`의 exact digest이며 batch 내 모든 DEC receipt에서 같다. `prior_same_area_bundle_digests`를 그 base 위에 proposal order로 overlay해 이 result 직전 virtual Current set을 만든다. `receipt_digest`는 자기 field를 제외한 object의 canonical SHA-256이다. `validated_facts` key order는 예시 그대로이며 actual primary claim과 rationale를 owner result draft에서 다시 읽는다. validator는 virtual Current set에 exact slot·ancestor/descendant conflict·supersede predecessor 상태를 적용한다. exact slot 중복, 승인되지 않은 overlap, 이미 앞 bundle에서 retire된 predecessor면 receipt를 만들지 않고 domain error를 반환한다. core `transaction preview`는 capability가 이 surface를 선언한 owner result에 receipt를 필수로 요구하고 result digest, batch base index, 모든 앞선 same-area bundle digest의 **exact ordered list**와 receipt digest를 구조적으로 검증해 final plan에 포함한다. apply는 이를 approval material과 current/prior precondition으로 다시 검증한다. 따라서 같은 grouped approval 안의 두 DEC도 base filesystem만 보고 독립 통과할 수 없다.
 
 ### Decision recall
 

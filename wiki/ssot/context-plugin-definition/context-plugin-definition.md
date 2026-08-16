@@ -3,7 +3,7 @@ title: 컨텍스트 플러그인 정의 (영역 인덱스)
 created_at: 2026-08-13
 summary: context-core와 context-decision의 구현 정본 영역으로 공통 저장·semantic index, artifact별 lifecycle, 단일 capture audit와 recall, v1 구현·검증 계약을 연결한다.
 tags: [context-core, context-decision, plugin, architecture, ssot]
-verified_at: 2026-08-13
+verified_at: 2026-08-17
 audience: [human, agent]
 affects_paths: [plugins/context-core/**, plugins/context-decision/**]
 ---
@@ -12,7 +12,7 @@ affects_paths: [plugins/context-core/**, plugins/context-decision/**]
 
 이 영역은 기존 `wiki-markdown`을 그대로 분리하는 설계가 아니라, 대화와 작업에서 생긴 공유 맥락을 가볍게 보존하는 새 플러그인군의 구현 계약이다. 기존 플러그인은 동작·실패 사례를 확인하는 참고 구현이며 새 계약의 하위 호환 대상은 아니다.
 
-현재 상태는 **설계 확정, 구현 전**이다. 문서의 `MUST`는 v1 acceptance를 구성하고 `SHOULD`는 특별한 반대 근거가 없으면 구현한다. `MAY`는 v1 이후 선택 사항이다.
+현재 상태는 **0.2.0 구현·통합 검증 단계**다. 문서의 `MUST`는 acceptance를 구성하고 `SHOULD`는 특별한 반대 근거가 없으면 구현한다. `MAY`는 후속 선택 사항이다.
 
 ## 제품 구조
 
@@ -38,6 +38,8 @@ affects_paths: [plugins/context-core/**, plugins/context-decision/**]
 10. 기본 검색은 semantic index에서 후보를 좁힌 뒤 선택한 문서 또는 section만 읽는다.
 11. Obsidian은 호환되는 view일 뿐 runtime dependency가 아니다.
 12. semantic addon의 core 의존성은 manual hard dependency다. 두 host 모두 native dependency·자동 설치·자동 활성화를 사용하지 않으며, exact provider marketplace/plugin identity와 protocol preflight 실패 시 host configuration과 repository를 변경하지 않는다.
+13. substantive 판단과 결정 수렴에서는 capture보다 먼저 scoped Current recall과 actual-body 비교를 수행하고, conflict·rationale change를 결론 전에 알린다. hash는 semantic identity가 아니다.
+14. 명시적 init은 현재 host의 `AGENTS.md` 또는 `CLAUDE.md`에 marker-bounded managed policy를 설치해 이 흐름을 자동 로드하지만 background runtime hook은 만들지 않는다.
 
 ### Distribution dependency boundary
 
@@ -49,6 +51,12 @@ Plugin install/enable/update와 marketplace add는 사용자 환경 mutation이�
 
 ```text
 대화·작업
+   │ substantive 판단·결정 수렴
+   ▼
+scoped Current recall + actual-body comparison
+   │ conflict/rationale change면 결론 전 알림
+   ▼
+primary 대화·작업 완료
    │ semantic milestone 또는 closeout당 최대 1회
    ▼
 context-core capture audit
@@ -97,7 +105,7 @@ context-core storage coordinator
 
 ## 계약 진화
 
-공통 envelope와 index 문법은 `context-common/v1`, candidate는 `context-capture-candidate/v1`로 versioning한다. v1 필드 추가는 reader가 모르는 필드를 무시할 수 있을 때만 호환이다. 필드 의미 변경, ID/ref 형식 변경, generated block 문법 변경은 새 major schema가 필요하다.
+공통 envelope와 index 문법은 `context-common/v1`, candidate는 `context-capture-candidate/v1`로 versioning한다. plugin 0.2.0은 의미 판정용 claim 지문을 제거한 0.x breaking release이며 legacy artifact의 제거된 field를 조용히 수락하지 않는다. v1 필드 추가는 reader가 모르는 필드를 무시할 수 있을 때만 호환이다. 필드 의미 변경, ID/ref 형식 변경, generated block 문법 변경은 새 major schema가 필요하다.
 
 두 번째 실제 addon이 구현되기 전에는 generic SDK를 추출하지 않는다. 그 시점에 현재 decision owner와 새 owner의 공통 부분만 공통 계약으로 승격한다.
 

@@ -112,11 +112,9 @@ class SyntheticRepository:
                 "다음 단계": "- synthetic next step",
             }
         elif area == "observation":
-            frontmatter["claim_fingerprint"] = context_cli.claim_fingerprint("observation", "", probe)
             sections = {"관찰": f"{probe} observation", "근거": "- deterministic fixture"}
         else:
             frontmatter.update(
-                claim_fingerprint=context_cli.claim_fingerprint("decision", "project/synthetic", probe),
                 scope="project/synthetic",
                 decision_key=f"slot-{state}-{number:04d}",
             )

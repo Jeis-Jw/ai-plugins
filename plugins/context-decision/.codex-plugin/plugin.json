@@ -1,7 +1,7 @@
 {
   "name": "context-decision",
-  "version": "0.1.2",
-  "description": "Decision continuity with rationale, rejected alternatives, conflict checks, and superseded history.",
+  "version": "0.2.0",
+  "description": "Decision continuity with actual-body comparison, proactive conflict notices, and approval-gated capture.",
   "author": {
     "name": "Jinwuk-Lee",
     "url": "https://github.com/Jeis-Jw"
@@ -9,16 +9,16 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Context Decision",
-    "shortDescription": "Remember what was decided, why, and what not to follow.",
-    "longDescription": "Preserves an accepted decision, its rationale, and rejected alternatives as one authoritative record; recalls the current choice and marks superseded history do_not_follow. Its explicit init skill validates context-core and bootstraps an absent compatible repository in the same call.",
+    "shortDescription": "Compare, preserve, and safely change decisions.",
+    "longDescription": "Before a choice is finalized, supplies related Current decision bodies for same, supporting, rationale-changed, conflict, or new assessment; preserves approved decisions with rationale and rejected alternatives and marks superseded history do_not_follow.",
     "developerName": "Jinwuk-Lee",
     "category": "Productivity",
     "capabilities": ["Read", "Validation"],
     "defaultPrompt": [
       "Before any repository operation, require the exact installed and enabled context-core@jeis-ai-plugins source, context-common/v1 protocol, and a compatible doctor receipt.",
-      "For an explicitly invoked $context-decision:init only, accept doctor repository_state=ready or absent; when absent, delegate the fixed core and decision seeds to the active installed context-core public bootstrap surface so the same call reaches decision ready.",
-      "Use $context-decision:decision only for an explicit accepted choice with scope and commitment; keep the decision, rationale, and rejected alternatives together.",
-      "Never install, enable, or update plugins, probe plugin caches, embed context-core, or install agent policy automatically; all physical repository writes belong to the context-core coordinator and non-init durable mutations retain exact digest approval."
+      "For an explicitly invoked $context-decision:init only, accept doctor repository_state=ready or absent; delegate fixed core and decision seeds plus the active host name to context-core so the same call reaches decision ready and installs the managed policy.",
+      "When discussion converges on or changes a choice, use $context-decision:decision to compare actual Current bodies before concluding; report rationale changes or conflicts and only capture an explicit accepted choice with scope and commitment.",
+      "Never install, enable, or update plugins, probe plugin caches, or embed context-core; fixed init policy installation is allowed, while all non-init durable mutations remain exact-digest approval gated through the context-core coordinator."
     ]
   }
 }

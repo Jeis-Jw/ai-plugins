@@ -43,7 +43,7 @@ class DecisionConflictTests(unittest.TestCase):
                 decision_cli.validate_batch(repo, second, [first_bundle])
             self.assertEqual("decision_slot_conflict", virtual.exception.code)
 
-    def test_same_meaning_is_compared_from_actual_bodies_not_hash_gated(self) -> None:
+    def test_acceptance_46_actual_body_semantic_check(self) -> None:
         with helpers.git_repo() as temp:
             repo = helpers.Path(temp)
             existing = helpers.claim_result()
@@ -68,6 +68,41 @@ class DecisionConflictTests(unittest.TestCase):
             self.assertEqual("인증 세션은 BFF가 소유한다.", check["comparison_input"]["current"][0]["sections"]["결정"])
             self.assertEqual(list(decision_cli.SEMANTIC_RELATIONS), check["assessment_contract"]["relations"])
             self.assertFalse(check["physical_write"])
+
+            fixtures = helpers.PLUGIN.parents[1] / "tests/context-v1/fixtures/host-inventory"
+            cases = helpers.json.loads((fixtures / "preflight-cases.json").read_text(encoding="utf-8"))["cases"]
+            ready = next(case for case in cases if case["expected_code"] == "ready")
+            inventory = repo / "inventory.json"
+            doctor = repo / "doctor.json"
+            inventory.write_text(helpers.json.dumps(ready["inventory"], ensure_ascii=False), encoding="utf-8")
+            doctor.write_text(helpers.json.dumps(ready["doctor"], ensure_ascii=False), encoding="utf-8")
+            completed = helpers.subprocess.run(
+                [
+                    helpers.sys.executable,
+                    str(helpers.CLI_PATH),
+                    "check",
+                    "--statement",
+                    related_value["claim"],
+                    "--scope",
+                    related_value["scope_hint"],
+                    "--decision-key",
+                    related_value["owner_inputs"]["decision"]["decision_key"],
+                    "--host",
+                    ready["host"],
+                    "--core-inventory",
+                    f"@{inventory}",
+                    "--core-doctor",
+                    f"@{doctor}",
+                    "--json",
+                ],
+                cwd=repo,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
+            cli_result = helpers.json.loads(completed.stdout)["result"]
+            self.assertEqual("context-decision-check/v1", cli_result["schema"])
+            self.assertEqual(check["comparison_input"]["current"][0]["id"], cli_result["comparison_input"]["current"][0]["id"])
 
     def test_acceptance_27_scope_overlap(self) -> None:
         with helpers.git_repo() as temp:

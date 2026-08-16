@@ -3,13 +3,13 @@ title: context-core와 context-decision v1 구현 계획과 acceptance
 created_at: 2026-08-13
 summary: 구현 순서, source 단위, CLI·fixture·통합 테스트, token/I-O 계측, host packaging과 공개 release gate를 정의한 context plugin v1 실행 청사진.
 tags: [context-core, context-decision, implementation, acceptance, release, ssot]
-verified_at: 2026-08-13
+verified_at: 2026-08-17
 affects_paths: [plugins/context-core/**, plugins/context-decision/**]
 ---
 
 ## 현재 상태
 
-이 문서는 [[context-storage-retrieval]], [[context-artifact-lifecycle]], [[context-capture-routing]], [[context-core-plugin]], [[context-decision-plugin]]을 코드로 옮기는 순서와 완료 조건이다. 현재 구현은 시작되지 않았다.
+이 문서는 [[context-storage-retrieval]], [[context-artifact-lifecycle]], [[context-capture-routing]], [[context-core-plugin]], [[context-decision-plugin]]을 코드로 옮긴 순서와 완료 조건이다. 현재 0.2.0 통합 candidate는 Phase 1~5의 deterministic acceptance를 구현했고 최종 회귀 검증 대상으로 둔다.
 
 ### v1 기술 제약
 
@@ -104,6 +104,7 @@ DEC schema, claim/draft validator, slot conflict, capture/search/read/brief, sup
 - 핵심 3 section validation
 - exact slot exclusivity
 - scope overlap conflict acknowledgement
+- related Current DEC actual body를 bounded하게 제공하는 pre-decision `check`와 `new|same|supporting|rationale_changed|conflict` assessment contract
 - ordered prior same-area bundle을 overlay한 batch validator receipt와 same-batch slot exclusivity
 - current/history와 reciprocal lifecycle edge
 - repeated same-title supersede의 deterministic history filename
@@ -121,13 +122,13 @@ agent skill과 deterministic router를 연결한다.
 - actual artifact content와 lifecycle effect를 포함한 one grouped preview
 - 승인된 final bundle digest만 core coordinator apply
 - batch receipt에 proposal/created/skipped/error를 묶음
-- init의 fixed core/area seed direct bootstrap, structured phase·retry convergence와 선택적 AGENTS.md/CLAUDE.md policy 분리
+- init의 fixed core/area seed direct bootstrap, structured phase·retry convergence와 host별 AGENTS.md/CLAUDE.md managed policy 설치
 
 완료 조건:
 
 - audit/route 자체 filesystem diff 0
 - owner가 transcript를 다시 읽는 호출 0
-- owner conflict·unavailable·duplicate가 fail-closed
+- owner conflict·unavailable·same-batch exact candidate duplicate가 fail-closed
 - embedded semantic input/attestation digest·pointer·transition set 불일치 fail-closed
 - requested kind가 owner semantic validation을 우회하지 않음
 - 승인 뒤 owner draft 재생성 0, digest mismatch apply 0
@@ -145,7 +146,7 @@ agent skill과 deterministic router를 연결한다.
 - context-decision 설치 조합 demo
 - README에서 decision continuity를 전면 가치로 설명
 - existing wiki와의 차이·migration 없음·PCMS 경계 명시
-- version 0.1.0 package validation
+- version 0.2.0 package validation
 
 ### Cross-plugin protocol fixture
 
@@ -168,7 +169,7 @@ agent skill과 deterministic router를 연결한다.
 
 | # | fixture | expected |
 |---:|---|---|
-| 1 | init 두 번 | 두 번째 diff 0, 사람 작성 설명 보존 |
+| 1 | init 두 번 | host policy 포함 두 번째 diff 0, marker 밖 사람 작성 설명 보존 |
 | 2 | decision plugin이 먼저 init | `core_missing`, exact provider marketplace/plugin/source와 수동 next action, repository·host config write 0 |
 | 3 | 자연 filename capture | prefix/timestamp 0, valid immutable ID |
 | 4 | path collision | overwrite/suffix 없이 `path_exists` |
@@ -209,10 +210,12 @@ agent skill과 deterministic router를 연결한다.
 | 39 | strict refresh | out-of-band 신규/rename/frontmatter drift 전수 검출 |
 | 40 | Obsidian graph | repository root vault에서 context.index→area index→artifact hub 구분 |
 | 41 | wrong-source/disabled/incompatible core | 각각 `core_source_mismatch|core_disabled|core_incompatible`, install/enable/update 자동 실행과 repository·host config write 0 |
-| 42 | exact core, repository absent | core init 단일 호출로 ready, 기존 content/policy 보존 |
+| 42 | exact core, repository absent | core init 단일 호출로 ready, 기존 content와 managed marker 밖 policy 보존 |
 | 43 | distribution manifests | Claude/Codex manifest dependency field 0, context-decision 때문에 core를 implicit/default install하는 marketplace policy 0 |
-| 44 | decision init bootstrap | exact compatible installed core에서 absent core→decision area ready를 같은 호출로 완료, ready 재호출 noop |
-| 45 | bootstrap phase retry | core 성공 뒤 area 실패 phase 구조화, 같은 호출 재시도에서 core noop·area apply로 수렴 |
+| 44 | decision init bootstrap | exact compatible installed core에서 absent core→decision area→host policy를 같은 호출로 완료, ready 재호출 noop |
+| 45 | bootstrap phase retry | core 성공 뒤 area 실패 phase 구조화, 재시도에서 core noop·area apply·policy apply로 수렴 |
+| 46 | pre-decision semantic check | related Current DEC의 actual 세 핵심 section과 artifact identity를 bounded하게 반환, write 0, five-relation contract 제공 |
+| 47 | removed claim identity field | 신규 artifact/projection/receipt에 의미 지문 0, legacy field 입력은 조용히 수락하지 않음 |
 
 ### Integrity release gate
 
@@ -256,11 +259,12 @@ wall-clock 절대 수치는 Phase 0 fixture에서 baseline을 잡은 후 release
 
 무료 공개 v1은 다음 사용자 흐름이 plugin 없이 수작업하는 것보다 분명히 짧아야 한다.
 
-1. 대화 중 결정 확정
-2. 한 번의 grouped proposal 승인
-3. 자연스러운 filename의 DEC 생성
-4. 다른 agent/session에서 query 한 번으로 현재 결정·취지·반려대안 복원
-5. 새 결정으로 supersede 후 이전 agent도 old DEC를 따르지 않음
+1. 대화가 결정으로 수렴할 때 관련 Current DEC를 한 번 recall하고 actual body를 비교
+2. same이면 기존 결정을 재사용하고, 취지 변경·충돌이면 결론 전에 차이를 알림
+3. 새 결정이 확정되면 한 번의 grouped proposal 승인
+4. 자연스러운 filename의 DEC 생성
+5. 다른 agent/session에서 query 한 번으로 현재 결정·취지·반려대안 복원
+6. 새 결정으로 supersede 후 이전 agent도 old DEC를 따르지 않음
 
 README/demo는 generic context framework보다 이 흐름을 먼저 보여준다. PCMS는 local plugin 기능을 제한해 판매하지 않고 조직 규모의 권한·승인 workflow·cross-project search·policy·audit·conflict queue·운영 지표를 유료 경계로 둔다.
 
@@ -271,7 +275,7 @@ README/demo는 generic context framework보다 이 흐름을 먼저 보여준다
 - BM25/vector/embedding/SQLite cache
 - custom Git merge driver
 - generic addon registry/SDK
-- 자동 semantic conflict 판정
+- vector/embedding 기반 전역 semantic conflict 자동 판정과 background daemon
 - Git 없는 저장소용 SNAP archive
 - PCMS sync/control plane
 

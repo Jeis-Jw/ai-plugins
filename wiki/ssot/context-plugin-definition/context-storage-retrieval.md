@@ -3,7 +3,7 @@ title: 컨텍스트 저장소와 semantic index 조회 계약
 created_at: 2026-08-13
 summary: 자유로운 Markdown 파일명과 immutable ID를 분리하고 context.index.md 및 영역별 semantic index를 문서에서 파생해 index-first·document-authoritative recall을 수행하는 v1 계약.
 tags: [context-core, storage, index, recall, obsidian, ssot]
-verified_at: 2026-08-13
+verified_at: 2026-08-17
 affects_paths: [plugins/context-core/**, plugins/context-decision/**]
 ---
 
@@ -86,7 +86,6 @@ search_terms: ["ITP","third-party cookie"]
 - `captured_from`: `conversation | workspace | manual | import`
 - `tags`, `search_terms`: 선택, 각각 최대 12개·항목당 40자
 - `source_refs`: 선택, opaque URI-like string 목록·항목당 최대 500자
-- `claim_fingerprint`: OBS·DEC에서 writer가 생성하는 `sha256:<lowercase 24 hex>`
 - `kind`와 `status`는 공통 frontmatter에 반복 저장하지 않는다. kind는 area, active/retired는 path가 정본이다.
 
 CLI가 timestamp를 생성할 때는 preview 시점의 `datetime.now().astimezone().isoformat(timespec="seconds")`을 사용하고 final bundle에 고정한다. apply 시각으로 다시 만들지 않는다. 입력 timestamp는 Python `datetime.fromisoformat`으로 parse되고 timezone offset 필수, canonical output은 seconds precision ISO string이다. `updated_at`/`retired_at`도 같은 규칙이며 document의 기존 `created_at`보다 이르면 clock error로 실패한다.
@@ -100,11 +99,11 @@ v1은 일반 YAML 전체가 아니라 JSON-compatible YAML subset만 지원한�
 - 각 field는 한 줄 `KEY: JSON_VALUE`다. `KEY`는 `[a-z][a-z0-9_]*`이며 duplicate key는 오류다.
 - `JSON_VALUE`는 compact JSON의 string, `true|false|null`, string array 또는 한 단계 object다. object value는 string, boolean, null 또는 string array만 허용한다. number와 중첩 object/array는 금지한다.
 - string escaping과 parsing은 Python `json.loads`/`json.dumps(ensure_ascii=False, separators=(",", ":"))` 의미를 그대로 따른다. 따라서 `:`·`,`·`#`가 든 값도 JSON string으로만 쓴다.
-- writer의 key 순서는 각 schema가 선언한 known-field order 뒤에 unknown key Unicode codepoint ASC다. 공통 prefix는 `schema,id,title,summary,created_at,updated_at,captured_from,source_refs,tags,search_terms,claim_fingerprint`다. SNAP additive order는 `anchors`; OBS는 `kind_hint,source_claim_fingerprint,verified_at,affects_paths,relations,supersedes,superseded_by,retired_at,retired_reason,retirement_note`; DEC는 `scope,decision_key,revisit_when,revisit_on,relations,supersedes,superseded_by,retired_at,retired_reason,retirement_note`다. lifecycle key는 current 문서에서는 absent다.
+- writer의 key 순서는 각 schema가 선언한 known-field order 뒤에 unknown key Unicode codepoint ASC다. 공통 prefix는 `schema,id,title,summary,created_at,updated_at,captured_from,source_refs,tags,search_terms`다. SNAP additive order는 `anchors`; OBS는 `kind_hint,verified_at,affects_paths,relations,supersedes,superseded_by,retired_at,retired_reason,retirement_note`; DEC는 `scope,decision_key,revisit_when,revisit_on,relations,supersedes,superseded_by,retired_at,retired_reason,retirement_note`다. lifecycle key는 current 문서에서는 absent다.
 - 같은 schema major의 unknown additive field는 위 value grammar 안에서 semantic value를 보존하고 canonical rewrite한다. unknown key는 domain schema validation에는 쓰지 않지만 rename/index refresh 같은 common rewrite에서도 삭제하지 않는다. raw whitespace·quote style·frontmatter comment 보존은 약속하지 않는다. grammar 밖 unknown field는 mutation 전에 `frontmatter_unsupported`로 실패한다.
 - closing delimiter 뒤에는 blank line 하나와 Markdown body가 온다. body는 schema가 선언한 H2 section만 canonical order로 각 최대 한 번 허용하고 첫 section 전에는 blank line만 허용한다. required section은 substantive non-whitespace content가 있어야 하며 literal `...`, `TODO`, `TBD`, `해당 없음` 하나만 있는 값은 placeholder로 거부한다. H3 이하 heading은 section content다. fixed section heading은 line 전체가 정확히 `## <schema-defined name>`일 때만 인식하며 CommonMark backtick/tilde fenced code 안 heading은 무시한다. unknown/duplicate/out-of-order H2는 `section_schema_error`다.
 
-`claim_fingerprint`는 artifact kind, owner가 canonicalize한 scope(없으면 empty string), primary claim section을 `kind + "\n" + scope + "\n" + claim`으로 잇고 전체를 NFKC+casefold→모든 Unicode whitespace run을 ASCII space 하나로 축약→trim한 UTF-8 bytes에서 SHA-256을 계산한 앞 24 hex다. candidate fingerprint는 routing hint일 뿐이고 owner가 artifact draft에서 다시 계산한다. 같은 owner의 current artifact와 exact fingerprint가 같으면 deterministic duplicate gate이며 의미가 같지만 표현이 다른 문장까지 탐지한다고 주장하지 않는다.
+OBS·DEC의 의미 동일성은 저장 필드나 hash로 판정하지 않는다. owner가 bounded recall로 가져온 actual primary claim·supporting section·scope를 비교한다. exact file SHA-256은 승인 뒤 bytes가 바뀌지 않았음을 보장하는 artifact identity/precondition일 뿐 semantic identity가 아니다. 제거된 legacy claim 지문 field가 남은 artifact는 조용히 읽지 않고 `schema_removed_field`로 실패한다.
 
 ### Root index
 
@@ -248,7 +247,7 @@ context-core의 `transaction preview`가 owner/capability, target ID/path, embed
       "capability_digest": "sha256:...",
       "transition": "decision_fallback_import",
       "owner_descriptor": {"owner":"context-decision","kind":"decision","artifact_schema":"context-decision/v1"},
-      "owner_validation": {"schema":"context-owner-validation-receipt/v1","owner":"context-decision","kind":"decision","owner_result_digest":"sha256:...","base_area_index_sha256":"sha256:...","prior_same_area_bundle_digests":[],"validated_facts":{"scope":"project/auth","decision_key":"session-owner","claim_fingerprint":"sha256:0123456789abcdef01234567","acknowledged_conflicts":[]},"status":"valid","receipt_digest":"sha256:..."},
+      "owner_validation": {"schema":"context-owner-validation-receipt/v1","owner":"context-decision","kind":"decision","owner_result_digest":"sha256:...","base_area_index_sha256":"sha256:...","prior_same_area_bundle_digests":[],"validated_facts":{"scope":"project/auth","decision_key":"session-owner","primary_claim":"인증 세션은 BFF가 소유한다.","rationale":"cookie lifecycle을 서버 경계로 모은다.","acknowledged_conflicts":[]},"status":"valid","receipt_digest":"sha256:..."},
       "prior_bundle_digests": [],
       "read_preconditions": [],
       "operations": [
@@ -275,7 +274,7 @@ context-core의 `transaction preview`가 owner/capability, target ID/path, embed
 - owner-result material은 apply 재검증용 ephemeral bundle payload다. model recall이나 사용자 preview에 중복 노출하지 않고 apply receipt 이후 별도 ledger/file로 저장하지 않는다. 사용자에게는 그 result에서 나온 artifact content·effect·attestation label만 한 번 보여준다.
 - `before_sha256`는 mutation 전 **exact on-disk bytes**의 lowercase SHA-256에 `sha256:`를 붙인다. artifact/index-seed `after_sha256`는 material string을 LF, UTF-8 without BOM, file 끝 정확히 한 newline로 encode한 bytes에서 계산한다. `role:"policy"` material은 policy preview가 만든 UTF-8 string을 newline 재정규화 없이 encode한다. `path:null`인 owner-result material은 complete `context-owner-result/v1`의 canonical JSON string 자체이며 trailing newline을 붙이지 않는다. 그 raw UTF-8 SHA-256은 plan의 `owner_result_digest`와 같아야 한다. apply는 material content를 다시 render하지 않고 이 bytes를 쓴다.
 - requested mutation을 canonical render한 bytes가 before와 같으면 timestamp를 올리지 않고 `noop:true`, bundle 없음으로 반환한다. noop은 durable write approval이 필요 없고 index rebuild도 만들지 않는다.
-- `approval_digest`, candidate/capability digest와 file digest는 모두 lowercase 64 hex다. claim fingerprint만 명시적으로 앞 24 hex를 쓴다.
+- `approval_digest`, candidate/capability digest와 file digest는 모두 lowercase 64 hex다.
 
 #### Operation discriminated schema
 
@@ -308,7 +307,7 @@ artifact `area`는 root catalog의 owner claim과 일치해야 한다. `transiti
 - area 등록은 별도 multi-output op가 아니다. `transition: area_register`, hashed owner descriptor와 `index_rebuild(areas:[new_area], include_root:true)` 하나로 root index와 새 area index 두 projection을 생성한다. preview effect는 `register_area`이고 index operation이 그 effect ID를 `derived_from`으로 가진다. 이 transition에서만 exact area root를 생성하며, validated seed가 `History` generated marker를 가진 area면 `<area>/retired/`도 생성하고 Current-only seed면 생성하지 않는다. 임의 child directory는 만들지 않는다.
 - `seed_materials`는 repository-relative index path→material ID의 path ASC object다. `area_register`에서는 absent인 새 area index 하나를, `core_init`에서는 absent인 root/SNAP/OBS index를 정확히 seed하며 그 밖의 transition에서는 금지한다. 각 seed material은 자기 index path를 가지며 complete index Markdown content를 담는다. reserved frontmatter, 사람이 작성한 title/summary/search terms/projection fields, empty generated markers가 필수다. core는 seed와 owner descriptor를 검증하고 canonical generator로 generated block/root area row를 채운 output이 `after_sha256`와 같은지 확인한다. seed material content의 canonical file bytes digest도 `control_input.seed_digests`에 path ASC로 들어가 approval digest에 결박된다. seed material이 없으면 이미 존재하는 index의 marker 밖 bytes를 보존해 rebuild한다. 대상 index가 absent인데 허용된 seed가 없으면 `index_seed_required`로 실패하며 설명 metadata를 추측하지 않는다.
 - coordinator는 owner/area 권한, root containment, exact precondition, common envelope/ref/lifecycle, effect↔operation 완전 대응과 approval digest를 재검증한다.
-- 일반 plan의 artifact area는 owner descriptor claim과 같아야 한다. v1의 유일한 cross-owner transition은 `decision_fallback_import`이며 exact decision create+observation retire effects, `kind_hint: decision`, OBS `source_claim_fingerprint`=DEC `claim_fingerprint`, [[context-capture-routing]]의 operation-bound owner `same_claim` attestation과 predecessor/successor edge를 요구한다.
+- 일반 plan의 artifact area는 owner descriptor claim과 같아야 한다. v1의 유일한 cross-owner transition은 `decision_fallback_import`이며 exact decision create+observation retire effects, `kind_hint: decision`, predecessor/successor의 exact id·path·artifact SHA-256·actual primary claim, [[context-capture-routing]]의 operation-bound owner `same_claim` attestation과 reciprocal edge를 요구한다.
 - apply는 caller의 `--approved-digest`가 bundle의 digest와 정확히 일치할 때만 실행한다. owner가 승인 뒤 preview, plan 또는 material을 재생성하면 실패한다.
 
 #### `file_move` crash-resume state machine
