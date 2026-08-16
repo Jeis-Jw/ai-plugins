@@ -109,7 +109,7 @@ def strict_codes(repo: Path) -> set[str]:
 
 
 class StorageIndexTests(unittest.TestCase):
-    def test_removed_fingerprint_fields_fail_closed(self) -> None:
+    def test_acceptance_47_removed_fingerprint_fields_fail_closed(self) -> None:
         for field in ("claim_fingerprint", "source_claim_fingerprint"):
             with self.subTest(field=field), self.assertRaises(context_cli.ContextError) as caught:
                 context_cli.parse_document(

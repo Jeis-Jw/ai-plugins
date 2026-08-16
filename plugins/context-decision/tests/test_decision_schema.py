@@ -188,7 +188,7 @@ def bundle(result: dict, *, validation: dict | None = None, priors: list[str] | 
 
 
 class DecisionSchemaTests(unittest.TestCase):
-    def test_acceptance_47_removed_fingerprint_fields_fail_closed(self) -> None:
+    def test_removed_fingerprint_fields_fail_closed(self) -> None:
         content = claim_result()["artifact_drafts"][0]["content"]
         for field in ("claim_fingerprint", "source_claim_fingerprint"):
             with self.subTest(field=field), self.assertRaises(decision_cli.DecisionError) as caught:
