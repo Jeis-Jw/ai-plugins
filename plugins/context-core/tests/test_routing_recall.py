@@ -17,11 +17,10 @@ sys.modules[SPEC.name] = context_cli
 SPEC.loader.exec_module(context_cli)
 
 
-def candidate(candidate_id: str, claim_key: str, *, requested: str | None = None, specialized: list[str] | None = None, fallback: str | None = "observation") -> dict:
+def candidate(candidate_id: str, *, requested: str | None = None, specialized: list[str] | None = None, fallback: str | None = "observation") -> dict:
     return {
         "schema": "context-capture-candidate/v1",
         "candidate_id": candidate_id,
-        "claim_key": claim_key,
         "title": "인증 세션 소유권",
         "claim": "인증 세션은 BFF가 소유한다.",
         "summary": "인증 세션 경계를 BFF로 통합한다.",
@@ -96,12 +95,12 @@ def decision_capability() -> dict:
 
 class RoutingRecallTests(unittest.TestCase):
     def test_acceptance_19_unavailable(self) -> None:
-        value = candidate("cand_550e8400e29b41d4a716446655440000", "choice", requested="decision")
+        value = candidate("cand_550e8400e29b41d4a716446655440000", requested="decision")
         routed = context_cli.route_candidates([value], context_cli.capabilities_result(), [])
         self.assertEqual("owner_unavailable", routed["routes"][0]["status"])
         self.assertNotEqual("observation", routed["routes"][0].get("target_kind"))
 
-        specialized = candidate("cand_123e4567e89b42d3a456426614174000", "choice_two")
+        specialized = candidate("cand_123e4567e89b42d3a456426614174000")
         capabilities = context_cli.capabilities_result()
         capabilities["owners"].append(decision_capability())
         fallback_capability = context_cli.builtin_capability("observation")
@@ -111,7 +110,7 @@ class RoutingRecallTests(unittest.TestCase):
         self.assertEqual("specialized_owner_result_missing", routed["routes"][0]["reason"])
 
     def test_acceptance_20_invalid_type(self) -> None:
-        value = candidate("cand_550e8400e29b41d4a716446655440000", "fact", requested="decision")
+        value = candidate("cand_550e8400e29b41d4a716446655440000", requested="decision")
         capability = decision_capability()
         declined = result(value, capability, "decline")
         routed = context_cli.route_candidates([value], {"schema": "context-owner-capabilities/v1", "owners": [capability]}, [declined])
@@ -120,7 +119,7 @@ class RoutingRecallTests(unittest.TestCase):
         self.assertNotIn("authority", routed["routes"][0])
 
     def test_acceptance_22_owner_call_contract(self) -> None:
-        value = candidate("cand_550e8400e29b41d4a716446655440000", "choice")
+        value = candidate("cand_550e8400e29b41d4a716446655440000")
         capability = decision_capability()
         declined = result(value, capability, "decline")
         before = copy.deepcopy(declined)
@@ -130,12 +129,23 @@ class RoutingRecallTests(unittest.TestCase):
         self.assertEqual(0, routed["alternate_runtime_count"])
         self.assertEqual(before, declined)
 
-    def test_malformed_candidate_and_duplicate_candidate_claim_fail_closed(self) -> None:
-        first = candidate("cand_550e8400e29b41d4a716446655440000", "same", specialized=[], fallback="observation")
-        second = candidate("cand_123e4567e89b42d3a456426614174000", "same", specialized=[], fallback="observation")
+    def test_same_claim_text_is_not_a_mechanical_duplicate_but_duplicate_ids_fail_closed(self) -> None:
+        first = candidate("cand_550e8400e29b41d4a716446655440000", specialized=[], fallback="observation")
+        second = candidate("cand_123e4567e89b42d3a456426614174000", specialized=[], fallback="observation")
+        validated = context_cli.validate_candidate_batch([first, second], context_cli.capabilities_result())
+        self.assertEqual([first, second], validated)
+
+        duplicate_id = copy.deepcopy(second)
+        duplicate_id["candidate_id"] = first["candidate_id"]
         with self.assertRaises(context_cli.ContextError) as caught:
-            context_cli.route_candidates([first, second], context_cli.capabilities_result(), [])
-        self.assertEqual("duplicate_candidate_claim", caught.exception.code)
+            context_cli.validate_candidate_batch([first, duplicate_id], context_cli.capabilities_result())
+        self.assertEqual("candidate_invalid", caught.exception.code)
+
+        legacy = copy.deepcopy(first)
+        legacy["claim_key"] = "same"
+        with self.assertRaises(context_cli.ContextError) as caught:
+            context_cli.validate_candidate_batch([legacy], context_cli.capabilities_result())
+        self.assertEqual("schema_removed_field", caught.exception.code)
 
         oversized = copy.deepcopy(first)
         oversized["owner_inputs"]["observation"]["observation"] = "가" * 2100

@@ -42,4 +42,4 @@ Host는 `schema`/`capabilities`를 제외한 모든 CLI 호출에 `--host`, `--c
 
 기존 `wiki/` 자동 migration은 제공하지 않습니다. PCMS는 조직 권한·승인 workflow·cross-project search·policy·audit·conflict queue의 control-plane 경계이며, 이 local plugin은 결정 기록과 recall 자체에 집중합니다.
 
-0.2.0은 `claim_fingerprint`와 `source_claim_fingerprint`를 제거한 breaking release입니다. 혼합 설치는 `context-common/v2` handshake에서 fail-closed합니다. 구형 artifact에 이 field가 남아 있으면 `schema_removed_field`로 중단하며 자동 삭제하거나 의미상 동일한 것으로 간주하지 않습니다. 기존 record는 별도의 검토·승인된 bounded migration 뒤 derived index를 rebuild해야 합니다.
+0.2.0은 `claim_fingerprint`, `source_claim_fingerprint`와 batch-local `claim_key`를 제거한 breaking release입니다. `candidate_id`는 owner result 연결용 transport ID일 뿐 의미를 갖지 않습니다. 혼합 설치는 `context-common/v2` handshake에서 fail-closed합니다. 구형 artifact/candidate에 제거된 field가 남아 있으면 `schema_removed_field`로 중단하며 자동 삭제하거나 의미상 동일한 것으로 간주하지 않습니다. 기존 record는 별도의 검토·승인된 bounded migration 뒤 derived index를 rebuild해야 합니다.

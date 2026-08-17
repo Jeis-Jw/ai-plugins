@@ -109,7 +109,7 @@ def strict_codes(repo: Path) -> set[str]:
 
 
 class StorageIndexTests(unittest.TestCase):
-    def test_acceptance_47_removed_fingerprint_fields_fail_closed(self) -> None:
+    def test_acceptance_47_removed_semantic_identity_fields_fail_closed(self) -> None:
         for field in ("claim_fingerprint", "source_claim_fingerprint"):
             with self.subTest(field=field), self.assertRaises(context_cli.ContextError) as caught:
                 context_cli.parse_document(
@@ -124,7 +124,6 @@ class StorageIndexTests(unittest.TestCase):
             candidate = {
                 "schema": "context-capture-candidate/v1",
                 "candidate_id": "cand_550e8400e29b41d4a716446655440000",
-                "claim_key": "legacy-field",
                 "title": "구형 후보",
                 "claim": "구형 의미 지문 field가 있는 후보",
                 "summary": "제거된 field를 조용히 수락하지 않는다.",
@@ -144,6 +143,29 @@ class StorageIndexTests(unittest.TestCase):
             with self.assertRaises(context_cli.ContextError) as candidate_error:
                 context_cli.validate_candidate_batch([candidate], context_cli.capabilities_result())
             self.assertEqual("schema_removed_field", candidate_error.exception.code)
+
+        legacy_candidate = {
+            "schema": "context-capture-candidate/v1",
+            "candidate_id": "cand_550e8400e29b41d4a716446655440000",
+            "claim_key": "legacy-identity",
+            "title": "구형 후보",
+            "claim": "구형 의미 key가 있는 후보",
+            "summary": "제거된 key를 조용히 수락하지 않는다.",
+            "captured_from": "manual",
+            "requested_kind": "observation",
+            "specialized_kinds": ["observation"],
+            "fallback_kind": None,
+            "evidence": ["migration fixture"],
+            "owner_inputs": {
+                "observation": {
+                    "observation": "구형 의미 key가 있는 후보",
+                    "evidence": ["migration fixture"],
+                }
+            },
+        }
+        with self.assertRaises(context_cli.ContextError) as candidate_error:
+            context_cli.validate_candidate_batch([legacy_candidate], context_cli.capabilities_result())
+        self.assertEqual("schema_removed_field", candidate_error.exception.code)
 
     def test_acceptance_03_natural_filename_and_id(self) -> None:
         self.assertEqual("인증-세션-BFF.md", context_cli.natural_filename(" 인증 세션 / BFF "))

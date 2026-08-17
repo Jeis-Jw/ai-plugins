@@ -34,6 +34,7 @@ ENTRY_RE = re.compile(r"^.*<!-- context-entry (\{.*\}) -->$")
 CORE_SECTIONS = ("결정", "취지", "반려대안")
 ALL_SECTIONS = CORE_SECTIONS + ("근거와 제약", "트레이드오프", "재평가 조건")
 REMOVED_FINGERPRINT_FIELDS = {"claim_fingerprint", "source_claim_fingerprint"}
+REMOVED_CANDIDATE_FIELDS = REMOVED_FINGERPRINT_FIELDS | {"claim_key"}
 SEMANTIC_RELATIONS = ("new", "same", "supporting", "rationale_changed", "conflict")
 RELATION_ACTIONS = {
     "new": "결정이 확정되면 capture 여부를 묻는다.",
@@ -129,10 +130,7 @@ def new_context_id() -> str:
 
 
 def _valid_candidate_id(value: Any) -> bool:
-    if not isinstance(value, str) or not re.fullmatch(r"cand_[0-9a-f]{32}", value):
-        return False
-    parsed = uuid.UUID(hex=value[5:])
-    return parsed.version == 4 and parsed.variant == uuid.RFC_4122
+    return isinstance(value, str) and re.fullmatch(r"cand_[0-9a-f]{32}", value) is not None
 
 
 def now_rfc3339() -> str:
@@ -513,21 +511,21 @@ def _bounded_list(value: Any, field: str, *, minimum: int = 0, maximum: int = 8,
 
 
 def validate_candidate(candidate: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
-    required = {"schema", "candidate_id", "claim_key", "title", "claim", "summary", "captured_from", "requested_kind", "specialized_kinds", "fallback_kind", "owner_inputs"}
+    required = {"schema", "candidate_id", "title", "claim", "summary", "captured_from", "requested_kind", "specialized_kinds", "fallback_kind", "owner_inputs"}
     missing = required - set(candidate)
     if candidate.get("schema") != "context-capture-candidate/v1" or missing:
         raise DecisionError("candidate_invalid", "candidate envelope is incomplete", {"missing": sorted(missing)})
-    removed = sorted(REMOVED_FINGERPRINT_FIELDS & set(candidate))
+    removed = sorted(REMOVED_CANDIDATE_FIELDS & set(candidate))
     if removed:
         raise DecisionError(
             "schema_removed_field",
-            "claim fingerprint fields were removed from capture candidates",
+            "semantic identity surrogate fields were removed from capture candidates",
             {"fields": removed},
             EXIT_CONFLICT,
         )
     candidate_id = candidate.get("candidate_id")
     if not _valid_candidate_id(candidate_id):
-        raise DecisionError("candidate_invalid", "candidate_id must be cand_ plus lowercase UUIDv4 hex")
+        raise DecisionError("candidate_invalid", "candidate_id must be cand_ plus 32 lowercase hex characters")
     if candidate.get("requested_kind") not in {None, "decision"}:
         raise DecisionError("candidate_invalid", "candidate is not routed to the decision owner")
     if "decision" not in candidate.get("specialized_kinds", []):
@@ -559,6 +557,9 @@ def validate_candidate(candidate: dict[str, Any]) -> tuple[str, str, dict[str, A
         raise DecisionError("candidate_invalid", "decision candidate requires one or two caller-provided evidence items")
     for item in evidence:
         _bounded_string(item, "evidence", 240)
+    for field, item_maximum in (("source_refs", 500), ("tags", 40), ("search_terms", 40)):
+        if field in candidate:
+            _bounded_list(candidate[field], field, maximum=12, item_maximum=item_maximum)
     if len(canonical_json(values).encode("utf-8")) > 2 * 1024:
         raise DecisionError("candidate_too_large", "decision owner input exceeds 2 KiB", exit_code=EXIT_CONFLICT)
     if normalized_key(candidate["claim"]) != normalized_key(decision):
@@ -651,7 +652,7 @@ def _draft_from_candidate(
         "scope": scope,
         "decision_key": key,
     }
-    for field in ("source_refs", "tags"):
+    for field in ("source_refs", "tags", "search_terms"):
         if candidate.get(field):
             frontmatter[field] = list(candidate[field])
     if values.get("revisit_when"):
@@ -2009,10 +2010,11 @@ def _direct_candidate(args: argparse.Namespace) -> dict[str, Any]:
     if args.revisit_on:
         values["revisit_on"] = args.revisit_on
     candidate = {
-        "schema": "context-capture-candidate/v1", "candidate_id": args.candidate_id, "claim_key": "direct",
+        "schema": "context-capture-candidate/v1", "candidate_id": args.candidate_id,
         "title": args.title, "claim": args.sec_decision, "summary": args.summary, "captured_from": args.captured_from,
         "requested_kind": "decision", "specialized_kinds": ["decision"], "fallback_kind": None,
-        "scope_hint": args.scope, "source_refs": args.source_ref, "tags": args.tag, "evidence": args.commitment_evidence,
+        "scope_hint": args.scope, "source_refs": args.source_ref, "tags": args.tag, "search_terms": args.search_term,
+        "evidence": args.commitment_evidence,
         "owner_inputs": {"decision": values},
     }
     if args.informed_by:
@@ -2038,6 +2040,7 @@ def _add_capture_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--revisit-on")
     parser.add_argument("--source-ref", action="append", default=[])
     parser.add_argument("--tag", action="append", default=[])
+    parser.add_argument("--search-term", action="append", default=[])
     parser.add_argument("--informed-by", action="append", default=[])
 
 

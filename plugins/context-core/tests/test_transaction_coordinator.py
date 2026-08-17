@@ -52,7 +52,6 @@ def observation_owner_result(identifier: str = "ctx_550e8400e29b41d4a71644665544
     candidate = {
         "schema": "context-capture-candidate/v1",
         "candidate_id": "cand_550e8400e29b41d4a716446655440000",
-        "claim_key": "direct",
         "title": "Cookie 전달 관찰",
         "claim": "Safari에서 cookie 전달이 차단된다.",
         "summary": "Safari cookie 전달 실패를 재현했다.",
@@ -110,7 +109,6 @@ def decision_candidate(candidate_id: str, decision: str) -> dict:
     return {
         "schema": "context-capture-candidate/v1",
         "candidate_id": candidate_id,
-        "claim_key": "choice-1",
         "title": "인증 세션 소유권",
         "claim": decision,
         "summary": "OAuth callback과 cookie boundary를 한 경계로 통합한다.",

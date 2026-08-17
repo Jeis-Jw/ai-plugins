@@ -110,10 +110,11 @@ missing/source mismatch/disabled/incompatible의 사람용 안내는 현재 host
 decision_cli.py init [--json]
 decision_cli.py schema [--json]
 decision_cli.py capabilities [--json]
-decision_cli.py candidate prepare --candidate-id UUID --title TEXT --summary TEXT
+decision_cli.py candidate prepare --candidate-id cand_<32hex> --title TEXT --summary TEXT
                          --scope SCOPE --decision-key KEY --captured-from SOURCE
                          --commitment-evidence TEXT --sec-decision BODY
-                         --sec-rationale BODY --sec-alternatives BODY [--json]
+                         --sec-rationale BODY --sec-alternatives BODY
+                         [--search-term TEXT]... [--json]
 decision_cli.py check --statement BODY --scope SCOPE --decision-key KEY
                       [--rationale BODY] [--query TEXT] [--limit N] [--json]
 decision_cli.py draft --candidate @file|@- --attestation @file [--json]
@@ -211,7 +212,7 @@ field type과 length semantics는 context-core capability 계약의 `string|stri
 
 문장 hash나 표면 유사도는 의미 판정으로 사용하지 않는다. 결정이 명시적으로 확정된 semantic milestone에서만 원 답변 뒤 기록 여부를 한 번 묻고, 승인 전 write는 0이다.
 
-direct `capture`도 flags를 complete `context-capture-candidate/v1`로 정규화한다. `requested_kind:"decision"`, `specialized_kinds:["decision"]`, `fallback_kind:null`, `claim_key:"direct"`, 새 candidate ID와 `owner_inputs.decision`을 사용해 exact object를 claim semantic input으로 embed한 뒤 `--attestation` pointer를 검증한다. raw CLI가 accepted choice 의미를 발명하지 않는다.
+direct `capture`도 flags를 complete `context-capture-candidate/v1`로 정규화한다. `requested_kind:"decision"`, `specialized_kinds:["decision"]`, `fallback_kind:null`, 새 transport-only candidate ID와 `owner_inputs.decision`을 사용해 exact object를 claim semantic input으로 embed한 뒤 `--attestation` pointer를 검증한다. `search_terms`는 artifact와 index까지 보존되는 recall hint일 뿐 의미 동일성 gate가 아니다. raw CLI가 accepted choice 의미를 발명하지 않는다.
 
 ### DEC schema
 

@@ -189,7 +189,7 @@ agent skill과 deterministic router를 연결한다.
 | 18 | owner installed | 같은 claim은 DEC 하나, OBS fallback 억제 |
 | 19 | explicit unavailable type | owner_unavailable, silent downgrade 0 |
 | 20 | explicit invalid type | requested DEC라도 fact이면 owner decline, authority 상승 0 |
-| 21 | independent fact+choice | 서로 다른 claim_key로 OBS+DEC 허용 |
+| 21 | independent fact+choice | 같은 발언에서 독립 OBS evidence와 DEC choice를 허용하고 router는 ID·표면 문장으로 의미 중복을 판정하지 않음 |
 | 22 | owner call contract | host 수집 claim result만 router 입력, router owner process 실행 0 |
 | 23 | approval preview | 실제 필수 section·path·lifecycle·plan·digest 노출, 승인 뒤 생성/변경 0 |
 | 24 | approval digest | preview+plan·owner-result material 변조, hidden operation, 불일치 digest, autonomous maintenance apply 모두 실패 |

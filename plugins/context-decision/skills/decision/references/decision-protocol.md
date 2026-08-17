@@ -22,7 +22,7 @@ DEC는 현재 또는 미래 행동을 지배하는 명시적 선택이며 다음
 
 idea, question, fact, preference와 미합의 제안은 `decline` 또는 `needs_clarification`이다. `requested_kind:"decision"`은 owner 선택만 고정하며 이 gate를 우회하지 않는다. CLI는 agent skill의 의미 판단을 대신하지 않고 assertion set, input digest와 RFC 6901 pointer만 fail-closed 검증한다.
 
-Direct surface는 2단계다. `candidate prepare`는 caller가 명시한 UUIDv4 candidate ID와 commitment evidence를 포함한 exact candidate만 정규화한다. owner skill이 그 object를 판독한 뒤 `capture --candidate @file --attestation @file`로 claim하거나 `--decline-reason`/`--needs-clarification-reason`으로 권위 draft 없이 종료한다. random candidate 생성, 상수 commitment evidence, CLI 자체 attestation은 금지다.
+Direct surface는 2단계다. `candidate prepare`는 caller가 명시한 `cand_`+32 lowercase hex transport ID, commitment evidence와 bounded search terms를 포함한 exact candidate만 정규화한다. candidate ID와 search metadata는 의미 동일성을 보장하지 않는다. owner skill이 그 object를 판독한 뒤 `capture --candidate @file --attestation @file`로 claim하거나 `--decline-reason`/`--needs-clarification-reason`으로 권위 draft 없이 종료한다. random candidate 생성, 상수 commitment evidence, CLI 자체 attestation은 금지다.
 
 ## DEC schema와 slot
 
@@ -65,7 +65,7 @@ Receipt 없는 final owner plan이나 altered receipt는 `plan validate`에서 �
 
 `init`은 production preflight가 ready 또는 absent일 때 `context-owner-descriptor/v1`, complete empty decision index seed, descriptor/seed digest와 installed core `bootstrap` 요청을 반환한다. Init skill은 `decision_init.py` entrypoint 한 번으로 preflight와 active installed core의 public `context_cli.py bootstrap --host <host>` 호출을 순서대로 수행한다. 이 core surface가 absent core init, decision area registration과 host별 managed operating policy installation을 coordinator로 적용하며 phase result를 반환한다. ready 재호출은 noop이고, exact fixed write prefix만 중간 실패 재시도에서 남은 write로 수렴한다. decision CLI 자체는 root/area/index/policy를 만들거나 수정하지 않는다.
 
-`claim_fingerprint`와 `source_claim_fingerprint`는 schema에서 제거됐다. legacy input에 남아 있으면 `schema_removed_field`로 실패하며 조용히 무시하지 않는다.
+`claim_fingerprint`, `source_claim_fingerprint`와 capture candidate의 `claim_key`는 schema에서 제거됐다. candidate ID는 transport reference로만 사용한다. legacy input에 제거된 field가 남아 있으면 `schema_removed_field`로 실패하며 조용히 무시하지 않는다.
 
 ## Output and errors
 

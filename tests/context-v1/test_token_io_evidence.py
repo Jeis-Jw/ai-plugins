@@ -26,7 +26,6 @@ def candidate(number: int) -> dict:
     return {
         "schema": "context-capture-candidate/v1",
         "candidate_id": f"cand_550e8400e29b41d4a71644665544{number:04x}",
-        "claim_key": f"c{number}",
         "title": f"관찰 {number}",
         "claim": f"재사용 가능한 관찰 {number}",
         "summary": f"후속 판단에 쓰는 근거 {number}",

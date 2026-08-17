@@ -87,6 +87,7 @@ POLICY_BODY = """<!-- BEGIN context-core-policy (managed by context-core) -->
 
 - Substantive work나 결정 수렴 전에 이전 맥락이 판단을 바꿀 수 있으면 Current context를 scoped index-first로 한 번 recall한다.
 - 설치된 semantic owner가 있으면 후보와 관련 Current artifact의 실제 본문·scope·rationale를 비교한다. hash나 fingerprint로 의미 동일성 또는 충돌을 판정하지 않는다.
+- capture 후보의 title·summary·search_terms에는 대화에서 쓰인 표현과 필요한 동의어를 bounded하게 남겨 이후 index recall을 돕되, index metadata를 의미 판정으로 사용하지 않는다.
 - 기존 결정과의 conflict 또는 rationale change가 보이면 결론 전에 관련 artifact와 차이를 알리고 유지·수정·supersede 중 무엇인지 확인한다.
 - Primary 요청과 답변을 먼저 끝낸다. semantic milestone 또는 closeout당 durable candidate audit은 최대 한 번 수행하고, 재사용 가치가 있는 후보가 있을 때만 grouped capture를 제안한다.
 - Current DEC는 authoritative, OBS는 non-authoritative evidence, SNAP은 resume staging으로 취급한다.
@@ -95,6 +96,7 @@ POLICY_BODY = """<!-- BEGIN context-core-policy (managed by context-core) -->
 POLICY_TARGETS = {"AGENTS.md", "CLAUDE.md"}
 POLICY_HOST_TARGETS = {"codex": "AGENTS.md", "claude-code": "CLAUDE.md"}
 REMOVED_FINGERPRINT_FIELDS = {"claim_fingerprint", "source_claim_fingerprint"}
+REMOVED_CANDIDATE_FIELDS = REMOVED_FINGERPRINT_FIELDS | {"claim_key"}
 
 
 class ContextError(Exception):
@@ -1225,34 +1227,27 @@ def validate_candidate_batch(batch: Any, capabilities: Any) -> list[dict[str, An
         raise ContextError("candidate_batch_too_large", "candidate batch exceeds 16 KiB", exit_code=EXIT_CONFLICT)
     capability_by_kind = {item["kind"]: item for item in _capability_list(capabilities)}
     required = {
-        "schema", "candidate_id", "claim_key", "title", "claim", "summary", "captured_from", "requested_kind",
+        "schema", "candidate_id", "title", "claim", "summary", "captured_from", "requested_kind",
         "specialized_kinds", "fallback_kind", "owner_inputs",
     }
     candidate_ids: set[str] = set()
-    claim_keys: set[str] = set()
     for candidate in candidates:
         if not isinstance(candidate, dict) or candidate.get("schema") != "context-capture-candidate/v1" or required - set(candidate):
             raise ContextError("candidate_invalid", "candidate envelope is incomplete", exit_code=EXIT_CONFLICT)
-        removed = sorted(REMOVED_FINGERPRINT_FIELDS & set(candidate))
+        removed = sorted(REMOVED_CANDIDATE_FIELDS & set(candidate))
         if removed:
             raise ContextError(
                 "schema_removed_field",
-                "claim fingerprint fields were removed from capture candidates",
+                "semantic identity surrogate fields were removed from capture candidates",
                 {"fields": removed},
                 EXIT_CONFLICT,
             )
         identifier = candidate.get("candidate_id")
-        claim_key = candidate.get("claim_key")
         if not isinstance(identifier, str) or not re.fullmatch(r"cand_[0-9a-f]{32}", identifier):
             raise ContextError("candidate_invalid", "candidate_id is invalid")
-        if not isinstance(claim_key, str) or not LOCAL_ID.fullmatch(claim_key):
-            raise ContextError("candidate_invalid", "claim_key is invalid")
         if identifier in candidate_ids:
             raise ContextError("candidate_invalid", "candidate_id is duplicated", {"candidate_id": identifier}, EXIT_CONFLICT)
-        if claim_key in claim_keys:
-            raise ContextError("duplicate_candidate_claim", "one claim_key may appear only once in an audit batch", {"claim_key": claim_key}, EXIT_CONFLICT)
         candidate_ids.add(identifier)
-        claim_keys.add(claim_key)
         if not _substantive(candidate.get("title")) or len(candidate["title"]) > 120 or "\n" in candidate["title"]:
             raise ContextError("candidate_invalid", "candidate title is invalid")
         if not _substantive(candidate.get("claim")) or len(candidate["claim"]) > 320:
@@ -1316,7 +1311,7 @@ def route_candidates(batch: Any, capabilities: Any, claim_results: Any) -> dict[
         ordered = [requested] if requested else list(candidate["specialized_kinds"])
         available = [kind for kind in ordered if kind in capability_by_kind]
         if requested and not available:
-            routes.append({"candidate_id": candidate["candidate_id"], "claim_key": candidate["claim_key"], "status": "owner_unavailable", "reason": "requested_owner_unavailable"})
+            routes.append({"candidate_id": candidate["candidate_id"], "status": "owner_unavailable", "reason": "requested_owner_unavailable"})
             continue
         evaluated: list[tuple[str, dict[str, Any]]] = []
         for kind in available:
@@ -1341,26 +1336,26 @@ def route_candidates(batch: Any, capabilities: Any, claim_results: Any) -> dict[
         claims = [(kind, result) for kind, result in evaluated if result.get("decision") == "claim"]
         if clarifications:
             kind, result = clarifications[0]
-            routes.append({"candidate_id": candidate["candidate_id"], "claim_key": candidate["claim_key"], "status": "needs_clarification", "owner": result["owner"], "target_kind": kind, "reason": result["reason"]})
+            routes.append({"candidate_id": candidate["candidate_id"], "status": "needs_clarification", "owner": result["owner"], "target_kind": kind, "reason": result["reason"]})
             continue
         if len(claims) > 1:
-            routes.append({"candidate_id": candidate["candidate_id"], "claim_key": candidate["claim_key"], "status": "owner_conflict", "reason": "multiple_specialized_owners_claimed"})
+            routes.append({"candidate_id": candidate["candidate_id"], "status": "owner_conflict", "reason": "multiple_specialized_owners_claimed"})
             continue
         if len(claims) == 1:
             kind, result = claims[0]
             reason = "requested_owner" if requested else ("fallback_owner" if kind == candidate.get("fallback_kind") else "specialized_owner")
             routes.append({
-                "candidate_id": candidate["candidate_id"], "claim_key": candidate["claim_key"], "status": "proposed",
+                "candidate_id": candidate["candidate_id"], "status": "proposed",
                 "owner": result["owner"], "target_kind": kind, "authority": capability_by_kind[kind]["authority"],
                 "reason": reason, "owner_result_digest": canonical_digest(result),
             })
             continue
         if requested:
             declined = next((result for _, result in evaluated if result.get("decision") == "decline"), None)
-            routes.append({"candidate_id": candidate["candidate_id"], "claim_key": candidate["claim_key"], "status": "skipped", "reason": "owner_decline" if declined else "owner_unavailable"})
+            routes.append({"candidate_id": candidate["candidate_id"], "status": "skipped", "reason": "owner_decline" if declined else "owner_unavailable"})
             continue
         if available and len(evaluated) != len(available):
-            routes.append({"candidate_id": candidate["candidate_id"], "claim_key": candidate["claim_key"], "status": "owner_unavailable", "reason": "specialized_owner_result_missing"})
+            routes.append({"candidate_id": candidate["candidate_id"], "status": "owner_unavailable", "reason": "specialized_owner_result_missing"})
             continue
         fallback = candidate.get("fallback_kind")
         fallback_result = results.get((candidate["candidate_id"], fallback)) if fallback else None
@@ -1372,12 +1367,12 @@ def route_candidates(batch: Any, capabilities: Any, claim_results: Any) -> dict[
             validate_owner_result(fallback_result, capability)
             if fallback_result.get("decision") == "claim":
                 routes.append({
-                    "candidate_id": candidate["candidate_id"], "claim_key": candidate["claim_key"], "status": "proposed",
+                    "candidate_id": candidate["candidate_id"], "status": "proposed",
                     "owner": fallback_result["owner"], "target_kind": fallback, "authority": capability["authority"],
                     "reason": "fallback_owner", "owner_result_digest": canonical_digest(fallback_result),
                 })
                 continue
-        routes.append({"candidate_id": candidate["candidate_id"], "claim_key": candidate["claim_key"], "status": "skipped", "reason": "no_owner_claim"})
+        routes.append({"candidate_id": candidate["candidate_id"], "status": "skipped", "reason": "no_owner_claim"})
     return {
         "schema": "context-route-result/v1", "routes": routes,
         "conflicts": [item for item in routes if item["status"] == "owner_conflict"],
@@ -1447,7 +1442,6 @@ def direct_candidate(
     candidate: dict[str, Any] = {
         "schema": "context-capture-candidate/v1",
         "candidate_id": "cand_" + uuid.uuid4().hex,
-        "claim_key": "direct",
         "title": nfc(title.strip()),
         "claim": primary,
         "summary": nfc(summary.strip()),

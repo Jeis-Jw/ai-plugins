@@ -162,7 +162,7 @@ repository root의 `context/`가 유일한 v1 storage root이며 CLI에 `--root`
 
 `observation invalidate --reason`은 enum state `retired_reason:"invalidated"`와 free-text `retirement_note`로 분리해 persist한다.
 
-direct `snapshot save`/`observation capture`는 CLI flags를 동일 complete `context-capture-candidate/v1` common fields+owner_inputs object로 먼저 정규화한다. `requested_kind`는 exact target kind, `specialized_kinds`는 그 kind 하나, `fallback_kind:null`, `claim_key:"direct"`, 새 candidate ID를 사용하고 그 object 전체를 claim semantic input으로 embed한다. `--attestation`의 JSON pointers를 그 exact object에 대해 검증한다. user-facing skill이 explicit 요청을 bounded candidate와 attestation으로 바꾸며 raw CLI가 semantic assertion을 발명하지 않는다.
+direct `snapshot save`/`observation capture`는 CLI flags를 동일 complete `context-capture-candidate/v1` common fields+owner_inputs object로 먼저 정규화한다. `requested_kind`는 exact target kind, `specialized_kinds`는 그 kind 하나, `fallback_kind:null`, 새 transport-only candidate ID를 사용하고 그 object 전체를 claim semantic input으로 embed한다. `--attestation`의 JSON pointers를 그 exact object에 대해 검증한다. user-facing skill이 explicit 요청을 bounded candidate와 attestation으로 바꾸며 raw CLI가 semantic assertion을 발명하지 않는다.
 
 CLI 표기의 `[--flag VALUE]...`는 repeatable option이다. `@file`은 UTF-8 file 전체, `@-`는 stdin 전체이며 두 입력은 command당 한 곳에서만 사용할 수 있다.
 
@@ -310,6 +310,7 @@ user-facing `context-core:init`은 사용자의 명시적 init 의도를 fixed s
 
 - Substantive work나 결정 수렴 전에 이전 맥락이 판단을 바꿀 수 있으면 Current context를 scoped index-first로 한 번 recall한다.
 - 설치된 semantic owner가 있으면 후보와 관련 Current artifact의 실제 본문·scope·rationale를 비교한다. hash나 fingerprint로 의미 동일성 또는 충돌을 판정하지 않는다.
+- capture 후보의 title·summary·search_terms에는 대화에서 쓰인 표현과 필요한 동의어를 bounded하게 남겨 이후 index recall을 돕되, index metadata를 의미 판정으로 사용하지 않는다.
 - 기존 결정과의 conflict 또는 rationale change가 보이면 결론 전에 관련 artifact와 차이를 알리고 유지·수정·supersede 중 무엇인지 확인한다.
 - Primary 요청과 답변을 먼저 끝낸다. semantic milestone 또는 closeout당 durable candidate audit은 최대 한 번 수행하고, 재사용 가치가 있는 후보가 있을 때만 grouped capture를 제안한다.
 - Current DEC는 authoritative, OBS는 non-authoritative evidence, SNAP은 resume staging으로 취급한다.

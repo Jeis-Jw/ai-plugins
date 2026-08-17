@@ -49,11 +49,10 @@ def initialize(repo: Path) -> None:
     context_cli.apply_bundle(repo, area["bundle"], area["approval_digest"])
 
 
-def choice(candidate_id: str = "cand_550e8400e29b41d4a716446655440000", claim_key: str = "choice", *, informed_by: list[str] | None = None) -> dict:
+def choice(candidate_id: str = "cand_550e8400e29b41d4a716446655440000", *, informed_by: list[str] | None = None) -> dict:
     value = {
         "schema": "context-capture-candidate/v1",
         "candidate_id": candidate_id,
-        "claim_key": claim_key,
         "title": "인증 세션 소유권",
         "claim": "인증 세션은 BFF가 소유한다.",
         "summary": "OAuth callback과 cookie 경계를 BFF로 통합한다.",
@@ -63,6 +62,7 @@ def choice(candidate_id: str = "cand_550e8400e29b41d4a716446655440000", claim_ke
         "fallback_kind": "observation",
         "scope_hint": "project/auth",
         "source_refs": ["conversation:test"],
+        "search_terms": ["인증 주체", "세션 owner"],
         "evidence": ["결정 권한자가 현재 따를 선택으로 확정했다."],
         "owner_inputs": {
             "decision": {
@@ -123,7 +123,7 @@ class CrossPluginFlowTests(unittest.TestCase):
     def test_acceptance_21_independent_claims(self) -> None:
         decision = choice()
         observation = {
-            **choice("cand_123e4567e89b42d3a456426614174000", "fact"),
+            **choice("cand_123e4567e89b42d3a456426614174000"),
             "requested_kind": "observation",
             "specialized_kinds": ["observation"],
             "fallback_kind": None,
@@ -143,7 +143,7 @@ class CrossPluginFlowTests(unittest.TestCase):
             subprocess.run(["git", "init", "-q", temp], check=True)
             initialize(repo)
             obs_candidate = {
-                **choice("cand_123e4567e89b42d3a456426614174000", "fact"),
+                **choice("cand_123e4567e89b42d3a456426614174000"),
                 "requested_kind": "observation",
                 "specialized_kinds": ["observation"],
                 "fallback_kind": None,
@@ -183,7 +183,7 @@ class CrossPluginFlowTests(unittest.TestCase):
             context_cli.apply_bundle(repo, obs_bundle["bundle"], obs_bundle["approval_digest"])
             obs_id = obs_result["effects"][0]["id"]
 
-            dec_candidate = choice("cand_123e4567e89b42d3a456426614174000", "choice-import")
+            dec_candidate = choice("cand_123e4567e89b42d3a456426614174000")
             dec_result = decision_cli.build_claim_result(
                 dec_candidate, decision_attestation(dec_candidate), repo=repo,
                 created_at="2026-08-14T09:00:00+09:00",
@@ -214,7 +214,7 @@ class CrossPluginFlowTests(unittest.TestCase):
 
             def make(number: int) -> dict:
                 value = {
-                    **choice(f"cand_550e8400e29b41d4a71644665544{number:04x}", f"fact-{number}"),
+                    **choice(f"cand_550e8400e29b41d4a71644665544{number:04x}"),
                     "requested_kind": "observation",
                     "specialized_kinds": ["observation"],
                     "fallback_kind": None,

@@ -57,7 +57,7 @@ def candidate(
     return {
         "schema": "context-capture-candidate/v1",
         "candidate_id": candidate_id,
-        "claim_key": "choice-1",
+        "search_terms": ["인증 주체", "세션 owner"],
         "title": title,
         "claim": decision,
         "summary": "OAuth callback과 cookie boundary를 한 경계로 통합한다.",
@@ -188,7 +188,7 @@ def bundle(result: dict, *, validation: dict | None = None, priors: list[str] | 
 
 
 class DecisionSchemaTests(unittest.TestCase):
-    def test_removed_fingerprint_fields_fail_closed(self) -> None:
+    def test_removed_semantic_identity_fields_fail_closed(self) -> None:
         content = claim_result()["artifact_drafts"][0]["content"]
         for field in ("claim_fingerprint", "source_claim_fingerprint"):
             with self.subTest(field=field), self.assertRaises(decision_cli.DecisionError) as caught:
@@ -200,6 +200,12 @@ class DecisionSchemaTests(unittest.TestCase):
             with self.assertRaises(decision_cli.DecisionError) as candidate_error:
                 decision_cli.validate_candidate(legacy_candidate)
             self.assertEqual("schema_removed_field", candidate_error.exception.code)
+
+        legacy_candidate = candidate()
+        legacy_candidate["claim_key"] = "choice-1"
+        with self.assertRaises(decision_cli.DecisionError) as candidate_error:
+            decision_cli.validate_candidate(legacy_candidate)
+        self.assertEqual("schema_removed_field", candidate_error.exception.code)
 
     def test_acceptance_25_sections(self) -> None:
         valid = candidate()
@@ -233,12 +239,22 @@ class DecisionSchemaTests(unittest.TestCase):
         value = candidate()
         result = claim_result(value)
         decision_cli.validate_owner_result(result)
+        frontmatter, _ = decision_cli.parse_document(result["artifact_drafts"][0]["content"])
+        self.assertEqual(value["search_terms"], frontmatter["search_terms"])
         self.assertEqual(value, result["semantic_inputs"][0]["value"])
         self.assertEqual(decision_cli.canonical_digest(value), result["semantic_attestations"][0]["input_digest"])
         altered = json.loads(json.dumps(result))
         altered["semantic_inputs"][0]["value"]["summary"] += " altered"
         with self.assertRaises(decision_cli.DecisionError):
             decision_cli.validate_owner_result(altered)
+
+    def test_candidate_id_is_transport_only(self) -> None:
+        transport = candidate(candidate_id="cand_00000000000000000000000000000000")
+        self.assertEqual("project/auth", decision_cli.validate_candidate(transport)[0])
+        for invalid in ("cand_0", "cand_0000000000000000000000000000000G", "ctx_00000000000000000000000000000000"):
+            with self.subTest(candidate_id=invalid), self.assertRaises(decision_cli.DecisionError) as caught:
+                decision_cli.validate_candidate(candidate(candidate_id=invalid))
+            self.assertEqual("candidate_invalid", caught.exception.code)
 
     def test_acceptance_36_scope_key(self) -> None:
         variants = [

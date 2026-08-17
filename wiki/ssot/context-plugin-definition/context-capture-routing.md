@@ -35,7 +35,6 @@ auditor는 host agent의 bounded semantic extraction 단계다. candidate 생성
 {
   "schema": "context-capture-candidate/v1",
   "candidate_id": "cand_550e8400e29b41d4a716446655440000",
-  "claim_key": "c1",
   "title": "인증 세션 소유권",
   "claim": "인증 세션은 BFF가 소유한다",
   "summary": "OAuth callback과 cookie boundary를 BFF로 통합하기로 합의했다.",
@@ -48,6 +47,7 @@ auditor는 host agent의 bounded semantic extraction 단계다. candidate 생성
   "source_refs": ["conversation:codex/<task-id>"],
   "evidence": ["사용자가 최종 합의로 명시한 문장"],
   "tags": ["auth"],
+  "search_terms": ["인증 주체", "세션 owner", "로그인 상태 소유권"],
   "owner_inputs": {
     "decision": {
       "decision": "인증 세션은 BFF가 소유한다.",
@@ -63,10 +63,9 @@ auditor는 host agent의 bounded semantic extraction 단계다. candidate 생성
 }
 ```
 
-필수 필드는 `schema`, `candidate_id`, `claim_key`, `title`, `claim`, `summary`, `captured_from`, `specialized_kinds`, `fallback_kind`, `owner_inputs`다.
+필수 필드는 `schema`, `candidate_id`, `title`, `claim`, `summary`, `captured_from`, `specialized_kinds`, `fallback_kind`, `owner_inputs`다.
 
-- `candidate_id`: `cand_`+lowercase UUIDv4 hex 32자의 batch-local ID
-- `claim_key`: 의미적으로 같은 주장인지 구분하는 batch-local `[a-z][a-z0-9_-]{0,79}` key
+- `candidate_id`: `cand_`+32 lowercase hex의 batch-local transport ID. owner result와 route를 연결할 뿐 의미 동일성·중복·lifecycle을 보장하지 않는다.
 - `requested_kind`: 사용자가 명시한 저장 type; 있으면 routing 최우선. 필드는 항상 존재하고 absent 의미는 JSON null이다.
 - `kind_hint`: auditor의 비권위 분류 힌트. optional이며 absent는 key 생략, OBS fallback에서만 frontmatter로 복사한다.
 - `captured_from`: `conversation | workspace | manual | import`; audit caller가 provenance를 알고 명시하며 owner가 추측하지 않는다.
@@ -74,13 +73,14 @@ auditor는 host agent의 bounded semantic extraction 단계다. candidate 생성
 - `fallback_kind`: `observation | snapshot | null`. specialized owner가 모두 decline/부재한 뒤 호출할 core kind이며 auditor가 해당 owner input을 함께 제공한다.
 - `scope_hint`: owner가 검증·정규화할 입력. decision specialized kind에서는 필수, 그 밖에는 생략한다.
 - `evidence`: 분류에 필요한 짧은 근거만 포함; transcript 전체 금지
+- `search_terms`: title·summary에 없는 동의어·과거 표현을 최대 12개까지 넣는 recall hint. 의미 동일성의 증명이나 capture gate가 아니다.
 - `owner_inputs`: capability가 선언한 `draft_fields`만 담는 bounded opaque map. core router는 내용을 해석하지 않고 해당 owner에게만 전달한다.
 
 auditor는 capability를 먼저 읽고 현재 대화를 **한 번만** 판독해 owner draft에 필요한 내용을 candidate에 넣는다. DEC의 결정·취지·반려대안, SNAP의 현재 맥락·열린 항목·다음 단계처럼 영속 문서의 핵심 section을 candidate 밖에서 승인 후 새로 만들 수 없다. owner가 필수 input이 부족하다고 판단하면 `decline` 또는 `needs_clarification`을 반환하며 transcript를 다시 읽지 않는다.
 
 `owner_inputs`는 candidate당 2 KiB다. candidate batch의 canonical compact JSON UTF-8 합계는 16 KiB를 넘을 수 없다. 선언되지 않은 key와 원문 transcript blob은 거부한다. v1 값은 capability의 plain string/list/date/enum뿐이므로 별도 executable type은 존재하지 않으며 content를 shell/template로 평가하지 않는다.
 
-한 발언에 사실·선택·실행 항목이 함께 있어도 서로 다른 semantic claim이면 OBS·DEC·TASK candidate를 각각 만들 수 있다. 같은 claim을 type별로 복제해 여러 candidate로 만들면 안 된다.
+한 발언에 사실·선택·실행 항목이 함께 있어도 OBS·DEC·TASK candidate를 각각 만들 수 있다. router는 ID나 문자열 정규화로 candidate 사이의 의미 동일성을 추정하지 않는다. 저장된 artifact와 중복되는지는 index로 후보를 좁힌 뒤 actual body를 읽은 semantic owner가 판정한다.
 
 ### Lifecycle semantic input
 
@@ -178,7 +178,6 @@ owner는 transcript가 아닌 candidate만 받아 다음 descriptor와 결과를
       "value": {
         "schema": "context-capture-candidate/v1",
         "candidate_id": "cand_550e8400e29b41d4a716446655440000",
-        "claim_key": "c1",
         "title": "인증 세션 소유권",
         "claim": "인증 세션은 BFF가 소유한다",
         "summary": "OAuth callback과 cookie boundary를 BFF로 통합하기로 합의했다.",
@@ -191,6 +190,7 @@ owner는 transcript가 아닌 candidate만 받아 다음 descriptor와 결과를
         "source_refs": ["conversation:codex/<task-id>"],
         "evidence": ["사용자가 최종 합의로 명시한 문장"],
         "tags": ["auth"],
+        "search_terms": ["인증 주체", "세션 owner", "로그인 상태 소유권"],
         "owner_inputs": {
           "decision": {
             "decision": "인증 세션은 BFF가 소유한다.",
@@ -265,7 +265,7 @@ router가 owner binary를 발견하거나 실행하지 않는다. host skill이 
 3. host는 `requested_kind`가 있으면 그 owner skill 하나만 호출한다. 없으면 `specialized_kinds`의 owner skill을 순서대로 최대 2회 호출한다. addon 전체를 broadcast하지 않는다.
 4. specialized result 중 claim이 있으면 fallback을 호출하지 않는다. 모두 `decline` 또는 owner 부재이고 `fallback_kind`가 있으면 해당 core owner skill을 한 번 호출한다. 하나라도 `needs_clarification`이면 fallback하지 않고 질문으로 종료한다. requested kind에는 어떤 fallback도 없다.
 5. host는 candidate batch, 사용한 capability descriptor와 모든 claim result를 `context_cli.py candidate route --batch @file --capabilities @file --claim-results @file --json`에 전달한다.
-6. router는 schema, candidate ID, embedded candidate canonical equality, owner/kind, capability digest, 중복 claim과 routing priority를 결정적으로 검증한다. owner를 호출하거나 semantic body를 생성하지 않는다.
+6. router는 schema, candidate ID 중복, embedded candidate canonical equality, owner/kind, capability digest와 routing priority를 결정적으로 검증한다. owner를 호출하거나 candidate 간 의미 동일성을 판정하거나 semantic body를 생성하지 않는다.
 7. 선택된 result를 proposal 순서대로 처리한다. capability가 `batch_validation_surface`를 선언하면 host는 current area index와 앞서 finalize된 **same-area** bundle을 해당 owner validator에 전달해 `context-owner-validation-receipt/v1`을 먼저 받는다. context-core built-in owner는 같은 검사를 coordinator library에서 직접 수행한다.
 8. host는 result, optional validation receipt와 앞 bundle들을 `context_cli.py transaction preview --owner-result @file [--owner-validation @file] [--prior-bundle @file]... --json`에 전달한다. core는 앞 bundle expected after-state를 virtual precondition으로 사용하고, validation receipt가 요구되면 ordered same-area digest coverage를 확인한 뒤 final bundle화한다.
 9. 실제 content/lifecycle effect와 final plan을 한 grouped approval로 제시하고, 승인된 `approval_digest`와 **동일 final bundle object**만 context-core coordinator의 `transaction apply`에 전달한다.
@@ -278,7 +278,7 @@ route JSON success result는 다음 fixed projection이다.
 {
   "schema":"context-route-result/v1",
   "routes":[
-    {"candidate_id":"cand_...","claim_key":"c1","status":"proposed","owner":"context-decision","target_kind":"decision","authority":"authoritative","reason":"specialized_owner","owner_result_digest":"sha256:..."}
+    {"candidate_id":"cand_...","status":"proposed","owner":"context-decision","target_kind":"decision","authority":"authoritative","reason":"specialized_owner","owner_result_digest":"sha256:..."}
   ],
   "conflicts":[],
   "skipped":[]
@@ -304,7 +304,7 @@ route JSON success result는 다음 fixed projection이다.
    └─ skipped, 기록 제안 없음
 ```
 
-둘 이상의 specialized owner가 같은 `claim_key`를 claim하면 파일을 쓰지 않고 `owner_conflict`로 사용자에게 type 선택을 요청한다. 한 audit batch 안의 같은 `claim_key` 또는 normalized exact claim 중복은 `duplicate_candidate_claim`로 fail-closed한다. 저장된 artifact와 의미가 같은지는 이 gate가 판정하지 않으며 actual body comparison 결과 `same`이면 owner가 기존 문서를 제시하고 새 capture를 만들지 않는다. top-level `kind_hint`가 fallback OBS frontmatter의 유일한 정본이며 `owner_inputs.observation` 안에는 같은 field를 둘 수 없다.
+둘 이상의 specialized owner가 같은 candidate를 claim하면 파일을 쓰지 않고 `owner_conflict`로 사용자에게 type 선택을 요청한다. router가 기계적으로 검증하는 candidate 동일성은 중복 `candidate_id`뿐이며, 그 ID는 의미를 갖지 않는다. candidate끼리 또는 저장된 artifact와 의미가 같은지는 actual body comparison 결과 `same`이면 owner가 기존 문서를 제시하고 새 capture를 만들지 않는다. top-level `kind_hint`가 fallback OBS frontmatter의 유일한 정본이며 `owner_inputs.observation` 안에는 같은 field를 둘 수 없다.
 
 `requested_kind`는 owner 선택을 강제할 뿐 schema·semantic validation을 우회하지 않는다. 예를 들어 사용자가 fact를 DEC로 요청해도 decision owner가 accepted choice로 검증하지 못하면 권위 DEC를 만들지 않는다.
 

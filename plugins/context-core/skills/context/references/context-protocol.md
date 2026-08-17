@@ -8,7 +8,7 @@
 - Markdown artifact가 정본이고 `context.index.md`와 `<area>.index.md`는 deterministic projection이다.
 - artifact ID는 `ctx_` + lowercase UUIDv4 hex 32자다. filename, title, path와 lifecycle이 ID를 바꾸지 않는다.
 - frontmatter는 `KEY: JSON_VALUE` 한 줄 형식의 JSON-compatible YAML subset이고, document body는 schema별 fixed H2 section 순서를 사용한다.
-- `claim_fingerprint`와 `source_claim_fingerprint`는 protocol에서 제거됐다. 신규 artifact와 semantic projection은 이를 출력하거나 요구하지 않으며 legacy field가 남은 artifact는 `schema_removed_field`로 fail-closed한다.
+- `claim_fingerprint`, `source_claim_fingerprint`와 capture candidate의 `claim_key`는 protocol에서 제거됐다. 신규 artifact와 semantic projection은 fingerprint를 출력하거나 요구하지 않고, candidate ID는 transport reference로만 사용한다. legacy field가 남은 artifact/candidate는 `schema_removed_field`로 fail-closed한다.
 
 ## Read 경계
 

@@ -47,7 +47,7 @@ class ProductFlowTests(unittest.TestCase):
             self.assertEqual(before, tree_digest(repo))
             context_cli.apply_bundle(repo, init["bundle"], init["approval_digest"])
 
-            observation = flow.choice("cand_123e4567e89b42d3a456426614174000", "standalone-fact")
+            observation = flow.choice("cand_123e4567e89b42d3a456426614174000")
             observation.update(
                 requested_kind="observation",
                 specialized_kinds=["observation"],
@@ -84,6 +84,9 @@ class ProductFlowTests(unittest.TestCase):
                 self.assertIn(section, preview_text)
             self.assertEqual(before, tree_digest(repo))
             context_cli.apply_bundle(repo, proposal["bundle"], proposal["approval_digest"])
+            decision_index = (repo / "context/decision/decision.index.md").read_text(encoding="utf-8")
+            _, current_rows, _ = decision_cli.parse_decision_index(decision_index)
+            self.assertEqual({"인증 주체", "세션 owner"}, set(current_rows[0]["terms"]))
 
             decision_id = owner_result["effects"][0]["id"]
             brief = decision_cli.brief_decisions(repo, identifiers=[decision_id])
@@ -92,7 +95,7 @@ class ProductFlowTests(unittest.TestCase):
             self.assertIn("cookie 차이", sections["취지"])
             self.assertIn("SPA token", sections["반려대안"])
 
-            successor = flow.choice("cand_987e6543e21b42d3a456426614174002", "choice-v2")
+            successor = flow.choice("cand_987e6543e21b42d3a456426614174002")
             successor["claim"] = "인증 세션은 auth service가 소유한다."
             successor["owner_inputs"]["decision"]["decision"] = successor["claim"]
             successor["owner_inputs"]["decision"]["rationale"] = "BFF와 worker가 같은 session lifecycle을 공유한다."

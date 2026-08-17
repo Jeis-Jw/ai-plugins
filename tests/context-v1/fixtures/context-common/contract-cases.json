@@ -47,6 +47,6 @@
     "bootstrap_phase_retry": {"input": "core phase succeeds before area phase failure", "expected": ["structured_phases", "retry_converges", "user_content_preserved"]},
     "distribution_manifests": {"input": "Claude, Codex and marketplace manifests", "expected": ["dependency_fields_zero", "implicit_install_policy_zero"]},
     "pre_decision_semantic_check": {"input": "paraphrased candidate and related Current DEC", "expected": ["actual_core_sections", "five_relation_contract", "write_zero"]},
-    "removed_claim_identity_field": {"input": "legacy claim identity field on OBS or DEC", "expected": ["schema_removed_field", "silent_accept_zero"]}
+    "removed_claim_identity_surrogates": {"input": "legacy claim identity field on artifact or capture candidate", "expected": ["schema_removed_field", "silent_accept_zero"]}
   }
 }
