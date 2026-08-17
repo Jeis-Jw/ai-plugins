@@ -17,7 +17,7 @@ affects_paths: [plugins/context-core/**]
 |---|---|---|---|
 | 제품 취지·domain 경계 | 확정 | 이 SSOT, [[context-plugin-definition]], [[context-capture-routing]], active fingerprint 제거 v2 결정 | 실제 사용에서 recall/capture 제안이 충분히 유용한지는 계속 관찰 필요 |
 | core source·공개 계약 | 구현 | `plugins/context-core/**`, `context-common/v2`, 0.2.0 manifests | 0.1.x와 wire/storage 호환 없음 |
-| deterministic 검증 | 통과 | 이 변경 worktree에서 `python3 -m unittest discover`로 `context-core` 69 tests, `context-v1` 26 tests, `context-decision` 34 tests를 실측 | test는 실제 장기 대화의 의미 품질을 대신하지 않음 |
+| deterministic 검증 | 통과 | 이 변경 worktree에서 `python3 -m unittest discover`로 `context-core` 72 tests, `context-v1` 26 tests, `context-decision` 34 tests를 실측했고 repo-root `pytest`로 decision 34 tests+14 subtests를 확인 | test는 실제 장기 대화의 의미 품질을 대신하지 않음 |
 | index 효율성 | 구현·계측 | Stage 1 synthetic explicit/cross-area query에서 artifact open/read/stat와 artifact directory listing 0, bounded output 검증 | 대규모 실제 corpus의 recall precision/false negative는 별도 측정 필요 |
 | Codex 설치본 실행 | 부분 운영 검증 | 현재 Codex skill catalog에서 0.2.0이 발견되고 `capabilities --json` 실행 성공 | client별 설치·reload·upgrade UX의 반복 검증은 부족 |
 | Claude Code·Linux | 미확인 | static contract와 platform test만 존재 | 실제 host inventory와 live filesystem flow 필요 |
@@ -189,7 +189,7 @@ JSON success envelope은 `{"ok":true,"result":{...}}`다.
 - `doctor`: read-only `context-core-doctor/v1`; supported protocol, repository state, blocking `issues`와 non-blocking `warnings`를 반환하고 filesystem을 변경하지 않음
 - `draft`: owner skill의 attestation을 구조 검증하고 matching candidate와 input을 embedded해 render한 claim variant `context-owner-result/v1`; semantic claim/decline은 CLI가 수행하지 않음
 - `list/search/recall`: `items`, `returned`, `omitted`, `truncated`, `index_fallback`, `warnings`
-- `load/read`: exact `artifact` metadata, 요청한 `sections`, authority/freshness와 `truncated`
+- `load/read`: index-first exact ID resolution, exact `artifact` metadata, 요청한 `sections`, authority/freshness, `warnings`와 실제 byte budget 기반 `truncated`; stale/missing lookup은 `index_lookup_fallback`
 - `lifecycle prepare`: exact `context-lifecycle-semantic-input/v1`, input digest, `applied:false`
 - `init`/`bootstrap`: `context-core-bootstrap-result/v1`, ordered `core_init|area_register|policy_install`의 `applied|noop` phase, changed paths, post-apply doctor와 host policy receipt
 - 일반 core domain mutation/`area register`/policy와 `transaction preview`: complete final `bundle`, `approval_preview`, `approval_digest`, `applied:false`
@@ -197,6 +197,8 @@ JSON success envelope은 `{"ok":true,"result":{...}}`다.
 - `transaction apply`: `applied:true`, `plan_id`, `approval_digest`, `changed_paths`, `index_paths`, `warnings`
 
 text mode는 사람이 읽는 projection일 뿐 host orchestration과 test는 JSON envelope만 계약으로 사용한다.
+
+`snapshot load`와 `observation read`의 `--max-bytes`는 result object 기준 1..32768 bytes다. section을 prefix 단위로 줄여도 metadata envelope가 들어가지 않는 값은 usage error이며, 정상 truncation은 `truncated:true`와 `full_read_hint`를 반환한다. `rename`/`discard` preview도 index lookup fallback이 발생하면 top-level `warnings`에 같은 code를 노출한다.
 
 공통 exit code:
 

@@ -182,26 +182,28 @@ projection_fields: ["scope","decision_key","revisit_on"]
 1. `context.index.md`에서 초기화된 area index 경로를 읽는다.
 2. 명시적 `--area`/`--kind`가 없으면 모든 area index를 검색한다. root summary만으로 area를 미리 제외하지 않는다.
 3. 기본은 `Current`, `--include-history`일 때만 `History` entry를 포함한다.
-4. index metadata의 title·summary·terms·path로 lexical score를 계산한다. `--facet key=value`는 area가 선언한 `projection_fields`에 대한 exact filter이며 core는 field 의미를 알지 않는다. scalar는 NFKC+casefold exact equality, string array는 normalized element membership이다. 여러 facet은 AND이고 같은 key를 반복하면 그 값도 모두 포함해야 한다.
+4. index metadata의 title·summary·terms·path로 lexical score와 query token coverage를 계산한다. `--facet key=value`는 area가 선언한 `projection_fields`에 대한 exact filter이며 core는 field 의미를 알지 않는다. scalar는 NFKC+casefold exact equality, string array는 normalized element membership이다. 여러 facet은 AND이고 같은 key를 반복하면 그 값도 모두 포함해야 한다.
 5. bounded top-K Stage 1 결과만 반환한다. 이 단계에서는 artifact 파일을 열지 않는다.
 6. `--pack`, `--section`, `--read`가 선택한 artifact만 연다.
 
-query는 Unicode NFKC+casefold 후 공백·구두점 token으로 나눈다. stemming, embedding, vector DB를 사용하지 않는다. v1 deterministic score는 다음과 같다.
+query는 Unicode NFKC+casefold 후 공백·구두점 token으로 나누고 중복 token을 제거한다. stemming, embedding, vector DB를 사용하지 않는다. v1 deterministic score는 다음과 같다.
 
 | match | score |
 |---|---:|
 | exact ID | 100 |
 | title 전체 phrase | 40 |
 | exact tag/search term | 12 |
-| title token | 8 |
 | summary phrase | 10 |
-| summary token | 3 |
-| path token | 1 |
+| query token별 가장 강한 match | title substring 8, term substring 6, summary substring 3, path substring 1 |
 | 모든 query token 포함 | +10 |
 
-tie-break는 `score DESC → created_at DESC → id ASC`다. query가 없으면 모든 filter 통과 item의 score는 0이므로 최신순 listing이 된다. 기본 `limit=8`, 최대 20이다.
+non-empty query는 unique query token의 절반 이상(`ceil(N/2)`)을 match해야 한다. strong match(title·term·summary)가 하나라도 있으면 path-only 후보는 cutoff한다. 그 뒤 tie-break는 `score DESC → created_at DESC → id ASC`다. query가 없으면 모든 filter 통과 item의 score는 0이므로 최신순 listing이 된다. 기본 `limit=8`, 최대 20이다.
 
 Stage 1은 `id, kind, state, title, summary, path, authority`와 owner가 명시한 작은 facet만 반환한다. decision plugin은 `--facet scope=... --facet decision_key=...`를 사용하고 필요하면 후보 안에서 domain ranking을 적용한다. `search_terms` 전체와 index 원문을 model prompt에 노출하지 않는다.
+
+exact ID read도 root→area index의 `id→path`를 먼저 사용한다. healthy index의 `snapshot load`와 `observation read`는 선택한 artifact 본문 하나만 parse한다. `rename`과 `discard`도 같은 resolver로 target을 고르고, write 경계의 duplicate ID 검사는 다른 artifact의 frontmatter ID만 확인한다. index가 unreadable하거나 ID/path/schema가 어긋나면 그때만 canonical area를 scan하고 결과에 `index_lookup_fallback` warning을 붙인다. `discard`의 inbound relation 검사는 별도 write safety scan이므로 유지한다.
+
+`snapshot load`와 `observation read`의 `--max-bytes`는 1..32768 범위에서 complete result object를 제한한다. metadata envelope를 보존한 뒤 section을 순서대로 채우고 마지막 section prefix만 UTF-8 JSON byte budget에 맞춰 자른다. 잘리면 `truncated:true`, `full_read_hint`를 반환한다. metadata envelope 자체보다 작은 budget은 잘못된 usage로 거부한다.
 
 ### Drift와 fallback
 

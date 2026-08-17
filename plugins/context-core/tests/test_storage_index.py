@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 PLUGIN = Path(__file__).resolve().parents[1]
@@ -274,6 +275,146 @@ class StorageIndexTests(unittest.TestCase):
             for item in result["items"]:
                 self.assertEqual({"id", "kind", "state", "title", "summary", "path", "authority", "score"}, set(item))
             self.assertLessEqual(len(context_cli.canonical_json(result["items"]).encode()), 900)
+
+    def test_index_first_artifact_lookup_and_fallback_warning(self) -> None:
+        with git_repo() as temp:
+            repo = Path(temp)
+            initialize(repo)
+            snapshot_id = "ctx_550e8400e29b41d4a716446655440010"
+            observation_id = "ctx_550e8400e29b41d4a716446655440011"
+            snapshot_path = repo / "context/snapshot/handoff.md"
+            snapshot_path.write_text(
+                context_cli.render_document(
+                    {
+                        "schema": "context-snapshot/v1",
+                        "id": snapshot_id,
+                        "title": "index handoff",
+                        "summary": "index-first snapshot fixture",
+                        "created_at": "2026-08-13T18:20:00+09:00",
+                        "captured_from": "workspace",
+                    },
+                    {"현재 맥락": "selected snapshot body", "열린 항목": "open", "다음 단계": "next"},
+                ),
+                encoding="utf-8",
+            )
+            observation_path = repo / "context/observation/indexed.md"
+            observation_path.write_text(
+                observation(observation_id, "indexed observation", "selected observation body"),
+                encoding="utf-8",
+            )
+            refresh_area(repo, "snapshot")
+            refresh_area(repo, "observation")
+
+            with mock.patch.object(context_cli, "_scan_area_paths", side_effect=AssertionError("full scan")):
+                loaded = context_cli.snapshot_load(repo, snapshot_id)
+                read = context_cli.observation_read(repo, observation_id)
+            self.assertEqual("selected snapshot body", loaded["sections"]["현재 맥락"])
+            self.assertEqual("workspace fixture evidence", read["sections"]["근거"])
+            self.assertEqual([], loaded["warnings"])
+            self.assertEqual([], read["warnings"])
+
+            duplicate_path = repo / "context/observation/unindexed-duplicate.md"
+            duplicate_path.write_text(
+                observation(observation_id, "duplicate observation", "duplicate body"),
+                encoding="utf-8",
+            )
+            with self.assertRaises(context_cli.ContextError) as duplicate:
+                context_cli.build_rename_bundle(repo, observation_id, "renamed.md")
+            self.assertEqual("duplicate_id", duplicate.exception.code)
+            duplicate_path.unlink()
+
+            index_path = repo / "context/observation/observation.index.md"
+            index = context_cli.parse_area_index(index_path.read_text(encoding="utf-8"))
+            index_path.write_text(context_cli._replace_block(index.text, "current", []), encoding="utf-8")
+            fallback = context_cli.observation_read(repo, observation_id)
+            self.assertIn("index_lookup_fallback", fallback["warnings"])
+            rename = context_cli.build_rename_bundle(repo, observation_id, "renamed.md")
+            discard = context_cli.build_discard_bundle(repo, observation_id)
+            self.assertIn("index_lookup_fallback", rename["warnings"])
+            self.assertIn("index_lookup_fallback", discard["warnings"])
+
+    def test_recall_ranks_multi_term_matches_and_cuts_path_only_rows(self) -> None:
+        with git_repo() as temp:
+            repo = Path(temp)
+            initialize(repo)
+            relevant_id = "ctx_550e8400e29b41d4a716446655440020"
+            partial_id = "ctx_550e8400e29b41d4a716446655440021"
+            path_only_id = "ctx_550e8400e29b41d4a716446655440022"
+            area = repo / "context/observation"
+            (area / "relevant.md").write_text(
+                observation(relevant_id, "결제 재시도 정책", "결제 실패를 안전하게 재시도한다"),
+                encoding="utf-8",
+            )
+            (area / "partial.md").write_text(
+                observation(partial_id, "재시도 메모", "일반 재시도 기록"),
+                encoding="utf-8",
+            )
+            (area / "결제-재시도-archive.md").write_text(
+                observation(path_only_id, "무관 메모", "별도 운영 기록"),
+                encoding="utf-8",
+            )
+            refresh_area(repo, "observation")
+
+            result = context_cli.recall_repository(repo, query="결제 재시도")
+            self.assertEqual([relevant_id, partial_id], [item["id"] for item in result["items"]])
+            self.assertGreater(result["items"][0]["score"], result["items"][1]["score"])
+
+    def test_snapshot_load_and_observation_read_enforce_byte_budget(self) -> None:
+        with git_repo() as temp:
+            repo = Path(temp)
+            initialize(repo)
+            snapshot_id = "ctx_550e8400e29b41d4a716446655440030"
+            observation_id = "ctx_550e8400e29b41d4a716446655440031"
+            (repo / "context/snapshot/large.md").write_text(
+                context_cli.render_document(
+                    {
+                        "schema": "context-snapshot/v1",
+                        "id": snapshot_id,
+                        "title": "bounded handoff",
+                        "summary": "bounded snapshot fixture",
+                        "created_at": "2026-08-13T18:20:00+09:00",
+                        "captured_from": "workspace",
+                    },
+                    {"현재 맥락": "가" * 4000, "열린 항목": "open", "다음 단계": "next"},
+                ),
+                encoding="utf-8",
+            )
+            (repo / "context/observation/large.md").write_text(
+                context_cli.render_document(
+                    {
+                        "schema": "context-observation/v1",
+                        "id": observation_id,
+                        "title": "bounded observation",
+                        "summary": "bounded observation fixture",
+                        "created_at": "2026-08-13T18:20:00+09:00",
+                        "captured_from": "workspace",
+                    },
+                    {"관찰": "나" * 4000, "근거": "runtime fixture"},
+                ),
+                encoding="utf-8",
+            )
+            refresh_area(repo, "snapshot")
+            refresh_area(repo, "observation")
+
+            for result in (
+                context_cli.snapshot_load(repo, snapshot_id, max_bytes=900),
+                context_cli.observation_read(repo, observation_id, max_bytes=900),
+            ):
+                self.assertTrue(result["truncated"])
+                self.assertIn("full_read_hint", result)
+                self.assertLessEqual(len(context_cli.canonical_json(result).encode("utf-8")), 900)
+            self.assertEqual(
+                900,
+                context_cli.build_parser().parse_args(
+                    ["snapshot", "load", "--id", snapshot_id, "--max-bytes", "900"]
+                ).max_bytes,
+            )
+            self.assertEqual(
+                900,
+                context_cli.build_parser().parse_args(
+                    ["observation", "read", "--id", observation_id, "--max-bytes", "900"]
+                ).max_bytes,
+            )
 
     def test_acceptance_35_frontmatter_grammar(self) -> None:
         raw = """---

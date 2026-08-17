@@ -900,33 +900,51 @@ def _query_tokens(query: str) -> list[str]:
     return re.findall(r"[\w]+", normalized, flags=re.UNICODE)
 
 
-def score_entry(row: dict[str, Any], query: str) -> int:
+def _score_entry_details(row: dict[str, Any], query: str) -> tuple[int, int, int]:
     query_normal = normalized_key(query.strip())
     if not query_normal:
-        return 0
-    tokens = _query_tokens(query)
+        return 0, 0, 0
+    tokens = list(dict.fromkeys(_query_tokens(query)))
     title = normalized_key(row.get("title", ""))
     summary = normalized_key(row.get("summary", ""))
     path = normalized_key(row.get("path", ""))
     terms = [normalized_key(term) for term in row.get("terms", [])]
-    score = 100 if query_normal == normalized_key(row.get("id", "")) else 0
+    exact_id = query_normal == normalized_key(row.get("id", ""))
+    score = 100 if exact_id else 0
     if query_normal and query_normal in title:
         score += 40
     if query_normal and query_normal in summary:
         score += 10
     if query_normal in terms:
         score += 12
+    matched_tokens = 0
+    strong_tokens = 0
     for token in tokens:
-        if token in title.split():
-            score += 8
-        if token in summary.split():
-            score += 3
-        if token in re.findall(r"[\w]+", path):
-            score += 1
+        token_score = 0
+        if token in title:
+            token_score = max(token_score, 8)
+        if any(token in term for term in terms):
+            token_score = max(token_score, 6)
+        if token in summary:
+            token_score = max(token_score, 3)
+        if token in path:
+            token_score = max(token_score, 1)
+        if token_score:
+            matched_tokens += 1
+            score += token_score
+            if token_score > 1:
+                strong_tokens += 1
+    if exact_id:
+        matched_tokens = max(matched_tokens, len(tokens))
+        strong_tokens = max(strong_tokens, len(tokens))
     searchable = " ".join([title, summary, path, *terms])
     if tokens and all(token in searchable for token in tokens):
         score += 10
-    return score
+    return score, matched_tokens, strong_tokens
+
+
+def score_entry(row: dict[str, Any], query: str) -> int:
+    return _score_entry_details(row, query)[0]
 
 
 def _fallback_entries(repo: pathlib.Path, area_row: dict[str, Any], metrics: IOMetrics | None) -> list[dict[str, Any]]:
@@ -952,26 +970,32 @@ def _recall_result(items: list[dict[str, Any]], total_matches: int, fallback: bo
     }
 
 
-def _expanded_item(
-    item: dict[str, Any],
-    document: Document,
-    selected_sections: Sequence[str],
+def _fit_section_payload(
+    base: dict[str, Any],
+    available: dict[str, str],
     max_bytes: int,
+    *,
+    complete_fields: dict[str, Any],
+    truncated_fields: dict[str, Any],
+    too_small_code: str,
 ) -> dict[str, Any]:
-    available = {name: document.sections[name] for name in selected_sections if name in document.sections}
-    complete = {**item, "sections": available}
+    complete = {**base, "sections": available, **complete_fields}
     if len(canonical_json(complete).encode("utf-8")) <= max_bytes:
         return complete
 
-    hint = f"context recall --read {item['id']}"
     truncated: dict[str, Any] = {
-        **item,
+        **base,
         "sections": {},
-        "section_truncated": True,
-        "full_read_hint": hint,
+        **truncated_fields,
     }
-    if len(canonical_json(truncated).encode("utf-8")) > max_bytes:
-        return truncated
+    minimum_bytes = len(canonical_json(truncated).encode("utf-8"))
+    if minimum_bytes > max_bytes:
+        raise ContextError(
+            too_small_code,
+            "max-bytes is too small for the bounded metadata envelope",
+            {"minimum_bytes": minimum_bytes, "max_bytes": max_bytes},
+            EXIT_USAGE if too_small_code == "usage_invalid" else EXIT_INTEGRITY,
+        )
     for name, value in available.items():
         proposed_sections = {**truncated["sections"], name: value}
         proposed = {**truncated, "sections": proposed_sections}
@@ -995,6 +1019,26 @@ def _expanded_item(
             truncated["sections"] = {**truncated["sections"], name: fitted}
         break
     return truncated
+
+
+def _expanded_item(
+    item: dict[str, Any],
+    document: Document,
+    selected_sections: Sequence[str],
+    max_bytes: int,
+) -> dict[str, Any]:
+    available = {name: document.sections[name] for name in selected_sections if name in document.sections}
+    return _fit_section_payload(
+        item,
+        available,
+        max_bytes,
+        complete_fields={},
+        truncated_fields={
+            "section_truncated": True,
+            "full_read_hint": f"context recall --read {item['id']}",
+        },
+        too_small_code="recall_budget_internal",
+    )
 
 
 def recall_repository(
@@ -1070,8 +1114,11 @@ def recall_repository(
             all_entries = [(row, owner) for row, owner in all_entries if owner["area"] != area_row["area"]]
             all_entries.extend((row, area_row) for row in _fallback_entries(repo, area_row, metrics))
         all_entries = [(row, area_row) for row, area_row in all_entries if row["id"] in wanted]
-    def matched(entries: Sequence[tuple[dict[str, Any], dict[str, Any]]]) -> list[tuple[dict[str, Any], dict[str, Any], int]]:
-        output: list[tuple[dict[str, Any], dict[str, Any], int]] = []
+    query_tokens = list(dict.fromkeys(_query_tokens(query)))
+    minimum_token_matches = (len(query_tokens) + 1) // 2
+
+    def matched(entries: Sequence[tuple[dict[str, Any], dict[str, Any]]]) -> list[tuple[dict[str, Any], dict[str, Any], int, int]]:
+        output: list[tuple[dict[str, Any], dict[str, Any], int, int]] = []
         for row, area_row in entries:
             permitted = True
             for key, expected in facets:
@@ -1081,9 +1128,12 @@ def recall_repository(
                     permitted = permitted and normalized_expected in {normalized_key(str(item)) for item in actual}
                 else:
                     permitted = permitted and isinstance(actual, str) and normalized_key(actual) == normalized_expected
-            score = score_entry(row, query)
-            if permitted and (not query or score > 0):
-                output.append((row, area_row, score))
+            score, token_matches, strong_matches = _score_entry_details(row, query)
+            if permitted and (
+                not query
+                or (score > 0 and token_matches >= minimum_token_matches)
+            ):
+                output.append((row, area_row, score, strong_matches))
         return output
 
     filtered = matched(all_entries)
@@ -1097,12 +1147,14 @@ def recall_repository(
                 rows = [row for row in rows if row["state"] == "current"]
             fallback_entries.extend((row, area_row) for row in rows)
         filtered = matched(fallback_entries)
+    if query and any(item[3] for item in filtered):
+        filtered = [item for item in filtered if item[3] > 0]
     filtered.sort(key=lambda item: item[0]["id"])
     filtered.sort(key=lambda item: item[0]["created_at"], reverse=True)
     filtered.sort(key=lambda item: item[2], reverse=True)
     candidates = filtered[:limit]
     stage1_items: list[dict[str, Any]] = []
-    for row, area_row, score in candidates:
+    for row, area_row, score, _ in candidates:
         item = {
             "id": row["id"], "kind": area_row["area"], "state": row["state"], "title": row["title"],
             "summary": row["summary"], "path": row["path"], "authority": area_row["authority"], "score": score,
@@ -1926,10 +1978,20 @@ def _mutation_result(
     }
 
 
-def _artifact_in_area(repo: pathlib.Path, identifier: str, area: str, *, current_only: bool = False) -> tuple[pathlib.Path, Document]:
-    found_area, path, document = _find_artifact(repo, identifier)
+def _artifact_in_area(
+    repo: pathlib.Path,
+    identifier: str,
+    area: str,
+    *,
+    current_only: bool = False,
+    verify_unique: bool = True,
+    warnings: list[str] | None = None,
+) -> tuple[pathlib.Path, Document]:
+    found_area, path, document = _find_artifact(repo, identifier, warnings=warnings)
     if found_area != area or (current_only and "/retired/" in path.relative_to(repo).as_posix()):
         raise ContextError("artifact_state_invalid", f"artifact is not a current {area}", {"id": identifier}, EXIT_CONFLICT)
+    if verify_unique:
+        _assert_artifact_id_unique(repo, identifier, path)
     return path, document
 
 
@@ -2034,20 +2096,35 @@ def build_snapshot_update_bundle(
     return finalize_owner_result(repo, result)
 
 
-def _read_artifact(repo: pathlib.Path, identifier: str, area: str, sections: Sequence[str] = ()) -> dict[str, Any]:
-    path, document = _artifact_in_area(repo, identifier, area)
+def _read_artifact(
+    repo: pathlib.Path,
+    identifier: str,
+    area: str,
+    sections: Sequence[str] = (),
+    max_bytes: int | None = None,
+) -> dict[str, Any]:
+    if max_bytes is not None and not 1 <= max_bytes <= MAX_USER_BYTES:
+        raise ContextError("usage_invalid", "max-bytes is outside the v1 range")
+    warnings: list[str] = []
+    path, document = _artifact_in_area(
+        repo,
+        identifier,
+        area,
+        verify_unique=False,
+        warnings=warnings,
+    )
+    warnings.extend(warning["code"] for warning in document.warnings)
     selected = sections or tuple(document.sections)
+    available = {name: document.sections[name] for name in selected if name in document.sections}
     result: dict[str, Any] = {
         "artifact": dict(document.frontmatter),
         "path": path.relative_to(repo).as_posix(),
-        "sections": {name: document.sections[name] for name in selected if name in document.sections},
         "authority": "staging" if area == "snapshot" else "evidence",
-        "truncated": False,
+        "warnings": sorted(set(warnings)),
     }
     if area == "snapshot":
         result["use_as"] = "resume_context"
         anchors = document.frontmatter.get("anchors", [])
-        warnings: list[str] = []
         if not anchors:
             freshness = "authority_unknown"
         else:
@@ -2061,15 +2138,32 @@ def _read_artifact(repo: pathlib.Path, identifier: str, area: str, sections: Seq
                     freshness = "anchor_changed"
             if freshness == "anchor_changed":
                 warnings.append("anchor_changed")
-        result.update({"freshness": freshness, "warnings": warnings})
+        result.update({"freshness": freshness, "warnings": sorted(set(warnings))})
     else:
         result["use_as"] = "investigate_or_support"
         result["state"] = "history" if "/retired/" in result["path"] else "current"
-    return result
+    if max_bytes is None:
+        return {**result, "sections": available, "truncated": False}
+    return _fit_section_payload(
+        result,
+        available,
+        max_bytes,
+        complete_fields={"truncated": False},
+        truncated_fields={
+            "truncated": True,
+            "full_read_hint": f"context {area} {'load' if area == 'snapshot' else 'read'} --id {identifier}",
+        },
+        too_small_code="usage_invalid",
+    )
 
 
-def snapshot_load(repo: pathlib.Path, identifier: str, sections: Sequence[str] = ()) -> dict[str, Any]:
-    return _read_artifact(repo, identifier, "snapshot", sections)
+def snapshot_load(
+    repo: pathlib.Path,
+    identifier: str,
+    sections: Sequence[str] = (),
+    max_bytes: int | None = None,
+) -> dict[str, Any]:
+    return _read_artifact(repo, identifier, "snapshot", sections, max_bytes)
 
 
 def snapshot_list(repo: pathlib.Path, limit: int = 8) -> dict[str, Any]:
@@ -2596,7 +2690,7 @@ def _area_for_owner(repo: pathlib.Path, area: str, owner: str) -> tuple[dict[str
     matches = [row for row in rows if row["area"] == area]
     if len(matches) != 1 or matches[0]["owner"] != owner:
         raise ContextError("area_owner_mismatch", "owner is not authorized for target area", {"owner": owner, "area": area}, EXIT_CONFLICT)
-    parsed = parse_area_index((repo / matches[0]["path"]).read_text(encoding="utf-8"))
+    parsed = parse_area_index(_ensure_contained(repo, matches[0]["path"]).read_text(encoding="utf-8"))
     return matches[0], parsed
 
 
@@ -2825,15 +2919,33 @@ def finalize_owner_result(repo: pathlib.Path, owner_result: dict[str, Any], owne
     return _bundle_result(preview, plan, materials)
 
 
-def _find_artifact(repo: pathlib.Path, identifier: str) -> tuple[str, pathlib.Path, Document]:
-    _require_context_id(identifier)
-    _, areas = _root_catalog(repo)
+def _filesystem_lookup_areas(repo: pathlib.Path) -> list[dict[str, Any]]:
+    root = _ensure_contained(repo, "context")
+    if root.is_symlink():
+        raise ContextError("symlink_path", "context root cannot be a symlink", {"path": "context"}, EXIT_INTEGRITY)
+    if not root.is_dir():
+        return []
+    areas: list[dict[str, Any]] = []
+    with os.scandir(root) as entries:
+        for entry in entries:
+            if entry.is_symlink():
+                raise ContextError("symlink_path", "context area cannot be a symlink", {"path": f"context/{entry.name}"}, EXIT_INTEGRITY)
+            if entry.is_dir(follow_symlinks=False) and AREA_NAME.fullmatch(entry.name):
+                areas.append({"area": entry.name})
+    return sorted(areas, key=lambda item: item["area"])
+
+
+def _scan_artifact_id(
+    repo: pathlib.Path,
+    identifier: str,
+    areas: Sequence[dict[str, Any]],
+) -> tuple[str, pathlib.Path, Document]:
     found: list[tuple[str, pathlib.Path, Document]] = []
     for area in areas:
         for path, _ in _scan_area_paths(repo, area["area"]):
             try:
                 document = parse_document(path.read_text(encoding="utf-8"))
-            except ContextError:
+            except (ContextError, OSError, UnicodeError):
                 continue
             if document.frontmatter["id"] == identifier:
                 found.append((area["area"], path, document))
@@ -2844,8 +2956,102 @@ def _find_artifact(repo: pathlib.Path, identifier: str) -> tuple[str, pathlib.Pa
     return found[0]
 
 
+def _find_artifact(
+    repo: pathlib.Path,
+    identifier: str,
+    *,
+    warnings: list[str] | None = None,
+) -> tuple[str, pathlib.Path, Document]:
+    _require_context_id(identifier)
+    areas: list[dict[str, Any]] = []
+    try:
+        _, areas = _root_catalog(repo)
+        indexed: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for area in areas:
+            index_path = _ensure_contained(repo, area["path"])
+            if index_path.is_symlink():
+                raise ContextError("symlink_path", "area index cannot be a symlink", {"path": area["path"]}, EXIT_INTEGRITY)
+            index = parse_area_index(index_path.read_text(encoding="utf-8"))
+            if (
+                index.frontmatter["area"] != area["area"]
+                or index.frontmatter["owner"] != area["owner"]
+                or index.frontmatter["artifact_schema"] != area["artifact_schema"]
+            ):
+                raise ContextError("index_stale", "area index/root catalog mismatch", {"path": area["path"]}, EXIT_INTEGRITY)
+            indexed.extend(
+                (area, row)
+                for row in [*index.current, *index.history]
+                if row["id"] == identifier
+            )
+        if len(indexed) != 1:
+            raise ContextError("index_lookup_miss", "artifact id is absent or duplicated in derived indexes", {"id": identifier}, EXIT_INTEGRITY)
+        area, row = indexed[0]
+        path = _ensure_contained(repo, row["path"])
+        if path.is_symlink() or not path.is_file():
+            raise ContextError("index_stale", "selected index path is unavailable", {"path": row["path"]}, EXIT_INTEGRITY)
+        document = parse_document(path.read_text(encoding="utf-8"))
+        if (
+            document.frontmatter["id"] != identifier
+            or document.frontmatter["schema"] != area["artifact_schema"]
+        ):
+            raise ContextError("index_stale", "selected index entry differs from artifact identity", {"path": row["path"]}, EXIT_INTEGRITY)
+        return area["area"], path, document
+    except (ContextError, OSError, UnicodeError):
+        if warnings is not None:
+            warnings.append("index_lookup_fallback")
+        if not areas:
+            areas = _filesystem_lookup_areas(repo)
+        return _scan_artifact_id(repo, identifier, areas)
+
+
+def _frontmatter_identifier(path: pathlib.Path) -> str | None:
+    try:
+        with path.open("r", encoding="utf-8", newline=None) as handle:
+            if handle.readline().rstrip("\r\n") != "---":
+                return None
+            found: str | None = None
+            for line in handle:
+                value = line.rstrip("\r\n")
+                if value == "---":
+                    return found
+                if value.startswith("id: "):
+                    if found is not None:
+                        return None
+                    parsed = json.loads(value.removeprefix("id: "))
+                    if not is_context_id(parsed):
+                        return None
+                    found = parsed
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    return None
+
+
+def _assert_artifact_id_unique(repo: pathlib.Path, identifier: str, selected_path: pathlib.Path) -> None:
+    try:
+        _, areas = _root_catalog(repo)
+    except (ContextError, OSError, UnicodeError):
+        areas = _filesystem_lookup_areas(repo)
+    matches = [
+        path.relative_to(repo).as_posix()
+        for area in areas
+        for path, _ in _scan_area_paths(repo, area["area"])
+        if _frontmatter_identifier(path) == identifier
+    ]
+    selected = selected_path.relative_to(repo).as_posix()
+    if len(matches) != 1 or matches[0] != selected:
+        raise ContextError(
+            "duplicate_id",
+            "artifact id is duplicated or target identity is ambiguous",
+            {"id": identifier, "paths": sorted(matches)},
+            EXIT_INTEGRITY,
+        )
+
+
 def build_rename_bundle(repo: pathlib.Path, identifier: str, filename: str) -> dict[str, Any]:
-    area, source, document = _find_artifact(repo, identifier)
+    warnings: list[str] = []
+    area, source, document = _find_artifact(repo, identifier, warnings=warnings)
+    warnings.extend(warning["code"] for warning in document.warnings)
+    _assert_artifact_id_unique(repo, identifier, source)
     relative_source = source.relative_to(repo).as_posix()
     destination = resolve_artifact_path(repo, area, filename, existing_path=relative_source)
     relative_destination = destination.relative_to(repo).as_posix()
@@ -2862,7 +3068,9 @@ def build_rename_bundle(repo: pathlib.Path, identifier: str, filename: str) -> d
         "effects": [{"effect_id": effect_id, "action": "rename", "area": area, "id": identifier, "state": "history" if "/retired/" in relative_source else "current"}],
         "proposed_plan": {"schema": "context-owner-plan/v1", "transition": "rename", "operations": [{"op": "move", "effect_id": effect_id, "area": area, "id": identifier, "from_path": relative_source, "to_path": relative_destination}]},
     }
-    return finalize_owner_result(repo, result)
+    finalized = finalize_owner_result(repo, result)
+    finalized["warnings"] = sorted(set(warnings))
+    return finalized
 
 
 def _inbound_refs(repo: pathlib.Path, identifier: str, excluded_path: pathlib.Path) -> list[str]:
@@ -2889,7 +3097,10 @@ def _inbound_refs(repo: pathlib.Path, identifier: str, excluded_path: pathlib.Pa
 
 
 def build_discard_bundle(repo: pathlib.Path, identifier: str) -> dict[str, Any]:
-    area, source, document = _find_artifact(repo, identifier)
+    warnings: list[str] = []
+    area, source, document = _find_artifact(repo, identifier, warnings=warnings)
+    warnings.extend(warning["code"] for warning in document.warnings)
+    _assert_artifact_id_unique(repo, identifier, source)
     if area not in BUILTIN_AREAS:
         raise ContextError("owner_unavailable", "discard requires the semantic area owner", {"area": area}, EXIT_CONFLICT)
     relative = source.relative_to(repo).as_posix()
@@ -2912,11 +3123,18 @@ def build_discard_bundle(repo: pathlib.Path, identifier: str) -> dict[str, Any]:
         "proposed_plan": {"schema": "context-owner-plan/v1", "transition": "discard", "operations": [{"op": "delete", "effect_id": effect_id, "area": area, "id": identifier, "path": relative}]},
     }
     del document
-    return finalize_owner_result(repo, result)
+    finalized = finalize_owner_result(repo, result)
+    finalized["warnings"] = sorted(set(warnings))
+    return finalized
 
 
-def observation_read(repo: pathlib.Path, identifier: str, sections: Sequence[str] = ()) -> dict[str, Any]:
-    return _read_artifact(repo, identifier, "observation", sections)
+def observation_read(
+    repo: pathlib.Path,
+    identifier: str,
+    sections: Sequence[str] = (),
+    max_bytes: int | None = None,
+) -> dict[str, Any]:
+    return _read_artifact(repo, identifier, "observation", sections, max_bytes)
 
 
 def observation_search(repo: pathlib.Path, query: str = "", *, include_history: bool = False, limit: int = 8) -> dict[str, Any]:
@@ -4498,6 +4716,7 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument("--limit", type=int, default=8)
         if name == "load":
             command.add_argument("--section", action="append", default=[])
+            command.add_argument("--max-bytes", type=int)
         command.add_argument("--json", action="store_true")
     observation = sub.add_parser("observation")
     observation_sub = observation.add_subparsers(dest="observation_command", required=True)
@@ -4520,6 +4739,7 @@ def build_parser() -> argparse.ArgumentParser:
     observation_read = observation_sub.add_parser("read")
     observation_read.add_argument("--id", required=True)
     observation_read.add_argument("--section", action="append", default=[])
+    observation_read.add_argument("--max-bytes", type=int)
     observation_read.add_argument("--json", action="store_true")
     observation_search_parser = observation_sub.add_parser("search")
     observation_search_parser.add_argument("--query", default="")
@@ -4664,7 +4884,7 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
         if args.snapshot_command == "search":
             return snapshot_search(repo, args.query, args.limit)
         if args.snapshot_command == "load":
-            return snapshot_load(repo, args.id, args.section)
+            return snapshot_load(repo, args.id, args.section, args.max_bytes)
         if args.snapshot_command == "discard":
             return build_snapshot_discard_bundle(repo, args.id)
     if args.command == "observation":
@@ -4693,7 +4913,7 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
             attestation = _direct_attestation(_load_json_argument(args.attestation), candidate, "observation")
             return build_observation_capture_bundle(repo, candidate, attestation, filename=args.filename)
         if args.observation_command == "read":
-            return observation_read(repo, args.id, args.section)
+            return observation_read(repo, args.id, args.section, args.max_bytes)
         if args.observation_command == "search":
             return observation_search(repo, args.query, include_history=args.include_history, limit=args.limit)
         if args.observation_command == "annotate":
