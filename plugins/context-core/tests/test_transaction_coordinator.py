@@ -543,6 +543,34 @@ class TransactionCoordinatorTests(unittest.TestCase):
                 )
                 self.assertNotIn("decision", {row["area"] for row in rows})
 
+    def test_area_register_rechecks_exact_empty_directory_before_write(self) -> None:
+        with git_repo() as temp:
+            repo = Path(temp)
+            initialize(repo)
+            plan = decision_cli.build_init_plan()
+            registration = context_cli.build_area_register_bundle(
+                repo, plan["owner_descriptor"], plan["index_seed"]
+            )
+            area_root = repo / "context/decision"
+            area_root.mkdir()
+            (area_root / "rogue.md").write_text("unapproved bytes\n", encoding="utf-8")
+            before = tree_digest(repo)
+
+            with self.assertRaises(context_cli.ContextError) as caught:
+                context_cli.apply_bundle(
+                    repo,
+                    registration["bundle"],
+                    registration["approval_digest"],
+                    approval_source="explicit_init",
+                )
+            self.assertEqual("precondition_changed", caught.exception.code)
+            self.assertEqual(before, tree_digest(repo))
+            self.assertFalse((area_root / "decision.index.md").exists())
+            _, rows = context_cli.parse_root_index(
+                (repo / context_cli.ROOT_INDEX).read_text(encoding="utf-8")
+            )
+            self.assertNotIn("decision", {row["area"] for row in rows})
+
     def test_existing_area_rejects_incompatible_descriptor_without_writes(self) -> None:
         with git_repo() as temp:
             repo = Path(temp)

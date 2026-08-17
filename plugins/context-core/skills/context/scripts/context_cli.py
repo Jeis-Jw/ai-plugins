@@ -4353,6 +4353,20 @@ def _apply_index_operation(repo: pathlib.Path, plan: dict[str, Any], operation: 
             if current != operation["before_sha256"][relative] or relative not in by_path:
                 raise ContextError("precondition_changed", "index precondition changed", {"path": relative}, EXIT_CONFLICT)
             pending.append((relative, path))
+        if transition == "area_register":
+            area = plan["owner_descriptor"]["kind"]
+            area_root = _ensure_contained(repo, f"context/{area}")
+            allowed_entry = f"{area}.index.md"
+            if area_root.exists() and (
+                not area_root.is_dir()
+                or any(entry.name != allowed_entry for entry in area_root.iterdir())
+            ):
+                raise ContextError(
+                    "precondition_changed",
+                    "area register target contains content beyond its approved index seed",
+                    {"area": area, "path": f"context/{area}"},
+                    EXIT_CONFLICT,
+                )
         if transition == "core_init":
             retired = _ensure_contained(repo, "context/observation/retired")
             if retired.exists() and (not retired.is_dir() or retired.is_symlink()):
