@@ -4,7 +4,7 @@ created_at: 2026-08-17
 summary: context-core와 context-decision에서 claim fingerprint를 제거하고, 명시적 init이 설치하는 관리형 운영지침을 통해 기존 컨텍스트 recall·본문 의미 비교·충돌/취지 변경 알림·승인형 capture 제안을 일관되게 수행하도록 재정렬한다.
 tags: [context-core, context-decision, durable-context, semantic-comparison, agent-policy]
 relations:
-  decisions: [DEC-2026-08-13-180535-capture-audit는-milestone-단위-단일-판독과-승인형-write를-지킨다, DEC-2026-08-13-183612-컨텍스트-플러그인은-milestone-capture-audit와-semantic-owner-draft로-결합한다]
+  decisions: [DEC-2026-08-13-180535-capture-audit는-milestone-단위-단일-판독과-승인형-write를-지킨다, DEC-2026-08-13-183612-컨텍스트-플러그인은-milestone-capture-audit와-semantic-owner-draft로-결합한다, DEC-2026-08-17-114327-fingerprint-제거-release는-context-common-v2로-분리하고-init은-managed-policy까지-완료한다]
 ---
 
 ## 개요
