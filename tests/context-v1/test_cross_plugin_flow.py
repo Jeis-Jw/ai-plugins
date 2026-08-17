@@ -127,7 +127,7 @@ class CrossPluginFlowTests(unittest.TestCase):
             "requested_kind": "observation",
             "specialized_kinds": ["observation"],
             "fallback_kind": None,
-            "claim": "Safari에서 third-party cookie가 차단된다.",
+            "claim": decision["claim"],
         }
         observation["owner_inputs"] = {"observation": {"observation": observation["claim"], "evidence": ["재현 fixture"]}}
         dec_result = decision_cli.build_claim_result(decision, decision_attestation(decision))

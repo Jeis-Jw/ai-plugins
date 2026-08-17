@@ -1230,7 +1230,6 @@ def validate_candidate_batch(batch: Any, capabilities: Any) -> list[dict[str, An
     }
     candidate_ids: set[str] = set()
     claim_keys: set[str] = set()
-    semantic_claims: set[str] = set()
     for candidate in candidates:
         if not isinstance(candidate, dict) or candidate.get("schema") != "context-capture-candidate/v1" or required - set(candidate):
             raise ContextError("candidate_invalid", "candidate envelope is incomplete", exit_code=EXIT_CONFLICT)
@@ -1250,12 +1249,10 @@ def validate_candidate_batch(batch: Any, capabilities: Any) -> list[dict[str, An
             raise ContextError("candidate_invalid", "claim_key is invalid")
         if identifier in candidate_ids:
             raise ContextError("candidate_invalid", "candidate_id is duplicated", {"candidate_id": identifier}, EXIT_CONFLICT)
-        normalized_claim = normalized_key(candidate.get("claim", "").strip())
-        if claim_key in claim_keys or normalized_claim in semantic_claims:
-            raise ContextError("duplicate_candidate_claim", "one exact candidate claim may appear only once in an audit batch", {"claim_key": claim_key}, EXIT_CONFLICT)
+        if claim_key in claim_keys:
+            raise ContextError("duplicate_candidate_claim", "one claim_key may appear only once in an audit batch", {"claim_key": claim_key}, EXIT_CONFLICT)
         candidate_ids.add(identifier)
         claim_keys.add(claim_key)
-        semantic_claims.add(normalized_claim)
         if not _substantive(candidate.get("title")) or len(candidate["title"]) > 120 or "\n" in candidate["title"]:
             raise ContextError("candidate_invalid", "candidate title is invalid")
         if not _substantive(candidate.get("claim")) or len(candidate["claim"]) > 320:
@@ -2253,7 +2250,7 @@ def bootstrap_repository(
     changed_paths: list[str] = []
     try:
         policy_target = _policy_target_for_host(host)
-        policy_bundle = build_policy_bundle(repo, policy_target)
+        build_policy_bundle(repo, policy_target)
     except ContextError as error:
         raise _bootstrap_phase_error(error, "policy_preflight", phases) from error
     area_resume = (
