@@ -1115,7 +1115,7 @@ def recall_repository(
             all_entries.extend((row, area_row) for row in _fallback_entries(repo, area_row, metrics))
         all_entries = [(row, area_row) for row, area_row in all_entries if row["id"] in wanted]
     query_tokens = list(dict.fromkeys(_query_tokens(query)))
-    minimum_token_matches = (len(query_tokens) + 1) // 2
+    minimum_token_matches = min(2, (len(query_tokens) + 1) // 2)
 
     def matched(entries: Sequence[tuple[dict[str, Any], dict[str, Any]]]) -> list[tuple[dict[str, Any], dict[str, Any], int, int]]:
         output: list[tuple[dict[str, Any], dict[str, Any], int, int]] = []
@@ -2131,11 +2131,19 @@ def _read_artifact(
             freshness = "anchored"
             for anchor in anchors:
                 try:
-                    _, anchor_path, _ = _find_artifact(repo, anchor)
-                    if "/retired/" in anchor_path.relative_to(repo).as_posix():
+                    _, anchor_areas = _root_catalog(repo)
+                    _, anchor_row, _ = _indexed_artifact_entry(repo, anchor, anchor_areas)
+                    if anchor_row["state"] != "current":
                         freshness = "anchor_changed"
-                except ContextError:
-                    freshness = "anchor_changed"
+                except (ContextError, OSError, UnicodeError):
+                    anchor_warnings: list[str] = []
+                    try:
+                        _, anchor_path, _ = _find_artifact(repo, anchor, warnings=anchor_warnings)
+                        if "/retired/" in anchor_path.relative_to(repo).as_posix():
+                            freshness = "anchor_changed"
+                    except (ContextError, OSError, UnicodeError):
+                        freshness = "anchor_changed"
+                    warnings.extend(anchor_warnings)
             if freshness == "anchor_changed":
                 warnings.append("anchor_changed")
         result.update({"freshness": freshness, "warnings": sorted(set(warnings))})
@@ -2690,8 +2698,27 @@ def _area_for_owner(repo: pathlib.Path, area: str, owner: str) -> tuple[dict[str
     matches = [row for row in rows if row["area"] == area]
     if len(matches) != 1 or matches[0]["owner"] != owner:
         raise ContextError("area_owner_mismatch", "owner is not authorized for target area", {"owner": owner, "area": area}, EXIT_CONFLICT)
-    parsed = parse_area_index(_ensure_contained(repo, matches[0]["path"]).read_text(encoding="utf-8"))
-    return matches[0], parsed
+    row = matches[0]
+    parsed = parse_area_index(_ensure_contained(repo, row["path"]).read_text(encoding="utf-8"))
+    metadata = parsed.frontmatter
+    if (
+        metadata["area"],
+        metadata["owner"],
+        metadata["artifact_schema"],
+        metadata["authority"],
+    ) != (
+        row["area"],
+        row["owner"],
+        row["artifact_schema"],
+        row["authority"],
+    ):
+        raise ContextError(
+            "area_index_mismatch",
+            "target area index metadata differs from its authoritative root descriptor",
+            {"area": area, "path": row["path"]},
+            EXIT_CONFLICT,
+        )
+    return row, parsed
 
 
 def _virtual_area_index(index: AreaIndex, effects: Sequence[dict[str, Any]], drafts: dict[str, dict[str, Any]]) -> str:
@@ -2956,6 +2983,38 @@ def _scan_artifact_id(
     return found[0]
 
 
+def _indexed_artifact_entry(
+    repo: pathlib.Path,
+    identifier: str,
+    areas: Sequence[dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any], pathlib.Path]:
+    indexed: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for area in areas:
+        index_path = _ensure_contained(repo, area["path"])
+        if index_path.is_symlink():
+            raise ContextError("symlink_path", "area index cannot be a symlink", {"path": area["path"]}, EXIT_INTEGRITY)
+        index = parse_area_index(index_path.read_text(encoding="utf-8"))
+        if (
+            index.frontmatter["area"] != area["area"]
+            or index.frontmatter["owner"] != area["owner"]
+            or index.frontmatter["artifact_schema"] != area["artifact_schema"]
+            or index.frontmatter["authority"] != area["authority"]
+        ):
+            raise ContextError("index_stale", "area index/root catalog mismatch", {"path": area["path"]}, EXIT_INTEGRITY)
+        indexed.extend(
+            (area, row)
+            for row in [*index.current, *index.history]
+            if row["id"] == identifier
+        )
+    if len(indexed) != 1:
+        raise ContextError("index_lookup_miss", "artifact id is absent or duplicated in derived indexes", {"id": identifier}, EXIT_INTEGRITY)
+    area, row = indexed[0]
+    path = _ensure_contained(repo, row["path"])
+    if path.is_symlink() or not path.is_file():
+        raise ContextError("index_stale", "selected index path is unavailable", {"path": row["path"]}, EXIT_INTEGRITY)
+    return area, row, path
+
+
 def _find_artifact(
     repo: pathlib.Path,
     identifier: str,
@@ -2966,29 +3025,7 @@ def _find_artifact(
     areas: list[dict[str, Any]] = []
     try:
         _, areas = _root_catalog(repo)
-        indexed: list[tuple[dict[str, Any], dict[str, Any]]] = []
-        for area in areas:
-            index_path = _ensure_contained(repo, area["path"])
-            if index_path.is_symlink():
-                raise ContextError("symlink_path", "area index cannot be a symlink", {"path": area["path"]}, EXIT_INTEGRITY)
-            index = parse_area_index(index_path.read_text(encoding="utf-8"))
-            if (
-                index.frontmatter["area"] != area["area"]
-                or index.frontmatter["owner"] != area["owner"]
-                or index.frontmatter["artifact_schema"] != area["artifact_schema"]
-            ):
-                raise ContextError("index_stale", "area index/root catalog mismatch", {"path": area["path"]}, EXIT_INTEGRITY)
-            indexed.extend(
-                (area, row)
-                for row in [*index.current, *index.history]
-                if row["id"] == identifier
-            )
-        if len(indexed) != 1:
-            raise ContextError("index_lookup_miss", "artifact id is absent or duplicated in derived indexes", {"id": identifier}, EXIT_INTEGRITY)
-        area, row = indexed[0]
-        path = _ensure_contained(repo, row["path"])
-        if path.is_symlink() or not path.is_file():
-            raise ContextError("index_stale", "selected index path is unavailable", {"path": row["path"]}, EXIT_INTEGRITY)
+        area, row, path = _indexed_artifact_entry(repo, identifier, areas)
         document = parse_document(path.read_text(encoding="utf-8"))
         if (
             document.frontmatter["id"] != identifier
@@ -3026,25 +3063,82 @@ def _frontmatter_identifier(path: pathlib.Path) -> str | None:
     return None
 
 
-def _assert_artifact_id_unique(repo: pathlib.Path, identifier: str, selected_path: pathlib.Path) -> None:
+def _artifact_id_paths(repo: pathlib.Path, identifiers: Iterable[str]) -> dict[str, list[str]]:
+    wanted = set(identifiers)
     try:
         _, areas = _root_catalog(repo)
     except (ContextError, OSError, UnicodeError):
         areas = _filesystem_lookup_areas(repo)
-    matches = [
-        path.relative_to(repo).as_posix()
-        for area in areas
-        for path, _ in _scan_area_paths(repo, area["area"])
-        if _frontmatter_identifier(path) == identifier
-    ]
+    matches = {identifier: [] for identifier in wanted}
+    for area in areas:
+        for path, _ in _scan_area_paths(repo, area["area"]):
+            identifier = _frontmatter_identifier(path)
+            if identifier in matches:
+                matches[identifier].append(path.relative_to(repo).as_posix())
+    return {identifier: sorted(paths) for identifier, paths in matches.items()}
+
+
+def _assert_artifact_id_unique(repo: pathlib.Path, identifier: str, selected_path: pathlib.Path) -> None:
+    matches = _artifact_id_paths(repo, [identifier])[identifier]
     selected = selected_path.relative_to(repo).as_posix()
-    if len(matches) != 1 or matches[0] != selected:
+    if matches != [selected]:
         raise ContextError(
             "duplicate_id",
             "artifact id is duplicated or target identity is ambiguous",
-            {"id": identifier, "paths": sorted(matches)},
+            {"id": identifier, "paths": matches},
             EXIT_INTEGRITY,
         )
+
+
+def _validate_target_artifact_ids(
+    repo: pathlib.Path,
+    operations: Sequence[dict[str, Any]],
+    effects: Sequence[dict[str, Any]],
+) -> None:
+    artifact_operations = [operation for operation in operations if operation.get("role") == "artifact"]
+    effect_identifiers = {effect.get("effect_id"): effect.get("id") for effect in effects}
+    bound_operations: list[tuple[dict[str, Any], str]] = []
+    for operation in artifact_operations:
+        effect_identifier = effect_identifiers.get(operation.get("effect_id"))
+        identifier = operation.get("id", effect_identifier)
+        if not is_context_id(identifier) or identifier != effect_identifier:
+            raise ContextError(
+                "plan_preview_mismatch",
+                "artifact operation id differs from its approved effect",
+                exit_code=EXIT_CONFLICT,
+            )
+        bound_operations.append((operation, identifier))
+    identifiers = {identifier for _, identifier in bound_operations}
+    expected: dict[str, set[str]] = {identifier: set() for identifier in identifiers}
+    for operation, identifier in bound_operations:
+        op = operation["op"]
+        if op == "file_create":
+            relative = operation["path"]
+            if _digest_or_none(_ensure_contained(repo, relative)) == operation["after_sha256"]:
+                expected[identifier].add(relative)
+        elif op == "file_replace":
+            expected[identifier].add(operation["path"])
+        elif op == "file_move":
+            source = operation["from_path"]
+            destination = operation["to_path"]
+            if _digest_or_none(_ensure_contained(repo, source)) == operation["before_sha256"]:
+                expected[identifier].add(source)
+            if _digest_or_none(_ensure_contained(repo, destination)) == operation["after_sha256"]:
+                expected[identifier].add(destination)
+        elif op == "file_delete":
+            relative = operation["path"]
+            if _digest_or_none(_ensure_contained(repo, relative)) is not None:
+                expected[identifier].add(relative)
+    actual = _artifact_id_paths(repo, identifiers)
+    for identifier in sorted(identifiers):
+        expected_paths = sorted(expected[identifier])
+        if actual[identifier] != expected_paths:
+            raise ContextError(
+                "duplicate_id",
+                "target artifact id changed or is duplicated at apply time",
+                {"id": identifier, "paths": actual[identifier], "expected_paths": expected_paths},
+                EXIT_INTEGRITY,
+            )
 
 
 def build_rename_bundle(repo: pathlib.Path, identifier: str, filename: str) -> dict[str, Any]:
@@ -3393,36 +3487,40 @@ def build_observation_discard_bundle(repo: pathlib.Path, identifier: str) -> dic
     return build_discard_bundle(repo, identifier)
 
 
-def _discover_area_specs(repo: pathlib.Path) -> list[tuple[dict[str, Any], str, str]]:
+def _recoverable_builtin_area_specs(repo: pathlib.Path) -> list[tuple[dict[str, Any], str, str]]:
     context_root = _ensure_contained(repo, "context")
     if not context_root.is_dir() or context_root.is_symlink():
         raise ContextError("path_invalid", "context root must be a safe directory", {"path": "context"}, EXIT_INTEGRITY)
     specs: list[tuple[dict[str, Any], str, str]] = []
-    with os.scandir(context_root) as entries:
-        for entry in entries:
-            if entry.is_symlink():
-                raise ContextError("path_invalid", "context root contains a symlink", {"path": f"context/{entry.name}"}, EXIT_INTEGRITY)
-            if not entry.is_dir(follow_symlinks=False):
-                continue
-            area = entry.name
-            if not AREA_NAME.fullmatch(area):
-                raise ContextError("path_invalid", "context area directory is not canonical", {"path": f"context/{area}"}, EXIT_INTEGRITY)
-            relative = f"context/{area}/{area}.index.md"
-            path = _ensure_contained(repo, relative)
-            if not path.is_file() or path.is_symlink():
-                raise ContextError("index_seed_required", "area index metadata is required to rebuild the root index", {"path": relative}, EXIT_INTEGRITY)
-            metadata = _parse_area_index_metadata(path.read_text(encoding="utf-8"))
-            if metadata["area"] != area:
-                raise ContextError("area_index_mismatch", "area index metadata differs from its directory", {"path": relative}, EXIT_INTEGRITY)
-            row = {
-                "area": area,
-                "path": relative,
-                "owner": metadata["owner"],
-                "claims": [area],
-                "artifact_schema": metadata["artifact_schema"],
-                "authority": metadata["authority"],
-            }
-            specs.append((row, _area_label(area), metadata["summary"]))
+    for expected, label, _ in _builtin_area_specs():
+        relative = expected["path"]
+        path = _ensure_contained(repo, relative)
+        if not path.is_file() or path.is_symlink():
+            raise ContextError(
+                "index_seed_required",
+                "all canonical builtin area indexes are required to rebuild a missing root index",
+                {"path": relative},
+                EXIT_INTEGRITY,
+            )
+        metadata = _parse_area_index_metadata(path.read_text(encoding="utf-8"))
+        if (
+            metadata["area"],
+            metadata["owner"],
+            metadata["artifact_schema"],
+            metadata["authority"],
+        ) != (
+            expected["area"],
+            expected["owner"],
+            expected["artifact_schema"],
+            expected["authority"],
+        ):
+            raise ContextError(
+                "area_index_mismatch",
+                "builtin area index metadata is not authoritative enough to rebuild the root catalog",
+                {"path": relative},
+                EXIT_INTEGRITY,
+            )
+        specs.append((expected, label, metadata["summary"]))
     return sorted(specs, key=lambda item: item[0]["area"])
 
 
@@ -3437,7 +3535,7 @@ def repair_derived_indexes(repo: pathlib.Path) -> dict[str, Any]:
     with _root_lock(repo):
         root_path = repo / ROOT_INDEX
         if not root_path.is_file():
-            specs = _discover_area_specs(repo)
+            specs = _recoverable_builtin_area_specs(repo)
             if not specs:
                 raise ContextError("context_root_missing", "context root has no recoverable area indexes", exit_code=EXIT_NOT_FOUND)
             _atomic_write(root_path, render_root_index(_root_seed(), specs))
@@ -3461,14 +3559,10 @@ def repair_derived_indexes(repo: pathlib.Path) -> dict[str, Any]:
                 _atomic_write(repo / relative, rendered)
                 changed.append(relative)
 
-        root_warning_codes = {
-            "root_index_drift",
-            "reserved_index_missing",
-            "area_index_mismatch",
-        }
-        if any(warning.get("code") in root_warning_codes for warning in diagnostic["warnings"]):
-            specs = _discover_area_specs(repo)
-            rendered_root = render_root_index(_root_seed(), specs)
+        warning_codes = {warning.get("code") for warning in diagnostic["warnings"]}
+        if "root_index_drift" in warning_codes and "area_index_mismatch" not in warning_codes:
+            specs = [_registered_area_spec(repo, row) for row in catalog]
+            rendered_root = render_root_index(root_path.read_text(encoding="utf-8"), specs)
             if _digest_or_none(root_path) != sha256_bytes(file_bytes(rendered_root)):
                 _atomic_write(root_path, rendered_root)
                 changed.append(ROOT_INDEX)
@@ -3920,6 +4014,7 @@ def _validate_bundle(repo: pathlib.Path, bundle: dict[str, Any], approved_digest
         ):
             raise ContextError("plan_preview_mismatch", "final plan is not bound to its owner result", exit_code=EXIT_CONFLICT)
         _area_for_owner(repo, plan["owner_descriptor"]["kind"], plan["owner"])
+        _validate_target_artifact_ids(repo, non_index, owner_result["effects"])
         validation = plan.get("owner_validation")
         if owner_result["owner"] != "context-core":
             if not isinstance(validation, dict):

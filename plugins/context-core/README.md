@@ -9,7 +9,7 @@
 3. `$context-core:init`을 한 번 호출하면 canonical storage seed와 활성 host의 관리형 운영지침을 core coordinator가 적용합니다.
 4. 반환된 `doctor.repository_state: ready`, `policy.target`과 phase result를 확인합니다. ready 재호출은 noop입니다.
 
-`schema`와 `capabilities`는 repository root 없이 확인할 수 있습니다. `doctor`는 read-only이며 `context-common/v2`, `repository_state`, `issues`, `warnings`를 보고합니다. 저장소가 아직 초기화되지 않은 read operation은 dependency 오류가 아닌 `context_root_missing`으로 실패합니다. `init`은 absent에서 fixed root/SNAP/OBS seed와 `codex → AGENTS.md`, `claude-code → CLAUDE.md` 관리형 block만 직접 적용합니다. populated repository에서 root index만 없으면 area metadata로 rebuild하고, legacy artifact/index warning은 init을 막지 않습니다. init target의 incompatible schema/owner/path는 덮어쓰지 않습니다.
+`schema`와 `capabilities`는 repository root 없이 확인할 수 있습니다. `doctor`는 read-only이며 `context-common/v2`, `repository_state`, `issues`, `warnings`를 보고합니다. 저장소가 아직 초기화되지 않은 read operation은 dependency 오류가 아닌 `context_root_missing`으로 실패합니다. `init`은 absent에서 fixed root/SNAP/OBS seed와 `codex → AGENTS.md`, `claude-code → CLAUDE.md` 관리형 block만 직접 적용합니다. populated repository에서 root index만 없으면 exact built-in SNAP/OBS metadata로 rebuild하고 미등록 area는 자동 claim하지 않으며, legacy artifact/index warning은 init을 막지 않습니다. init target의 incompatible schema/owner/path는 덮어쓰지 않습니다.
 
 ## 제품 흐름
 

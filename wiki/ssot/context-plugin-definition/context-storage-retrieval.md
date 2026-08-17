@@ -197,11 +197,11 @@ query는 Unicode NFKC+casefold 후 공백·구두점 token으로 나누고 중�
 | query token별 가장 강한 match | title substring 8, term substring 6, summary substring 3, path substring 1 |
 | 모든 query token 포함 | +10 |
 
-non-empty query는 unique query token의 절반 이상(`ceil(N/2)`)을 match해야 한다. strong match(title·term·summary)가 하나라도 있으면 path-only 후보는 cutoff한다. 그 뒤 tie-break는 `score DESC → created_at DESC → id ASC`다. query가 없으면 모든 filter 통과 item의 score는 0이므로 최신순 listing이 된다. 기본 `limit=8`, 최대 20이다.
+non-empty query는 unique query token의 `min(2, ceil(N/2))` 이상을 match해야 한다. 긴 자연어 query의 filler token 때문에 강한 2-token match를 버리지 않으면서 단일 우연 match는 줄이는 bounded cutoff다. strong match(title·term·summary)가 하나라도 있으면 path-only 후보는 cutoff한다. 그 뒤 tie-break는 `score DESC → created_at DESC → id ASC`다. query가 없으면 모든 filter 통과 item의 score는 0이므로 최신순 listing이 된다. 기본 `limit=8`, 최대 20이다.
 
 Stage 1은 `id, kind, state, title, summary, path, authority`와 owner가 명시한 작은 facet만 반환한다. decision plugin은 `--facet scope=... --facet decision_key=...`를 사용하고 필요하면 후보 안에서 domain ranking을 적용한다. `search_terms` 전체와 index 원문을 model prompt에 노출하지 않는다.
 
-exact ID read도 root→area index의 `id→path`를 먼저 사용한다. healthy index의 `snapshot load`와 `observation read`는 선택한 artifact 본문 하나만 parse한다. `rename`과 `discard`도 같은 resolver로 target을 고르고, write 경계의 duplicate ID 검사는 다른 artifact의 frontmatter ID만 확인한다. index가 unreadable하거나 ID/path/schema가 어긋나면 그때만 canonical area를 scan하고 결과에 `index_lookup_fallback` warning을 붙인다. `discard`의 inbound relation 검사는 별도 write safety scan이므로 유지한다.
+exact ID read도 root→area index의 `id→path`를 먼저 사용한다. healthy index의 `snapshot load`와 `observation read`는 선택한 artifact 본문 하나만 parse하며 SNAP anchor freshness도 다른 본문 대신 index state/path로 계산한다. stale anchor index만 scan fallback한다. `rename`과 `discard`도 같은 resolver로 target을 고르고, write 경계의 duplicate ID 검사는 다른 artifact의 frontmatter ID만 확인한다. index가 unreadable하거나 ID/path/schema가 어긋나면 그때만 canonical area를 scan하고 결과에 `index_lookup_fallback` warning을 붙인다. `discard`의 inbound relation 검사는 별도 write safety scan이므로 유지한다.
 
 `snapshot load`와 `observation read`의 `--max-bytes`는 1..32768 범위에서 complete result object를 제한한다. metadata envelope를 보존한 뒤 section을 순서대로 채우고 마지막 section prefix만 UTF-8 JSON byte budget에 맞춰 자른다. 잘리면 `truncated:true`, `full_read_hint`를 반환한다. metadata envelope 자체보다 작은 budget은 잘못된 usage로 거부한다.
 
@@ -214,7 +214,7 @@ normal read path는 다음 상태만 즉시 stale index로 판정한다.
 
 healthy-index Stage 1의 positive match는 root index와 area index 외에 directory listing, artifact stat/open을 수행하지 않는다. area index 자체가 파손됐거나 선택된 entry load에서 누락이 확인되거나 non-empty query가 zero-match이면 그때만 해당 area directory를 frontmatter scan해 fallback하고 `index_fallback: true`와 원인을 반환한다. zero-match fallback은 out-of-band missing row를 회수하기 위한 bounded 예외다. root index 자체가 없으면 storage-level `context_root_missing`이며 recall이 임의 folder scan으로 root catalog를 추측하지 않는다. read operation은 index를 자동 수정하지 않는다. `--strict-index`는 fallback 없이 exit 6으로 실패한다. out-of-band 신규·rename·frontmatter 변경과 전체 path-set 불일치는 plain `refresh`가 전수 진단한다. addon user-facing preflight는 exact core plugin identity/protocol과 repository `absent`만 전역 gate로 쓰며 partial/invalid 진단은 실제 operation target과 겹칠 때 해당 command가 중단한다.
 
-`refresh --fix index`는 root lock 아래 문서를 정본으로 derived area/root index를 즉시 rebuild한다. approval bundle이나 `transaction apply`는 사용하지 않는다. 승인된 capture/mutation transaction도 자기 target area index의 exact before/after material만 갱신한다. 어떤 경로도 artifact 본문·lifecycle을 index로 덮어쓰지 않는다.
+`refresh --fix index`는 root lock 아래 문서를 정본으로 derived area entry와 기존 root의 generated display row를 즉시 rebuild한다. 기존 root descriptor와 marker 밖 사람 bytes를 보존하고, area metadata mismatch·미등록 area를 root authority로 승격하지 않는다. root가 유실된 populated core는 exact built-in SNAP/OBS descriptor만 복구하며 addon 등록을 추측하지 않는다. approval bundle이나 `transaction apply`는 사용하지 않는다. 승인된 capture/mutation transaction도 자기 target area index의 exact before/after material만 갱신하고, target root descriptor와 area metadata가 어긋나면 중단한다. 어떤 경로도 artifact 본문·lifecycle을 index로 덮어쓰지 않는다.
 
 ### 단일 writer와 mutation plan
 

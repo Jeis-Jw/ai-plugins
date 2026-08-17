@@ -346,7 +346,7 @@ route 결과는 사용자에게 한 번의 grouped proposal로 제시한다. 제
 - type 변경·권위 상승·OBS fallback→DEC import는 각각 명시 승인이 필요하다.
 - 거절·보류 candidate를 영속 ledger에 저장하지 않는다. 같은 세션에서는 새 근거 없이 재제안하지 않는다.
 - grouped approval은 UX 단위이지 multi-artifact atomic transaction이 아니다. final bundle은 proposal 순서와 `prior_bundle_digests`를 plan에 결박한다. 승인된 bundle을 같은 순서로 `transaction apply`하고 각 apply가 자기 root lock/precondition을 가진다. batch receipt는 item별 `applied|failed|not_attempted`, plan ID, changed paths를 묶는다. 한 item 실패 뒤 나머지는 실행하지 않으며 이미 성공한 item은 rollback하지 않는다. 남은 item은 current state에서 새 preview/digest가 필요하다. owner는 filesystem을 직접 쓰지 않는다.
-- capture뿐 아니라 rename, metadata annotate, reverify, invalidate/withdraw, supersede, discard와 index fix도 durable mutation이다. 사용자가 현재 요청에서 exact target·action·모든 새 값/lifecycle effect를 명시하면 그 범위의 승인으로 인정할 수 있고, 그렇지 않으면 preview digest 승인이 필요하다. autonomous audit/maintenance는 `transaction apply`를 호출할 수 없다.
+- capture뿐 아니라 rename, metadata annotate, reverify, invalidate/withdraw, supersede와 discard는 durable artifact mutation이다. 사용자가 현재 요청에서 exact target·action·모든 새 값/lifecycle effect를 명시하면 그 범위의 승인으로 인정할 수 있고, 그렇지 않으면 preview digest 승인이 필요하다. autonomous audit/maintenance는 `transaction apply`를 호출할 수 없다. `refresh --fix index`는 artifact/lifecycle을 건드리지 않는 derived projection repair라 approval 없이 즉시 실행한다.
 - complete preview가 32 KiB를 넘으면 핵심 section을 truncate하지 않고 `approval_preview_too_large`로 실패시켜 candidate를 나눈다.
 
 ### Recall budget

@@ -277,6 +277,42 @@ class TransactionCoordinatorTests(unittest.TestCase):
             self.assertEqual(polluted_before, polluted.read_bytes())
             self.assertEqual("invalid", context_cli.doctor_repository(repo)["repository_state"])
 
+    def test_write_rechecks_duplicate_id_and_target_area_authority(self) -> None:
+        with git_repo() as temp:
+            repo = Path(temp)
+            initialize(repo)
+            result = observation_owner_result()
+            preview = context_cli.finalize_owner_result(repo, result)
+            duplicate = repo / "context/observation/unindexed-duplicate.md"
+            duplicate.write_text(result["artifact_drafts"][0]["content"], encoding="utf-8")
+            before = tree_digest(repo)
+
+            with self.assertRaises(context_cli.ContextError) as caught:
+                context_cli.apply_bundle(repo, preview["bundle"], preview["approval_digest"])
+            self.assertEqual("duplicate_id", caught.exception.code)
+            self.assertEqual(before, tree_digest(repo))
+
+        with git_repo() as temp:
+            repo = Path(temp)
+            initialize(repo)
+            root_index = repo / context_cli.ROOT_INDEX
+            root_before = root_index.read_bytes()
+            area_index = repo / "context/observation/observation.index.md"
+            area_index.write_text(
+                area_index.read_text(encoding="utf-8").replace(
+                    'owner: "context-core"', 'owner: "untrusted-owner"'
+                ),
+                encoding="utf-8",
+            )
+            repaired = context_cli.repair_derived_indexes(repo)
+            self.assertFalse(repaired["applied"])
+            self.assertIn("area_index_mismatch", {warning["code"] for warning in repaired["warnings"]})
+            self.assertEqual(root_before, root_index.read_bytes())
+
+            with self.assertRaises(context_cli.ContextError) as caught:
+                context_cli.finalize_owner_result(repo, observation_owner_result())
+            self.assertEqual("area_index_mismatch", caught.exception.code)
+
     def test_explicit_init_resumes_exact_core_prefix_after_interruption(self) -> None:
         with git_repo() as temp:
             repo = Path(temp)
@@ -328,6 +364,14 @@ class TransactionCoordinatorTests(unittest.TestCase):
             root_index.write_text(
                 root_index.read_text(encoding="utf-8").replace(
                     " — Snapshot: session handoff staging ", " — Corrupted: session handoff staging "
+                ) + "\nOwner-maintained recovery note.\n",
+                encoding="utf-8",
+            )
+            rogue = repo / "context/rogue"
+            rogue.mkdir()
+            (rogue / "rogue.index.md").write_text(
+                context_cli._area_seed(
+                    "rogue", "untrusted-owner", "context-rogue/v1", "evidence", "must stay unregistered"
                 ),
                 encoding="utf-8",
             )
@@ -340,6 +384,10 @@ class TransactionCoordinatorTests(unittest.TestCase):
             repaired = context_cli.repair_derived_indexes(repo)
             self.assertTrue(repaired["applied"])
             self.assertEqual([], repaired["warnings"])
+            repaired_root = root_index.read_text(encoding="utf-8")
+            self.assertIn("Owner-maintained recovery note.", repaired_root)
+            _, areas = context_cli.parse_root_index(repaired_root)
+            self.assertEqual(["observation", "snapshot"], [area["area"] for area in areas])
 
     def test_explicit_init_rejects_noncanonical_empty_directory_prefix(self) -> None:
         with git_repo() as temp:

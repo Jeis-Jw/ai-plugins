@@ -282,6 +282,7 @@ class StorageIndexTests(unittest.TestCase):
             initialize(repo)
             snapshot_id = "ctx_550e8400e29b41d4a716446655440010"
             observation_id = "ctx_550e8400e29b41d4a716446655440011"
+            discard_id = "ctx_550e8400e29b41d4a716446655440012"
             snapshot_path = repo / "context/snapshot/handoff.md"
             snapshot_path.write_text(
                 context_cli.render_document(
@@ -292,6 +293,7 @@ class StorageIndexTests(unittest.TestCase):
                         "summary": "index-first snapshot fixture",
                         "created_at": "2026-08-13T18:20:00+09:00",
                         "captured_from": "workspace",
+                        "anchors": [observation_id],
                     },
                     {"현재 맥락": "selected snapshot body", "열린 항목": "open", "다음 단계": "next"},
                 ),
@@ -302,12 +304,21 @@ class StorageIndexTests(unittest.TestCase):
                 observation(observation_id, "indexed observation", "selected observation body"),
                 encoding="utf-8",
             )
+            (repo / "context/observation/discardable.md").write_text(
+                observation(discard_id, "discardable observation", "unanchored observation body"),
+                encoding="utf-8",
+            )
             refresh_area(repo, "snapshot")
             refresh_area(repo, "observation")
 
-            with mock.patch.object(context_cli, "_scan_area_paths", side_effect=AssertionError("full scan")):
+            with (
+                mock.patch.object(context_cli, "_scan_area_paths", side_effect=AssertionError("full scan")),
+                mock.patch.object(context_cli, "parse_document", wraps=context_cli.parse_document) as parsed,
+            ):
                 loaded = context_cli.snapshot_load(repo, snapshot_id)
+                self.assertEqual(1, parsed.call_count)
                 read = context_cli.observation_read(repo, observation_id)
+                self.assertEqual(2, parsed.call_count)
             self.assertEqual("selected snapshot body", loaded["sections"]["현재 맥락"])
             self.assertEqual("workspace fixture evidence", read["sections"]["근거"])
             self.assertEqual([], loaded["warnings"])
@@ -329,7 +340,7 @@ class StorageIndexTests(unittest.TestCase):
             fallback = context_cli.observation_read(repo, observation_id)
             self.assertIn("index_lookup_fallback", fallback["warnings"])
             rename = context_cli.build_rename_bundle(repo, observation_id, "renamed.md")
-            discard = context_cli.build_discard_bundle(repo, observation_id)
+            discard = context_cli.build_discard_bundle(repo, discard_id)
             self.assertIn("index_lookup_fallback", rename["warnings"])
             self.assertIn("index_lookup_fallback", discard["warnings"])
 
@@ -358,6 +369,8 @@ class StorageIndexTests(unittest.TestCase):
             result = context_cli.recall_repository(repo, query="결제 재시도")
             self.assertEqual([relevant_id, partial_id], [item["id"] for item in result["items"]])
             self.assertGreater(result["items"][0]["score"], result["items"][1]["score"])
+            filler_query = context_cli.recall_repository(repo, query="결제 재시도 관련 문서 찾아줘")
+            self.assertEqual([relevant_id], [item["id"] for item in filler_query["items"]])
 
     def test_snapshot_load_and_observation_read_enforce_byte_budget(self) -> None:
         with git_repo() as temp:

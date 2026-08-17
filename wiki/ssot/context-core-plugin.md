@@ -17,7 +17,7 @@ affects_paths: [plugins/context-core/**]
 |---|---|---|---|
 | 제품 취지·domain 경계 | 확정 | 이 SSOT, [[context-plugin-definition]], [[context-capture-routing]], active fingerprint 제거 v2 결정 | 실제 사용에서 recall/capture 제안이 충분히 유용한지는 계속 관찰 필요 |
 | core source·공개 계약 | 구현 | `plugins/context-core/**`, `context-common/v2`, 0.2.0 manifests | 0.1.x와 wire/storage 호환 없음 |
-| deterministic 검증 | 통과 | 이 변경 worktree에서 `python3 -m unittest discover`로 `context-core` 72 tests, `context-v1` 26 tests, `context-decision` 34 tests를 실측했고 repo-root `pytest`로 decision 34 tests+14 subtests를 확인 | test는 실제 장기 대화의 의미 품질을 대신하지 않음 |
+| deterministic 검증 | 통과 | 이 변경 worktree에서 `python3 -m unittest discover`로 `context-core` 73 tests, `context-v1` 26 tests, `context-decision` 34 tests를 실측했고 repo-root `pytest`로 decision 34 tests+14 subtests를 확인 | test는 실제 장기 대화의 의미 품질을 대신하지 않음 |
 | index 효율성 | 구현·계측 | Stage 1 synthetic explicit/cross-area query에서 artifact open/read/stat와 artifact directory listing 0, bounded output 검증 | 대규모 실제 corpus의 recall precision/false negative는 별도 측정 필요 |
 | Codex 설치본 실행 | 부분 운영 검증 | 현재 Codex skill catalog에서 0.2.0이 발견되고 `capabilities --json` 실행 성공 | client별 설치·reload·upgrade UX의 반복 검증은 부족 |
 | Claude Code·Linux | 미확인 | static contract와 platform test만 존재 | 실제 host inventory와 live filesystem flow 필요 |
@@ -226,7 +226,7 @@ error JSON은 `{"ok":false,"error":{"code":"...","message":"...","details":{...}
 }
 ```
 
-`repository_state` enum은 `absent|ready|partial|invalid`다. `absent`는 `context/` 자체가 없는 상태다. populated `context/`에서 root index만 없으면 `partial`+`index_missing` warning으로 판정하고 explicit init이 area index metadata로 root catalog를 복구한다. `ready`는 blocking issue가 없다는 뜻이며 legacy field·derived index drift warning을 포함할 수 있다. addon preflight는 exact core identity/protocol과 `absent`만 전역 검사하고, `partial|invalid` 진단은 실제 operation target과 겹칠 때 해당 command가 중단한다. Plugin의 marketplace/source/enabled 여부는 filesystem CLI가 주장하지 않고 host plugin inventory가 검증한다.
+`repository_state` enum은 `absent|ready|partial|invalid`다. `absent`는 `context/` 자체가 없는 상태다. populated `context/`에서 root index만 없으면 `partial`+`index_missing` warning으로 판정하고 explicit init이 exact built-in SNAP/OBS area metadata로 root catalog를 복구한다. 미등록 area를 추측 등록하지 않는다. `ready`는 blocking issue가 없다는 뜻이며 legacy field·derived index drift warning을 포함할 수 있다. addon preflight는 exact core identity/protocol과 `absent`만 전역 검사하고, `partial|invalid` 진단은 실제 operation target과 겹칠 때 해당 command가 중단한다. Plugin의 marketplace/source/enabled 여부는 filesystem CLI가 주장하지 않고 host plugin inventory가 검증한다.
 
 ### SNAP schema
 
@@ -313,7 +313,7 @@ OBS capture는 claim/evidence가 placeholder 또는 비어 있으면 실패한�
 
 ### Init과 policy
 
-`context_cli.py init --host codex|claude-code`은 한 번의 명시적 호출에서 fixed `core_init`과 활성 host의 `policy_install`을 coordinator로 적용한다. repository에 `context/`가 전혀 없으면 directory 자체는 operation이 아니며 apply가 file parent를 `mkdir(mode=0755, parents=True, exist_ok=True)`로 만들고 built-in complete root/SNAP/OBS index seed material을 canonical generator에 전달한다. 생성 가능한 parent는 exact `context/`, `context/snapshot/`, `context/observation/`, `context/observation/retired/` allowlist뿐이고 non-directory/symlink 충돌은 실패한다. index file apply 전에 crash해 생긴 빈 allowlist directory는 재실행에서 absent와 동등하게 취급한다. populated repository에서 root index만 없으면 기존 area index metadata로 root catalog를 즉시 rebuild한 뒤 계속한다. 세 built-in index descriptor가 일치하면 unrelated artifact warning/issue와 무관하게 core phase는 `noop`이고, incompatible schema/owner/path처럼 init target 자체를 안전하게 해석할 수 없는 경우만 `partial_core_init`으로 중단한다. schema major upgrade는 별도 migration 결정 없이는 수행하지 않는다.
+`context_cli.py init --host codex|claude-code`은 한 번의 명시적 호출에서 fixed `core_init`과 활성 host의 `policy_install`을 coordinator로 적용한다. repository에 `context/`가 전혀 없으면 directory 자체는 operation이 아니며 apply가 file parent를 `mkdir(mode=0755, parents=True, exist_ok=True)`로 만들고 built-in complete root/SNAP/OBS index seed material을 canonical generator에 전달한다. 생성 가능한 parent는 exact `context/`, `context/snapshot/`, `context/observation/`, `context/observation/retired/` allowlist뿐이고 non-directory/symlink 충돌은 실패한다. index file apply 전에 crash해 생긴 빈 allowlist directory는 재실행에서 absent와 동등하게 취급한다. populated repository에서 root index만 없으면 exact built-in SNAP/OBS descriptor만 root catalog로 즉시 rebuild한 뒤 계속하며, 미등록 addon/rogue area는 자동 claim하지 않는다. 세 built-in index descriptor가 일치하면 unrelated artifact warning/issue와 무관하게 core phase는 `noop`이고, incompatible schema/owner/path처럼 init target 자체를 안전하게 해석할 수 없는 경우만 `partial_core_init`으로 중단한다. schema major upgrade는 별도 migration 결정 없이는 수행하지 않는다.
 
 1. repository root의 `context/`, SNAP, OBS area와 세 semantic index의 `index_rebuild(include_root:true)`를 preview한다.
 2. 기존 사람 작성 index 설명과 일반 artifact를 보존한다.
@@ -363,7 +363,7 @@ capture audit의 claim result는 [[context-capture-routing]]의 complete artifac
 - 제거된 legacy artifact field (`schema_removed_field`); 다음 승인 rewrite에서 lazy-clean
 - derived index missing/ghost/wrong path·state/content와 root generated drift
 
-`doctor`와 plain `refresh`는 진단만 하며 write 0이다. artifact schema/lifecycle/ref 문제는 corpus 진단의 `issues`와 `repository_state:invalid`로 남지만 addon preflight나 unrelated target write의 전역 gate로 사용하지 않는다. 검색 projection 문제는 `warnings`다. `refresh --fix index`만 approval 없이 derived index를 rebuild한다. lifecycle, 본문과 relation은 자동 수정하지 않는다.
+`doctor`와 plain `refresh`는 진단만 하며 write 0이다. artifact schema/lifecycle/ref 문제는 corpus 진단의 `issues`와 `repository_state:invalid`로 남지만 addon preflight나 unrelated target write의 전역 gate로 사용하지 않는다. 검색 projection 문제는 `warnings`다. `refresh --fix index`만 approval 없이 derived entry와 기존 root의 generated display row를 rebuild하며 marker 밖 bytes와 authoritative root descriptor를 보존한다. area metadata mismatch와 미등록 area는 repair 대상이 아니고, lifecycle·본문·relation도 자동 수정하지 않는다.
 
 ### Core-only behavior
 
@@ -452,7 +452,7 @@ core가 제공해야 하는 결과는 “더 많이 기억함”이 아니라 �
 | 저장 일관성 | 단일 coordinator, root lock, CAS/atomic replace, document와 derived index 동시 수렴 | owner 직접 write, lost index row, partial lifecycle |
 | 검색 효율 | Stage 1 artifact I/O 0, output·pack·section byte budget 준수, query alias는 bounded metadata로 전달 | directory scan, corpus 크기만큼 artifact open, 의미 metadata 과적재 |
 | 초기화 UX | 명시적 init 한 번으로 storage와 active-host policy를 설치, 재호출 diff 0, 사용자 bytes/mode 보존 | init과 policy 수동 다단계, partial state overwrite, marker 밖 변경 |
-| 호환성·복구 | protocol mismatch와 legacy schema를 명시적으로 fail-closed하고 actionable migration 경계를 제공 | 혼합 버전을 ready로 오판, 구형 artifact를 조용히 변형 |
+| 호환성·복구 | protocol mismatch와 신규 write의 removed field는 fail-closed하고, 저장된 legacy field는 warning+승인 rewrite 시 lazy-clean한다 | 혼합 버전을 ready로 오판, 구형 artifact 때문에 read/init을 막거나 조용히 변형 |
 | 복잡도·비용 | stdlib/local default가 핵심 flow를 완결하고 새 abstraction은 측정된 병목을 해결 | 실사용 증거 없이 service/vector/runtime 계층 추가 |
 
 ### 평가 절차와 증거 우선순위
