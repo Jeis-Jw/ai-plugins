@@ -187,13 +187,20 @@ def classify_preflight(inventory, doctor, required_plugin):
         return {"code": "core_incompatible", "observed": observed}
 
     repository_state = doctor.get("repository_state")
+    if repository_state not in {"absent", "partial", "invalid", "ready"}:
+        raise InventoryContractError("repository_state_invalid")
     if repository_state == "absent":
         return {"code": "core_uninitialized", "observed": observed}
-    if repository_state in {"partial", "invalid"}:
-        return {"code": "partial_core_init", "observed": observed}
-    if repository_state != "ready":
-        raise InventoryContractError("repository_state_invalid")
-    return {"code": "ready", "observed": observed}
+    issues = doctor.get("issues", [])
+    warnings = doctor.get("warnings", [])
+    if not isinstance(issues, list) or not isinstance(warnings, list):
+        raise InventoryContractError("repository_diagnostics_invalid")
+    diagnostics = [
+        {"repository_state": repository_state, **item}
+        for item in [*issues, *warnings]
+        if isinstance(item, dict)
+    ]
+    return {"code": "ready", "observed": observed, "warnings": diagnostics}
 
 
 _MESSAGES = {
@@ -202,8 +209,7 @@ _MESSAGES = {
     "core_disabled": "exact context-core가 현재 scope에서 비활성이다.",
     "core_incompatible": "exact context-core가 context-common/v2 handshake를 통과하지 못했다.",
     "core_uninitialized": "exact core는 준비됐고 repository bootstrap이 필요하다.",
-    "partial_core_init": "repository context root가 partial 또는 invalid 상태다.",
-    "ready": "exact context-core와 repository가 준비됐다.",
+    "ready": "exact context-core가 준비됐다. repository 진단은 작업 대상과 겹칠 때만 차단한다.",
 }
 
 
@@ -235,11 +241,6 @@ def _manual_actions(code, required):
             "context-decision:init이 installed context-core public bootstrap surface를 호출한다.",
             "같은 명시적 호출에서 core init 뒤 decision area 등록을 계속한다.",
         ],
-        "partial_core_init": [
-            "context-core doctor의 issue/path를 확인한다.",
-            "context-core의 승인된 repair 절차로 수동 복구한다.",
-            "repository_state=ready 확인 뒤 context-decision:init을 다시 실행한다.",
-        ],
         "ready": [],
     }
     return actions[code]
@@ -254,7 +255,7 @@ def render_preflight(result, host, required_plugin):
     observed = result.get("observed")
     if not isinstance(observed, dict) or tuple(observed) != OBSERVED_FIELDS:
         raise InventoryContractError("preflight_result_invalid")
-    return {
+    rendered = {
         "code": result["code"],
         "host": host,
         "message": _MESSAGES[result["code"]],
@@ -263,6 +264,9 @@ def render_preflight(result, host, required_plugin):
         "manual_actions": _manual_actions(result["code"], required),
         "write_policy": {"repository": "none", "host_configuration": "none"},
     }
+    if result.get("warnings"):
+        rendered["warnings"] = copy.deepcopy(result["warnings"])
+    return rendered
 
 
 def _sha256(value):

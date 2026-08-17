@@ -69,7 +69,6 @@ load label:
 - anchors 전부 active면 `freshness: anchored`
 - anchor가 missing/retired/superseded면 `freshness: anchor_changed`와 warning
 - anchor가 없으면 `freshness: authority_unknown`
-- configured `snapshot_stale_days` 초과는 hygiene warning이며 자동 삭제하지 않는다.
 
 ### OBS — immutable evidence claim
 

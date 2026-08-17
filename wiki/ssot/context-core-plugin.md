@@ -17,11 +17,11 @@ affects_paths: [plugins/context-core/**]
 |---|---|---|---|
 | 제품 취지·domain 경계 | 확정 | 이 SSOT, [[context-plugin-definition]], [[context-capture-routing]], active fingerprint 제거 v2 결정 | 실제 사용에서 recall/capture 제안이 충분히 유용한지는 계속 관찰 필요 |
 | core source·공개 계약 | 구현 | `plugins/context-core/**`, `context-common/v2`, 0.2.0 manifests | 0.1.x와 wire/storage 호환 없음 |
-| deterministic 검증 | 통과 | `context-core` 63 tests, `context-v1` 26 tests, 교차 `context-decision` 34 tests, wiki integrity issue 0을 `c98623a`에서 확인 | test는 실제 장기 대화의 의미 품질을 대신하지 않음 |
+| deterministic 검증 | 통과 | 이 변경 worktree에서 `python3 -m unittest discover`로 `context-core` 69 tests, `context-v1` 26 tests, `context-decision` 34 tests를 실측 | test는 실제 장기 대화의 의미 품질을 대신하지 않음 |
 | index 효율성 | 구현·계측 | Stage 1 synthetic explicit/cross-area query에서 artifact open/read/stat와 artifact directory listing 0, bounded output 검증 | 대규모 실제 corpus의 recall precision/false negative는 별도 측정 필요 |
 | Codex 설치본 실행 | 부분 운영 검증 | 현재 Codex skill catalog에서 0.2.0이 발견되고 `capabilities --json` 실행 성공 | client별 설치·reload·upgrade UX의 반복 검증은 부족 |
 | Claude Code·Linux | 미확인 | static contract와 platform test만 존재 | 실제 host inventory와 live filesystem flow 필요 |
-| legacy consumer data | migration 필요 | 0.2.0 doctor가 제거된 fingerprint field와 불일치 index를 `invalid`로 fail-closed 판정 | 자동 migration tool은 구현·검증하지 않음 |
+| legacy consumer data | 점진 정리 | 제거된 fingerprint field는 `schema_removed_field` warning으로 읽고, 해당 artifact의 다음 승인 write에서 lazy-clean한다. index drift도 warning이며 즉시 rebuild 가능 | artifact 본문·lifecycle은 자동 수정하지 않음 |
 | GitHub 배포 표면 | source 공개 | 두 host manifest와 marketplace catalog가 0.2.0으로 정렬되고 `main@c98623a` push | tag·release artifact와 각 client UI 노출은 별도 상태 |
 
 이 표의 판정은 `verified_at` 시점의 snapshot이다. 다른 세션은 아래 평가 규칙에 따라 현재 code/runtime evidence를 다시 확인하고, 확인하지 않은 항목을 `완료`로 승격하지 않는다.
@@ -125,6 +125,7 @@ context_cli.py snapshot save --title TEXT --summary TEXT [--filename NAME]
                              --sec-context BODY --sec-open-items BODY --sec-next-steps BODY
                              [--sec-decided BODY] [--sec-refs BODY] [--sec-candidates BODY]
                              [--anchor ID]... [--source-ref REF]... [--tag TAG]...
+                             [--search-term TERM]...
                              [--json]
 context_cli.py snapshot update --id ID [--title TEXT] [--summary TEXT]
                                [--merge] [--sec-context BODY] [--sec-open-items BODY]
@@ -145,6 +146,7 @@ context_cli.py observation capture --title TEXT --summary TEXT [--filename NAME]
                                    --sec-observation BODY --sec-evidence BODY
                                    [--sec-impact BODY] [--sec-handling BODY] [--sec-followup BODY]
                                    [--kind-hint KIND] [--source-ref REF]... [--tag TAG]...
+                                   [--search-term TERM]...
                                    [--json]
 context_cli.py observation read --id ID [--section NAME]... [--max-bytes N] [--json]
 context_cli.py observation search --query TEXT [--include-history] [--limit N] [--json]
@@ -160,18 +162,18 @@ context_cli.py observation invalidate --id ID --reason TEXT
 context_cli.py observation supersede --id OLD --successor-result @file|@-
                                      --lifecycle-input @file
                                      --lifecycle-attestation @file [--json]
+context_cli.py observation discard --id ID [--json]
 
 context_cli.py rename --id ID --filename NAME [--json]
 context_cli.py discard --id ID [--json]
-context_cli.py refresh [--level integrity|hygiene|all] [--strict]
-                       [--fix index] [--json]
+context_cli.py refresh [--fix index] [--json]
 ```
 
 repository root의 `context/`가 유일한 v1 storage root이며 CLI에 `--root`는 없다. core-owned domain mutation과 init/area/policy 명령은 내부 final `context-mutation-bundle/v1` 검증을 통과한다. 명시적 `init`과 addon init의 `bootstrap`만 fixed `core_init|area_register|policy_install` bundle을 coordinator로 즉시 적용하고, 나머지는 exact digest 승인 뒤 `transaction apply`한다. addon owner result는 명시적으로 `transaction preview`에 전달한다. create ID와 `created_at`은 owner/core preview에서 한 번 생성되고 final bundle에 고정된다. caller는 final **동일 bundle object**를 보관해 `transaction apply --plan-bundle @file --approved-digest DIGEST`에 넘긴다. JSON whitespace 재직렬화는 허용하지만 apply 시 timestamp/ID/path/artifact content를 재생성하지 않는다.
 
 `snapshot save`는 create-only다. `snapshot update`는 기본 full replacement이므로 세 필수 section을 모두 요구하고, `--merge`일 때만 지정한 section·metadata를 부분 변경한다. repeatable list flag는 full replacement에서 해당 list 전체를 대체하고 merge에서 하나라도 주어졌을 때 전체를 대체한다. full replacement에서 생략한 optional list는 empty, merge에서 생략한 list는 unchanged다. list를 명시적으로 비우려면 `--clear anchors|tags|search_terms|source_refs`를 사용하며 required body list는 clear할 수 없다. `observation supersede`는 successor result를 검증해 new OBS create와 old OBS retirement를 하나의 plan으로 만든다. 이미 존재하는 successor ID만 연결하는 비원자 명령은 없다.
 
-`--successor-result`는 observation owner skill+`context_cli.py draft --kind observation`이 만든 complete claim result를 받으며 새 ID와 created_at이 고정된 artifact draft를 포함해야 한다. 먼저 `lifecycle prepare`가 current old artifact와 successor result의 owner-validated projection만으로 exact `context-lifecycle-semantic-input/v1`을 만든다. host는 그 object를 observation owner skill의 `same_claim` operation에 그대로 전달한다. supersede 명령은 successor result의 embedded claim input/attestation, byte-identical `--lifecycle-input`과 그 digest를 가리키는 `--lifecycle-attestation`을 검증해 두 lifecycle effect가 든 mutation variant를 내부 구성하고 `transaction preview`를 거친 final bundle을 반환한다. apply 전까지 세 단계 모두 filesystem write 0이다.
+`--successor-result`는 observation owner skill+`context_cli.py draft --kind observation`이 만든 complete claim result를 받으며 새 ID와 created_at이 고정된 artifact draft를 포함해야 한다. 먼저 `lifecycle prepare`가 current old artifact와 successor result의 owner-validated projection만으로 exact `context-lifecycle-semantic-input/v1`을 만든다. host는 그 object를 observation owner skill의 `same_claim` operation에 그대로 전달한다. supersede 명령은 successor result의 embedded claim input/attestation, canonical-JSON으로 동등한 `--lifecycle-input`과 그 digest를 가리키는 `--lifecycle-attestation`을 검증해 두 lifecycle effect가 든 mutation variant를 내부 구성하고 `transaction preview`를 거친 final bundle을 반환한다. apply 전까지 세 단계 모두 filesystem write 0이다.
 
 `lifecycle prepare`는 predecessor current bytes의 ID·path·SHA-256·실제 primary claim과 successor result의 같은 artifact identity·`semantic_projection`을 대조한다. 지원 transition 외에는 실패하고 semantic equality를 스스로 판정하지 않는다. 반환 input 전체가 attestation과 mutation result에 그대로 embedded되며 caller가 내용을 재작성하면 digest mismatch다.
 
@@ -184,13 +186,14 @@ CLI 표기의 `[--flag VALUE]...`는 repeatable option이다. `@file`은 UTF-8 f
 JSON success envelope은 `{"ok":true,"result":{...}}`다.
 
 - `capabilities`: `context-owner-capabilities/v1` envelope 안의 SNAP·OBS `context-owner-capability/v1` 두 개
-- `doctor`: read-only `context-core-doctor/v1`; supported protocol, repository state와 blocking issue를 반환하고 filesystem을 변경하지 않음
+- `doctor`: read-only `context-core-doctor/v1`; supported protocol, repository state, blocking `issues`와 non-blocking `warnings`를 반환하고 filesystem을 변경하지 않음
 - `draft`: owner skill의 attestation을 구조 검증하고 matching candidate와 input을 embedded해 render한 claim variant `context-owner-result/v1`; semantic claim/decline은 CLI가 수행하지 않음
 - `list/search/recall`: `items`, `returned`, `omitted`, `truncated`, `index_fallback`, `warnings`
 - `load/read`: exact `artifact` metadata, 요청한 `sections`, authority/freshness와 `truncated`
 - `lifecycle prepare`: exact `context-lifecycle-semantic-input/v1`, input digest, `applied:false`
 - `init`/`bootstrap`: `context-core-bootstrap-result/v1`, ordered `core_init|area_register|policy_install`의 `applied|noop` phase, changed paths, post-apply doctor와 host policy receipt
-- 일반 core domain mutation/`area register`/policy/index fix와 `transaction preview`: complete final `bundle`, `approval_preview`, `approval_digest`, `applied:false`
+- 일반 core domain mutation/`area register`/policy와 `transaction preview`: complete final `bundle`, `approval_preview`, `approval_digest`, `applied:false`
+- `refresh --fix index`: derived index만 root lock 아래 즉시 rebuild하고 `applied|noop`, `changed_paths`, 잔여 `issues|warnings`를 반환; approval bundle 없음
 - `transaction apply`: `applied:true`, `plan_id`, `approval_digest`, `changed_paths`, `index_paths`, `warnings`
 
 text mode는 사람이 읽는 projection일 뿐 host orchestration과 test는 JSON envelope만 계약으로 사용한다.
@@ -202,7 +205,6 @@ text mode는 사람이 읽는 projection일 뿐 host orchestration과 test는 JS
 | 0 | 성공 또는 정상 preview |
 | 2 | usage/schema/filename 오류 |
 | 3 | root/artifact not found |
-| 4 | read용 fuzzy ref가 ambiguous |
 | 5 | lifecycle/owner/path conflict |
 | 6 | integrity/index failure |
 
@@ -217,11 +219,12 @@ error JSON은 `{"ok":false,"error":{"code":"...","message":"...","details":{...}
   "supported_protocols": ["context-common/v2"],
   "repository_state": "ready",
   "root": "context/",
-  "issues": []
+  "issues": [],
+  "warnings": []
 }
 ```
 
-`repository_state` enum은 `absent|ready|partial|invalid`다. `absent`는 `context/` 또는 root index가 없는 상태이며 storage error `context_root_missing`에 대응한다. `ready`만 addon operational preflight를 통과한다. `partial|invalid`는 issue code와 path를 포함하고 자동 repair하지 않는다. Plugin의 marketplace/source/enabled 여부는 filesystem CLI가 주장하지 않고 host plugin inventory가 검증한다.
+`repository_state` enum은 `absent|ready|partial|invalid`다. `absent`는 `context/` 자체가 없는 상태다. populated `context/`에서 root index만 없으면 `partial`+`index_missing` warning으로 판정하고 explicit init이 area index metadata로 root catalog를 복구한다. `ready`는 blocking issue가 없다는 뜻이며 legacy field·derived index drift warning을 포함할 수 있다. addon preflight는 exact core identity/protocol과 `absent`만 전역 검사하고, `partial|invalid` 진단은 실제 operation target과 겹칠 때 해당 command가 중단한다. Plugin의 marketplace/source/enabled 여부는 filesystem CLI가 주장하지 않고 host plugin inventory가 검증한다.
 
 ### SNAP schema
 
@@ -308,7 +311,7 @@ OBS capture는 claim/evidence가 placeholder 또는 비어 있으면 실패한�
 
 ### Init과 policy
 
-`context_cli.py init --host codex|claude-code`은 한 번의 명시적 호출에서 fixed `core_init`과 활성 host의 `policy_install`을 coordinator로 적용한다. repository에 `context/`가 전혀 없으면 directory 자체는 operation이 아니며 apply가 file parent를 `mkdir(mode=0755, parents=True, exist_ok=True)`로 만들고 built-in complete root/SNAP/OBS index seed material을 canonical generator에 전달한다. 생성 가능한 parent는 exact `context/`, `context/snapshot/`, `context/observation/`, `context/observation/retired/` allowlist뿐이고 non-directory/symlink 충돌은 실패한다. index file apply 전에 crash해 생긴 빈 allowlist directory는 재실행에서 absent와 동등하게 취급한다. 세 index가 모두 valid v1이고 managed policy가 최신이면 전체 `noop:true`로 끝난다. fixed bundle의 정렬된 write 순서와 bytes가 일치하는 exact canonical prefix만 남은 index write를 재개한다. 그 밖의 일부 index, extra content, schema/owner 차이는 `partial_core_init`로 실패해 doctor 결과와 수동 repair를 요구하며 임의 overwrite하지 않는다. schema major upgrade는 별도 migration 결정 없이는 수행하지 않는다.
+`context_cli.py init --host codex|claude-code`은 한 번의 명시적 호출에서 fixed `core_init`과 활성 host의 `policy_install`을 coordinator로 적용한다. repository에 `context/`가 전혀 없으면 directory 자체는 operation이 아니며 apply가 file parent를 `mkdir(mode=0755, parents=True, exist_ok=True)`로 만들고 built-in complete root/SNAP/OBS index seed material을 canonical generator에 전달한다. 생성 가능한 parent는 exact `context/`, `context/snapshot/`, `context/observation/`, `context/observation/retired/` allowlist뿐이고 non-directory/symlink 충돌은 실패한다. index file apply 전에 crash해 생긴 빈 allowlist directory는 재실행에서 absent와 동등하게 취급한다. populated repository에서 root index만 없으면 기존 area index metadata로 root catalog를 즉시 rebuild한 뒤 계속한다. 세 built-in index descriptor가 일치하면 unrelated artifact warning/issue와 무관하게 core phase는 `noop`이고, incompatible schema/owner/path처럼 init target 자체를 안전하게 해석할 수 없는 경우만 `partial_core_init`으로 중단한다. schema major upgrade는 별도 migration 결정 없이는 수행하지 않는다.
 
 1. repository root의 `context/`, SNAP, OBS area와 세 semantic index의 `index_rebuild(include_root:true)`를 preview한다.
 2. 기존 사람 작성 index 설명과 일반 artifact를 보존한다.
@@ -341,29 +344,24 @@ addon init은 root index를 직접 수정하지 않는다. `context-decision:ini
 
 semantic owner는 schema·domain lifecycle을 검증하고 fully rendered after-content, effect와 proposed plan을 반환한다. context-core preview가 current byte precondition과 index rebuild를 붙인 final bundle을 만들고 coordinator만 root lock 아래 document/index를 실제 변경한다. cross-owner transition은 protocol allowlist에 있는 plan만 허용하며 현재 계약에서는 `decision_fallback_import` 하나다.
 
-capture audit의 claim result는 [[context-capture-routing]]의 complete artifact preview를 포함해야 한다. rename·annotate·reverify·invalidate·supersede·discard·index fix도 durable mutation이므로 사용자가 현재 요청에서 exact action·target·새 값과 lifecycle effect를 모두 명시했거나 preview digest를 승인한 경우에만 `transaction apply`할 수 있다. agent의 autonomous maintenance는 preview까지만 허용한다.
+capture audit의 claim result는 [[context-capture-routing]]의 complete artifact preview를 포함해야 한다. rename·annotate·reverify·invalidate·supersede·discard는 durable artifact mutation이므로 사용자가 현재 요청에서 exact action·target·새 값과 lifecycle effect를 모두 명시했거나 preview digest를 승인한 경우에만 `transaction apply`할 수 있다. `refresh --fix index`는 artifact를 정본으로 삼아 derived index만 즉시 rebuild하는 예외이며 artifact body·lifecycle bytes는 건드리지 않는다.
 
-### Integrity/hygiene
+### Integrity 진단과 write 경계
 
-blocking integrity:
+항상 blocking인 write 경계:
 
-- 예약 index 존재·schema·marker와 area/path 일치
+- 대상 artifact CAS byte 일치
+- 대상 area index before digest와 deterministic after material
 - global duplicate ID
-- artifact schema/필수 field/date/section
-- path traversal, symlink root escape, reserved filename
-- active/history path와 retired field 불일치
-- internal ref 누락, supersede reciprocal edge/cycle
-- index entry 누락·중복·wrong path/state
-- root area/owner/claim 중복
+- path traversal·symlink·reserved filename guard
+- exact approval digest, root lock, atomic replace와 replay 시 after-byte 재생성 0
 
-non-blocking hygiene:
+검색 품질 warning:
 
-- stale SNAP
-- OBS verified_at age 또는 changed affects_path
-- missing/changed anchor
-- 지나치게 긴 body, 검색 metadata 부족
+- 제거된 legacy artifact field (`schema_removed_field`); 다음 승인 rewrite에서 lazy-clean
+- derived index missing/ghost/wrong path·state/content와 root generated drift
 
-auto-fix는 derived index만 허용한다. lifecycle, 본문과 relation은 자동 수정하지 않는다.
+`doctor`와 plain `refresh`는 진단만 하며 write 0이다. artifact schema/lifecycle/ref 문제는 corpus 진단의 `issues`와 `repository_state:invalid`로 남지만 addon preflight나 unrelated target write의 전역 gate로 사용하지 않는다. 검색 projection 문제는 `warnings`다. `refresh --fix index`만 approval 없이 derived index를 rebuild한다. lifecycle, 본문과 relation은 자동 수정하지 않는다.
 
 ### Core-only behavior
 
@@ -381,7 +379,7 @@ auto-fix는 derived index만 허용한다. lifecycle, 본문과 relation은 자�
 - prefix/timestamp 없는 filename과 immutable `ctx_*` ID 생성
 - rename 뒤 ID/ref 보존, index path만 변경
 - Stage 1 instrument 시 root/area index 외 artifact read 0
-- Stage 1 instrument 시 directory listing과 artifact stat도 0; 전수 drift 검사는 strict refresh에서만 수행
+- Stage 1 instrument 시 positive index match에서 directory listing과 artifact stat도 0; zero-match 또는 stale selected link만 area scan fallback
 - SNAP save→merge→load→discard에서 created_at 보존·retired 생성 0
 - SNAP 여러 개를 독립 생성할 수 있고 각 ID만 update-in-place
 - OBS supersede 한 plan에서 successor 생성과 predecessor history 이동, 반복 supersede history path 충돌 0
@@ -463,7 +461,7 @@ core가 제공해야 하는 결과는 “더 많이 기억함”이 아니라 �
 4. wiki decision/SSOT로 의도와 rejected alternative를 확인한다.
 5. 과거 session memory는 후보 근거로만 사용하고 현재 code/runtime과 충돌하면 폐기한다.
 
-판정 보고에는 최소한 `기획`, `구현`, `운영 검증`, `배포`를 분리하고, 미확인 host·OS·migration·client UI를 명시한다. `refresh --strict` 통과는 구조 무결성 증거일 뿐 semantic freshness나 운영 readiness의 증거가 아니다.
+판정 보고에는 최소한 `기획`, `구현`, `운영 검증`, `배포`를 분리하고, 미확인 host·OS·migration·client UI를 명시한다. plain `refresh`의 `issues:[]`는 corpus 구조 진단 증거일 뿐 semantic freshness나 운영 readiness의 증거가 아니다.
 
 ### 개발 우선순위 판단
 

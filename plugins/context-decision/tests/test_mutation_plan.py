@@ -34,7 +34,7 @@ class MutationPlanTests(unittest.TestCase):
                 [("core_init", "ready"), ("area_register", "pending"), ("policy_install", "pending")],
                 [(phase["phase"], phase["status"]) for phase in result["phases"]],
             )
-            self.assertEqual("apply_if_absent", result["bootstrap"]["core_init"])
+            self.assertEqual("apply_if_needed", result["bootstrap"]["core_init"])
             self.assertEqual("active_host", result["bootstrap"]["host"])
             self.assertEqual("active_host", result["bootstrap"]["policy_install"])
             self.assertNotIn("context.index.md", result["index_seed"])

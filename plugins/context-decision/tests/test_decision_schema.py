@@ -188,12 +188,14 @@ def bundle(result: dict, *, validation: dict | None = None, priors: list[str] | 
 
 
 class DecisionSchemaTests(unittest.TestCase):
-    def test_removed_semantic_identity_fields_fail_closed(self) -> None:
+    def test_removed_artifact_fields_are_readable_and_lazy_cleaned(self) -> None:
         content = claim_result()["artifact_drafts"][0]["content"]
         for field in ("claim_fingerprint", "source_claim_fingerprint"):
-            with self.subTest(field=field), self.assertRaises(decision_cli.DecisionError) as caught:
-                decision_cli.parse_document(content.replace("schema: \"context-decision/v1\"\n", f"schema: \"context-decision/v1\"\n{field}: \"sha256:{'0' * 24}\"\n", 1))
-            self.assertEqual("schema_removed_field", caught.exception.code)
+            with self.subTest(field=field):
+                legacy = content.replace("schema: \"context-decision/v1\"\n", f"schema: \"context-decision/v1\"\n{field}: \"sha256:{'0' * 24}\"\n", 1)
+                frontmatter, sections = decision_cli.parse_document(legacy)
+                self.assertIn(field, frontmatter)
+                self.assertNotIn(field, decision_cli.render_document(frontmatter, sections))
 
             legacy_candidate = candidate()
             legacy_candidate[field] = "sha256:" + "0" * 24

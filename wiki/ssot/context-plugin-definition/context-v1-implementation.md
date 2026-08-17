@@ -207,7 +207,7 @@ agent skill과 deterministic router를 연결한다.
 | 36 | scope/key normalization | case/slash/space variants canonical slot·segment ancestor 일치 |
 | 37 | parallel capture | duplicate ID/lost index entry 0 |
 | 38 | crash between writes | changed move start/prepared/final 각 지점에서 exact bundle resume, doc 정본 보존, index_stale와 repair 성공 |
-| 39 | strict refresh | out-of-band 신규/rename/frontmatter drift 전수 검출 |
+| 39 | refresh diagnostics | out-of-band 신규/rename/frontmatter drift 전수 검출, derived index drift는 warning |
 | 40 | Obsidian graph | repository root vault에서 context.index→area index→artifact hub 구분 |
 | 41 | wrong-source/disabled/incompatible core | 각각 `core_source_mismatch|core_disabled|core_incompatible`, install/enable/update 자동 실행과 repository·host config write 0 |
 | 42 | exact core, repository absent | core init 단일 호출로 ready, 기존 content와 managed marker 밖 policy 보존 |
@@ -215,11 +215,11 @@ agent skill과 deterministic router를 연결한다.
 | 44 | decision init bootstrap | exact compatible installed core에서 absent core→decision area→host policy를 같은 호출로 완료, ready 재호출 noop |
 | 45 | bootstrap phase retry | core 성공 뒤 area 실패 phase 구조화, 재시도에서 core noop·area apply·policy apply로 수렴 |
 | 46 | pre-decision semantic check | related Current DEC의 actual 세 핵심 section과 artifact identity를 bounded하게 반환, write 0, five-relation contract 제공 |
-| 47 | removed claim identity field | 신규 artifact/projection/receipt에 의미 지문 0, legacy field 입력은 조용히 수락하지 않음 |
+| 47 | removed claim identity field | 신규 artifact/projection/receipt에 의미 지문 0, legacy artifact는 warning+승인 rewrite lazy-clean, candidate는 거부 |
 
-### Integrity release gate
+### Integrity 진단 gate
 
-`refresh --level integrity --strict`가 다음을 모두 잡아야 한다.
+plain `refresh`가 다음을 전수 진단해야 한다. command는 결과를 반환하며 corpus issue 때문에 자체 exit를 6으로 바꾸지 않는다.
 
 - missing/wrong reserved index, marker와 canonical JSON 오류
 - schema/area/path mismatch와 required field/section 오류
@@ -227,11 +227,11 @@ agent skill과 deterministic router를 연결한다.
 - active/history path와 retired metadata 불일치
 - supersede missing reciprocal edge, cycle와 illegal cross-kind predecessor
 - duplicate current decision slot
-- index missing/ghost/duplicate/wrong-state entry
+- index missing/ghost/duplicate/wrong-state entry는 `warnings`
 - duplicate area/claim owner
 - symlink/path traversal root escape
 
-hygiene warning은 release를 막지 않는다. auto-fix는 derived index 외 금지한다.
+legacy removed field와 derived index drift는 `warnings`이며 `repository_state`를 invalid로 만들지 않는다. `refresh --fix index`는 approval 없이 derived index만 즉시 고친다. artifact body·lifecycle auto-fix는 금지한다.
 
 ### Token·I/O evidence
 

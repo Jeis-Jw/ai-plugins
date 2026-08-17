@@ -39,7 +39,7 @@
     "scope_key_normalization": {"input": "case, slash, space and underscore variants", "expected": ["canonical_slot", "segment_ancestor_only"]},
     "parallel_capture": {"input": "two approved bundles applied concurrently", "expected": ["duplicate_id_zero", "lost_index_entry_zero"]},
     "crash_resume": {"input": "changed move start, prepared and final states", "expected": ["same_bundle_converges", "document_authority_preserved", "repair_succeeds"]},
-    "strict_refresh": {"input": "out-of-band add, rename and frontmatter edit", "expected": ["all_drift_detected", "document_not_overwritten"]},
+    "refresh_diagnostics": {"input": "out-of-band add, rename and frontmatter edit", "expected": ["all_drift_detected", "index_drift_warns", "document_not_overwritten"]},
     "obsidian_graph": {"input": "repository root opened as vault", "expected": ["root_to_area_to_artifact_hubs"]},
     "core_dependency_matrix": {"input": "wrong source, disabled and incompatible exact core", "expected": ["distinct_error_codes", "automatic_mutation_zero"]},
     "repository_absent": {"input": "exact core ready with absent context root", "expected": ["core_uninitialized", "installed_core_bootstrap", "decision_ready_same_call"]},
@@ -47,6 +47,6 @@
     "bootstrap_phase_retry": {"input": "core phase succeeds before area phase failure", "expected": ["structured_phases", "retry_converges", "user_content_preserved"]},
     "distribution_manifests": {"input": "Claude, Codex and marketplace manifests", "expected": ["dependency_fields_zero", "implicit_install_policy_zero"]},
     "pre_decision_semantic_check": {"input": "paraphrased candidate and related Current DEC", "expected": ["actual_core_sections", "five_relation_contract", "write_zero"]},
-    "removed_claim_identity_surrogates": {"input": "legacy claim identity field on artifact or capture candidate", "expected": ["schema_removed_field", "silent_accept_zero"]}
+    "removed_claim_identity_surrogates": {"input": "legacy claim identity field on artifact or capture candidate", "expected": ["artifact_warning", "authorized_lazy_clean", "candidate_rejected"]}
   }
 }

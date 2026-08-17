@@ -101,25 +101,30 @@ def refresh_area(repo: Path, area: str) -> None:
     index.write_text(context_cli.render_area_index_from_repository(repo, area), encoding="utf-8")
 
 
-def strict_codes(repo: Path) -> set[str]:
-    result = context_cli.refresh_repository(repo, strict=True)
-    if result["ok"]:
-        raise AssertionError("negative strict-integrity fixture unexpectedly passed")
-    return {issue["code"] for issue in result["issues"]}
+def diagnostic_codes(repo: Path) -> set[str]:
+    result = context_cli.refresh_repository(repo)
+    return {item["code"] for item in [*result["issues"], *result["warnings"]]}
+
+
+def with_legacy_field(content: str, field: str) -> str:
+    return content.replace(
+        'schema: "context-observation/v1"\n',
+        f'schema: "context-observation/v1"\n{field}: "sha256:{"0" * 24}"\n',
+        1,
+    )
 
 
 class StorageIndexTests(unittest.TestCase):
-    def test_acceptance_47_removed_semantic_identity_fields_fail_closed(self) -> None:
+    def test_acceptance_47_removed_artifact_fields_warn_and_lazy_clean(self) -> None:
         for field in ("claim_fingerprint", "source_claim_fingerprint"):
-            with self.subTest(field=field), self.assertRaises(context_cli.ContextError) as caught:
-                context_cli.parse_document(
-                    artifact(
-                        "context-observation/v1",
-                        "ctx_550e8400e29b41d4a716446655440000",
-                        extra={field: "sha256:" + "0" * 24},
-                    )
+            with self.subTest(field=field):
+                legacy = with_legacy_field(
+                    artifact("context-observation/v1", "ctx_550e8400e29b41d4a716446655440000"),
+                    field,
                 )
-            self.assertEqual("schema_removed_field", caught.exception.code)
+                parsed = context_cli.parse_document(legacy)
+                self.assertEqual(["schema_removed_field"], [warning["code"] for warning in parsed.warnings])
+                self.assertNotIn(field, context_cli.render_document(parsed.frontmatter, parsed.sections))
 
             candidate = {
                 "schema": "context-capture-candidate/v1",
@@ -301,7 +306,7 @@ evidence
         with self.assertRaises(context_cli.ContextError):
             context_cli.parse_document(unsupported)
 
-    def test_acceptance_39_strict_refresh_detects_drift(self) -> None:
+    def test_acceptance_39_refresh_reports_index_drift_as_warnings(self) -> None:
         with git_repo() as temp:
             repo = Path(temp)
             initialize(repo)
@@ -316,10 +321,109 @@ evidence
             third = area / "third.md"
             third.write_text(observation("ctx_550e8400e29b41d4a716446655440002", "셋 관찰", "third"), encoding="utf-8")
             second.write_text(second.read_text(encoding="utf-8").replace("둘 관찰", "변경된 관찰"), encoding="utf-8")
-            result = context_cli.refresh_repository(repo, strict=True)
-            codes = {issue["code"] for issue in result["issues"]}
+            result = context_cli.refresh_repository(repo)
+            codes = {warning["code"] for warning in result["warnings"]}
             self.assertTrue({"index_ghost_entry", "index_missing_entry", "index_content_drift"}.issubset(codes))
+            self.assertTrue(result["ok"])
             self.assertEqual(3, len(list(p for p in area.glob("*.md") if not p.name.endswith(".index.md"))))
+
+    def test_legacy_artifact_does_not_block_doctor_recall_init_or_capture(self) -> None:
+        with git_repo() as temp:
+            repo = Path(temp)
+            initialize(repo)
+            identifier = "ctx_550e8400e29b41d4a716446655440000"
+            legacy_path = repo / "context/observation/legacy.md"
+            legacy_path.write_text(
+                with_legacy_field(
+                    artifact("context-observation/v1", identifier, title="legacy searchable observation"),
+                    "claim_fingerprint",
+                ),
+                encoding="utf-8",
+            )
+            refresh_area(repo, "observation")
+
+            doctor = context_cli.doctor_repository(repo)
+            self.assertEqual("ready", doctor["repository_state"])
+            self.assertIn("schema_removed_field", {warning["code"] for warning in doctor["warnings"]})
+            recalled = context_cli.recall_repository(repo, query="legacy searchable observation", pack=True)
+            self.assertEqual([identifier], [item["id"] for item in recalled["items"]])
+            self.assertIn("schema_removed_field", recalled["warnings"])
+
+            initialized = context_cli.bootstrap_repository(repo, host="codex")
+            self.assertEqual("ready", initialized["doctor"]["repository_state"])
+
+            candidate = context_cli.direct_candidate(
+                "observation",
+                title="new capture",
+                summary="legacy sibling must not block this capture",
+                captured_from="workspace",
+                owner_inputs={"observation": "new reusable claim", "evidence": ["temp repo runtime fixture"]},
+            )
+            attestation = {
+                "schema": "context-semantic-attestation/v1",
+                "operation": "claim",
+                "input_schema": candidate["schema"],
+                "input_digest": context_cli.canonical_digest(candidate),
+                "assertions": [
+                    {"name": "reusable_observation", "value": True, "evidence_pointers": ["/owner_inputs/observation/observation"]},
+                    {"name": "evidence_present", "value": True, "evidence_pointers": ["/owner_inputs/observation/evidence/0"]},
+                ],
+            }
+            capture = context_cli.build_observation_capture_bundle(repo, candidate, attestation)
+            context_cli.apply_bundle(repo, capture["bundle"], capture["approval_digest"])
+
+            cleanup = context_cli.build_observation_annotate_bundle(repo, identifier, summary="legacy field lazy-cleaned")
+            context_cli.apply_bundle(repo, cleanup["bundle"], cleanup["approval_digest"])
+            self.assertNotIn("claim_fingerprint", legacy_path.read_text(encoding="utf-8"))
+            self.assertEqual([], context_cli.doctor_repository(repo)["warnings"])
+
+    def test_missing_index_row_falls_back_and_repairs_in_one_call(self) -> None:
+        with git_repo() as temp:
+            repo = Path(temp)
+            initialize(repo)
+            identifier = "ctx_550e8400e29b41d4a716446655440000"
+            artifact_path = repo / "context/observation/index-miss.md"
+            artifact_path.write_text(
+                artifact("context-observation/v1", identifier, title="index miss recovery"),
+                encoding="utf-8",
+            )
+            refresh_area(repo, "observation")
+            index_path = repo / "context/observation/observation.index.md"
+            index_path.write_text(
+                "\n".join(line for line in index_path.read_text(encoding="utf-8").splitlines() if "<!-- context-entry " not in line) + "\n",
+                encoding="utf-8",
+            )
+            artifact_before = artifact_path.read_bytes()
+
+            recalled = context_cli.recall_repository(repo, query="index miss recovery")
+            self.assertTrue(recalled["index_fallback"])
+            self.assertIn("index_miss_fallback", recalled["warnings"])
+            self.assertEqual([identifier], [item["id"] for item in recalled["items"]])
+            doctor = context_cli.doctor_repository(repo)
+            self.assertEqual("ready", doctor["repository_state"])
+            self.assertIn("index_missing_entry", {warning["code"] for warning in doctor["warnings"]})
+
+            repaired = context_cli.repair_derived_indexes(repo)
+            self.assertTrue(repaired["applied"])
+            self.assertEqual([], repaired["warnings"])
+            self.assertEqual("ready", context_cli.doctor_repository(repo)["repository_state"])
+            self.assertEqual(artifact_before, artifact_path.read_bytes())
+
+    def test_missing_at_file_uses_structured_error_envelope(self) -> None:
+        with git_repo() as temp:
+            completed = subprocess.run(
+                [
+                    "python3", str(CLI_PATH), "draft", "--kind", "observation",
+                    "--candidate", "@does-not-exist.json", "--attestation", "@does-not-exist.json", "--json",
+                ],
+                cwd=temp,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(3, completed.returncode)
+            self.assertEqual("", completed.stderr)
+            envelope = json.loads(completed.stdout)
+            self.assertEqual("input_unavailable", envelope["error"]["code"])
 
     def test_context_root_missing_is_storage_error(self) -> None:
         with git_repo() as temp:
@@ -342,7 +446,7 @@ class StrictIntegrityTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            self.assertIn("reserved_index_path", strict_codes(repo))
+            self.assertIn("reserved_index_path", diagnostic_codes(repo))
 
         with git_repo() as temp:
             repo = Path(temp)
@@ -350,7 +454,7 @@ class StrictIntegrityTests(unittest.TestCase):
             root = repo / context_cli.ROOT_INDEX
             lines = [line for line in root.read_text(encoding="utf-8").splitlines() if '"area":"observation"' not in line]
             root.write_text("\n".join(lines) + "\n", encoding="utf-8")
-            self.assertIn("reserved_index_missing", strict_codes(repo))
+            self.assertIn("reserved_index_missing", diagnostic_codes(repo))
 
         with git_repo() as temp:
             repo = Path(temp)
@@ -372,7 +476,7 @@ class StrictIntegrityTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            self.assertIn("index_self_entry", strict_codes(repo))
+            self.assertIn("index_self_entry", diagnostic_codes(repo))
 
     def test_group_02_markers_canonical_json_and_root_bytes(self) -> None:
         fixtures = (
@@ -401,7 +505,7 @@ class StrictIntegrityTests(unittest.TestCase):
                 initialize(repo)
                 path = repo / relative
                 path.write_text(mutate(path.read_text(encoding="utf-8")), encoding="utf-8")
-                self.assertIn(expected, strict_codes(repo))
+                self.assertIn(expected, diagnostic_codes(repo))
 
     def test_group_03_schema_area_path_fields_and_sections(self) -> None:
         cases: list[tuple[str, str]] = []
@@ -414,14 +518,14 @@ class StrictIntegrityTests(unittest.TestCase):
                 repo = Path(temp)
                 initialize(repo)
                 (repo / "context/observation/fixture.md").write_text(content, encoding="utf-8")
-                self.assertIn(expected, strict_codes(repo))
+                self.assertIn(expected, diagnostic_codes(repo))
 
         with git_repo() as temp:
             repo = Path(temp)
             initialize(repo)
             index = repo / "context/observation/observation.index.md"
             index.write_text(index.read_text(encoding="utf-8").replace('owner: "context-core"', 'owner: "other"'), encoding="utf-8")
-            self.assertIn("area_index_mismatch", strict_codes(repo))
+            self.assertIn("area_index_mismatch", diagnostic_codes(repo))
 
     def test_group_04_duplicate_id(self) -> None:
         with git_repo() as temp:
@@ -431,7 +535,7 @@ class StrictIntegrityTests(unittest.TestCase):
             for name in ("one.md", "two.md"):
                 (repo / f"context/observation/{name}").write_text(artifact("context-observation/v1", identifier), encoding="utf-8")
             refresh_area(repo, "observation")
-            self.assertIn("duplicate_id", strict_codes(repo))
+            self.assertIn("duplicate_id", diagnostic_codes(repo))
 
     def test_group_05_broken_internal_reference(self) -> None:
         with git_repo() as temp:
@@ -444,7 +548,7 @@ class StrictIntegrityTests(unittest.TestCase):
             )
             (repo / "context/observation/ref.md").write_text(content, encoding="utf-8")
             refresh_area(repo, "observation")
-            self.assertIn("broken_internal_ref", strict_codes(repo))
+            self.assertIn("broken_internal_ref", diagnostic_codes(repo))
 
     def test_group_06_lifecycle_state_and_reason_metadata(self) -> None:
         fixtures = (
@@ -474,7 +578,7 @@ class StrictIntegrityTests(unittest.TestCase):
                 repo = Path(temp)
                 initialize(repo)
                 (repo / relative).write_text(content, encoding="utf-8")
-                self.assertIn("lifecycle_invalid", strict_codes(repo))
+                self.assertIn("lifecycle_invalid", diagnostic_codes(repo))
 
         with git_repo() as temp:
             repo = Path(temp)
@@ -489,10 +593,11 @@ class StrictIntegrityTests(unittest.TestCase):
                 },
             )
             (repo / "context/decision/retired/withdrawn.md").write_text(content, encoding="utf-8")
-            self.assertIn("lifecycle_invalid", strict_codes(repo))
-            with self.assertRaises(context_cli.ContextError) as caught:
-                context_cli.build_index_fix_bundle(repo)
-            self.assertEqual("integrity_not_fixable", caught.exception.code)
+            self.assertIn("lifecycle_invalid", diagnostic_codes(repo))
+            before = (repo / "context/decision/retired/withdrawn.md").read_bytes()
+            repair = context_cli.repair_derived_indexes(repo)
+            self.assertIn("lifecycle_invalid", {issue["code"] for issue in repair["issues"]})
+            self.assertEqual(before, (repo / "context/decision/retired/withdrawn.md").read_bytes())
 
     def test_group_07_reciprocal_supersede_edges(self) -> None:
         with git_repo() as temp:
@@ -514,7 +619,7 @@ class StrictIntegrityTests(unittest.TestCase):
             )
             (repo / "context/observation/new.md").write_text(artifact("context-observation/v1", successor), encoding="utf-8")
             refresh_area(repo, "observation")
-            self.assertIn("supersede_edge_missing", strict_codes(repo))
+            self.assertIn("supersede_edge_missing", diagnostic_codes(repo))
 
     def test_group_08_lifecycle_cycle(self) -> None:
         with git_repo() as temp:
@@ -537,10 +642,9 @@ class StrictIntegrityTests(unittest.TestCase):
                     encoding="utf-8",
                 )
             refresh_area(repo, "observation")
-            self.assertIn("lifecycle_cycle", strict_codes(repo))
-            with self.assertRaises(context_cli.ContextError) as caught:
-                context_cli.build_index_fix_bundle(repo)
-            self.assertEqual("integrity_not_fixable", caught.exception.code)
+            self.assertIn("lifecycle_cycle", diagnostic_codes(repo))
+            repair = context_cli.repair_derived_indexes(repo)
+            self.assertIn("lifecycle_cycle", {issue["code"] for issue in repair["issues"]})
 
     def test_group_09_illegal_cross_kind_predecessor(self) -> None:
         with git_repo() as temp:
@@ -567,7 +671,7 @@ class StrictIntegrityTests(unittest.TestCase):
             )
             refresh_area(repo, "observation")
             refresh_area(repo, "decision")
-            self.assertIn("illegal_cross_kind_predecessor", strict_codes(repo))
+            self.assertIn("illegal_cross_kind_predecessor", diagnostic_codes(repo))
 
     def test_group_10_duplicate_current_decision_slot(self) -> None:
         with git_repo() as temp:
@@ -580,7 +684,7 @@ class StrictIntegrityTests(unittest.TestCase):
             ):
                 (repo / f"context/decision/{name}.md").write_text(artifact("context-decision/v1", identifier), encoding="utf-8")
             refresh_area(repo, "decision")
-            self.assertIn("duplicate_current_slot", strict_codes(repo))
+            self.assertIn("duplicate_current_slot", diagnostic_codes(repo))
 
     def test_group_11_index_duplicate_and_wrong_state(self) -> None:
         for expected, mutate in (
@@ -605,11 +709,11 @@ class StrictIntegrityTests(unittest.TestCase):
                 position = next(i for i, line in enumerate(lines) if "<!-- context-entry " in line)
                 lines[position] = mutate(lines[position])
                 index.write_text("\n".join(lines) + "\n", encoding="utf-8")
-                self.assertIn(expected, strict_codes(repo))
+                self.assertIn(expected, diagnostic_codes(repo))
                 document_before = (repo / "context/observation/one.md").read_bytes()
-                repair = context_cli.build_index_fix_bundle(repo)
-                context_cli.apply_bundle(repo, repair["bundle"], repair["approval_digest"])
-                self.assertTrue(context_cli.refresh_repository(repo, strict=True)["ok"])
+                repair = context_cli.repair_derived_indexes(repo)
+                self.assertTrue(repair["applied"])
+                self.assertTrue(context_cli.refresh_repository(repo)["ok"])
                 self.assertEqual(document_before, (repo / "context/observation/one.md").read_bytes())
 
     def test_group_12_duplicate_area_and_claim_owner(self) -> None:
@@ -621,7 +725,7 @@ class StrictIntegrityTests(unittest.TestCase):
             position = next(i for i, line in enumerate(lines) if '"area":"observation"' in line)
             lines.insert(position, lines[position])
             root.write_text("\n".join(lines) + "\n", encoding="utf-8")
-            codes = strict_codes(repo)
+            codes = diagnostic_codes(repo)
             self.assertTrue({"duplicate_area_owner", "duplicate_claim_owner"}.issubset(codes))
 
     @unittest.skipIf(sys.platform == "win32", "POSIX symlink integrity fixture")
@@ -637,7 +741,7 @@ class StrictIntegrityTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            self.assertIn("path_escape", strict_codes(repo))
+            self.assertIn("path_escape", diagnostic_codes(repo))
 
         with git_repo() as temp, tempfile.TemporaryDirectory() as outside_temp:
             repo = Path(temp)
@@ -647,13 +751,12 @@ class StrictIntegrityTests(unittest.TestCase):
             outside = Path(outside_temp)
             (outside / "escaped.md").write_text("must not be read\n", encoding="utf-8")
             retired.symlink_to(outside, target_is_directory=True)
-            codes = strict_codes(repo)
+            codes = diagnostic_codes(repo)
             self.assertIn("symlink_path", codes)
-            with self.assertRaises(context_cli.ContextError) as caught:
-                context_cli.build_index_fix_bundle(repo)
-            self.assertEqual("integrity_not_fixable", caught.exception.code)
+            repair = context_cli.repair_derived_indexes(repo)
+            self.assertIn("symlink_path", {issue["code"] for issue in repair["issues"]})
 
-    def test_strict_cli_exits_six_with_exact_issue_codes(self) -> None:
+    def test_refresh_cli_reports_blocking_issue_without_strict_mode(self) -> None:
         with git_repo() as temp:
             repo = Path(temp)
             initialize(repo)
@@ -665,14 +768,15 @@ class StrictIntegrityTests(unittest.TestCase):
             (repo / "context/observation/ref.md").write_text(content, encoding="utf-8")
             refresh_area(repo, "observation")
             completed = subprocess.run(
-                ["python3", str(CLI_PATH), "refresh", "--strict", "--json"],
+                ["python3", str(CLI_PATH), "refresh", "--json"],
                 cwd=repo,
                 text=True,
                 capture_output=True,
             )
-            self.assertEqual(6, completed.returncode, completed.stdout + completed.stderr)
+            self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
             envelope = json.loads(completed.stdout)
-            codes = {issue["code"] for issue in envelope["error"]["details"]["issues"]}
+            self.assertFalse(envelope["result"]["ok"])
+            codes = {issue["code"] for issue in envelope["result"]["issues"]}
             self.assertIn("broken_internal_ref", codes)
 
 

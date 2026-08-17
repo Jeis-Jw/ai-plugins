@@ -74,7 +74,6 @@ class DistributionProofTests(unittest.TestCase):
             "core_disabled",
             "core_incompatible",
             "core_uninitialized",
-            "partial_core_init",
             "ready",
         }
         observed: set[str] = set()
@@ -228,7 +227,7 @@ class DistributionProofTests(unittest.TestCase):
         for token in (
             "context-core@jeis-ai-plugins",
             "context-common/v2",
-            "repository_state=ready or absent",
+            "repository_state=ready, partial, invalid, or absent",
             "managed policy",
             "compare actual Current bodies",
             "Never install, enable, or update plugins",

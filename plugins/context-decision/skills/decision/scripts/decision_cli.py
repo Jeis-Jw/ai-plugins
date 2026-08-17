@@ -17,7 +17,6 @@ from typing import Any, Iterable, Sequence
 
 EXIT_USAGE = 2
 EXIT_NOT_FOUND = 3
-EXIT_AMBIGUOUS = 4
 EXIT_CONFLICT = 5
 EXIT_INTEGRITY = 6
 PROTOCOL = "context-common/v2"
@@ -58,8 +57,7 @@ PREFLIGHT_MESSAGES = {
     "core_disabled": "exact context-core가 현재 scope에서 비활성이다.",
     "core_incompatible": "exact context-core가 context-common/v2 handshake를 통과하지 못했다.",
     "core_uninitialized": "exact core는 준비됐고 repository bootstrap이 필요하다.",
-    "partial_core_init": "repository context root가 partial 또는 invalid 상태다.",
-    "ready": "exact context-core와 repository가 준비됐다.",
+    "ready": "exact context-core가 준비됐다. repository 진단은 작업 대상과 겹칠 때만 차단한다.",
 }
 
 
@@ -361,14 +359,6 @@ def parse_observation_document(text: str) -> tuple[dict[str, Any], dict[str, str
             raise DecisionError("section_schema_error", "observation content before sections is invalid")
     if current is not None:
         sections[current] = "\n".join(buffer).strip()
-    removed = sorted(REMOVED_FINGERPRINT_FIELDS & set(frontmatter))
-    if removed:
-        raise DecisionError(
-            "schema_removed_field",
-            "claim fingerprint fields were removed; migrate the artifact before using this protocol",
-            {"fields": removed},
-            EXIT_CONFLICT,
-        )
     if frontmatter.get("schema") != "context-observation/v1" or not all(frontmatter.get(key) for key in ("id", "title", "summary", "created_at", "captured_from")) or not all(sections.get(key) for key in ("관찰", "근거")):
         raise DecisionError("schema_invalid", "fallback observation is incomplete", exit_code=EXIT_CONFLICT)
     require_context_id(frontmatter["id"])
@@ -376,12 +366,10 @@ def parse_observation_document(text: str) -> tuple[dict[str, Any], dict[str, str
 
 
 def render_observation_document(frontmatter: dict[str, Any], sections: dict[str, str]) -> str:
-    removed = sorted(REMOVED_FINGERPRINT_FIELDS & set(frontmatter))
-    if removed:
-        raise DecisionError("schema_removed_field", "claim fingerprint fields are not renderable", {"fields": removed}, EXIT_CONFLICT)
-    ordered = [key for key in OBSERVATION_KEY_ORDER if key in frontmatter]
-    ordered.extend(sorted(set(frontmatter) - set(ordered)))
-    lines = ["---"] + [f"{key}: {json.dumps(frontmatter[key], ensure_ascii=False, separators=(',', ':'))}" for key in ordered] + ["---", ""]
+    canonical_frontmatter = {key: value for key, value in frontmatter.items() if key not in REMOVED_FINGERPRINT_FIELDS}
+    ordered = [key for key in OBSERVATION_KEY_ORDER if key in canonical_frontmatter]
+    ordered.extend(sorted(set(canonical_frontmatter) - set(ordered)))
+    lines = ["---"] + [f"{key}: {json.dumps(canonical_frontmatter[key], ensure_ascii=False, separators=(',', ':'))}" for key in ordered] + ["---", ""]
     for name in ("관찰", "근거", "영향", "현재 처리", "후속 조건"):
         if name in sections:
             lines.extend([f"## {name}", "", sections[name].strip(), ""])
@@ -389,14 +377,6 @@ def render_observation_document(frontmatter: dict[str, Any], sections: dict[str,
 
 
 def validate_decision_document(frontmatter: dict[str, Any], sections: dict[str, str]) -> None:
-    removed = sorted(REMOVED_FINGERPRINT_FIELDS & set(frontmatter))
-    if removed:
-        raise DecisionError(
-            "schema_removed_field",
-            "claim fingerprint fields were removed; migrate the artifact before using this protocol",
-            {"fields": removed},
-            EXIT_CONFLICT,
-        )
     required = ("schema", "id", "title", "summary", "created_at", "captured_from", "scope", "decision_key")
     missing = [field for field in required if field not in frontmatter]
     if missing or frontmatter.get("schema") != "context-decision/v1":
@@ -432,12 +412,13 @@ def validate_decision_document(frontmatter: dict[str, Any], sections: dict[str, 
 
 
 def render_document(frontmatter: dict[str, Any], sections: dict[str, str]) -> str:
-    validate_decision_document(frontmatter, sections)
-    ordered = [key for key in DECISION_KEY_ORDER if key in frontmatter]
-    ordered.extend(sorted(set(frontmatter) - set(ordered)))
+    canonical_frontmatter = {key: value for key, value in frontmatter.items() if key not in REMOVED_FINGERPRINT_FIELDS}
+    validate_decision_document(canonical_frontmatter, sections)
+    ordered = [key for key in DECISION_KEY_ORDER if key in canonical_frontmatter]
+    ordered.extend(sorted(set(canonical_frontmatter) - set(ordered)))
     lines = ["---"]
     for key in ordered:
-        value = frontmatter[key]
+        value = canonical_frontmatter[key]
         if not _valid_frontmatter_value(value):
             raise DecisionError("frontmatter_unsupported", "frontmatter value is unsupported", {"key": key})
         lines.append(f"{key}: {json.dumps(value, ensure_ascii=False, separators=(',', ':'))}")
@@ -986,13 +967,13 @@ def build_init_plan(preflight: dict[str, Any] | None = None) -> dict[str, Any]:
             "owner": "context-core",
             "operation": "bootstrap",
             "host": host or "active_host",
-            "core_init": "apply_if_absent",
+            "core_init": "apply_if_needed",
             "area_register": "context-decision",
             "policy_install": policy_target,
             "index_path": DECISION_INDEX,
         },
         "phases": [
-            {"phase": "core_init", "status": "pending" if core_state == "absent" else "ready"},
+            {"phase": "core_init", "status": "ready" if core_state == "ready" else "pending"},
             {"phase": "area_register", "status": "pending"},
             {"phase": "policy_install", "status": "pending", "target": policy_target},
         ],
@@ -1833,8 +1814,8 @@ def _load_json_argument(value: str, *, allow_stdin: bool = False) -> Any:
     elif value.startswith("@"):
         try:
             text = pathlib.Path(value[1:]).read_text(encoding="utf-8")
-        except OSError as error:
-            raise DecisionError("input_unavailable", "JSON input could not be read", {"path": value[1:]}) from error
+        except (OSError, UnicodeError) as error:
+            raise DecisionError("input_unavailable", "JSON input could not be read", {"path": value[1:]}, EXIT_NOT_FOUND) from error
     else:
         raise DecisionError("usage_invalid", "JSON input must use @file or @-")
     try:
@@ -1917,13 +1898,20 @@ def classify_core_preflight(inventory: Any, doctor_receipt: Any) -> dict[str, An
     ):
         return {"code": "core_incompatible", "observed": observed}
     repository_state = doctor.get("repository_state")
+    if repository_state not in {"absent", "partial", "invalid", "ready"}:
+        raise DecisionError("doctor_receipt_invalid", "core doctor repository_state is invalid", exit_code=EXIT_CONFLICT)
     if repository_state == "absent":
         return {"code": "core_uninitialized", "observed": observed}
-    if repository_state in {"partial", "invalid"}:
-        return {"code": "partial_core_init", "observed": observed}
-    if repository_state != "ready":
-        raise DecisionError("doctor_receipt_invalid", "core doctor repository_state is invalid", exit_code=EXIT_CONFLICT)
-    return {"code": "ready", "observed": observed}
+    issues = doctor.get("issues", [])
+    warnings = doctor.get("warnings", [])
+    if not isinstance(issues, list) or not isinstance(warnings, list):
+        raise DecisionError("doctor_receipt_invalid", "core doctor diagnostics must be arrays", exit_code=EXIT_CONFLICT)
+    diagnostics = [
+        {"repository_state": repository_state, **item}
+        for item in [*issues, *warnings]
+        if isinstance(item, dict)
+    ]
+    return {"code": "ready", "observed": observed, "warnings": diagnostics}
 
 
 def _manual_actions(code: str) -> list[str]:
@@ -1954,11 +1942,6 @@ def _manual_actions(code: str) -> list[str]:
             "context-decision:init이 installed context-core public bootstrap surface를 호출한다.",
             "같은 명시적 호출에서 core init 뒤 decision area 등록을 계속한다.",
         ],
-        "partial_core_init": [
-            "context-core doctor의 issue/path를 확인한다.",
-            "context-core의 승인된 repair 절차로 수동 복구한다.",
-            "repository_state=ready 확인 뒤 context-decision:init을 다시 실행한다.",
-        ],
         "ready": [],
     }[code]
 
@@ -1967,7 +1950,7 @@ def render_core_preflight(result: dict[str, Any], host: str) -> dict[str, Any]:
     code = result.get("code")
     if host not in {"codex", "claude-code"} or code not in PREFLIGHT_MESSAGES or not isinstance(result.get("observed"), dict):
         raise DecisionError("core_preflight_invalid", "core preflight result or host is invalid", exit_code=EXIT_CONFLICT)
-    return {
+    rendered = {
         "code": code,
         "host": host,
         "message": PREFLIGHT_MESSAGES[code],
@@ -1976,6 +1959,9 @@ def render_core_preflight(result: dict[str, Any], host: str) -> dict[str, Any]:
         "manual_actions": _manual_actions(code),
         "write_policy": {"repository": "none", "host_configuration": "none"},
     }
+    if result.get("warnings"):
+        rendered["warnings"] = list(result["warnings"])
+    return rendered
 
 
 def require_core_preflight(args: argparse.Namespace, *, allow_absent: bool = False) -> dict[str, Any]:

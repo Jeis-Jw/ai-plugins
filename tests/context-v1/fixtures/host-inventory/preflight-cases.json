@@ -179,7 +179,7 @@
       }
     },
     {
-      "id": "claude-partial-core-init",
+      "id": "claude-partial-core-diagnostic",
       "host": "claude-code",
       "inventory": {
         "plugins": [
@@ -195,9 +195,10 @@
       "doctor": {
         "supported_protocols": ["context-common/v2"],
         "repository_state": "partial",
-        "issues": ["missing_area_index"]
+        "issues": [{"code": "index_missing", "path": "context/decision/decision.index.md"}],
+        "warnings": []
       },
-      "expected_code": "partial_core_init",
+      "expected_code": "ready",
       "expected_observed": {
         "marketplace": "jeis-ai-plugins",
         "plugin": "context-core",
@@ -207,14 +208,11 @@
         "repository_state": "partial"
       },
       "expected_rendered": {
-        "code": "partial_core_init",
+        "code": "ready",
         "host": "claude-code",
-        "message": "repository context root가 partial 또는 invalid 상태다.",
-        "manual_actions": [
-          "context-core doctor의 issue/path를 확인한다.",
-          "context-core의 승인된 repair 절차로 수동 복구한다.",
-          "repository_state=ready 확인 뒤 context-decision:init을 다시 실행한다."
-        ]
+        "message": "exact context-core가 준비됐다. repository 진단은 작업 대상과 겹칠 때만 차단한다.",
+        "manual_actions": [],
+        "warnings": [{"repository_state": "partial", "code": "index_missing", "path": "context/decision/decision.index.md"}]
       }
     },
     {

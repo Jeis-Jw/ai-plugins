@@ -247,12 +247,6 @@ class TransactionCoordinatorTests(unittest.TestCase):
                     encoding="utf-8",
                 ),
             ),
-            "noncanonical-generated-row": lambda repo: (repo / context_cli.ROOT_INDEX).write_text(
-                (repo / context_cli.ROOT_INDEX).read_text(encoding="utf-8").replace(
-                    " — Snapshot: session handoff staging ", " — Corrupted: session handoff staging "
-                ),
-                encoding="utf-8",
-            ),
             "partial-index-set": lambda repo: (repo / "context/observation/observation.index.md").unlink(),
         }
         for label, corrupt in corruptions.items():
@@ -266,6 +260,22 @@ class TransactionCoordinatorTests(unittest.TestCase):
                 self.assertEqual("partial_core_init", caught.exception.code)
                 self.assertEqual("failed", caught.exception.details["phases"][-1]["status"])
                 self.assertEqual(before, tree_digest(repo))
+
+    def test_target_write_ignores_unrelated_invalid_artifact(self) -> None:
+        with git_repo() as temp:
+            repo = Path(temp)
+            initialize(repo)
+            polluted = repo / "context/snapshot/unrelated-broken.md"
+            polluted.write_text("---\nschema: not-json\n---\n", encoding="utf-8")
+            polluted_before = polluted.read_bytes()
+            self.assertEqual("invalid", context_cli.doctor_repository(repo)["repository_state"])
+
+            preview = context_cli.finalize_owner_result(repo, observation_owner_result())
+            applied = context_cli.apply_bundle(repo, preview["bundle"], preview["approval_digest"])
+
+            self.assertIn("context/observation/Cookie-전달-관찰.md", applied["changed_paths"])
+            self.assertEqual(polluted_before, polluted.read_bytes())
+            self.assertEqual("invalid", context_cli.doctor_repository(repo)["repository_state"])
 
     def test_explicit_init_resumes_exact_core_prefix_after_interruption(self) -> None:
         with git_repo() as temp:
@@ -295,6 +305,41 @@ class TransactionCoordinatorTests(unittest.TestCase):
             self.assertEqual("applied", resumed["phases"][0]["status"])
             self.assertEqual("ready", resumed["doctor"]["repository_state"])
             self.assertEqual("preserve\n", keep.read_text(encoding="utf-8"))
+
+    def test_explicit_init_repairs_missing_root_index_in_populated_repository(self) -> None:
+        with git_repo() as temp:
+            repo = Path(temp)
+            initialize(repo)
+            (repo / context_cli.ROOT_INDEX).unlink()
+            doctor = context_cli.doctor_repository(repo)
+            self.assertEqual("partial", doctor["repository_state"])
+            self.assertEqual("index_missing", doctor["warnings"][0]["code"])
+
+            initialized = context_cli.bootstrap_repository(repo, host="codex")
+            self.assertEqual("applied", initialized["phases"][0]["status"])
+            self.assertIn(context_cli.ROOT_INDEX, initialized["phases"][0]["changed_paths"])
+            self.assertEqual("ready", initialized["doctor"]["repository_state"])
+
+    def test_explicit_init_ignores_derived_root_drift_and_refresh_fix_repairs(self) -> None:
+        with git_repo() as temp:
+            repo = Path(temp)
+            initialize(repo)
+            root_index = repo / context_cli.ROOT_INDEX
+            root_index.write_text(
+                root_index.read_text(encoding="utf-8").replace(
+                    " — Snapshot: session handoff staging ", " — Corrupted: session handoff staging "
+                ),
+                encoding="utf-8",
+            )
+
+            initialized = context_cli.bootstrap_repository(repo, host="codex")
+            self.assertEqual("noop", initialized["phases"][0]["status"])
+            self.assertEqual("ready", initialized["doctor"]["repository_state"])
+            self.assertIn("root_index_drift", {warning["code"] for warning in initialized["doctor"]["warnings"]})
+
+            repaired = context_cli.repair_derived_indexes(repo)
+            self.assertTrue(repaired["applied"])
+            self.assertEqual([], repaired["warnings"])
 
     def test_explicit_init_rejects_noncanonical_empty_directory_prefix(self) -> None:
         with git_repo() as temp:
@@ -478,28 +523,10 @@ class TransactionCoordinatorTests(unittest.TestCase):
             )
             return context_cli.build_area_register_bundle(repo, descriptor, seed)
 
-        def index_fix(repo: Path) -> dict:
-            (repo / "context/observation/out-of-band.md").write_text(
-                context_cli.render_document(
-                    {
-                        "schema": "context-observation/v1",
-                        "id": "ctx_550e8400e29b41d4a716446655440098",
-                        "title": "Out-of-band observation",
-                        "summary": "Index repair fixture",
-                        "created_at": "2026-08-13T18:20:00+09:00",
-                        "captured_from": "workspace",
-                    },
-                    {"관찰": "Out-of-band observation", "근거": "integration fixture"},
-                ),
-                encoding="utf-8",
-            )
-            return context_cli.build_index_fix_bundle(repo)
-
         cases = {
             "core_init": (False, context_cli.build_init_bundle),
             "area_register": (True, area_register),
             "policy_install": (True, lambda repo: context_cli.build_policy_bundle(repo, "CLAUDE.md")),
-            "index_fix": (True, index_fix),
         }
         for transition, (initialized, build) in cases.items():
             with self.subTest(transition=transition), git_repo() as temp:
@@ -516,10 +543,7 @@ class TransactionCoordinatorTests(unittest.TestCase):
                 control["approval_material"]["plan"]["control_input"]["forged"] = True
                 variants["control-input"] = control
                 effect = copy.deepcopy(legitimate)
-                if effect["approval_material"]["preview"]["effects"]:
-                    effect["approval_material"]["preview"]["effects"][0]["forged"] = True
-                else:
-                    effect["approval_material"]["preview"]["index_diffs"][0]["forged"] = True
+                effect["approval_material"]["preview"]["effects"][0]["forged"] = True
                 variants["effect"] = effect
                 binding = copy.deepcopy(legitimate)
                 binding_control = binding["approval_material"]["plan"]["control_input"]
@@ -528,8 +552,6 @@ class TransactionCoordinatorTests(unittest.TestCase):
                     binding_control["seed_digests"][first] = "sha256:" + "0" * 64
                 elif transition == "policy_install":
                     binding_control["outside_bytes_sha256"] = "sha256:" + "0" * 64
-                else:
-                    binding_control["issue_digest"] = "sha256:" + "0" * 64
                 variants["control-binding"] = binding
                 coherent = copy.deepcopy(legitimate)
                 coherent_plan = coherent["approval_material"]["plan"]
@@ -551,10 +573,6 @@ class TransactionCoordinatorTests(unittest.TestCase):
                     material["content"] = "forged outside\n\n" + material["content"]
                     coherent_operation["after_sha256"] = context_cli.sha256_bytes(material["content"].encode("utf-8"))
                     coherent["approval_material"]["preview"]["artifacts"][0]["content"] = material["content"]
-                else:
-                    issues = coherent["approval_material"]["preview"]["index_diffs"]
-                    issues[0]["forged"] = True
-                    coherent_plan["control_input"]["issue_digest"] = context_cli.canonical_digest(issues)
                 variants["coherent-forgery"] = coherent
                 for label, forged in variants.items():
                     with self.subTest(transition=transition, forgery=label):
@@ -705,7 +723,7 @@ class TransactionCoordinatorTests(unittest.TestCase):
             self.assertEqual("precondition_changed", caught.exception.code)
             self.assertEqual(before, tree_digest(repo))
 
-    def test_index_fix_is_approval_gated_and_document_authoritative(self) -> None:
+    def test_index_fix_is_immediate_and_document_authoritative(self) -> None:
         with git_repo() as temp:
             repo = Path(temp)
             initialize(repo)
@@ -724,18 +742,11 @@ class TransactionCoordinatorTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            before = tree_digest(repo)
-            preview = context_cli.build_index_fix_bundle(repo)
-            self.assertEqual(before, tree_digest(repo), "index fix preview must not write")
-            self.assertFalse(preview["noop"])
-            self.assertEqual("index_fix", preview["bundle"]["approval_material"]["plan"]["transition"])
-            with self.assertRaises(context_cli.ContextError) as caught:
-                context_cli.apply_bundle(repo, preview["bundle"], "sha256:" + "0" * 64)
-            self.assertEqual("approval_digest_mismatch", caught.exception.code)
-            self.assertEqual(before, tree_digest(repo))
-
-            context_cli.apply_bundle(repo, preview["bundle"], preview["approval_digest"])
-            self.assertTrue(context_cli.refresh_repository(repo, strict=True)["ok"])
+            artifact_before = artifact.read_bytes()
+            repair = context_cli.repair_derived_indexes(repo)
+            self.assertTrue(repair["applied"])
+            self.assertTrue(context_cli.refresh_repository(repo)["ok"])
+            self.assertEqual(artifact_before, artifact.read_bytes())
             area_index = context_cli.parse_area_index(
                 (repo / "context/observation/observation.index.md").read_text(encoding="utf-8")
             )
@@ -749,6 +760,7 @@ class TransactionCoordinatorTests(unittest.TestCase):
             self.assertTrue(result["ok"])
             self.assertEqual("context-common/v2", result["result"]["protocol"])
             self.assertNotIn("--root", completed.stdout)
+            self.assertNotIn("ambiguous", result["result"]["exit_codes"])
 
 
 if __name__ == "__main__":

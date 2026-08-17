@@ -22,7 +22,6 @@ from typing import Any, Iterable, Iterator, Sequence
 
 EXIT_USAGE = 2
 EXIT_NOT_FOUND = 3
-EXIT_AMBIGUOUS = 4
 EXIT_CONFLICT = 5
 EXIT_INTEGRITY = 6
 PROTOCOL = "context-common/v2"
@@ -46,6 +45,7 @@ INDEX_FIXABLE_CODES = {
     "index_duplicate_entry",
     "index_ghost_entry",
     "index_missing_entry",
+    "index_self_entry",
     "index_wrong_state",
 }
 OWNER_RESULT_FIELDS = {
@@ -115,6 +115,7 @@ class ContextError(Exception):
 class Document:
     frontmatter: dict[str, Any]
     sections: dict[str, str]
+    warnings: tuple[dict[str, Any], ...] = ()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -401,15 +402,13 @@ def _string_list(value: Any, field: str, *, required: bool = False, maximum: int
     return [nfc(item.strip()) for item in value]
 
 
-def _validate_common_document(frontmatter: dict[str, Any]) -> None:
+def _validate_common_document(frontmatter: dict[str, Any]) -> tuple[dict[str, Any], ...]:
     removed = sorted(REMOVED_FINGERPRINT_FIELDS & set(frontmatter))
-    if removed:
-        raise ContextError(
-            "schema_removed_field",
-            "claim fingerprint fields were removed; migrate the artifact before using this protocol",
-            {"fields": removed},
-            EXIT_CONFLICT,
-        )
+    warnings = (
+        ({"code": "schema_removed_field", "fields": removed},)
+        if removed
+        else ()
+    )
     required = ("schema", "id", "title", "summary", "created_at", "captured_from")
     missing = [key for key in required if key not in frontmatter]
     if missing:
@@ -471,11 +470,12 @@ def _validate_common_document(frontmatter: dict[str, Any]) -> None:
         if "supersedes" in frontmatter:
             for identifier in _string_list(frontmatter["supersedes"], "supersedes", maximum=12, item_maximum=36):
                 _require_context_id(identifier, "supersedes")
+    return warnings
 
 
 def parse_document(text: str) -> Document:
     frontmatter, lines, closing = _parse_frontmatter(text)
-    _validate_common_document(frontmatter)
+    warnings = _validate_common_document(frontmatter)
     schema = frontmatter["schema"]
     allowed, required = SECTION_SPECS[schema]
     sections: dict[str, str] = {}
@@ -507,12 +507,17 @@ def parse_document(text: str) -> Document:
         content = sections.get(name, "").strip()
         if not content or content in PLACEHOLDERS:
             raise ContextError("section_schema_error", "required section is missing or placeholder", {"section": name})
-    return Document(frontmatter=frontmatter, sections=sections)
+    return Document(frontmatter=frontmatter, sections=sections, warnings=warnings)
 
 
 def render_document(frontmatter: dict[str, Any], sections: dict[str, str]) -> str:
-    _validate_common_document(frontmatter)
-    schema = frontmatter["schema"]
+    canonical_frontmatter = {
+        key: value
+        for key, value in frontmatter.items()
+        if key not in REMOVED_FINGERPRINT_FIELDS
+    }
+    _validate_common_document(canonical_frontmatter)
+    schema = canonical_frontmatter["schema"]
     allowed, required = SECTION_SPECS[schema]
     unknown = set(sections) - set(allowed)
     if unknown:
@@ -521,11 +526,11 @@ def render_document(frontmatter: dict[str, Any], sections: dict[str, str]) -> st
         if not sections.get(name, "").strip() or sections[name].strip() in PLACEHOLDERS:
             raise ContextError("section_schema_error", "required section is missing or placeholder", {"section": name})
     known = COMMON_KEY_ORDER + ADDITIVE_KEY_ORDER.get(schema, ())
-    ordered = [key for key in known if key in frontmatter]
-    ordered.extend(sorted(set(frontmatter) - set(ordered)))
+    ordered = [key for key in known if key in canonical_frontmatter]
+    ordered.extend(sorted(set(canonical_frontmatter) - set(ordered)))
     lines = ["---"]
     for key in ordered:
-        value = frontmatter[key]
+        value = canonical_frontmatter[key]
         if not _valid_yaml_value(value):
             raise ContextError("frontmatter_unsupported", "frontmatter value is outside the supported subset", {"key": key})
         lines.append(f"{key}: {compact_json(value)}")
@@ -1065,19 +1070,33 @@ def recall_repository(
             all_entries = [(row, owner) for row, owner in all_entries if owner["area"] != area_row["area"]]
             all_entries.extend((row, area_row) for row in _fallback_entries(repo, area_row, metrics))
         all_entries = [(row, area_row) for row, area_row in all_entries if row["id"] in wanted]
-    filtered: list[tuple[dict[str, Any], dict[str, Any], int]] = []
-    for row, area_row in all_entries:
-        permitted = True
-        for key, expected in facets:
-            actual = row.get(key)
-            normalized_expected = normalized_key(expected)
-            if isinstance(actual, list):
-                permitted = permitted and normalized_expected in {normalized_key(str(item)) for item in actual}
-            else:
-                permitted = permitted and isinstance(actual, str) and normalized_key(actual) == normalized_expected
-        score = score_entry(row, query)
-        if permitted and (not query or score > 0):
-            filtered.append((row, area_row, score))
+    def matched(entries: Sequence[tuple[dict[str, Any], dict[str, Any]]]) -> list[tuple[dict[str, Any], dict[str, Any], int]]:
+        output: list[tuple[dict[str, Any], dict[str, Any], int]] = []
+        for row, area_row in entries:
+            permitted = True
+            for key, expected in facets:
+                actual = row.get(key)
+                normalized_expected = normalized_key(expected)
+                if isinstance(actual, list):
+                    permitted = permitted and normalized_expected in {normalized_key(str(item)) for item in actual}
+                else:
+                    permitted = permitted and isinstance(actual, str) and normalized_key(actual) == normalized_expected
+            score = score_entry(row, query)
+            if permitted and (not query or score > 0):
+                output.append((row, area_row, score))
+        return output
+
+    filtered = matched(all_entries)
+    if query and not filtered and selected_areas and not fallback and not strict_index:
+        fallback = True
+        warnings.append("index_miss_fallback")
+        fallback_entries: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for area_row in selected_areas:
+            rows = _fallback_entries(repo, area_row, metrics)
+            if not include_history:
+                rows = [row for row in rows if row["state"] == "current"]
+            fallback_entries.extend((row, area_row) for row in rows)
+        filtered = matched(fallback_entries)
     filtered.sort(key=lambda item: item[0]["id"])
     filtered.sort(key=lambda item: item[0]["created_at"], reverse=True)
     filtered.sort(key=lambda item: item[2], reverse=True)
@@ -1109,6 +1128,7 @@ def recall_repository(
                 document = parse_document(_read_artifact_text(path, metrics))
             except FileNotFoundError:
                 continue
+            warnings.extend(warning["code"] for warning in document.warnings)
             selected_sections = sections or tuple(document.sections)
             result_with_placeholder = _recall_result(output + [{}], total_matches, fallback, warnings)
             result_overhead = len(canonical_json(result_with_placeholder).encode("utf-8")) - len(canonical_json({}).encode("utf-8"))
@@ -1742,6 +1762,14 @@ def validate_owner_result(result: dict[str, Any], capability: dict[str, Any] | N
     draft_ids = {item["effect_id"] for item in drafts}
     for draft in drafts:
         document = parse_document(draft.get("content", ""))
+        if document.warnings:
+            warning = document.warnings[0]
+            raise ContextError(
+                warning["code"],
+                "removed legacy fields cannot be introduced by a new artifact draft",
+                {key: value for key, value in warning.items() if key != "code"},
+                EXIT_CONFLICT,
+            )
         projection = draft.get("semantic_projection")
         if not isinstance(projection, dict) or set(projection) != {"kind", "primary_claim", "supporting_context"}:
             raise ContextError("owner_result_invalid", "draft semantic projection is invalid", exit_code=EXIT_CONFLICT)
@@ -2140,8 +2168,7 @@ def build_init_bundle(repo: pathlib.Path) -> dict[str, Any]:
                 } == descriptor
                 for area, descriptor in expected.items()
             )
-            integrity = refresh_repository(repo, strict=True)
-            if descriptors_match and integrity["ok"]:
+            if descriptors_match:
                 return {"noop": True, "applied": False, "changed_paths": []}
         except (ContextError, OSError, UnicodeError):
             pass
@@ -2242,11 +2269,24 @@ def bootstrap_repository(
         )
     phases: list[dict[str, Any]] = []
     changed_paths: list[str] = []
+    repaired_core_paths: list[str] = []
     try:
         policy_target = _policy_target_for_host(host)
         build_policy_bundle(repo, policy_target)
     except ContextError as error:
         raise _bootstrap_phase_error(error, "policy_preflight", phases) from error
+    context_root = repo / "context"
+    if (
+        context_root.is_dir()
+        and not (repo / ROOT_INDEX).is_file()
+        and any(path.is_file() for path in context_root.glob("*/*.index.md"))
+    ):
+        try:
+            repair = repair_derived_indexes(repo)
+            repaired_core_paths = repair["changed_paths"]
+            changed_paths.extend(repaired_core_paths)
+        except ContextError as error:
+            raise _bootstrap_phase_error(error, "core_init", phases) from error
     area_resume = (
         _pending_area_resume_bundle(repo, descriptor, index_seed)
         if descriptor is not None and index_seed is not None
@@ -2258,7 +2298,11 @@ def bootstrap_repository(
         try:
             core = build_init_bundle(repo)
             if core.get("noop") is True:
-                phases.append({"phase": "core_init", "status": "noop", "changed_paths": []})
+                phases.append({
+                    "phase": "core_init",
+                    "status": "applied" if repaired_core_paths else "noop",
+                    "changed_paths": repaired_core_paths,
+                })
             else:
                 applied = apply_bundle(
                     repo,
@@ -2268,20 +2312,14 @@ def bootstrap_repository(
                 )
                 changed_paths.extend(applied["changed_paths"])
                 phases.append(
-                    {"phase": "core_init", "status": "applied", "changed_paths": applied["changed_paths"]}
+                    {
+                        "phase": "core_init",
+                        "status": "applied",
+                        "changed_paths": sorted(set([*repaired_core_paths, *applied["changed_paths"]])),
+                    }
                 )
         except ContextError as error:
             raise _bootstrap_phase_error(error, "core_init", phases) from error
-
-        doctor = doctor_repository(repo)
-        if doctor["repository_state"] != "ready":
-            error = ContextError(
-                "bootstrap_incomplete",
-                "core bootstrap did not converge to repository_state=ready",
-                {"doctor": doctor},
-                EXIT_INTEGRITY,
-            )
-            raise _bootstrap_phase_error(error, "core_verify", phases) from error
 
     if descriptor is not None and index_seed is not None:
         try:
@@ -2303,14 +2341,6 @@ def bootstrap_repository(
             raise _bootstrap_phase_error(error, "area_register", phases) from error
 
     doctor = doctor_repository(repo)
-    if doctor["repository_state"] != "ready":
-        error = ContextError(
-            "bootstrap_incomplete",
-            "bootstrap did not converge to repository_state=ready",
-            {"doctor": doctor},
-            EXIT_INTEGRITY,
-        )
-        raise _bootstrap_phase_error(error, "bootstrap_verify", phases) from error
 
     try:
         policy_bundle = build_policy_bundle(repo, policy_target)
@@ -2778,8 +2808,11 @@ def finalize_owner_result(repo: pathlib.Path, owner_result: dict[str, Any], owne
         matching_drafts = {key: value for key, value in drafts.items() if any(effect["effect_id"] == key for effect in matching_effects)}
         index = area_indexes[area]
         path = f"context/{area}/{area}.index.md"
+        rendered_index = _virtual_area_index(index, matching_effects, matching_drafts)
         index_before[path] = sha256_bytes(index.text.encode("utf-8"))
-        index_after[path] = sha256_bytes(file_bytes(_virtual_area_index(index, matching_effects, matching_drafts)))
+        index_after[path] = sha256_bytes(file_bytes(rendered_index))
+        index_material_id = f"material_index_{hashlib.sha256(area.encode('utf-8')).hexdigest()[:12]}"
+        materials.append(_material(index_material_id, path, rendered_index))
     operations.append({"op": "index_rebuild", "derived_from": sorted(effects), "areas": touched_areas, "include_root": False, "before_sha256": index_before, "after_sha256": index_after})
     plan = {
         "schema": "context-mutation-plan/v1", "plan_id": new_plan_id(), "owner": owner, "source_type": "owner_result",
@@ -3142,36 +3175,94 @@ def build_observation_discard_bundle(repo: pathlib.Path, identifier: str) -> dic
     return build_discard_bundle(repo, identifier)
 
 
-def build_index_fix_bundle(repo: pathlib.Path) -> dict[str, Any]:
-    integrity = refresh_repository(repo, strict=True)
-    if integrity["ok"]:
-        return {"noop": True, "applied": False, "changed_paths": []}
-    non_index = [issue for issue in integrity["issues"] if issue["code"] not in INDEX_FIXABLE_CODES]
-    if non_index:
-        raise ContextError("integrity_not_fixable", "only derived index drift can be fixed automatically", {"issues": non_index}, EXIT_INTEGRITY)
-    _, catalog = _root_catalog(repo)
-    affected = sorted({
-        area["area"]
-        for area in catalog
-        if any(issue.get("path", "").startswith(f"context/{area['area']}/") for issue in integrity["issues"])
-    })
-    before: dict[str, str | None] = {}
-    after: dict[str, str] = {}
-    for area in affected:
-        relative = f"context/{area}/{area}.index.md"
-        path = repo / relative
-        before[relative] = _digest_or_none(path)
-        rendered = render_area_index_from_repository(repo, area, repair_rows=True)
-        after[relative] = sha256_bytes(file_bytes(rendered))
-    plan = {
-        "schema": "context-mutation-plan/v1", "plan_id": new_plan_id(), "owner": "context-core", "source_type": "core_control",
-        "transition": "index_fix", "owner_descriptor": {"owner": "context-core", "kind": "storage", "artifact_schema": PROTOCOL},
-        "control_input": {"schema": "context-core-control/v1", "transition": "index_fix", "issue_digest": canonical_digest(integrity["issues"])},
-        "prior_bundle_digests": [], "read_preconditions": [],
-        "operations": [{"op": "index_rebuild", "derived_from": [], "areas": affected, "include_root": False, "before_sha256": before, "after_sha256": after}],
+def _discover_area_specs(repo: pathlib.Path) -> list[tuple[dict[str, Any], str, str]]:
+    context_root = _ensure_contained(repo, "context")
+    if not context_root.is_dir() or context_root.is_symlink():
+        raise ContextError("path_invalid", "context root must be a safe directory", {"path": "context"}, EXIT_INTEGRITY)
+    specs: list[tuple[dict[str, Any], str, str]] = []
+    with os.scandir(context_root) as entries:
+        for entry in entries:
+            if entry.is_symlink():
+                raise ContextError("path_invalid", "context root contains a symlink", {"path": f"context/{entry.name}"}, EXIT_INTEGRITY)
+            if not entry.is_dir(follow_symlinks=False):
+                continue
+            area = entry.name
+            if not AREA_NAME.fullmatch(area):
+                raise ContextError("path_invalid", "context area directory is not canonical", {"path": f"context/{area}"}, EXIT_INTEGRITY)
+            relative = f"context/{area}/{area}.index.md"
+            path = _ensure_contained(repo, relative)
+            if not path.is_file() or path.is_symlink():
+                raise ContextError("index_seed_required", "area index metadata is required to rebuild the root index", {"path": relative}, EXIT_INTEGRITY)
+            metadata = _parse_area_index_metadata(path.read_text(encoding="utf-8"))
+            if metadata["area"] != area:
+                raise ContextError("area_index_mismatch", "area index metadata differs from its directory", {"path": relative}, EXIT_INTEGRITY)
+            row = {
+                "area": area,
+                "path": relative,
+                "owner": metadata["owner"],
+                "claims": [area],
+                "artifact_schema": metadata["artifact_schema"],
+                "authority": metadata["authority"],
+            }
+            specs.append((row, _area_label(area), metadata["summary"]))
+    return sorted(specs, key=lambda item: item[0]["area"])
+
+
+def repair_derived_indexes(repo: pathlib.Path) -> dict[str, Any]:
+    """Rebuild derived index bytes immediately without artifact approval.
+
+    Only generated index blocks/root catalog are writable here. Artifact bytes and
+    lifecycle metadata are never changed.
+    """
+
+    changed: list[str] = []
+    with _root_lock(repo):
+        root_path = repo / ROOT_INDEX
+        if not root_path.is_file():
+            specs = _discover_area_specs(repo)
+            if not specs:
+                raise ContextError("context_root_missing", "context root has no recoverable area indexes", exit_code=EXIT_NOT_FOUND)
+            _atomic_write(root_path, render_root_index(_root_seed(), specs))
+            changed.append(ROOT_INDEX)
+
+        diagnostic = refresh_repository(repo)
+        _, catalog = _root_catalog(repo)
+        affected = sorted({
+            area["area"]
+            for area in catalog
+            if any(
+                warning.get("code") in INDEX_FIXABLE_CODES
+                and warning.get("path", "").startswith(f"context/{area['area']}/")
+                for warning in diagnostic["warnings"]
+            )
+        })
+        for area in affected:
+            relative = f"context/{area}/{area}.index.md"
+            rendered = render_area_index_from_repository(repo, area, repair_rows=True)
+            if _digest_or_none(repo / relative) != sha256_bytes(file_bytes(rendered)):
+                _atomic_write(repo / relative, rendered)
+                changed.append(relative)
+
+        root_warning_codes = {
+            "root_index_drift",
+            "reserved_index_missing",
+            "area_index_mismatch",
+        }
+        if any(warning.get("code") in root_warning_codes for warning in diagnostic["warnings"]):
+            specs = _discover_area_specs(repo)
+            rendered_root = render_root_index(_root_seed(), specs)
+            if _digest_or_none(root_path) != sha256_bytes(file_bytes(rendered_root)):
+                _atomic_write(root_path, rendered_root)
+                changed.append(ROOT_INDEX)
+
+        after = refresh_repository(repo)
+    return {
+        "applied": bool(changed),
+        "noop": not changed,
+        "changed_paths": sorted(set(changed)),
+        "issues": after["issues"],
+        "warnings": after["warnings"],
     }
-    preview = {"schema": "context-approval-preview/v1", "owner": "context-core", "candidate_id": None, "artifacts": [], "effects": [], "index_diffs": integrity["issues"]}
-    return _bundle_result(preview, plan, [])
 
 
 def _core_control_error(message: str) -> None:
@@ -3464,75 +3555,6 @@ def _validate_policy_control(
         _core_control_error("policy_install plan differs from its exact allowlist")
 
 
-def _validate_index_fix_control(
-    repo: pathlib.Path,
-    plan: dict[str, Any],
-    preview: dict[str, Any],
-    by_id: dict[str, dict[str, Any]],
-    operation: dict[str, Any],
-) -> None:
-    descriptor = {"owner": "context-core", "kind": "storage", "artifact_schema": PROTOCOL}
-    control = plan["control_input"]
-    _require_exact_fields(control, {"schema", "transition", "issue_digest"}, "index_fix control input")
-    issues = preview.get("index_diffs")
-    areas = operation.get("areas")
-    expected_paths = {f"context/{area}/{area}.index.md" for area in areas} if isinstance(areas, list) else set()
-    if (
-        not isinstance(issues, list)
-        or not issues
-        or any(not isinstance(issue, dict) or issue.get("code") not in INDEX_FIXABLE_CODES for issue in issues)
-        or not isinstance(areas, list)
-        or not areas
-        or areas != sorted(set(areas))
-        or any(not AREA_NAME.fullmatch(str(area)) for area in areas)
-        or any(not any(issue.get("path", "").startswith(f"context/{area}/") for issue in issues) for area in areas)
-    ):
-        _core_control_error("index_fix issue and area set is invalid")
-    if (
-        plan["owner"] != "context-core"
-        or plan["owner_descriptor"] != descriptor
-        or control != {
-            "schema": "context-core-control/v1",
-            "transition": "index_fix",
-            "issue_digest": canonical_digest(issues),
-        }
-        or by_id
-        or set(operation) != {"op", "derived_from", "areas", "include_root", "before_sha256", "after_sha256"}
-        or operation["op"] != "index_rebuild"
-        or operation["derived_from"] != []
-        or operation["include_root"] is not False
-        or set(operation["before_sha256"]) != expected_paths
-        or set(operation["after_sha256"]) != expected_paths
-        or preview["owner"] != "context-core"
-        or preview["candidate_id"] is not None
-        or preview["artifacts"] != []
-        or preview["effects"] != []
-    ):
-        _core_control_error("index_fix plan differs from its exact allowlist")
-    current = {relative: _digest_or_none(repo / relative) for relative in expected_paths}
-    before = operation["before_sha256"]
-    after = operation["after_sha256"]
-    if any(current[path] not in {before[path], after[path]} for path in expected_paths):
-        _core_control_error("index_fix repository state differs from the approved transition")
-    if all(current[path] == before[path] for path in expected_paths):
-        actual_issues = refresh_repository(repo, strict=True)["issues"]
-        if issues != actual_issues:
-            _core_control_error("index_fix control input does not bind the current integrity issues")
-        _, catalog = _root_catalog(repo)
-        actual_areas = sorted({
-            row["area"]
-            for row in catalog
-            if any(issue.get("path", "").startswith(f"context/{row['area']}/") for issue in actual_issues)
-        })
-        if areas != actual_areas:
-            _core_control_error("index_fix area set differs from the current integrity issues")
-    for area in areas:
-        relative = f"context/{area}/{area}.index.md"
-        rendered = render_area_index_from_repository(repo, area, repair_rows=True)
-        if operation["after_sha256"][relative] != sha256_bytes(file_bytes(rendered)):
-            _core_control_error("index_fix after digest is not the deterministic repository projection")
-
-
 def _validate_core_control_bundle(
     repo: pathlib.Path,
     plan: dict[str, Any],
@@ -3551,13 +3573,11 @@ def _validate_core_control_bundle(
     )
     transition = plan.get("transition")
     expected_preview_fields = {"schema", "owner", "candidate_id", "artifacts", "effects"}
-    if transition == "index_fix":
-        expected_preview_fields.add("index_diffs")
     _require_exact_fields(preview, expected_preview_fields, "core control preview")
     if (
         plan.get("schema") != "context-mutation-plan/v1"
         or plan.get("source_type") != "core_control"
-        or transition not in {"core_init", "area_register", "policy_install", "index_fix"}
+        or transition not in {"core_init", "area_register", "policy_install"}
         or not _valid_plan_id(plan.get("plan_id"))
         or plan.get("prior_bundle_digests") != []
         or plan.get("read_preconditions") != []
@@ -3577,10 +3597,8 @@ def _validate_core_control_bundle(
     operation = index_operations[0]
     if transition == "core_init":
         _validate_core_init_control(plan, preview, by_id, operation)
-    elif transition == "area_register":
-        _validate_area_register_control(repo, plan, preview, by_id, operation)
     else:
-        _validate_index_fix_control(repo, plan, preview, by_id, operation)
+        _validate_area_register_control(repo, plan, preview, by_id, operation)
 
 
 def _validate_bundle(repo: pathlib.Path, bundle: dict[str, Any], approved_digest: str) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
@@ -3699,6 +3717,63 @@ def _validate_bundle(repo: pathlib.Path, bundle: dict[str, Any], approved_digest
                 or receipt_digest != canonical_digest(receipt_body)
             ):
                 raise ContextError("owner_validation_invalid", "addon owner validation receipt is altered", exit_code=EXIT_CONFLICT)
+        index_operation = index_operations[0]
+        index_paths = {
+            f"context/{area}/{area}.index.md"
+            for area in index_operation.get("areas", [])
+        }
+        index_materials = {
+            item.get("path"): item
+            for item in materials
+            if item.get("path") in index_paths
+        }
+        if set(index_materials) != index_paths:
+            raise ContextError(
+                "material_digest_mismatch",
+                "owner result must bind the exact target area index bytes",
+                exit_code=EXIT_CONFLICT,
+            )
+        owner_effects = {effect["effect_id"]: effect for effect in owner_result["effects"]}
+        owner_drafts = {draft["effect_id"]: draft for draft in owner_result["artifact_drafts"]}
+        for area in index_operation["areas"]:
+            relative = f"context/{area}/{area}.index.md"
+            material = index_materials[relative]
+            content = material.get("content", "")
+            if (
+                sha256_bytes(file_bytes(content)) != index_operation["after_sha256"].get(relative)
+                or parse_area_index(content).frontmatter.get("area") != area
+            ):
+                raise ContextError(
+                    "material_digest_mismatch",
+                    "target area index material differs from the approved digest",
+                    {"path": relative},
+                    EXIT_CONFLICT,
+                )
+            current_digest = _digest_or_none(repo / relative)
+            before_digest = index_operation["before_sha256"].get(relative)
+            after_digest = index_operation["after_sha256"].get(relative)
+            if current_digest == before_digest:
+                current_index = parse_area_index((repo / relative).read_text(encoding="utf-8"))
+                matching_effects = [effect for effect in owner_effects.values() if effect.get("area") == area]
+                matching_drafts = {
+                    effect_id: draft
+                    for effect_id, draft in owner_drafts.items()
+                    if any(effect["effect_id"] == effect_id for effect in matching_effects)
+                }
+                if content != _virtual_area_index(current_index, matching_effects, matching_drafts):
+                    raise ContextError(
+                        "plan_preview_mismatch",
+                        "target area index material is not derived from the approved effects",
+                        {"path": relative},
+                        EXIT_CONFLICT,
+                    )
+            elif current_digest != after_digest:
+                raise ContextError(
+                    "precondition_changed",
+                    "target area index precondition changed",
+                    {"path": relative},
+                    EXIT_CONFLICT,
+                )
         request_inputs = [item for item in owner_result["semantic_inputs"] if item.get("operation") == "mutation_request"]
         if request_inputs:
             request = request_inputs[0]["value"]
@@ -3911,6 +3986,11 @@ def _apply_index_operation(repo: pathlib.Path, plan: dict[str, Any], operation: 
             _atomic_write(path, by_path[relative]["content"])
             changed.append(relative)
     else:
+        by_path = {
+            material.get("path"): material
+            for material in materials.values()
+            if material.get("path")
+        }
         for area in operation["areas"]:
             relative = f"context/{area}/{area}.index.md"
             path = repo / relative
@@ -3920,7 +4000,12 @@ def _apply_index_operation(repo: pathlib.Path, plan: dict[str, Any], operation: 
                 continue
             if current != expected_before:
                 raise ContextError("precondition_changed", "area index precondition changed", {"path": relative}, EXIT_CONFLICT)
-            rendered = render_area_index_from_repository(repo, area, repair_rows=True)
+            material = by_path.get(relative)
+            rendered = (
+                material["content"]
+                if plan.get("source_type") == "owner_result" and material is not None
+                else render_area_index_from_repository(repo, area, repair_rows=True)
+            )
             if sha256_bytes(file_bytes(rendered)) != operation["after_sha256"][relative]:
                 raise ContextError("plan_preview_mismatch", "deterministic index output differs from preview", {"path": relative}, EXIT_INTEGRITY)
             _atomic_write(path, rendered)
@@ -3950,9 +4035,9 @@ def apply_bundle(repo: pathlib.Path, bundle: dict[str, Any], approved_digest: st
     return {"applied": True, "plan_id": plan["plan_id"], "approval_digest": approved_digest, "changed_paths": sorted(set(changed)), "index_paths": index_paths, "warnings": []}
 
 
-def refresh_repository(repo: pathlib.Path, *, strict: bool = False) -> dict[str, Any]:
-    del strict
+def refresh_repository(repo: pathlib.Path) -> dict[str, Any]:
     issues: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
     root_text = ""
     root_valid = False
     try:
@@ -3974,13 +4059,13 @@ def refresh_repository(repo: pathlib.Path, *, strict: bool = False) -> dict[str,
             "schema": "context-integrity-result/v1",
             "ok": not issues,
             "issues": sorted(issues, key=canonical_json),
-            "warnings": [],
+            "warnings": sorted(warnings, key=canonical_json),
             "root_digest": sha256_bytes(root_text.encode("utf-8")),
         }
     area_names = [area["area"] for area in areas]
     claims = [claim for area in areas for claim in area["claims"]]
     for area in sorted(set(BUILTIN_AREAS) - set(area_names)):
-        issues.append({"code": "reserved_index_missing", "path": f"context/{area}/{area}.index.md", "area": area})
+        warnings.append({"code": "reserved_index_missing", "path": f"context/{area}/{area}.index.md", "area": area})
     if len(area_names) != len(set(area_names)):
         issues.append({"code": "duplicate_area_owner", "path": ROOT_INDEX})
     if len(claims) != len(set(claims)):
@@ -4002,13 +4087,19 @@ def refresh_repository(repo: pathlib.Path, *, strict: bool = False) -> dict[str,
             issues.append({"code": "index_invalid", "path": area["path"], "message": str(error)})
             continue
         except ContextError as error:
-            issues.append({"code": error.code, "path": error.details.get("path", area["path"]), "message": error.message})
             if index_text is None:
+                issues.append({"code": error.code, "path": error.details.get("path", area["path"]), "message": error.message})
                 continue
             try:
                 metadata = _parse_area_index_metadata(index_text)
             except ContextError:
+                issues.append({"code": error.code, "path": error.details.get("path", area["path"]), "message": error.message})
                 continue
+            warning_code = error.code if error.code.startswith("index_") else "index_content_drift"
+            warning = {"code": warning_code, "path": area["path"]}
+            if warning_code != error.code:
+                warning["cause"] = error.code
+            warnings.append(warning)
             index = AreaIndex(frontmatter=metadata, current=[], history=[], text=index_text)
             index_valid = False
         metadata = index.frontmatter
@@ -4024,7 +4115,7 @@ def refresh_repository(repo: pathlib.Path, *, strict: bool = False) -> dict[str,
             area["artifact_schema"],
             area["authority"],
         ):
-            issues.append({"code": "area_index_mismatch", "path": area["path"]})
+            warnings.append({"code": "area_index_mismatch", "path": area["path"]})
         actual: dict[str, dict[str, Any]] = {}
         try:
             for artifact_path, state in _scan_area_paths(repo, area["area"]):
@@ -4033,6 +4124,10 @@ def refresh_repository(repo: pathlib.Path, *, strict: bool = False) -> dict[str,
                     row = _entry_from_document(repo, artifact_path, metadata, state)
                     document = parse_document(artifact_path.read_text(encoding="utf-8"))
                     _validate_strict_lifecycle(document.frontmatter, state, relative)
+                    warnings.extend(
+                        {**warning, "path": relative}
+                        for warning in document.warnings
+                    )
                 except (OSError, UnicodeError) as error:
                     issues.append({"code": "artifact_invalid", "path": relative, "message": str(error)})
                     continue
@@ -4049,30 +4144,30 @@ def refresh_repository(repo: pathlib.Path, *, strict: bool = False) -> dict[str,
             issues.append({"code": error.code, "path": error.details.get("path", f"context/{area['area']}")})
         projected = {row["id"]: row for row in index.current + index.history} if index_valid else {}
         for identifier in sorted(set(projected) - set(actual)):
-            issues.append({"code": "index_ghost_entry", "path": projected[identifier]["path"], "id": identifier})
+            warnings.append({"code": "index_ghost_entry", "path": projected[identifier]["path"], "id": identifier})
         for identifier in sorted(set(actual) - set(projected)):
-            issues.append({"code": "index_missing_entry", "path": actual[identifier]["path"], "id": identifier})
+            warnings.append({"code": "index_missing_entry", "path": actual[identifier]["path"], "id": identifier})
         for identifier in sorted(set(actual) & set(projected)):
             if actual[identifier] != projected[identifier]:
                 code = "index_ghost_entry" if actual[identifier]["path"] != projected[identifier]["path"] else "index_content_drift"
-                issues.append({"code": code, "path": projected[identifier]["path"], "actual_path": actual[identifier]["path"], "id": identifier})
+                warnings.append({"code": code, "path": projected[identifier]["path"], "actual_path": actual[identifier]["path"], "id": identifier})
                 if code == "index_ghost_entry":
-                    issues.append({"code": "index_missing_entry", "path": actual[identifier]["path"], "id": identifier})
+                    warnings.append({"code": "index_missing_entry", "path": actual[identifier]["path"], "id": identifier})
         try:
             regenerated = render_area_index_from_repository(repo, area["area"])
             if file_bytes(regenerated) != path.read_bytes() and not any(
                 issue.get("code") in INDEX_FIXABLE_CODES
                 and issue.get("path", "").startswith(f"context/{area['area']}/")
-                for issue in issues
+                for issue in warnings
             ):
-                issues.append({"code": "index_content_drift", "path": area["path"]})
+                warnings.append({"code": "index_content_drift", "path": area["path"]})
         except ContextError:
             pass
     if len(root_specs) == len(areas) and len(area_names) == len(set(area_names)):
         try:
             regenerated_root = render_root_index(root_text, root_specs)
             if file_bytes(regenerated_root) != (repo / ROOT_INDEX).read_bytes():
-                issues.append({"code": "root_index_drift", "path": ROOT_INDEX})
+                warnings.append({"code": "root_index_drift", "path": ROOT_INDEX})
         except (ContextError, OSError):
             pass
     for identifier, (path, frontmatter) in documents.items():
@@ -4149,7 +4244,7 @@ def refresh_repository(repo: pathlib.Path, *, strict: bool = False) -> dict[str,
         "schema": "context-integrity-result/v1",
         "ok": not issues,
         "issues": sorted(issues, key=canonical_json),
-        "warnings": [],
+        "warnings": sorted(warnings, key=canonical_json),
         "root_digest": sha256_bytes(root_text.encode("utf-8")),
     }
 
@@ -4157,13 +4252,31 @@ def refresh_repository(repo: pathlib.Path, *, strict: bool = False) -> dict[str,
 def doctor_repository(repo: pathlib.Path) -> dict[str, Any]:
     root = repo / "context"
     root_index = repo / ROOT_INDEX
-    if not root.exists() or not root_index.exists():
-        return {"schema": "context-core-doctor/v1", "owner": "context-core", "supported_protocols": [PROTOCOL], "repository_state": "absent", "root": "context/", "issues": []}
+    if not root.exists():
+        return {"schema": "context-core-doctor/v1", "owner": "context-core", "supported_protocols": [PROTOCOL], "repository_state": "absent", "root": "context/", "issues": [], "warnings": []}
+    if not root_index.exists():
+        return {
+            "schema": "context-core-doctor/v1",
+            "owner": "context-core",
+            "supported_protocols": [PROTOCOL],
+            "repository_state": "partial",
+            "root": "context/",
+            "issues": [],
+            "warnings": [{"code": "index_missing", "path": ROOT_INDEX}],
+        }
     try:
-        result = refresh_repository(repo, strict=True)
+        result = refresh_repository(repo)
     except ContextError as error:
-        return {"schema": "context-core-doctor/v1", "owner": "context-core", "supported_protocols": [PROTOCOL], "repository_state": "partial", "root": "context/", "issues": [{"code": error.code, "path": error.details.get("path")}]}
-    return {"schema": "context-core-doctor/v1", "owner": "context-core", "supported_protocols": [PROTOCOL], "repository_state": "ready" if result["ok"] else "invalid", "root": "context/", "issues": result["issues"]}
+        return {"schema": "context-core-doctor/v1", "owner": "context-core", "supported_protocols": [PROTOCOL], "repository_state": "partial", "root": "context/", "issues": [{"code": error.code, "path": error.details.get("path")}], "warnings": []}
+    return {
+        "schema": "context-core-doctor/v1",
+        "owner": "context-core",
+        "supported_protocols": [PROTOCOL],
+        "repository_state": "ready" if result["ok"] else "invalid",
+        "root": "context/",
+        "issues": result["issues"],
+        "warnings": result["warnings"],
+    }
 
 
 def schema_result() -> dict[str, Any]:
@@ -4171,7 +4284,7 @@ def schema_result() -> dict[str, Any]:
         "schema": "context-core-schema/v1", "protocol": PROTOCOL, "storage_root": "context/", "root_override": False,
         "id": "ctx_<lowercase-uuidv4-hex>", "json_success": {"ok": True, "result": {}},
         "json_error": {"ok": False, "error": {"code": "string", "message": "string", "details": {}}},
-        "exit_codes": {"usage_schema_filename": 2, "not_found": 3, "ambiguous": 4, "conflict": 5, "integrity_index": 6},
+        "exit_codes": {"usage_schema_filename": 2, "not_found": 3, "conflict": 5, "integrity_index": 6},
         "commands": [
             "schema", "capabilities", "doctor", "init", "bootstrap", "draft", "lifecycle prepare", "area register",
             "transaction preview", "transaction apply", "recall", "snapshot save/update/list/search/load/discard",
@@ -4193,13 +4306,25 @@ def _repository_root() -> pathlib.Path:
     return root
 
 
+def _read_input_file(value: str) -> str:
+    try:
+        return pathlib.Path(value).read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise ContextError(
+            "input_unavailable",
+            "input file is unavailable or not valid UTF-8",
+            {"path": value},
+            EXIT_NOT_FOUND,
+        ) from error
+
+
 def _load_json_argument(value: str, *, allow_stdin: bool = False) -> Any:
     if value == "@-":
         if not allow_stdin:
             raise ContextError("usage_invalid", "stdin is not supported for this argument")
         text = sys.stdin.read()
     elif value.startswith("@"):
-        text = pathlib.Path(value[1:]).read_text(encoding="utf-8")
+        text = _read_input_file(value[1:])
     else:
         raise ContextError("usage_invalid", "JSON input must use @file or @-")
     try:
@@ -4211,7 +4336,7 @@ def _load_json_argument(value: str, *, allow_stdin: bool = False) -> Any:
 def _load_text_argument(value: str) -> str:
     if not value.startswith("@") or value == "@-":
         raise ContextError("usage_invalid", "text input must use @file")
-    return pathlib.Path(value[1:]).read_text(encoding="utf-8")
+    return _read_input_file(value[1:])
 
 
 def _load_body_argument(value: str) -> str:
@@ -4220,7 +4345,7 @@ def _load_body_argument(value: str) -> str:
     if value == "@-":
         return sys.stdin.read()
     if value.startswith("@"):
-        return pathlib.Path(value[1:]).read_text(encoding="utf-8")
+        return _read_input_file(value[1:])
     return value
 
 
@@ -4430,8 +4555,6 @@ def build_parser() -> argparse.ArgumentParser:
     observation_discard.add_argument("--id", required=True)
     observation_discard.add_argument("--json", action="store_true")
     refresh = sub.add_parser("refresh")
-    refresh.add_argument("--level", choices=("integrity", "hygiene", "all"), default="integrity")
-    refresh.add_argument("--strict", action="store_true")
     refresh.add_argument("--fix", choices=("index",))
     refresh.add_argument("--json", action="store_true")
     return parser
@@ -4601,11 +4724,8 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
             return build_observation_discard_bundle(repo, args.id)
     if args.command == "refresh":
         if args.fix:
-            return build_index_fix_bundle(repo)
-        result = refresh_repository(repo, strict=args.strict)
-        if args.strict and not result["ok"]:
-            raise ContextError("integrity_failed", "strict integrity found blocking issues", {"issues": result["issues"]}, EXIT_INTEGRITY)
-        return result
+            return repair_derived_indexes(repo)
+        return refresh_repository(repo)
     raise ContextError("usage_invalid", "unsupported command")
 
 

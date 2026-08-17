@@ -10,7 +10,7 @@
 - source: `Jeis-Jw/ai-plugins`
 - protocol: `context-common/v2`
 
-`schema`와 `capabilities`만 core 없이 호출할 수 있다. host는 다른 operation에 `--host`, `--core-inventory @file`, `--core-doctor @file`을 넘긴다. production CLI가 repository root를 탐색하기 전 exact identity, source, enabled state와 protocol을 read-only로 확인한다. 일반 operation은 `doctor.repository_state=ready`도 요구하고, init만 `repository_state=absent`를 bootstrap-required state로 수락한다. decision owner는 install, enable, update, marketplace add, cache probing 또는 embedded core를 수행하지 않는다.
+`schema`와 `capabilities`만 core 없이 호출할 수 있다. host는 다른 operation에 `--host`, `--core-inventory @file`, `--core-doctor @file`을 넘긴다. production CLI가 repository root를 탐색하기 전 exact identity, source, enabled state와 protocol을 read-only로 확인한다. `doctor.repository_state=absent`는 bootstrap-required state이고 partial/invalid diagnostics는 전역 차단하지 않는다. decision owner는 install, enable, update, marketplace add, cache probing 또는 embedded core를 수행하지 않는다.
 
 ## Semantic claim gate
 
@@ -63,10 +63,10 @@ Receipt 없는 final owner plan이나 altered receipt는 `plan validate`에서 �
 
 `check --statement ... --scope ... --decision-key ...`는 새 선택을 확정하거나 기록하기 전에 사용한다. exact slot과 scope overlap은 반드시 포함하고, 나머지는 bounded ranking으로 선택해 실제 Current DEC의 세 핵심 section과 `{id,path,sha256}`를 `context-decision-comparison-input/v1`으로 반환한다. comparison input은 24 KiB, 전체 result는 32 KiB이며 omitted ID는 최대 8개 sample과 exact count만 반환한다. agent는 `new|same|supporting|rationale_changed|conflict` 중 하나와 근거·관련 ID를 제시한다. `new`는 반환된 집합 안의 판정이며 전역 무충돌 증명이 아니다. 이 operation은 read-only이고 지문·문장 유사도로 의미를 확정하지 않는다.
 
-`init`은 production preflight가 ready 또는 absent일 때 `context-owner-descriptor/v1`, complete empty decision index seed, descriptor/seed digest와 installed core `bootstrap` 요청을 반환한다. Init skill은 `decision_init.py` entrypoint 한 번으로 preflight와 active installed core의 public `context_cli.py bootstrap --host <host>` 호출을 순서대로 수행한다. 이 core surface가 absent core init, decision area registration과 host별 managed operating policy installation을 coordinator로 적용하며 phase result를 반환한다. ready 재호출은 noop이고, exact fixed write prefix만 중간 실패 재시도에서 남은 write로 수렴한다. decision CLI 자체는 root/area/index/policy를 만들거나 수정하지 않는다.
+`init`은 exact core identity/source/enabled/protocol이 맞으면 `repository_state`가 ready/partial/invalid인 경우에도 `context-owner-descriptor/v1`, complete empty decision index seed, descriptor/seed digest와 installed core `bootstrap` 요청을 반환한다. `absent`도 bootstrap-required로 허용한다. Init skill은 `decision_init.py` entrypoint 한 번으로 preflight와 active installed core의 public `context_cli.py bootstrap --host <host>` 호출을 순서대로 수행한다. core surface가 필요한 root 복구, decision area registration과 host별 managed operating policy installation을 coordinator로 적용하며 phase result를 반환한다. decision CLI 자체는 root/area/index/policy를 만들거나 수정하지 않는다.
 
-`claim_fingerprint`, `source_claim_fingerprint`와 capture candidate의 `claim_key`는 schema에서 제거됐다. candidate ID는 transport reference로만 사용한다. legacy input에 제거된 field가 남아 있으면 `schema_removed_field`로 실패하며 조용히 무시하지 않는다.
+`claim_fingerprint`, `source_claim_fingerprint`와 capture candidate의 `claim_key`는 schema에서 제거됐다. candidate ID는 transport reference로만 사용한다. legacy artifact field는 읽고 다음 승인 rewrite에서 제거하며, 신규 candidate/draft의 제거된 field는 `schema_removed_field`로 실패한다.
 
 ## Output and errors
 
-JSON success는 `{"ok":true,"result":...}`, error는 `{"ok":false,"error":{"code":...,"message":...,"details":...}}`다. exit code는 usage/schema 2, not found 3, ambiguous 4, conflict 5, integrity/index 6이다. 모든 operation은 실행 전후 repository filesystem bytes가 같아야 한다.
+JSON success는 `{"ok":true,"result":...}`, error는 `{"ok":false,"error":{"code":...,"message":...,"details":...}}`다. exit code는 usage/schema 2, not found 3, conflict 5, integrity/index 6이다. 모든 operation은 실행 전후 repository filesystem bytes가 같아야 한다.
