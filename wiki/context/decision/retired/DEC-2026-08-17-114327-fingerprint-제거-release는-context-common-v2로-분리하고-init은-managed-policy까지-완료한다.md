@@ -6,6 +6,9 @@ tags: [context-core, context-decision, init, policy, protocol]
 supersedes: [DEC-2026-08-14-173233-명시적-init-호출은-필요한-repository-bootstrap을-한-번에-완료한다]
 relations:
   ssot: [context-core-plugin, context-decision-plugin, context-v1-implementation]
+retired_at: 2026-08-17
+retired_type: superseded
+superseded_by: DEC-2026-08-17-222516-context-무결성은-검색-경고와-대상-write-경계로-분리한다
 ---
 
 ## 결정

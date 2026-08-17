@@ -5,7 +5,7 @@ summary: core init을 즉시 적용하고 decision init이 필요한 core bootst
 tags: [context-core, context-decision, init, bootstrap, implementation]
 relations:
   ssot: [context-core-plugin, context-decision-plugin, context-v1-implementation]
-  decisions: [DEC-2026-08-17-114327-fingerprint-제거-release는-context-common-v2로-분리하고-init은-managed-policy까지-완료한다]
+  decisions: [DEC-2026-08-17-222516-context-무결성은-검색-경고와-대상-write-경계로-분리한다]
 ---
 
 ## 개요
