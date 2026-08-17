@@ -49,3 +49,15 @@
 - Ceremony scales to blast radius, not design-unit count: decompose for thinking, bundle for shipping. Bundle same-gear same-theme changes that share one rollback unit into a single PR; isolate irreversible or high-blast-radius work and give it adversarial review. A change outside a tracked flow still gets an effective gear by the same blast-radius test. Never bundle to slip an unreviewed change under a sibling's review, and don't turn each design decision into its own ship-cycle. (Mechanism: the gear→PR/review table in the task protocol where present.)
 - Rationale commits: capture decisions, rejected alternatives, and other rationale records directly on main; code changes go via PR branches that reference the DEC id. Define flows commit their task node and rationale atomically where the tracker supports it, and define/start warn on a dirty wiki vault.
 <!-- END agent-operating-policy (managed by wiki-markdown) -->
+
+<!-- BEGIN context-core-policy (managed by context-core) -->
+## Durable context workflow
+
+- Substantive work나 결정 수렴 전에 이전 맥락이 판단을 바꿀 수 있으면 Current context를 scoped index-first로 한 번 recall한다.
+- 설치된 semantic owner가 있으면 후보와 관련 Current artifact의 실제 본문·scope·rationale를 비교한다. hash나 fingerprint로 의미 동일성 또는 충돌을 판정하지 않는다.
+- capture 후보의 title·summary·search_terms에는 대화에서 쓰인 표현과 필요한 동의어를 bounded하게 남겨 이후 index recall을 돕되, index metadata를 의미 판정으로 사용하지 않는다.
+- 기존 결정과의 conflict 또는 rationale change가 보이면 결론 전에 관련 artifact와 차이를 알리고 유지·수정·supersede 중 무엇인지 확인한다.
+- Primary 요청과 답변을 먼저 끝낸다. semantic milestone 또는 closeout당 durable candidate audit은 최대 한 번 수행하고, 재사용 가치가 있는 후보가 있을 때만 grouped capture를 제안한다.
+- Current DEC는 authoritative, OBS는 non-authoritative evidence, SNAP은 resume staging으로 취급한다.
+- 사용자의 명시 승인 전에는 context artifact나 index를 쓰지 않는다.
+<!-- END context-core-policy (managed by context-core) -->
