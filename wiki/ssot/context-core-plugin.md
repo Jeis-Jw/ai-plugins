@@ -17,7 +17,7 @@ affects_paths: [plugins/context-core/**]
 |---|---|---|---|
 | 제품 취지·domain 경계 | 확정 | 이 SSOT, [[context-plugin-definition]], [[context-capture-routing]], active fingerprint 제거 v2 결정 | 실제 사용에서 recall/capture 제안이 충분히 유용한지는 계속 관찰 필요 |
 | core source·공개 계약 | 구현 | `plugins/context-core/**`, `context-common/v2`, 0.2.0 manifests | 0.1.x와 wire/storage 호환 없음 |
-| deterministic 검증 | 통과 | 이 변경 worktree에서 `python3 -m unittest discover`로 `context-core` 73 tests, `context-v1` 26 tests, `context-decision` 34 tests를 실측했고 repo-root `pytest`로 decision 34 tests+14 subtests를 확인 | test는 실제 장기 대화의 의미 품질을 대신하지 않음 |
+| deterministic 검증 | 통과 | 이 변경 worktree에서 `python3 -m unittest discover`로 `context-core` 74 tests, `context-v1` 26 tests, `context-decision` 34 tests를 실측했고 repo-root `pytest`로 decision 34 tests+14 subtests를 확인 | test는 실제 장기 대화의 의미 품질을 대신하지 않음 |
 | index 효율성 | 구현·계측 | Stage 1 synthetic explicit/cross-area query에서 artifact open/read/stat와 artifact directory listing 0, bounded output 검증 | 대규모 실제 corpus의 recall precision/false negative는 별도 측정 필요 |
 | Codex 설치본 실행 | 부분 운영 검증 | 현재 Codex skill catalog에서 0.2.0이 발견되고 `capabilities --json` 실행 성공 | client별 설치·reload·upgrade UX의 반복 검증은 부족 |
 | Claude Code·Linux | 미확인 | static contract와 platform test만 존재 | 실제 host inventory와 live filesystem flow 필요 |

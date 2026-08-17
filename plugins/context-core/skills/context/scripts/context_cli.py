@@ -2543,6 +2543,11 @@ def build_area_register_bundle(repo: pathlib.Path, descriptor: dict[str, Any], i
         "artifact_schema": schema,
         "authority": authority,
     }
+    path = _ensure_contained(repo, area_path)
+    area_root = _ensure_contained(repo, f"context/{area}")
+    seed_bytes = file_bytes(index_seed)
+    seed_digest = sha256_bytes(seed_bytes)
+    area_before: str | None = None
     matching = [row for row in rows if row["area"] == area or area in row["claims"]]
     resume_prefix = False
     root_before = root_text
@@ -2554,7 +2559,6 @@ def build_area_register_bundle(repo: pathlib.Path, descriptor: dict[str, Any], i
                 {"area": area},
                 EXIT_CONFLICT,
             )
-        path = _ensure_contained(repo, area_path)
         if path.is_file():
             existing_index = parse_area_index(path.read_text(encoding="utf-8"))
             metadata = existing_index.frontmatter
@@ -2578,7 +2582,6 @@ def build_area_register_bundle(repo: pathlib.Path, descriptor: dict[str, Any], i
                 {"area": area, "path": area_path},
                 EXIT_CONFLICT,
             )
-        area_root = _ensure_contained(repo, f"context/{area}")
         if area_root.exists() and (not area_root.is_dir() or any(area_root.iterdir())):
             raise ContextError(
                 "partial_area_register",
@@ -2602,6 +2605,59 @@ def build_area_register_bundle(repo: pathlib.Path, descriptor: dict[str, Any], i
         root_after = root_text
         resume_prefix = True
     else:
+        if path.exists():
+            if not path.is_file():
+                raise ContextError(
+                    "owner_descriptor_conflict",
+                    "unregistered area index path is not a regular file",
+                    {"area": area, "path": area_path},
+                    EXIT_CONFLICT,
+                )
+            existing_bytes = path.read_bytes()
+            if existing_bytes != seed_bytes:
+                try:
+                    existing_index = parse_area_index(existing_bytes.decode("utf-8"))
+                except (ContextError, UnicodeError) as error:
+                    raise ContextError(
+                        "partial_area_register",
+                        "unregistered area index is not the exact approved empty seed",
+                        {"area": area, "path": area_path},
+                        EXIT_CONFLICT,
+                    ) from error
+                metadata = existing_index.frontmatter
+                if (metadata["area"], metadata["owner"], metadata["artifact_schema"], metadata["authority"]) != (
+                    area,
+                    owner,
+                    schema,
+                    authority,
+                ):
+                    raise ContextError(
+                        "owner_descriptor_conflict",
+                        "unregistered area index differs from the requested descriptor",
+                        {"area": area, "path": area_path},
+                        EXIT_CONFLICT,
+                    )
+                raise ContextError(
+                    "partial_area_register",
+                    "unregistered area index is populated or differs from the approved empty seed",
+                    {"area": area, "path": area_path},
+                    EXIT_CONFLICT,
+                )
+            area_before = seed_digest
+            if any(entry.name != path.name for entry in area_root.iterdir()):
+                raise ContextError(
+                    "partial_area_register",
+                    "unregistered area contains content beyond the exact approved empty seed",
+                    {"area": area, "path": area_path},
+                    EXIT_CONFLICT,
+                )
+        elif area_root.exists() and (not area_root.is_dir() or any(area_root.iterdir())):
+            raise ContextError(
+                "partial_area_register",
+                "unregistered area has noncanonical content",
+                {"area": area, "path": area_path},
+                EXIT_CONFLICT,
+            )
         specs = [_registered_area_spec(repo, row) for row in rows]
         root_after = render_root_index(
             root_text,
@@ -2612,9 +2668,9 @@ def build_area_register_bundle(repo: pathlib.Path, descriptor: dict[str, Any], i
     effect_id = "effect_register_area"
     plan = {
         "schema": "context-mutation-plan/v1", "plan_id": new_plan_id(), "owner": owner, "source_type": "core_control", "transition": "area_register",
-        "owner_descriptor": descriptor, "control_input": {"schema": "context-core-control/v1", "transition": "area_register", "descriptor_digest": canonical_digest(descriptor), "seed_digests": {area_path: sha256_bytes(file_bytes(index_seed))}},
+        "owner_descriptor": descriptor, "control_input": {"schema": "context-core-control/v1", "transition": "area_register", "descriptor_digest": canonical_digest(descriptor), "seed_digests": {area_path: seed_digest}},
         "prior_bundle_digests": [], "read_preconditions": [],
-        "operations": [{"op": "index_rebuild", "derived_from": [effect_id], "areas": [area], "include_root": True, "before_sha256": {ROOT_INDEX: sha256_bytes(file_bytes(root_before)), area_path: None}, "after_sha256": {path: sha256_bytes(file_bytes(content)) for path, content in contents.items()}, "seed_materials": {area_path: "seed_area_index"}}],
+        "operations": [{"op": "index_rebuild", "derived_from": [effect_id], "areas": [area], "include_root": True, "before_sha256": {ROOT_INDEX: sha256_bytes(file_bytes(root_before)), area_path: area_before}, "after_sha256": {path: sha256_bytes(file_bytes(content)) for path, content in contents.items()}, "seed_materials": {area_path: "seed_area_index"}}],
     }
     preview = {"schema": "context-approval-preview/v1", "owner": owner, "candidate_id": None, "artifacts": [], "effects": [{"effect_id": effect_id, "action": "register_area", "area": area, "path": area_path}]}
     result = _bundle_result(preview, plan, materials)
@@ -3770,7 +3826,7 @@ def _validate_area_register_control(
         or operation["areas"] != [area]
         or operation["include_root"] is not True
         or set(operation["before_sha256"]) != {ROOT_INDEX, area_path}
-        or operation["before_sha256"].get(area_path) is not None
+        or operation["before_sha256"].get(area_path) not in {None, seed_digest}
         or set(operation["after_sha256"]) != {ROOT_INDEX, area_path}
         or operation["seed_materials"] != {area_path: "seed_area_index"}
         or root_material["path"] != ROOT_INDEX
@@ -4283,19 +4339,26 @@ def _apply_index_operation(repo: pathlib.Path, plan: dict[str, Any], operation: 
     index_paths = sorted(operation["after_sha256"])
     transition = plan["transition"]
     if transition in {"core_init", "area_register"}:
-        if transition == "core_init":
-            retired = _ensure_contained(repo, "context/observation/retired")
-            if retired.exists() and (not retired.is_dir() or retired.is_symlink()):
-                raise ContextError("precondition_changed", "observation retired path is not a safe directory", exit_code=EXIT_CONFLICT)
-            retired.mkdir(mode=0o755, parents=True, exist_ok=True)
         by_path = {material["path"]: material for material in materials.values() if material.get("path")}
+        pending: list[tuple[str, pathlib.Path]] = []
         for relative in index_paths:
             path = _ensure_contained(repo, relative)
+            if path.exists() and not path.is_file():
+                raise ContextError("precondition_changed", "index path is not a regular file", {"path": relative}, EXIT_CONFLICT)
+            if path.parent.exists() and not path.parent.is_dir():
+                raise ContextError("precondition_changed", "index parent is not a directory", {"path": relative}, EXIT_CONFLICT)
             current = _digest_or_none(path)
             if current == operation["after_sha256"][relative]:
                 continue
             if current != operation["before_sha256"][relative] or relative not in by_path:
                 raise ContextError("precondition_changed", "index precondition changed", {"path": relative}, EXIT_CONFLICT)
+            pending.append((relative, path))
+        if transition == "core_init":
+            retired = _ensure_contained(repo, "context/observation/retired")
+            if retired.exists() and (not retired.is_dir() or retired.is_symlink()):
+                raise ContextError("precondition_changed", "observation retired path is not a safe directory", exit_code=EXIT_CONFLICT)
+            retired.mkdir(mode=0o755, parents=True, exist_ok=True)
+        for relative, path in pending:
             _atomic_write(path, by_path[relative]["content"])
             changed.append(relative)
     else:

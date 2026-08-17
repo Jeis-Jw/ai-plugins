@@ -431,6 +431,118 @@ class TransactionCoordinatorTests(unittest.TestCase):
             )
             self.assertEqual("ready", resumed["doctor"]["repository_state"])
 
+    def test_index_seed_preconditions_are_checked_before_any_write(self) -> None:
+        with git_repo() as temp:
+            repo = Path(temp)
+            core_init = context_cli.build_init_bundle(repo)
+            unexpected = repo / "context/observation/observation.index.md"
+            unexpected.parent.mkdir(parents=True)
+            unexpected.write_text("out-of-band index bytes\n", encoding="utf-8")
+            before = tree_digest(repo)
+
+            with self.assertRaises(context_cli.ContextError) as caught:
+                context_cli.apply_bundle(
+                    repo,
+                    core_init["bundle"],
+                    core_init["approval_digest"],
+                    approval_source="explicit_init",
+                )
+            self.assertEqual("precondition_changed", caught.exception.code)
+            self.assertEqual(before, tree_digest(repo))
+            self.assertFalse((repo / context_cli.ROOT_INDEX).exists())
+            self.assertFalse((repo / "context/observation/retired").exists())
+
+        with git_repo() as temp:
+            repo = Path(temp)
+            initialize(repo)
+            plan = decision_cli.build_init_plan()
+            registration = context_cli.build_area_register_bundle(
+                repo, plan["owner_descriptor"], plan["index_seed"]
+            )
+            target = repo / "context/decision/decision.index.md"
+            target.parent.mkdir()
+            target.write_text(
+                plan["index_seed"].replace('owner: "context-decision"', 'owner: "other"'),
+                encoding="utf-8",
+            )
+            before = tree_digest(repo)
+
+            with self.assertRaises(context_cli.ContextError) as caught:
+                context_cli.apply_bundle(
+                    repo,
+                    registration["bundle"],
+                    registration["approval_digest"],
+                    approval_source="explicit_init",
+                )
+            self.assertEqual("precondition_changed", caught.exception.code)
+            self.assertEqual(before, tree_digest(repo))
+            _, rows = context_cli.parse_root_index(
+                (repo / context_cli.ROOT_INDEX).read_text(encoding="utf-8")
+            )
+            self.assertNotIn("decision", {row["area"] for row in rows})
+
+        with git_repo() as temp:
+            repo = Path(temp)
+            initialize(repo)
+            plan = decision_cli.build_init_plan()
+            target = repo / "context/decision/decision.index.md"
+            target.parent.mkdir()
+            target.write_text(plan["index_seed"], encoding="utf-8")
+            seed_before = target.read_bytes()
+
+            initialized = context_cli.bootstrap_repository(
+                repo, plan["owner_descriptor"], plan["index_seed"], host="codex"
+            )
+            area_phase = next(phase for phase in initialized["phases"] if phase["phase"] == "area_register")
+            self.assertEqual("applied", area_phase["status"])
+            self.assertEqual([context_cli.ROOT_INDEX], area_phase["changed_paths"])
+            self.assertEqual(seed_before, target.read_bytes())
+
+        for populated, expected_code in ((False, "owner_descriptor_conflict"), (True, "partial_area_register")):
+            with self.subTest(populated=populated), git_repo() as temp:
+                repo = Path(temp)
+                initialize(repo)
+                plan = decision_cli.build_init_plan()
+                target = repo / "context/decision/decision.index.md"
+                target.parent.mkdir()
+                if populated:
+                    target.write_text(plan["index_seed"], encoding="utf-8")
+                    candidate = decision_candidate(
+                        "cand_550e8400e29b41d4a716446655440010",
+                        "인증 세션은 BFF가 소유한다.",
+                    )
+                    result = decision_cli.build_claim_result(
+                        candidate,
+                        decision_attestation(candidate),
+                        identifier="ctx_550e8400e29b41d4a716446655440010",
+                        created_at="2026-08-13T18:20:00+09:00",
+                    )
+                    draft = result["artifact_drafts"][0]
+                    (repo / draft["path"]).write_text(draft["content"], encoding="utf-8")
+                    target.write_text(
+                        context_cli.render_area_index_from_repository(repo, "decision"),
+                        encoding="utf-8",
+                    )
+                else:
+                    target.write_text(
+                        plan["index_seed"].replace(
+                            'owner: "context-decision"', 'owner: "other"'
+                        ),
+                        encoding="utf-8",
+                    )
+                before = tree_digest(repo)
+
+                with self.assertRaises(context_cli.ContextError) as caught:
+                    context_cli.bootstrap_repository(
+                        repo, plan["owner_descriptor"], plan["index_seed"], host="codex"
+                    )
+                self.assertEqual(expected_code, caught.exception.code)
+                self.assertEqual(before, tree_digest(repo))
+                _, rows = context_cli.parse_root_index(
+                    (repo / context_cli.ROOT_INDEX).read_text(encoding="utf-8")
+                )
+                self.assertNotIn("decision", {row["area"] for row in rows})
+
     def test_existing_area_rejects_incompatible_descriptor_without_writes(self) -> None:
         with git_repo() as temp:
             repo = Path(temp)
