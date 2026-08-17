@@ -1,7 +1,7 @@
 ---
 title: context-core 플러그인
 created_at: 2026-08-13
-summary: session handoff SNAP, 비권위 evidence OBS, semantic area catalog, index-first recall, 단일 capture audit·routing·grouped approval을 소유하는 가벼운 공통 context runtime의 구현 정본.
+summary: 대화에서 생긴 재사용 가치 있는 프로젝트 맥락을 index-first로 회수하고, semantic owner 비교와 사용자 승인 뒤에만 보관하는 가벼운 Git/Markdown 공통 runtime의 제품·구현·평가 정본.
 tags: [context-core, plugin, snapshot, observation, recall, ssot]
 verified_at: 2026-08-17
 affects_paths: [plugins/context-core/**]
@@ -9,7 +9,22 @@ affects_paths: [plugins/context-core/**]
 
 ## 현재 상태
 
-`context-core` 0.2.0은 구현되어 deterministic test와 교차 플러그인 fixture로 검증한다. 기존 `wiki-markdown`의 snapshot/observation/index/recall 경험을 참고하지만 별도 plugin과 storage root를 사용하며 자동 migration이나 호환성을 약속하지 않는다.
+`context-core` 0.2.0은 구현되어 deterministic test와 교차 플러그인 fixture로 검증한다. 목적은 대화 전체를 기억하는 범용 memory가 아니라, 이후 판단을 바꿀 수 있는 프로젝트 맥락을 필요한 순간에 회수하고 보관 가치가 생긴 시점에 승인형 capture로 연결하는 것이다. 기존 `wiki-markdown`의 snapshot/observation/index/recall 경험을 참고하지만 별도 plugin과 storage root를 사용하며 자동 migration이나 호환성을 약속하지 않는다.
+
+현재 제품 판정은 **source와 contract는 구현·검증됐고, 실제 host/consumer 운영성은 부분 검증**이다. 문서나 test가 존재한다는 이유만으로 운영 완료로 판정하지 않는다.
+
+| 평가 축 | 현재 판정 | 확인 근거 | 남은 경계 |
+|---|---|---|---|
+| 제품 취지·domain 경계 | 확정 | 이 SSOT, [[context-plugin-definition]], [[context-capture-routing]], active fingerprint 제거 v2 결정 | 실제 사용에서 recall/capture 제안이 충분히 유용한지는 계속 관찰 필요 |
+| core source·공개 계약 | 구현 | `plugins/context-core/**`, `context-common/v2`, 0.2.0 manifests | 0.1.x와 wire/storage 호환 없음 |
+| deterministic 검증 | 통과 | `context-core` 63 tests, `context-v1` 26 tests, 교차 `context-decision` 34 tests, wiki integrity issue 0을 `c98623a`에서 확인 | test는 실제 장기 대화의 의미 품질을 대신하지 않음 |
+| index 효율성 | 구현·계측 | Stage 1 synthetic explicit/cross-area query에서 artifact open/read/stat와 artifact directory listing 0, bounded output 검증 | 대규모 실제 corpus의 recall precision/false negative는 별도 측정 필요 |
+| Codex 설치본 실행 | 부분 운영 검증 | 현재 Codex skill catalog에서 0.2.0이 발견되고 `capabilities --json` 실행 성공 | client별 설치·reload·upgrade UX의 반복 검증은 부족 |
+| Claude Code·Linux | 미확인 | static contract와 platform test만 존재 | 실제 host inventory와 live filesystem flow 필요 |
+| legacy consumer data | migration 필요 | 0.2.0 doctor가 제거된 fingerprint field와 불일치 index를 `invalid`로 fail-closed 판정 | 자동 migration tool은 구현·검증하지 않음 |
+| GitHub 배포 표면 | source 공개 | 두 host manifest와 marketplace catalog가 0.2.0으로 정렬되고 `main@c98623a` push | tag·release artifact와 각 client UI 노출은 별도 상태 |
+
+이 표의 판정은 `verified_at` 시점의 snapshot이다. 다른 세션은 아래 평가 규칙에 따라 현재 code/runtime evidence를 다시 확인하고, 확인하지 않은 항목을 `완료`로 승격하지 않는다.
 
 ### 소유 범위
 
@@ -380,7 +395,86 @@ auto-fix는 derived index만 허용한다. lifecycle, 본문과 relation은 자�
 
 ## 취지
 
-context-core는 범용 지식 시스템이 아니라 session continuity와 evidence capture의 작은 공통 runtime이다. transcript 판독·저장·검색을 addon마다 복제하지 않으면서도 domain 의미는 semantic owner에 남겨 token과 결합도를 줄인다.
+context-core는 범용 지식 시스템이 아니라 **session continuity, evidence capture, scoped recall과 승인형 보관을 위한 작은 공통 runtime**이다. transcript 판독·저장·검색을 addon마다 복제하지 않으면서도 domain 의미는 semantic owner에 남겨 token과 결합도를 줄인다.
+
+### 해결하려는 문제
+
+LLM과의 대화에는 이후 설계·구현 판단을 바꿀 수 있는 취지, 결정, 근거와 unfinished context가 생긴다. 이를 전부 transcript나 일반 memory에 맡기면 다음 문제가 반복된다.
+
+- 보관할 가치가 있는 맥락과 일회성 대화가 섞인다.
+- 새 판단 전에 관련 과거 맥락을 찾지 않아 취지 변경이나 충돌을 놓친다.
+- 같은 의미인지 ID·hash·문장 정규화 같은 기계적 surrogate로 오판한다.
+- addon마다 저장·검색·승인·index 갱신을 중복 구현한다.
+- 자동 저장이 사용자의 repository와 지식 권한을 침범한다.
+
+core가 제공해야 하는 결과는 “더 많이 기억함”이 아니라 다음 네 가지다.
+
+1. **필요한 때 찾는다.** substantive 판단 전에 관련 Current context를 scoped index-first recall한다.
+2. **실제 내용을 비교한다.** 의미 관계는 installed semantic owner가 실제 본문·scope·rationale를 읽고 attestation하며, core는 이를 기계적 동일성으로 가장하지 않는다.
+3. **보관 가치를 제안한다.** semantic milestone에서 재사용 가치가 있는 후보만 한 번 묶어 제안한다.
+4. **승인 뒤 안전하게 쓴다.** exact preview와 `approval_digest` 승인 뒤 coordinator만 document와 derived index를 원자적으로 변경한다.
+
+### 추구 원칙
+
+1. **Project context 우선** — 일반 개인 memory나 transcript archive보다 repository의 why, current state, evidence와 handoff continuity에 집중한다.
+2. **내용이 의미의 정본** — `candidate_id`와 artifact ID는 식별·transport용이다. title·summary·tag·`search_terms`와 index는 탐색 후보를 줄이는 projection일 뿐 의미 동일성·충돌의 증거가 아니다. addon의 slot key도 authority 주소이지 semantic equality가 아니다.
+3. **Recall before capture** — 보관부터 하지 않는다. 기존 Current context가 판단을 바꿀 수 있으면 먼저 회수·비교하고, 새로 남길 실익이 있을 때만 capture 후보를 만든다.
+4. **제안은 자동, 영속화는 승인형** — agent는 자연스럽게 grouped capture를 제안할 수 있지만, 일반 artifact write는 사용자의 exact 승인 전까지 byte-for-byte no-op이어야 한다.
+5. **Domain 의미는 owner가 소유** — core는 공통 envelope·index·transaction·approval을 담당하고, DEC 같은 domain 의미와 lifecycle은 specialized owner가 담당한다. owner가 없다고 권위 수준을 임의 승격하지 않는다.
+6. **Index-first, document-authoritative** — Stage 1은 index만 읽고 후보를 좁히며, 최종 판단에는 선택된 artifact 본문을 읽는다. 검색 비용을 줄이되 index corruption이나 metadata를 truth로 취급하지 않는다.
+7. **Local-first와 낮은 운영비** — Git/Markdown/Python stdlib만으로 기본 가치가 동작해야 한다. Obsidian, embedding DB, SaaS와 background daemon은 필수 의존성이 아니다.
+8. **Fail-closed와 복구 가능성** — schema·owner·protocol·path·digest·marker가 모호하면 쓰지 않는다. mutation은 bounded preview, exact precondition, root lock, atomic replace와 Git history로 검증·복구 가능해야 한다.
+9. **실익이 구현 형태보다 우선** — 이미 존재하는 field·key·flow라도 사용자 가치, 정확성 또는 운영 안전을 높이지 못하면 제거·축소한다. 확장성 명목의 추상화는 실제 addon·corpus·운영 증거가 생긴 뒤 도입한다.
+
+### 명시적 비목표
+
+- 모든 대화와 transcript의 자동 수집·보관
+- hash, fingerprint, embedding, 정규화 문장만으로 semantic equality나 conflict를 확정
+- 승인 없는 자동 DEC/OBS/SNAP 작성
+- vector search, 조직 전체 cross-project search, cloud sync와 권한 queue의 기본 내장
+- runtime hook, activity heuristic, session ledger와 항상 실행되는 background audit
+- TASK, DEC, SSOT/runbook 등 addon domain schema를 core가 직접 소유
+- 0.1.x legacy artifact의 묵시적 변환이나 손실 가능 auto-repair
+
+이 비목표는 영구 금지가 아니라 현재 제품 경계를 뜻한다. 실제 recall 실패율, corpus 규모, 협업·감사 요구가 local index와 owner contract의 한계를 반복해서 증명할 때만 다음 계층을 검토한다.
+
+### 객관적 평가 기준
+
+다른 세션은 다음 질문에 code/runtime evidence로 답한다. 문서의 의도만 충족하고 실제 flow가 없으면 `기획됨`, source와 deterministic test만 있으면 `구현됨`, 실제 host와 consumer repository에서 재현되면 `운영 검증됨`으로 구분한다.
+
+| 평가 항목 | 통과 기준 | 대표 실패 신호 |
+|---|---|---|
+| 맥락 회수 실익 | 관련 Current context가 bounded index query로 발견되고, 선택한 본문만 열어 판단에 사용 | 매번 전수 문서 읽기, 관련 결정을 놓침, history를 Current로 사용 |
+| 의미 판정 정직성 | owner가 실제 primary claim·scope·rationale를 비교하고 근거와 관계를 반환 | ID/key/hash/embedding score를 같은 의미의 보장으로 사용 |
+| 충돌·취지 변경 알림 | primary 결론 전에 관련 artifact ID와 실제 차이를 알리고 유지·수정·supersede를 확인 | 새 결정을 조용히 중복 작성하거나 과거 취지를 덮음 |
+| capture 품질 | milestone당 audit 1회, durable value가 있을 때만 최대 8개 bounded 후보를 grouped proposal | 매 응답마다 저장 질문, transcript 덤프, addon 수만큼 audit 반복 |
+| 승인 경계 | preview까지 write 0, exact approved bundle만 한 번 apply, 승인 뒤 ID/timestamp/content 재생성 0 | preview가 index를 바꿈, 승인과 다른 bytes를 apply |
+| 저장 일관성 | 단일 coordinator, root lock, CAS/atomic replace, document와 derived index 동시 수렴 | owner 직접 write, lost index row, partial lifecycle |
+| 검색 효율 | Stage 1 artifact I/O 0, output·pack·section byte budget 준수, query alias는 bounded metadata로 전달 | directory scan, corpus 크기만큼 artifact open, 의미 metadata 과적재 |
+| 초기화 UX | 명시적 init 한 번으로 storage와 active-host policy를 설치, 재호출 diff 0, 사용자 bytes/mode 보존 | init과 policy 수동 다단계, partial state overwrite, marker 밖 변경 |
+| 호환성·복구 | protocol mismatch와 legacy schema를 명시적으로 fail-closed하고 actionable migration 경계를 제공 | 혼합 버전을 ready로 오판, 구형 artifact를 조용히 변형 |
+| 복잡도·비용 | stdlib/local default가 핵심 flow를 완결하고 새 abstraction은 측정된 병목을 해결 | 실사용 증거 없이 service/vector/runtime 계층 추가 |
+
+### 평가 절차와 증거 우선순위
+
+1. 현재 commit과 dirty state를 고정한다.
+2. 실제 host inventory, installed version, `doctor`, representative init/recall/capture flow를 확인한다.
+3. source·manifest·protocol과 deterministic suite를 확인한다.
+4. wiki decision/SSOT로 의도와 rejected alternative를 확인한다.
+5. 과거 session memory는 후보 근거로만 사용하고 현재 code/runtime과 충돌하면 폐기한다.
+
+판정 보고에는 최소한 `기획`, `구현`, `운영 검증`, `배포`를 분리하고, 미확인 host·OS·migration·client UI를 명시한다. `refresh --strict` 통과는 구조 무결성 증거일 뿐 semantic freshness나 운영 readiness의 증거가 아니다.
+
+### 개발 우선순위 판단
+
+다음 개발은 현재 구조를 보존하는 것보다 실익을 높이는 순서로 평가한다.
+
+1. 실제 장기 대화에서 recall 누락·오탐, conflict 알림 품질과 capture 제안 피로도를 측정한다.
+2. legacy data가 사용을 막는 빈도와 손실 없는 migration 요구를 확인하고 upgrade UX를 결정한다.
+3. Codex·Claude Code·macOS·Linux의 live install/init/reload 흐름을 반복 검증한다.
+4. local index의 실제 한계가 측정될 때만 ranking, richer search 또는 외부 service를 검토한다.
+
+새 기능이 이 우선순위와 직접 연결되지 않으면 기본 판정은 보류다. 단순한 schema 확장, 새 key, fingerprint, background mechanism은 그 자체로 진전이 아니다.
 
 ## 구성요소
 

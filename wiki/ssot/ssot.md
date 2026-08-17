@@ -20,7 +20,7 @@ audience: [human, agent]
 ## 노트
 
 - [[agent-operating-model]] — 이전 4계층 설계에서 작업환경 운영정책 정본으로 쓰던 레거시 슬롯. 2026-06-03 이후 운영정책 statement는 CLAUDE.md/AGENTS.md 자동로드 entry 표면이 정본이고, 이 문서는 이관 기록과 구버전 참조 호환만 담당한다.
-- [[context-core-plugin]] — session handoff SNAP, 비권위 evidence OBS, semantic area catalog, index-first recall, 단일 capture audit·routing·grouped approval을 소유하는 가벼운 공통 context runtime의 구현 정본.
+- [[context-core-plugin]] — 대화에서 생긴 재사용 가치 있는 프로젝트 맥락을 index-first로 회수하고, semantic owner 비교와 사용자 승인 뒤에만 보관하는 가벼운 Git/Markdown 공통 runtime의 제품·구현·평가 정본.
 - [[context-decision-plugin]] — 결정·취지·반려대안을 하나의 권위 record로 보존하고 scope·decision key·conflict·supersede·withdraw·revisit와 결정 전용 recall을 소유하는 공개 제품의 구현 정본.
 - [[session-review-plugin]] — read-only doctor로 준비 상태를 확인하고 worker/reviewer가 audit snapshot 또는 fast context와 reviewer lease로 리뷰를 수렴시키는 플러그인 설계 정본
 - [[studio-plugin]] — Codex와 Claude Code가 제공하는 subagent 기능으로 역할 기반 crew를 운용하는 orchestration skill. 영속 상태는 mission receipt 재개 인덱스 하나뿐이다.
