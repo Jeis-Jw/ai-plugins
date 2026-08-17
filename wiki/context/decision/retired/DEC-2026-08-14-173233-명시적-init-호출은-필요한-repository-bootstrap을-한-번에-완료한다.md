@@ -6,6 +6,9 @@ tags: [context-core, context-decision, init, bootstrap, ux]
 supersedes: [DEC-2026-08-13-233319-context-decision은-context-core를-사용자가-직접-설치한-뒤에만-동작한다]
 relations:
   ssot: [context-core-plugin, context-decision-plugin, context-v1-implementation]
+retired_at: 2026-08-17
+retired_type: superseded
+superseded_by: DEC-2026-08-17-114327-fingerprint-제거-release는-context-common-v2로-분리하고-init은-managed-policy까지-완료한다
 ---
 
 ## 결정

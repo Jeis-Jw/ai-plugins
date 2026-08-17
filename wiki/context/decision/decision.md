@@ -63,4 +63,4 @@ audience: [human, agent]
 - [[DEC-2026-08-13-180257-snap-obs-dec는-각-의미에-맞는-독립-lifecycle을-갖는다]] — SNAP은 현재 handoff를 제자리 갱신 후 discard하고, OBS와 DEC는 의미 불변 record로서 같은 claim의 대체나 명시적 무효화 때만 retired로 전이한다.
 - [[DEC-2026-08-13-180535-capture-audit는-milestone-단위-단일-판독과-승인형-write를-지킨다]] — semantic milestone 또는 closeout마다 현재 대화를 한 번만 감사하고 축약 candidate를 semantic owner에 전달하며 모든 durable write는 grouped proposal 승인 뒤에만 수행한다.
 - [[DEC-2026-08-13-183612-컨텍스트-플러그인은-milestone-capture-audit와-semantic-owner-draft로-결합한다]] — context-core가 milestone 단위 단일 audit와 승인 UX 및 physical write coordinator를 맡고, semantic owner는 bounded candidate에서 완성된 artifact draft와 mutation plan을 만들어 중복 없이 결합한다.
-- [[DEC-2026-08-14-173233-명시적-init-호출은-필요한-repository-bootstrap을-한-번에-완료한다]] — Plugin 설치는 수동으로 유지하되 init 호출 자체가 안전한 repository 초기화를 적용하며 decision init은 필요한 core init까지 연계한다.
+- [[DEC-2026-08-17-114327-fingerprint-제거-release는-context-common-v2로-분리하고-init은-managed-policy까지-완료한다]] — Fingerprint를 제거한 0.2.0을 protocol v2로 격리하고 명시적 init이 storage, area와 host managed policy를 한 흐름으로 적용한다.
