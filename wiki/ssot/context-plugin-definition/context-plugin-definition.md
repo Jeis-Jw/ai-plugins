@@ -115,7 +115,7 @@ context-core storage coordinator
 
 ## 노트
 
-- [[context-artifact-lifecycle]] — SNAP은 현재 handoff staging으로 제자리 갱신 후 discard하고, OBS와 DEC는 의미 불변 record로서 domain별 retire reason과 supersede edge를 갖는 v1 상태 전이 계약.
-- [[context-capture-routing]] — 현재 대화를 milestone당 한 번 감사해 bounded ephemeral candidate를 만들고 설치된 semantic owner로 중복 없이 routing한 뒤 grouped approval 후에만 기록하는 provider-neutral v1 계약.
-- [[context-storage-retrieval]] — 자유로운 Markdown 파일명과 immutable ID를 분리하고 context.index.md 및 영역별 semantic index를 문서에서 파생해 index-first·document-authoritative recall을 수행하는 v1 계약.
-- [[context-v1-implementation]] — 구현 순서, source 단위, CLI·fixture·통합 테스트, token/I-O 계측, host packaging과 공개 release gate를 정의한 context plugin v1 실행 청사진.
+- [[context-artifact-lifecycle]] — ai-plugins에서 설계한 SNAP OBS DEC lifecycle 계약의 historical record와 독립 context-plugins 저장소로의 이관 pointer.
+- [[context-capture-routing]] — ai-plugins에서 설계한 context capture routing 계약의 historical record와 독립 context-plugins 저장소로의 이관 pointer.
+- [[context-storage-retrieval]] — ai-plugins에서 설계한 context storage와 semantic index 계약의 historical record와 독립 context-plugins 저장소로의 이관 pointer.
+- [[context-v1-implementation]] — ai-plugins에서 실행한 context plugin v1 구현·acceptance 계획의 historical record와 독립 context-plugins 저장소로의 이관 pointer.
