@@ -22,3 +22,5 @@
 기존 `wiki/`를 자동 migration하지 않습니다. Obsidian은 repository root를 vault로 열 때의 선택적 view일 뿐 runtime dependency가 아닙니다. PCMS는 조직 권한·승인 queue·cross-project search·정책·감사 같은 control-plane 범위를 담당하며, 이 local plugin은 그 기능을 제한해 판매하는 제품이 아닙니다.
 
 0.2.0은 의미 판정에 쓰던 `claim_fingerprint`, `source_claim_fingerprint`와 batch-local `claim_key`를 제거한 breaking release입니다. `candidate_id`는 owner result 연결용 transport ID일 뿐 의미를 갖지 않습니다. 혼합 설치를 호환으로 오판하지 않도록 wire/storage handshake를 `context-common/v2`로 올렸습니다. 제거된 field가 남은 0.1.x artifact는 `schema_removed_field` warning으로 읽고 다음 승인 rewrite에서 lazy-clean합니다. 신규 artifact/candidate에는 계속 허용하지 않습니다.
+
+0.2.1은 `context-common/v2` 호환 patch release입니다. corpus 전체 drift가 아니라 실제 target write의 CAS·index·path·lock·approval 경계만 fail-closed하고, read는 index-first 조회와 bounded fallback을 사용합니다. addon 등록은 root lock 안에서 exact-empty directory를 다시 확인해 preview 이후의 directory race도 차단합니다.

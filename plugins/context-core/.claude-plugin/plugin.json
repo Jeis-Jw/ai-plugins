@@ -1,5 +1,5 @@
 {
   "name": "context-core",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Shared-context runtime for proactive scoped recall, approval-gated capture suggestions, handoffs, evidence, and coordinated writes."
 }

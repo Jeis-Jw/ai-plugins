@@ -246,7 +246,7 @@
       "expected_rendered": {
         "code": "ready",
         "host": "codex",
-        "message": "exact context-core와 repository가 준비됐다.",
+        "message": "exact context-core가 준비됐다. repository 진단은 작업 대상과 겹칠 때만 차단한다.",
         "manual_actions": []
       }
     }

@@ -41,3 +41,5 @@ Host는 `schema`/`capabilities`를 제외한 모든 CLI 호출에 `--host`, `--c
 기존 `wiki/` 자동 migration은 제공하지 않습니다. PCMS는 조직 권한·승인 workflow·cross-project search·policy·audit·conflict queue의 control-plane 경계이며, 이 local plugin은 결정 기록과 recall 자체에 집중합니다.
 
 0.2.0은 `claim_fingerprint`, `source_claim_fingerprint`와 batch-local `claim_key`를 제거한 breaking release입니다. `candidate_id`는 owner result 연결용 transport ID일 뿐 의미를 갖지 않습니다. 혼합 설치는 `context-common/v2` handshake에서 fail-closed합니다. 구형 artifact의 제거된 field는 읽을 수 있고 다음 승인 rewrite에서 lazy-clean합니다. 신규 candidate/draft에는 `schema_removed_field`로 계속 거부하며 fingerprint를 의미상 동일성 근거로 사용하지 않습니다.
+
+0.2.1은 `context-common/v2` 호환 patch release입니다. core doctor의 `partial|invalid` 진단은 전역 preflight 실패가 아니라 warning으로 전달하고, 실제 decision target과 겹치는 blocking issue만 해당 operation을 중단합니다. init target 자체의 schema·owner·path가 안전하지 않을 때만 core bootstrap이 write 0으로 실패합니다.
