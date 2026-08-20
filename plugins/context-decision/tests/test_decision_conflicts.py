@@ -68,6 +68,12 @@ class DecisionConflictTests(unittest.TestCase):
             self.assertEqual(["ctx_550e8400e29b41d4a716446655440000"], [item["id"] for item in check["comparison_input"]["current"]])
             self.assertEqual("인증 세션은 BFF가 소유한다.", check["comparison_input"]["current"][0]["sections"]["결정"])
             self.assertEqual(list(decision_cli.SEMANTIC_RELATIONS), check["assessment_contract"]["relations"])
+            self.assertEqual(1, check["retrieval"]["body_reads"])
+            self.assertGreater(check["retrieval"]["selected_semantic_bytes"], 0)
+            self.assertEqual(
+                decision_cli.file_digest((repo / decision_cli.DECISION_INDEX).read_text(encoding="utf-8")),
+                check["retrieval"]["index_sha256"],
+            )
             self.assertFalse(check["physical_write"])
 
             fixtures = helpers.PLUGIN.parents[1] / "tests/context-v1/fixtures/host-inventory"
@@ -105,7 +111,7 @@ class DecisionConflictTests(unittest.TestCase):
             self.assertEqual("context-decision-check/v1", cli_result["schema"])
             self.assertEqual(check["comparison_input"]["current"][0]["id"], cli_result["comparison_input"]["current"][0]["id"])
 
-    def test_check_response_is_bounded_for_large_current_index(self) -> None:
+    def test_check_skips_unrelated_bodies_for_large_current_index(self) -> None:
         rows = [
             {
                 "id": f"ctx_{number:032x}",
@@ -139,7 +145,7 @@ class DecisionConflictTests(unittest.TestCase):
 
         with (
             mock.patch.object(decision_cli, "_index", return_value=("index", rows, [])),
-            mock.patch.object(decision_cli, "_record", side_effect=record),
+            mock.patch.object(decision_cli, "_record", side_effect=record) as opened,
         ):
             result = decision_cli.prepare_decision_check(
                 helpers.Path("."),
@@ -149,15 +155,77 @@ class DecisionConflictTests(unittest.TestCase):
             )
 
         retrieval = result["retrieval"]
+        opened.assert_not_called()
         self.assertEqual(5000, retrieval["total_current"])
-        self.assertEqual(8, retrieval["returned"])
-        self.assertEqual(4992, retrieval["omitted"])
+        self.assertEqual(0, retrieval["metadata_matches"])
+        self.assertEqual(0, retrieval["body_reads"])
+        self.assertEqual(0, retrieval["returned"])
+        self.assertEqual(5000, retrieval["omitted"])
+        self.assertEqual(2, retrieval["selected_semantic_bytes"])
+        self.assertEqual(decision_cli.file_digest("index"), retrieval["index_sha256"])
         self.assertEqual(decision_cli.MAX_OMITTED_ID_SAMPLE, len(retrieval["omitted_id_sample"]))
         self.assertTrue(retrieval["omitted_id_sample_truncated"])
         self.assertLessEqual(
             len(decision_cli.canonical_json(result).encode("utf-8")),
-            decision_cli.MAX_CHECK_RESULT_BYTES,
+            2500,
         )
+
+    def test_check_still_reads_a_distinctive_cross_scope_match(self) -> None:
+        rows = [
+            {
+                "id": "ctx_550e8400e29b41d4a716446655440000",
+                "path": "context/decision/unrelated.md",
+                "title": "generic delivery policy",
+                "summary": "common repository decision",
+                "scope": "other/product",
+                "decision_key": "delivery",
+                "terms": [],
+            },
+            {
+                "id": "ctx_123e4567e89b42d3a456426614174001",
+                "path": "context/decision/proactive-loop.md",
+                "title": "proactive conversation conflict loop",
+                "summary": "incremental decision detection",
+                "scope": "shared/agent",
+                "decision_key": "conversation-loop",
+                "terms": ["proactive", "conflict"],
+            },
+        ]
+
+        def record(_repo, row):
+            return {
+                "id": row["id"],
+                "path": row["path"],
+                "sha256": "sha256:" + "a" * 64,
+                "frontmatter": {
+                    "title": row["title"],
+                    "summary": row["summary"],
+                    "scope": row["scope"],
+                    "decision_key": row["decision_key"],
+                },
+                "sections": {
+                    "결정": "대화 중 결정 신호를 증분 감지한다.",
+                    "취지": "충돌을 먼저 발견한다.",
+                    "반려대안": "매 turn 전체 recall은 반려한다.",
+                },
+            }
+
+        with (
+            mock.patch.object(decision_cli, "_index", return_value=("index", rows, [])),
+            mock.patch.object(decision_cli, "_record", side_effect=record) as opened,
+        ):
+            result = decision_cli.prepare_decision_check(
+                helpers.Path("."),
+                statement="proactive conversation conflict detection",
+                scope="project/new-area",
+                decision_key="new-slot",
+            )
+
+        self.assertEqual(
+            ["ctx_123e4567e89b42d3a456426614174001"],
+            [item["id"] for item in result["comparison_input"]["current"]],
+        )
+        self.assertEqual(1, opened.call_count)
 
     def test_acceptance_27_scope_overlap(self) -> None:
         with helpers.git_repo() as temp:

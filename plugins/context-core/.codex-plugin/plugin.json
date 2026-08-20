@@ -1,6 +1,6 @@
 {
   "name": "context-core",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Proactive scoped recall and approval-gated context capture with coordinated writes.",
   "author": {
     "name": "Jinwuk-Lee",
@@ -15,9 +15,9 @@
     "category": "Productivity",
     "capabilities": ["Read", "Write", "Validation"],
     "defaultPrompt": [
-      "Use $context-core:context for one scoped index-first recall when prior handoff, evidence, or decisions may change the work.",
+      "On each user turn, audit only the new semantic delta in the same response pass; when there is no durable signal, make no extra model or tool call and show no audit status. Keep only a compact session-local ephemeral ledger.",
       "Use $context-core:init only when the user asks to initialize the repository context root; that explicit call also installs or updates the active host's managed policy block.",
-      "Before substantive decisions, compare actual Current bodies and rationale, report conflicts or intent changes first, then finish the primary task and offer at most one approval-gated capture at a semantic milestone."
+      "When a signal may change judgment, use $context-core:context metadata-first, read only selected actual Current bodies, and reuse their id and SHA only while the body remains in session context and anchors stay valid; report conflicts first, then offer mature grouped capture after the primary answer and require exact approval."
     ]
   }
 }

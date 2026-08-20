@@ -17,6 +17,13 @@
 - `--strict-index`는 fallback 없이 exit 6 `index_stale`로 실패한다.
 - root index가 없으면 storage error `context_root_missing`이며 plugin dependency error와 다르다.
 
+## 대화 관찰 경계
+
+- 관리형 policy는 각 user turn의 새 의미를 같은 model response pass에서 한 번 audit한다. 이는 background daemon, 별도 model call 또는 per-turn CLI hook이 아니다. 신호가 없으면 tool call과 user-visible status가 모두 0이다.
+- host/model session에는 scope·anchor, 읽은 `{id,sha256}`, pending·dismissed 참조만 bounded ephemeral ledger로 둔다. 실제 artifact body와 candidate 전체를 복제하지 않으며 repository나 index에 쓰지 않는다.
+- 신호가 있을 때 Stage 1 metadata를 먼저 읽고 선택된 body만 materialize한다. body가 session context에 남아 있고 scope·evidence·anchor·index와 artifact SHA가 그대로일 때만 재사용한다.
+- conflict·rationale change 알림은 primary 결론 전, 일반 capture proposal은 성숙한 milestone 뒤다. dismissed·deferred 후보는 새 evidence가 생기기 전에는 다시 제안하지 않는다.
+
 ## Write 경계
 
 - semantic owner는 complete `context-owner-result/v1`의 draft/effect/proposed plan만 만든다.

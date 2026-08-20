@@ -1,7 +1,7 @@
 # Context capture policy
 
-Substantive 판단 전에 관련 Current context를 scoped index-first로 한 번 recall한다. 설치된 semantic owner가 있으면 실제 본문·scope·rationale를 비교하고 conflict 또는 rationale change를 primary 결론 전에 알린다. hash나 fingerprint로 의미를 판정하지 않는다.
+매 user turn의 새 의미를 같은 응답 pass에서 별도 model·tool 호출 없이 한 번 audit한다. durable signal이 없으면 audit 상태를 표시하지 않는다. scope·anchor, 읽은 Current `{id,sha256}`, pending·dismissed 참조만 session-local ephemeral ledger로 유지하고 실제 본문이나 후보 전체를 복제·저장하지 않는다.
 
-답변과 작업을 먼저 완료한다. semantic milestone마다 durable candidate audit은 최대 한 번 수행하며, 실제 재사용 후보가 없으면 사용자에게 capture 질문을 표시하지 않는다.
+신호가 있을 때만 index metadata를 먼저 recall하고 관련 실제 본문만 읽는다. 본문이 session context에 있고 scope·evidence·anchor·index와 artifact SHA가 그대로일 때만 재사용한다. semantic owner는 실제 본문·scope·rationale를 비교하며 conflict 또는 rationale change를 primary 결론 전에 알린다. hash, ID와 metadata는 의미 판정 근거가 아니다.
 
-후보가 있으면 설치된 capability를 기준으로 한 번만 추출하고 grouped preview를 제시한다. owner 호출은 host가 수행하며 router가 process, plugin cache 또는 대체 runtime을 탐색하지 않는다. 어떤 durable write도 사용자의 exact final-bundle 승인 전에 수행하지 않는다.
+그 외에는 원 답변을 먼저 완료하고, 성숙한 durable 후보만 milestone당 한 번 grouped proposal로 제시한다. dismissed·deferred 후보는 새 근거 전까지 재제안하지 않는다. 어떤 durable write도 사용자의 exact final-bundle 승인 전에는 수행하지 않는다.

@@ -26,7 +26,7 @@ Host는 `schema`/`capabilities`를 제외한 모든 CLI 호출에 `--host`, `--c
 
 ## Product flow
 
-대화가 선택으로 수렴하거나 기존 선택을 바꾸려 하면 `check`가 먼저 관련 Current DEC의 실제 `결정`, `취지`, `반려대안`을 bounded input으로 제공합니다. agent는 이를 새 후보와 비교해 다음 중 하나로 판정합니다.
+context-core가 각 대화 delta를 같은 응답 pass에서 가볍게 audit하고, 선택의 형성·변경 신호가 있을 때만 context-decision을 부릅니다. 같은 scope·anchor와 `{id,sha256}`의 본문이 session context에 남아 있을 때만 재사용하며, 본문이 없거나 관련 anchor가 바뀌면 `check`가 metadata로 후보를 줄이고 Current DEC의 실제 `결정`, `취지`, `반려대안`을 제공합니다.
 
 - `same`: 기존 결정을 재사용하고 중복 기록하지 않음
 - `supporting`: 기존 결정을 유지하고 재사용 가치가 있는 새 근거만 OBS 후보로 제안
@@ -34,12 +34,14 @@ Host는 `schema`/`capabilities`를 제외한 모든 CLI 호출에 `--host`, `--c
 - `conflict`: 양립하지 않는 내용을 결론 전에 알리고 유지·supersede 의도를 확인
 - `new`: 조회된 범위 안에서 관련 기존 결정을 찾지 못함
 
-이 비교는 실제 본문을 대상으로 하며 문자열 hash나 지문을 의미 동일성의 근거로 사용하지 않습니다. 결정이 확정되면 원래 대화의 답을 먼저 마친 뒤 기록할지 한 번 묻고, 승인된 final bundle만 `context-core` coordinator가 적용합니다. 이후 brief는 세 핵심 section을 함께 복원하고, 새 결정이 같은 slot을 supersede하면 이전 DEC를 history로 이동해 더는 따르지 않도록 표시합니다.
+이 비교는 실제 본문을 대상으로 하며 문자열 hash, ID나 metadata를 의미 동일성의 근거로 사용하지 않습니다. 충돌·취지 변경은 결론 전에 알리고, 그 외의 성숙한 결정은 원래 답 뒤 grouped proposal에 한 번 포함합니다. dismissed·deferred 후보는 새 evidence 전까지 반복하지 않으며 승인된 final bundle만 `context-core` coordinator가 적용합니다. 이후 brief는 세 핵심 section을 함께 복원하고, 새 결정이 같은 slot을 supersede하면 이전 DEC를 history로 이동해 더는 따르지 않도록 표시합니다.
 
-`init`이 설치하는 managed policy가 scoped recall, 사전 비교, 변화 알림, semantic milestone의 grouped capture 제안을 매 대화에서 유도합니다. 이는 agent 운영지침이지 background daemon이나 runtime hook은 아닙니다. 사용자 확인 없는 durable write는 계속 금지됩니다.
+`init`이 설치하는 managed policy가 증분 audit, 선택적 recall, 변화 알림과 grouped capture를 매 대화에서 유도합니다. 이는 agent의 같은 응답 pass에서 동작하는 운영지침이지 background daemon이나 per-turn hook은 아닙니다. 사용자 확인 없는 durable write는 계속 금지됩니다.
 
 기존 `wiki/` 자동 migration은 제공하지 않습니다. PCMS는 조직 권한·승인 workflow·cross-project search·policy·audit·conflict queue의 control-plane 경계이며, 이 local plugin은 결정 기록과 recall 자체에 집중합니다.
 
 0.2.0은 `claim_fingerprint`, `source_claim_fingerprint`와 batch-local `claim_key`를 제거한 breaking release입니다. `candidate_id`는 owner result 연결용 transport ID일 뿐 의미를 갖지 않습니다. 혼합 설치는 `context-common/v2` handshake에서 fail-closed합니다. 구형 artifact의 제거된 field는 읽을 수 있고 다음 승인 rewrite에서 lazy-clean합니다. 신규 candidate/draft에는 `schema_removed_field`로 계속 거부하며 fingerprint를 의미상 동일성 근거로 사용하지 않습니다.
 
 0.2.1은 `context-common/v2` 호환 patch release입니다. core doctor의 `partial|invalid` 진단은 전역 preflight 실패가 아니라 warning으로 전달하고, 실제 decision target과 겹치는 blocking issue만 해당 operation을 중단합니다. init target 자체의 schema·owner·path가 안전하지 않을 때만 core bootstrap이 write 0으로 실패합니다.
+
+0.3.0은 core audit가 선택 형성·변경 신호를 찾았을 때만 decision 비교를 수행합니다. `check`는 metadata로 후보를 먼저 좁히고 무관한 score-0 본문을 열지 않으며, 실제 관련 DEC 본문·scope·rationale 비교와 승인형 capture 경계는 그대로 유지합니다.

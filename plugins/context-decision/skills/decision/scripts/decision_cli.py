@@ -1597,12 +1597,33 @@ def prepare_decision_check(
         query = _bounded_string(query, "query", 280)
     scope = canonical_scope(scope)
     decision_key = canonical_decision_key(decision_key)
-    _, current_rows, _ = _index(repo)
-    tokens = _comparison_tokens(statement, rationale, query, scope, decision_key)
+    index_text, current_rows, _ = _index(repo)
+    tokens = _comparison_tokens(statement, rationale, query)
+
+    metadata_haystacks = [
+        normalized_key(
+            " ".join(str(row.get(field, "")) for field in ("title", "summary"))
+            + " "
+            + " ".join(str(term) for term in row.get("terms", []))
+        )
+        for row in current_rows
+    ]
+    token_frequency = {
+        token: sum(token in haystack for haystack in metadata_haystacks)
+        for token in tokens
+    }
+    # Structural scope/key matches stay authoritative; high-frequency lexical terms
+    # are discovery noise and must not cause arbitrary body reads.
+    frequency_cutoff = max(1, (len(current_rows) + 3) // 4)
+    distinctive_tokens = {
+        token
+        for token, frequency in token_frequency.items()
+        if 0 < frequency <= frequency_cutoff
+    }
 
     ranked: list[tuple[int, list[str], dict[str, Any]]] = []
     mandatory_ids: set[str] = set()
-    for row in current_rows:
+    for row, haystack in zip(current_rows, metadata_haystacks, strict=True):
         row_scope = row.get("scope")
         row_key = row.get("decision_key")
         score = 0
@@ -1618,19 +1639,14 @@ def prepare_decision_check(
         elif row_key == decision_key:
             score += 40
             reasons.append("same_decision_key")
+        elif row_scope == scope:
+            score += 20
+            reasons.append("exact_scope")
         elif isinstance(row_scope, str) and scopes_overlap(row_scope, scope):
             score += 20
             reasons.append("related_scope")
-        haystack = normalized_key(
-            " ".join(
-                str(row.get(field, ""))
-                for field in ("id", "title", "summary", "path", "scope", "decision_key")
-            )
-            + " "
-            + " ".join(str(term) for term in row.get("terms", []))
-        )
-        hits = sorted(token for token in tokens if token in haystack)
-        if hits:
+        hits = sorted(token for token in distinctive_tokens if token in haystack)
+        if hits and (score > 0 or len(hits) >= 2 or any(token_frequency[token] == 1 for token in hits)):
             score += min(len(hits), 8)
             reasons.append("lexical:" + ",".join(hits[:4]))
         ranked.append((score, reasons, row))
@@ -1643,18 +1659,18 @@ def prepare_decision_check(
             EXIT_CONFLICT,
         )
     ranked.sort(key=lambda item: (-item[0], str(item[2].get("path", "")), item[2]["id"]))
-    if len(ranked) <= limit:
-        selected = ranked
+    eligible = [item for item in ranked if item[0] > 0]
+    if len(eligible) <= limit:
+        selected = eligible
     else:
-        selected = [item for item in ranked if item[2]["id"] in mandatory_ids]
+        selected = [item for item in eligible if item[2]["id"] in mandatory_ids]
         selected_ids = {item[2]["id"] for item in selected}
-        for item in ranked:
+        for item in eligible:
             if len(selected) >= limit:
                 break
             if item[2]["id"] in selected_ids:
                 continue
-            reasons = item[1] or ["bounded_sample"]
-            selected.append((item[0], reasons, item[2]))
+            selected.append(item)
             selected_ids.add(item[2]["id"])
 
     proposal = {
@@ -1676,7 +1692,7 @@ def prepare_decision_check(
             "scope": record["frontmatter"]["scope"],
             "decision_key": record["frontmatter"]["decision_key"],
             "sections": {name: record["sections"][name] for name in CORE_SECTIONS},
-            "retrieval_reasons": reasons or ["full_current_set"],
+            "retrieval_reasons": reasons,
         }
         candidate_input = {"schema": "context-decision-comparison-input/v1", "proposal": proposal, "current": [*current, item]}
         if len(canonical_json(candidate_input).encode("utf-8")) > MAX_CHECK_BYTES:
@@ -1724,6 +1740,10 @@ def prepare_decision_check(
         },
         "retrieval": {
             "total_current": len(current_rows),
+            "metadata_matches": len(eligible),
+            "body_reads": len(current),
+            "selected_semantic_bytes": len(canonical_json(current).encode("utf-8")),
+            "index_sha256": file_digest(index_text),
             "returned": len(current),
             "omitted": omitted_count,
             "omitted_id_sample": omitted_id_sample,

@@ -30,6 +30,19 @@ def tree_digest(root: Path) -> str:
 
 
 class PluginContractTests(unittest.TestCase):
+    def test_managed_policy_keeps_the_incremental_loop_call_free_and_ephemeral(self) -> None:
+        policy = context_cli.POLICY_BODY
+        for contract in (
+            "같은 response pass",
+            "별도 model·tool 호출 없이",
+            "session-local ephemeral ledger",
+            "metadata 먼저",
+            "새 근거가 생기기 전에는 다시 제안하지 않는다",
+            "exact `approval_digest`",
+        ):
+            self.assertIn(contract, policy)
+        self.assertLessEqual(len(policy.encode("utf-8")), 2200)
+
     def test_explicit_init_installs_active_host_policy_and_preserves_external_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             repo = Path(temp)

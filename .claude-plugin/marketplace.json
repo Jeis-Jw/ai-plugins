@@ -39,13 +39,13 @@
       "name": "context-core",
       "source": "./plugins/context-core",
       "description": "대화 중 scoped recall·본문 비교·승인형 capture 제안과 단일 physical write coordinator를 제공하는 shared-context runtime",
-      "version": "0.2.1"
+      "version": "0.3.0"
     },
     {
       "name": "context-decision",
       "source": "./plugins/context-decision",
       "description": "기존 결정 본문을 먼저 비교하고 충돌·취지 변경을 알린 뒤 승인된 결정과 history를 보존하는 decision continuity plugin",
-      "version": "0.2.1"
+      "version": "0.3.0"
     }
   ]
 }
