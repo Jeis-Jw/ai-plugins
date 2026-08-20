@@ -124,13 +124,5 @@ class WorkflowReceiptConformanceTests(unittest.TestCase):
         self.assertIn("local-only", github_manifest["description"])
         self.assertIn("GitHub Issue Tree", github_define)
 
-        for plugin in ("context-core", "context-decision"):
-            init_frontmatter = (
-                REPO / f"plugins/{plugin}/skills/init/SKILL.md"
-            ).read_text(encoding="utf-8").split("# ", 1)[0]
-            self.assertIn("명시적으로 요청", init_frontmatter)
-            self.assertIn("자동 실행하지 않는다", init_frontmatter)
-
-
 if __name__ == "__main__":
     unittest.main()

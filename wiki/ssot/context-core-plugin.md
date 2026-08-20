@@ -1,13 +1,21 @@
 ---
 title: context-core 플러그인
 created_at: 2026-08-13
-summary: 대화에서 생긴 재사용 가치 있는 프로젝트 맥락을 index-first로 회수하고, semantic owner 비교와 사용자 승인 뒤에만 보관하는 가벼운 Git/Markdown 공통 runtime의 제품·구현·평가 정본.
-tags: [context-core, plugin, snapshot, observation, recall, ssot]
-verified_at: 2026-08-17
-affects_paths: [plugins/context-core/**]
+summary: ai-plugins가 소유하던 context-core의 설계 이력과 context-plugins 독립 저장소로의 이관 provenance.
+tags: [context-core, plugin, snapshot, observation, recall, ssot, relocation]
+verified_at: 2026-08-20
+affects_paths: [wiki/ssot/context-core-plugin.md]
 ---
 
-## 현재 상태
+## 현재 상태와 소유권
+
+2026-08-20부터 `context-core`의 canonical source와 공개 계약은 독립 저장소 `/Users/jinwuklee/SRCs/personal/context-manager/context-plugins`가 소유한다. 최초 이관 기준은 `ai-plugins@eea43c9386735aa6141203a8a8912b0256746a64`, 검증된 새 저장소 commit은 `69c0544790e4ba873efa18f63f4f2f285af0ea59`다. 새 distribution identity는 `context-core@context-plugins`, planned source는 `Jeis-Jw/context-plugins`, version은 `0.4.0`이다.
+
+이 문서는 ai-plugins 안의 설계·검증 이력을 보존하는 historical record이며 더 이상 implementation SSOT가 아니다. 현재 공개 계약은 새 저장소의 root/plugin README와 plugin-local protocol reference를 따른다. ai-plugins의 기존 `context/`와 managed policy는 consumer dogfood data이므로 source 이관과 함께 삭제하거나 자동 migration하지 않는다.
+
+외부 repository 생성·push·marketplace publication과 새 좌표의 live install은 아직 수행하지 않았다. 따라서 기존 설치본 `context-core@jeis-ai-plugins`가 새 source로 전환됐다고 해석하지 않는다.
+
+## 이관 당시 상태
 
 `context-core` 0.2.0은 구현되어 deterministic test와 교차 플러그인 fixture로 검증한다. 목적은 대화 전체를 기억하는 범용 memory가 아니라, 이후 판단을 바꿀 수 있는 프로젝트 맥락을 필요한 순간에 회수하고 보관 가치가 생긴 시점에 승인형 capture로 연결하는 것이다. 기존 `wiki-markdown`의 snapshot/observation/index/recall 경험을 참고하지만 별도 plugin과 storage root를 사용하며 자동 migration이나 호환성을 약속하지 않는다.
 

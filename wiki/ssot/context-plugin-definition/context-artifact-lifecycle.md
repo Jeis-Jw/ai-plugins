@@ -1,13 +1,17 @@
 ---
 title: SNAP OBS DEC artifact lifecycle 계약
 created_at: 2026-08-13
-summary: SNAP은 현재 handoff staging으로 제자리 갱신 후 discard하고, OBS와 DEC는 의미 불변 record로서 domain별 retire reason과 supersede edge를 갖는 v1 상태 전이 계약.
-tags: [context-core, context-decision, snapshot, observation, decision, lifecycle, ssot]
-verified_at: 2026-08-17
-affects_paths: [plugins/context-core/**, plugins/context-decision/**]
+summary: ai-plugins에서 설계한 SNAP OBS DEC lifecycle 계약의 historical record와 독립 context-plugins 저장소로의 이관 pointer.
+tags: [context-core, context-decision, snapshot, observation, decision, lifecycle, ssot, relocation]
+verified_at: 2026-08-20
+affects_paths: [wiki/ssot/context-plugin-definition/context-artifact-lifecycle.md]
 ---
 
-## 현재 상태
+## 현재 상태와 소유권
+
+2026-08-20부터 이 계약의 구현 정본은 `/Users/jinwuklee/SRCs/personal/context-manager/context-plugins@69c0544790e4ba873efa18f63f4f2f285af0ea59`가 소유한다. 이 문서는 `ai-plugins`에서 형성된 historical design record이며 새 저장소의 plugin-local references와 tests보다 우선하지 않는다.
+
+## 이관 당시 계약
 
 artifact가 생성됐다는 이유로 그 원천 artifact를 자동 종료하지 않는다. successor가 **같은 semantic claim**을 인수할 때만 supersede한다. evidence와 choice, handoff와 durable record처럼 의미가 다르면 관계로 공존한다.
 

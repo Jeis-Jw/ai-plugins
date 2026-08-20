@@ -1,18 +1,22 @@
 ---
 title: 컨텍스트 플러그인 정의 (영역 인덱스)
 created_at: 2026-08-13
-summary: context-core와 context-decision의 구현 정본 영역으로 공통 저장·semantic index, artifact별 lifecycle, 단일 capture audit와 recall, v1 구현·검증 계약을 연결한다.
-tags: [context-core, context-decision, plugin, architecture, ssot]
-verified_at: 2026-08-17
+summary: ai-plugins에서 설계된 context-core와 context-decision의 historical contract와 독립 context-plugins 저장소로의 이관 경계를 연결한다.
+tags: [context-core, context-decision, plugin, architecture, ssot, relocation]
+verified_at: 2026-08-20
 audience: [human, agent]
-affects_paths: [plugins/context-core/**, plugins/context-decision/**]
+affects_paths: [wiki/ssot/context-plugin-definition/**]
 ---
 
 # 컨텍스트 플러그인 정의
 
+## 현재 상태와 소유권
+
+2026-08-20부터 이 영역의 구현 정본은 `/Users/jinwuklee/SRCs/personal/context-manager/context-plugins@69c0544790e4ba873efa18f63f4f2f285af0ea59`로 이전했다. 이 디렉터리는 `ai-plugins`에서 형성된 설계와 acceptance 이력을 보존하며, 새 저장소의 README·plugin-local references·tests보다 우선하지 않는다. 외부 공개·push·live install은 아직 미수행 상태다.
+
 이 영역은 기존 `wiki-markdown`을 그대로 분리하는 설계가 아니라, 대화와 작업에서 생긴 공유 맥락을 가볍게 보존하는 새 플러그인군의 구현 계약이다. 기존 플러그인은 동작·실패 사례를 확인하는 참고 구현이며 새 계약의 하위 호환 대상은 아니다.
 
-현재 상태는 **0.2.0 구현·통합 검증 단계**다. 문서의 `MUST`는 acceptance를 구성하고 `SHOULD`는 특별한 반대 근거가 없으면 구현한다. `MAY`는 후속 선택 사항이다.
+아래 내용은 **0.2.0 구현·통합 검증 당시 계약**이다. 문서의 `MUST`는 당시 acceptance를 구성했고 `SHOULD`는 특별한 반대 근거가 없으면 구현했다. `MAY`는 후속 선택 사항이었다.
 
 ## 제품 구조
 

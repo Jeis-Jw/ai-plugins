@@ -1,9 +1,0 @@
-{
-  "before": "active document bytes\n",
-  "after": "retired document bytes\n",
-  "states": [
-    {"id": "start", "source": "before", "destination": "absent", "expected_result": "completed_start"},
-    {"id": "prepared", "source": "before", "destination": "after", "expected_result": "resumed_prepared"},
-    {"id": "final", "source": "absent", "destination": "after", "expected_result": "already_final"}
-  ]
-}

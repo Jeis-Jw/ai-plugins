@@ -1,13 +1,17 @@
 ---
 title: 컨텍스트 capture routing과 bounded recall 계약
 created_at: 2026-08-13
-summary: 현재 대화를 milestone당 한 번 감사해 bounded ephemeral candidate를 만들고 설치된 semantic owner로 중복 없이 routing한 뒤 grouped approval 후에만 기록하는 provider-neutral v1 계약.
-tags: [context-core, capture, routing, approval, recall, token-efficiency, ssot]
-verified_at: 2026-08-17
-affects_paths: [plugins/context-core/**, plugins/context-decision/**]
+summary: ai-plugins에서 설계한 context capture routing 계약의 historical record와 독립 context-plugins 저장소로의 이관 pointer.
+tags: [context-core, capture, routing, approval, recall, token-efficiency, ssot, relocation]
+verified_at: 2026-08-20
+affects_paths: [wiki/ssot/context-plugin-definition/context-capture-routing.md]
 ---
 
-## 현재 상태
+## 현재 상태와 소유권
+
+2026-08-20부터 이 계약의 구현 정본은 `/Users/jinwuklee/SRCs/personal/context-manager/context-plugins@69c0544790e4ba873efa18f63f4f2f285af0ea59`가 소유한다. 이 문서는 `ai-plugins`에서 형성된 historical design record이며 새 저장소의 plugin-local references와 tests보다 우선하지 않는다.
+
+## 이관 당시 계약
 
 ### Recall and compare before capture
 

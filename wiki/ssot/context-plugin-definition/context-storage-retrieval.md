@@ -1,13 +1,17 @@
 ---
 title: 컨텍스트 저장소와 semantic index 조회 계약
 created_at: 2026-08-13
-summary: 자유로운 Markdown 파일명과 immutable ID를 분리하고 context.index.md 및 영역별 semantic index를 문서에서 파생해 index-first·document-authoritative recall을 수행하는 v1 계약.
-tags: [context-core, storage, index, recall, obsidian, ssot]
-verified_at: 2026-08-17
-affects_paths: [plugins/context-core/**, plugins/context-decision/**]
+summary: ai-plugins에서 설계한 context storage와 semantic index 계약의 historical record와 독립 context-plugins 저장소로의 이관 pointer.
+tags: [context-core, storage, index, recall, obsidian, ssot, relocation]
+verified_at: 2026-08-20
+affects_paths: [wiki/ssot/context-plugin-definition/context-storage-retrieval.md]
 ---
 
-## 현재 상태
+## 현재 상태와 소유권
+
+2026-08-20부터 이 계약의 구현 정본은 `/Users/jinwuklee/SRCs/personal/context-manager/context-plugins@69c0544790e4ba873efa18f63f4f2f285af0ea59`가 소유한다. 이 문서는 `ai-plugins`에서 형성된 historical design record이며 새 저장소의 plugin-local references와 tests보다 우선하지 않는다.
+
+## 이관 당시 계약
 
 ### 저장 구조와 예약 경로
 

@@ -1,15 +1,19 @@
 ---
 title: context-core와 context-decision v1 구현 계획과 acceptance
 created_at: 2026-08-13
-summary: 구현 순서, source 단위, CLI·fixture·통합 테스트, token/I-O 계측, host packaging과 공개 release gate를 정의한 context plugin v1 실행 청사진.
-tags: [context-core, context-decision, implementation, acceptance, release, ssot]
-verified_at: 2026-08-17
-affects_paths: [plugins/context-core/**, plugins/context-decision/**]
+summary: ai-plugins에서 실행한 context plugin v1 구현·acceptance 계획의 historical record와 독립 context-plugins 저장소로의 이관 pointer.
+tags: [context-core, context-decision, implementation, acceptance, release, ssot, relocation]
+verified_at: 2026-08-20
+affects_paths: [wiki/ssot/context-plugin-definition/context-v1-implementation.md]
 ---
 
-## 현재 상태
+## 현재 상태와 소유권
 
-이 문서는 [[context-storage-retrieval]], [[context-artifact-lifecycle]], [[context-capture-routing]], [[context-core-plugin]], [[context-decision-plugin]]을 코드로 옮긴 순서와 완료 조건이다. 현재 0.2.0 통합 candidate는 Phase 1~5의 deterministic acceptance를 구현했고 최종 회귀 검증 대상으로 둔다.
+2026-08-20부터 이 구현 계약과 acceptance의 정본은 `/Users/jinwuklee/SRCs/personal/context-manager/context-plugins@69c0544790e4ba873efa18f63f4f2f285af0ea59`가 소유한다. 이 문서는 `ai-plugins`에서 실행한 historical plan이며 새 저장소의 manifests, tests와 CI보다 우선하지 않는다.
+
+## 이관 당시 상태
+
+이 문서는 [[context-storage-retrieval]], [[context-artifact-lifecycle]], [[context-capture-routing]], [[context-core-plugin]], [[context-decision-plugin]]을 코드로 옮긴 순서와 완료 조건이다. 이관 당시 0.2.0 통합 candidate는 Phase 1~5의 deterministic acceptance를 구현했고 최종 회귀 검증 대상으로 뒀다.
 
 ### v1 기술 제약
 

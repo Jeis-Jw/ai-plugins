@@ -107,8 +107,6 @@ class PluginDistributionTests(unittest.TestCase):
             "session-review",
             "studio",
             "task-worker",
-            "context-core",
-            "context-decision",
         ):
             plugin_root = REPO / "plugins" / name
             claude = read_json(plugin_root / ".claude-plugin" / "plugin.json")

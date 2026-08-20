@@ -1,13 +1,19 @@
 ---
 title: context-decision 플러그인
 created_at: 2026-08-13
-summary: 결정·취지·반려대안을 하나의 권위 record로 보존하고 scope·decision key·conflict·supersede·withdraw·revisit와 결정 전용 recall을 소유하는 공개 제품의 구현 정본.
-tags: [context-decision, plugin, decision, rationale, supersede, ssot]
-verified_at: 2026-08-17
-affects_paths: [plugins/context-decision/**]
+summary: ai-plugins가 소유하던 context-decision의 설계 이력과 context-plugins 독립 저장소로의 이관 provenance.
+tags: [context-decision, plugin, decision, rationale, supersede, ssot, relocation]
+verified_at: 2026-08-20
+affects_paths: [wiki/ssot/context-decision-plugin.md]
 ---
 
-## 현재 상태
+## 현재 상태와 소유권
+
+2026-08-20부터 `context-decision`의 canonical source와 공개 계약은 독립 저장소 `/Users/jinwuklee/SRCs/personal/context-manager/context-plugins`가 소유한다. 최초 이관 기준은 `ai-plugins@eea43c9386735aa6141203a8a8912b0256746a64`, 검증된 새 저장소 commit은 `69c0544790e4ba873efa18f63f4f2f285af0ea59`다. 새 distribution identity는 `context-decision@context-plugins`, core selector는 `context-core@context-plugins`, planned source는 `Jeis-Jw/context-plugins`, version은 `0.4.0`이다.
+
+이 문서는 ai-plugins 안의 설계·검증 이력을 보존하는 historical record이며 더 이상 implementation SSOT가 아니다. 현재 공개 계약은 새 저장소의 root/plugin README와 plugin-local protocol reference를 따른다. 외부 repository 생성·push·marketplace publication과 새 좌표의 live install은 아직 수행하지 않았다.
+
+## 이관 당시 상태
 
 `context-decision` 0.2.0은 구현되어 deterministic test와 교차 플러그인 fixture로 검증한다. 공개 제품의 전면은 범용 memory가 아니라 프로젝트·조직에서 “무엇을 왜 결정했고, 무엇을 반려했으며, 지금도 무엇을 따라야 하는가”를 복원하는 decision continuity다.
 
