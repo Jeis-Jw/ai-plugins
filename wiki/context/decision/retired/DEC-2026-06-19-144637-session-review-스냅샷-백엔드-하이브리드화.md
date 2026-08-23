@@ -5,6 +5,9 @@ summary: session-review가 wiki-markdown 있으면 위임, 없으면 동일 포�
 tags: [session-review, architecture, portability]
 relations:
   ssot: [session-review-plugin]
+retired_at: 2026-08-24
+retired_type: superseded
+superseded_by: DEC-2026-08-24-013005-session-review-snapshot-provider를-설정으로-선택하고-context-core를-연결한다
 ---
 
 ## 결정

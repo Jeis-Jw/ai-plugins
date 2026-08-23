@@ -1,15 +1,25 @@
 ---
 title: session-review 플러그인
 created_at: 2026-06-18
-summary: read-only doctor로 준비 상태를 확인하고 worker/reviewer가 audit snapshot 또는 fast context와 reviewer lease로 리뷰를 수렴시키는 플러그인 설계 정본
-tags: [session-review, review, design]
-verified_at: 2026-08-14
+summary: 설정된 snapshot provider(builtin|wiki-markdown|context-core) 위에서 worker/reviewer가 audit snapshot 또는 fast context와 reviewer lease로 리뷰를 수렴시키고 read-only doctor로 준비 상태를 확인하는 플러그인 설계 정본
+tags: [session-review, review, design, context-core]
+verified_at: 2026-08-24
 affects_paths: [plugins/session-review/**]
 ---
 
 ## 현재 상태
 
-session-review 0.6.0은 별도 persistent config를 만들지 않는다. `session-review:doctor`가 기존 단일 CLI facade에서 snapshot backend resolver, wiki vault, Git worktree/branch/HEAD/dirty 준비 상태를 read-only JSON으로 보고한다. `wiki-markdown`이 없을 때의 built-in backend는 정상 지원 상태이며, 잘못 지정한 `SESSION_REVIEW_WIKI_CLI` override는 fallback과 함께 경고한다.
+session-review 0.7.0은 **플러그인 의존이 없다.** 핸드셰이크를 쓰는 snapshot provider는 workspace의 `.session-review.yml`이 정한다 — `snapshot-provider: builtin|wiki-markdown|context-core`, 선택적 `snapshot-cli:`; env `SESSION_REVIEW_SNAPSHOT_PROVIDER`/`SESSION_REVIEW_SNAPSHOT_CLI`가 우선, 설정이 없으면 `builtin`(wiki snapshot과 동일 포맷·위치의 내장 writer). 자동 발견은 없다: sibling `wiki-markdown`이 있어도 설정하지 않으면 쓰지 않고, 지정한 provider의 CLI를 못 찾으면(sibling → 설치 cache 최신 → PATH) fallback 없이 오류다 ([[DEC-2026-08-24-013005-session-review-snapshot-provider를-설정으로-선택하고-context-core를-연결한다]]). 플러그인 자체는 여전히 persistent config를 *만들지* 않는다 — `.session-review.yml`은 사용자가 쓴다.
+
+| provider | snapshot 파일 | status 섹션 | 비고 |
+|---|---|---|---|
+| `builtin`(기본) | `<vault>/snapshot/SNAP-<slug>.md` | `## 현재 논의` | 내장 writer, wiki와 동일 포맷(bespoke 아님); `snapshot.md` index는 이미 있을 때만 갱신 |
+| `wiki-markdown` | `<vault>/snapshot/SNAP-<slug>.md` | `## 현재 논의` | `wiki_cli.py snapshot save/load/discard` 위임; vault = `WIKI_VAULT` 또는 `./wiki` |
+| `context-core` | `<worktree>/context/snapshot/<slug>.md` | `## 현재 맥락` | `context_cli.py` 2단계 write(`snapshot save/update/discard` → `transaction apply`)를 facade가 스스로 승인; root = git worktree(cwd); `context_cli.py init` 선행 필요 |
+
+context-core 매핑: discussion→`현재 맥락`, open_questions→`열린 항목`, next_steps→`다음 단계`, decided→`정해진 것`, references+background→`참조`(`배경` 대응 섹션 없음), promotion_candidates→`capture 후보`. non-primary 섹션은 `- ` list로 저장. `snapshot save`의 primary 1200자 cap 때문에 seed 섹션으로 생성한 뒤 `update --merge`(cap 없음)로 실제 본문을 넣고, `열린 항목`/`다음 단계`는 `--open-questions`/`--next`를 주지 않으면 seed 문구가 남는다. `set-status`는 모든 provider에서 파일을 직접 고쳐 쓰며, context-core index는 frontmatter만 투영하므로 body-only write 뒤에도 `doctor`/`load`가 clean하다(테스트로 고정). `snapshot-dir` 서브커맨드가 provider의 snapshot 디렉터리를 돌려주므로 스킬은 `git add "$(… snapshot-dir)"`로 스테이징한다.
+
+`session-review:doctor`는 단일 CLI facade에서 provider(`provider`/`source`=env|config|default/`cli`/`config`/`error`), provider root(wiki vault 존재·생성 가능 여부, 또는 context-core `context/snapshot/snapshot.index.md` 초기화 여부), Git worktree/branch/HEAD/dirty를 read-only JSON으로 보고한다.
 
 선택 경계는 public plugin/`request-review` description에 노출한다. addressable reviewer의
 독립성, feedback round continuity 또는 audit 가능한 approval gate가 필요할 때 사용하며,
@@ -21,11 +31,11 @@ session-review 0.6.0은 별도 persistent config를 만들지 않는다. `sessio
 ### 3계층
 | 계층 | 무엇 | 성격 | 완료 시 |
 |------|------|------|---------|
-| 핸드셰이크(소통 채널) | 프로세스 상태·피드백·핸드오프 운반 | wiki **snapshot 기능** 사용. 단일 가변, 매 턴 갱신 | discard |
+| 핸드셰이크(소통 채널) | 프로세스 상태·피드백·핸드오프 운반 | 설정된 provider의 **snapshot 기능** 사용(builtin/wiki-markdown/context-core). 단일 가변, 매 턴 갱신 | discard |
 | 리뷰 대상(산출물) | 실제 작업 결과 — 이 ssot 같은 문서 또는 코드 diff | 수렴 대상 | 작업브랜치로 squash merge |
 | 역할 | worker(산출물 생성/수정+요청), reviewer(검토+피드백) | 독립 두 세션 | — |
 
-핸드셰이크는 wiki snapshot 기능을 그대로 쓴다(별도 파일/디렉터리 신설 안 함). 대화 전체 이력·과거 diff는 누적하지 않고 git log가 보관 — 핸드셰이크는 "git log와 합치면 전체 맥락 복원" 수준의 압축 현재상태만 유지한다.
+핸드셰이크는 provider의 snapshot 기능을 그대로 쓴다(별도 파일포맷/디렉터리 신설 안 함 — 어느 snapshot이냐만 설정이 정한다). 대화 전체 이력·과거 diff는 누적하지 않고 git log가 보관 — 핸드셰이크는 "git log와 합치면 전체 맥락 복원" 수준의 압축 현재상태만 유지한다.
 
 ### 실행 모드 (flow mode) — 시작 시 선택
 리뷰 플로우 시작(`request-review`) 시 모드를 정한다. 작업자 에이전트가 **서브에이전트를 지원**하는 경우에만 선택지가 열린다.
@@ -75,7 +85,7 @@ session-review 0.6.0은 별도 persistent config를 만들지 않는다. `sessio
 ### 상태 머신
 - **phase** (수렴 상태, owner=다음 행위자): `awaiting-review`(→reviewer) / `changes-requested`(→worker) / `approved`(→worker, 유저확인 진행) / `awaiting-user-confirmation`(→user) / `completed`(terminal) / `blocked`(→user).
 - **lock** (동시성): `active_actor` = none|worker|reviewer. 턴 시작 시 획득, 핸드오프 커밋 시 해제. 타인이 active면 행위 금지.
-- **턴/상태 정본 = parseable status object.** audit는 snapshot `## 현재 논의`의 첫 fenced `yaml` block, fast는 context JSON을 쓴다. 공통 필드는 phase/actor/target/round/profile/verdict와 reviewer lease 필드다. 식별자/ref/enum/digest/timestamp는 string, `round`·`blocking_count`·expiry/fresh/reuse counter는 integer, `fresh_required`는 boolean, `lock_since`는 ISO8601 string 또는 `null`이다. 전부-숫자 commit SHA도 string으로 normalize하며, helper가 phase/lock/verdict/lease 일관성을 강제한다.
+- **턴/상태 정본 = parseable status object.** audit는 snapshot primary 섹션(`## 현재 논의`, context-core는 `## 현재 맥락`)의 첫 fenced `yaml` block, fast는 context JSON을 쓴다. 공통 필드는 phase/actor/target/round/profile/verdict와 reviewer lease 필드다. 식별자/ref/enum/digest/timestamp는 string, `round`·`blocking_count`·expiry/fresh/reuse counter는 integer, `fresh_required`는 boolean, `lock_since`는 ISO8601 string 또는 `null`이다. 전부-숫자 commit SHA도 string으로 normalize하며, helper가 phase/lock/verdict/lease 일관성을 강제한다.
 - **리뷰 대상 성격/라운드 목적.** `target_nature`는 `code|spec|direction|process|general`, `round_type`은 `explore|converge|confirm|review`, `review_posture` override는 `verify|challenge|co-design`만 허용한다. `review_posture=confirm`은 금지다. `confirm`은 posture가 아니라 `round_type`이며 별도 lock-check behavior를 갖는다. 기본값은 보수적이다: `target_mode=diff`면 `target_nature=code`, document/unknown은 `general` fallback, `round_type` 누락은 `review`. helper는 `target_nature + round_type`에서 `effective_review_posture`를 계산한다.
 
 파생 기본값:
@@ -131,22 +141,22 @@ audit 통과 시 `base..HEAD`를 squash merge → 작업브랜치, 리뷰브랜�
 
 - **목적**: 한 세션의 작업을 독립 세션이 리뷰하고, 작업→피드백→재작업/완료를 반복해 수렴시킨다. 완료는 유저 확인 필수.
 - **성공 조건 (north star)**: 처음 보는 세션이 리뷰브랜치 checkout 후 **핸드셰이크 + git log만으로 다음 턴을 안전하게 수행**할 수 있다. "리뷰 가능"이 아니라 "안전한 핸드오프 가능"이 기준.
-- **왜 wiki 기능 위에 짓나**: 소통 채널은 wiki **snapshot**("다른 세션이 이어받도록 토론을 저장")에 정확히 부합 → 재발명하지 않는다. 산출물/설계 지식은 **ssot**(이 레포 4계층: knowledge→`wiki/*`). 별도 파일포맷·디렉터리를 새로 만들지 않는다.
+- **왜 snapshot 기능 위에 짓나**: 소통 채널은 **snapshot**("다른 세션이 이어받도록 토론을 저장")에 정확히 부합 → 재발명하지 않는다. 처음엔 wiki snapshot이었고(DEC-2026-06-18), 0.7.0부터는 같은 원칙을 설정된 provider(builtin/wiki-markdown/context-core)로 일반화했다. 산출물/설계 지식은 **ssot**(이 레포 4계층: knowledge→`wiki/*`). 별도 파일포맷·디렉터리를 새로 만들지 않는다.
 - **왜 PR 리뷰와 별개**: `task-github:review`/`pr-verifier`는 PR↔Issue 검증기. 이건 워크스페이스 내부 협업 프로토콜로, 코드뿐 아니라 문서(이 ssot처럼)도 대상이다.
 
 ## 구성요소
 
-### 핸드셰이크 (wiki snapshot)
-`SNAP-<slug>`, 고정 7섹션에 매핑:
-| snapshot 섹션 | 리뷰 용도 |
-|---------------|-----------|
-| discussion(현재 논의) | **맨 앞 parseable status block(yaml)** + 이번 라운드 핸드오프 |
-| background(배경) | 목적·브랜치 토폴로지·리뷰 대상 |
-| decided(정해진 것) | resolved feedback + 확정 결정 |
-| open_questions(열린 질문) | unresolved feedback + 리뷰 질문 |
-| next_steps(다음에 볼 것) | next actor + 리뷰 요청(렌즈) |
-| references(관련 파일/문서) | 대상 문서·브랜치·base commit |
-| promotion_candidates(승격 후보) | wiki decision으로 승격할 결정 |
+### 핸드셰이크 (snapshot provider)
+facade의 섹션 어휘는 provider와 무관하게 하나다(wiki 7섹션 기준). builtin/wiki-markdown은 `SNAP-<slug>`에 그대로, context-core는 오른쪽 열로 매핑:
+| snapshot 섹션 | 리뷰 용도 | context-core |
+|---------------|-----------|---|
+| discussion(현재 논의) | **맨 앞 parseable status block(yaml)** + 이번 라운드 핸드오프 | `현재 맥락` |
+| background(배경) | 목적·브랜치 토폴로지·리뷰 대상 | `참조`에 합침 |
+| decided(정해진 것) | resolved feedback + 확정 결정 | `정해진 것` |
+| open_questions(열린 질문) | unresolved feedback + 리뷰 질문 | `열린 항목`(필수, seed 기본) |
+| next_steps(다음에 볼 것) | next actor + 리뷰 요청(렌즈) | `다음 단계`(필수, seed 기본) |
+| references(관련 파일/문서) | 대상 문서·브랜치·base commit | `참조` |
+| promotion_candidates(승격 후보) | wiki decision으로 승격할 결정 | `capture 후보` |
 
 ### 역할 동작 계약
 - **worker**: 요청 초점 좁히기(대상+렌즈), 이미 기각한 대안 명시, 피드백 맹종 금지(수용=명시/이견=근거 반박), 수렴 우선(`[blocking]`만 처리·나머지 defer), `[should-reflect-before-implementation]`은 `accepted`/`deferred`/`rejected-with-rationale` 중 하나로 정리, 항목별 처리 추적, **커밋 메시지에 의미 있는 요약을 환경 기본 언어로** 작성, **판단·결정·완료 소통 담당**(애매한 판단 차이→사용자에게 질문, 승인 후→리뷰 내용 요약 브리핑+사용자 확인; 운영 릴레이는 별개). 시작 시 필독: 핸드셰이크 + `git log <직전 핸드오프>..HEAD` + 대상.
@@ -161,7 +171,7 @@ audit 통과 시 `base..HEAD`를 squash merge → 작업브랜치, 리뷰브랜�
 | `address-feedback` | worker | "피드백 왔어 / 확인해" |
 | `review` | reviewer | "n라운드 리뷰요청 왔어 / 새 리뷰 필요해" |
 | `complete` | worker | "완료해" (유저확인 게이트) |
-| `doctor` | operator | "session-review 진단해줘" (backend/vault/git read-only 점검) |
+| `doctor` | operator | "session-review 진단해줘" (provider 설정/root/git read-only 점검) |
 
 ### 동시성 / 이탈 경로
 - 동시 작업: lock으로 방지(타인 active면 중단).
