@@ -17,7 +17,7 @@ wiki_cli를 직접 호출하지 않는다.
 - 해석 순서: `SR="${SESSION_REVIEW_CLI:-$CLAUDE_PLUGIN_ROOT/scripts/session_review.py}"`.
   Codex 등 `$CLAUDE_PLUGIN_ROOT`가 없으면 이 스킬 로드 위치의 플러그인 루트 아래
   `scripts/session_review.py`로 `SR`(또는 `SESSION_REVIEW_CLI`)을 지정한다.
-- 스냅샷 백엔드는 하이브리드(wiki 있으면 위임, 없으면 내장).
+- snapshot provider는 `.session-review.yml`이 정한다(builtin|wiki-markdown|context-core).
 
 ## 절차
 
@@ -80,9 +80,10 @@ wiki_cli를 직접 호출하지 않는다.
    ```
    `{...}`는 현재 status의 lease 필드 전체를 보존한다는 뜻이며 실제 JSON 문법이 아니다.
    - `--fenced`는 status를 ```yaml 펜스째 출력하므로 그대로 discussion에 넣는다.
-   - 피드백은 `### 리뷰 피드백 (round N)` **하위 헤딩**으로 둬서 `## 현재 논의` 안에
-     머물게 한다(sibling `## ...` 금지 — `--merge`가 discussion을 매 라운드 통째
-     교체하므로 누적되지 않는다). `--merge`라 `--title/--summary/--tags`는 생략 가능:
+   - 피드백은 `### 리뷰 피드백 (round N)` **하위 헤딩**으로 둬서 primary 섹션
+     (`## 현재 논의`, context-core는 `## 현재 맥락`) 안에 머물게 한다(sibling `## ...`
+     금지 — `--merge`가 discussion을 매 라운드 통째 교체하므로 누적되지 않는다).
+     `--merge`라 `--title/--summary/--tags`는 생략 가능:
    ```bash
    python3 "$SR" snapshot-save --slug <snapshot> --merge \
      --discussion "$(printf '%s\n\n### 리뷰 피드백 (round %s)\n%s\n' "$STATUS" "$ROUND" "$FEEDBACK")"
@@ -95,7 +96,7 @@ wiki_cli를 직접 호출하지 않는다.
    검증한다.
    ```bash
    python3 "$SR" validate-status --slug <snapshot>   # approved ⇒ blocking_count==0 강제
-   git add wiki/snapshot
+   git add "$(python3 "$SR" snapshot-dir)"
    git commit -m "review: feedback — <approved|changes-requested>, <요지>"
    ```
 

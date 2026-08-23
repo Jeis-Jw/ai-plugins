@@ -56,9 +56,9 @@ phase: ignored
 
 
 class SessionReviewStatusTests(unittest.TestCase):
-    def test_doctor_reports_builtin_backend_without_persistent_config(self):
+    def test_doctor_reports_builtin_provider_without_persistent_config(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
-            os.environ, {"SESSION_REVIEW_WIKI_CLI": "off"}
+            os.environ, {"SESSION_REVIEW_SNAPSHOT_PROVIDER": "builtin"}
         ), mock.patch.object(
             session_review,
             "git_readiness",
@@ -70,14 +70,16 @@ class SessionReviewStatusTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertFalse(result["mutation_allowed"])
         self.assertFalse(result["persistent_config"])
-        self.assertEqual(result["backend"]["mode"], "built-in")
+        self.assertEqual(result["backend"]["provider"], "builtin")
+        self.assertEqual(result["backend"]["source"], "env")
         self.assertEqual(result["vault"]["status"], "creatable")
         self.assertFalse((root / "wiki").exists())
 
-    def test_doctor_warns_for_invalid_override_and_fails_without_git(self):
+    def test_doctor_fails_when_configured_provider_cli_is_missing(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
             os.environ,
-            {"SESSION_REVIEW_WIKI_CLI": str(Path(tmp) / "missing-wiki-cli.py")},
+            {"SESSION_REVIEW_SNAPSHOT_PROVIDER": "wiki-markdown",
+             "SESSION_REVIEW_SNAPSHOT_CLI": str(Path(tmp) / "missing-wiki-cli.py")},
         ), mock.patch.object(
             session_review,
             "git_readiness",
@@ -87,8 +89,31 @@ class SessionReviewStatusTests(unittest.TestCase):
             result = session_review.doctor(root, root / "wiki")
 
         self.assertFalse(result["ok"])
-        self.assertTrue(result["backend"]["override_invalid"])
-        self.assertEqual(result["backend"]["mode"], "built-in")
+        self.assertFalse(result["backend"]["ready"])
+        self.assertEqual(result["backend"]["provider"], "wiki-markdown")
+        self.assertIn("not found", result["backend"]["error"])
+
+    def test_doctor_context_core_requires_initialized_context_root(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            os.environ,
+            {"SESSION_REVIEW_SNAPSHOT_PROVIDER": "context-core",
+             "SESSION_REVIEW_SNAPSHOT_CLI": __file__},  # any existing file
+        ), mock.patch.object(
+            session_review,
+            "git_readiness",
+            return_value={"ready": True, "root": tmp},
+        ):
+            root = Path(tmp)
+            before = session_review.doctor(root, root)
+            (root / "context" / "snapshot").mkdir(parents=True)
+            (root / "context" / "snapshot" / "snapshot.index.md").write_text("x")
+            after = session_review.doctor(root, root)
+
+        self.assertFalse(before["ok"])
+        self.assertEqual(before["vault"]["status"], "blocked")
+        self.assertFalse(before["vault"]["initialized"])
+        self.assertTrue(after["ok"])
+        self.assertTrue(after["vault"]["initialized"])
 
     def test_doctor_cli_is_json_and_read_only(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
@@ -466,33 +491,106 @@ class ReviewerLeaseAndReceiptTests(unittest.TestCase):
             )
 
 
-class BackendResolverTests(unittest.TestCase):
-    def test_env_override_none_forces_builtin(self):
-        for val in ("", "none", "off"):
-            with self.subTest(val=val):
-                old = os.environ.get("SESSION_REVIEW_WIKI_CLI")
-                os.environ["SESSION_REVIEW_WIKI_CLI"] = val
-                try:
-                    self.assertIsNone(session_review.resolve_wiki_cli())
-                finally:
-                    if old is None:
-                        os.environ.pop("SESSION_REVIEW_WIKI_CLI", None)
-                    else:
-                        os.environ["SESSION_REVIEW_WIKI_CLI"] = old
+import subprocess  # noqa: E402
 
-    def test_env_override_explicit_path(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            fake = Path(tmp) / "wiki_cli.py"
+CLI = SCRIPT_DIR / "session_review.py"
+WIKI_CLI = (SCRIPT_DIR.parents[1] / "wiki-markdown" / "skills" / "wiki"
+            / "scripts" / "wiki_cli.py")
+
+
+def run_cli(*args, cwd=None, env=None):
+    merged = os.environ.copy()
+    merged.update(env or {})
+    return subprocess.run([sys.executable, str(CLI), *args], cwd=cwd, env=merged,
+                          text=True, capture_output=True)
+
+
+NO_PROVIDER_ENV = {"SESSION_REVIEW_SNAPSHOT_PROVIDER": "", "SESSION_REVIEW_SNAPSHOT_CLI": ""}
+
+
+class ProviderResolverTests(unittest.TestCase):
+    """Provider selection is explicit: env → .session-review.yml → builtin.
+    Nothing is auto-discovered — a sibling wiki-markdown never activates itself."""
+
+    def test_default_is_builtin_without_config_or_env(self):
+        with mock.patch.dict(os.environ, NO_PROVIDER_ENV), \
+                mock.patch.object(session_review, "find_config", return_value=None):
+            provider = session_review.resolve_provider()
+        self.assertEqual((provider.name, provider.source, provider.cli), ("builtin", "default", None))
+
+    def test_config_file_selects_provider_and_cli(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, NO_PROVIDER_ENV):
+            root = Path(tmp)
+            fake = root / "context_cli.py"
             fake.write_text("# fake\n")
-            old = os.environ.get("SESSION_REVIEW_WIKI_CLI")
-            os.environ["SESSION_REVIEW_WIKI_CLI"] = str(fake)
-            try:
-                self.assertEqual(session_review.resolve_wiki_cli(), fake)
-            finally:
-                if old is None:
-                    os.environ.pop("SESSION_REVIEW_WIKI_CLI", None)
-                else:
-                    os.environ["SESSION_REVIEW_WIKI_CLI"] = old
+            (root / ".session-review.yml").write_text(
+                "# snapshot handshake provider\n"
+                "snapshot-provider: context-core   # trailing comment\n"
+                f"snapshot-cli: '{fake}'\n")
+            provider = session_review.resolve_provider(root)
+            self.assertEqual((provider.name, provider.source), ("context-core", "config"))
+            self.assertEqual(provider.cli, fake)
+            self.assertEqual(session_review.provider_cli(provider), fake)
+            self.assertEqual(provider.config_path, root / ".session-review.yml")
+
+    def test_env_beats_config(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+                os.environ, {"SESSION_REVIEW_SNAPSHOT_PROVIDER": "builtin"}):
+            root = Path(tmp)
+            (root / ".session-review.yml").write_text("snapshot-provider: context-core\n")
+            provider = session_review.resolve_provider(root)
+        self.assertEqual((provider.name, provider.source), ("builtin", "env"))
+
+    def test_unknown_provider_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, NO_PROVIDER_ENV):
+            root = Path(tmp)
+            (root / ".session-review.yml").write_text("snapshot-provider: obsidian\n")
+            with self.assertRaisesRegex(session_review.StatusError, "unknown snapshot provider"):
+                session_review.resolve_provider(root)
+            readiness = session_review.backend_readiness(root)
+        self.assertFalse(readiness["ready"])
+        self.assertIn("obsidian", readiness["error"])
+
+    def test_configured_provider_without_cli_is_not_ready(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+                os.environ, {"SESSION_REVIEW_SNAPSHOT_PROVIDER": "context-core",
+                             "SESSION_REVIEW_SNAPSHOT_CLI": str(Path(tmp) / "nope.py")}):
+            provider = session_review.resolve_provider(Path(tmp))
+            with self.assertRaisesRegex(session_review.StatusError, "not found"):
+                session_review.provider_cli(provider)
+
+    def test_config_is_found_at_git_toplevel_from_a_subdirectory(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, NO_PROVIDER_ENV):
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            (root / ".session-review.yml").write_text("snapshot-provider: wiki-markdown\n")
+            sub = root / "a" / "b"
+            sub.mkdir(parents=True)
+            self.assertEqual(session_review.find_config(sub).resolve(),
+                             (root / ".session-review.yml").resolve())
+            self.assertEqual(session_review.resolve_provider(sub).name, "wiki-markdown")
+
+    def test_parse_config_rejects_non_key_value_lines(self):
+        self.assertEqual(session_review.parse_config("a: 1\n\n# c\nb: \"x y\"\n"),
+                         {"a": "1", "b": "x y"})
+        with self.assertRaisesRegex(session_review.StatusError, "invalid"):
+            session_review.parse_config("just words\n")
+
+    @unittest.skipUnless(WIKI_CLI.exists(), "wiki_cli not present")
+    def test_locator_prefers_monorepo_sibling_for_the_configured_provider(self):
+        self.assertEqual(session_review.locate_provider_cli("wiki-markdown"), WIKI_CLI)
+        self.assertIsNone(session_review.locate_provider_cli("builtin"))
+
+    def test_resolve_root_defaults_by_provider(self):
+        builtin = session_review.Provider("builtin", None, "env", None)
+        core = session_review.Provider("context-core", None, "env", None)
+        with mock.patch.dict(os.environ, {"WIKI_VAULT": "/tmp/vault-x"}):
+            self.assertEqual(session_review.resolve_root(builtin), Path("/tmp/vault-x"))
+            self.assertEqual(session_review.resolve_root(core), Path.cwd())
+        with mock.patch.dict(os.environ, {"WIKI_VAULT": ""}):
+            self.assertEqual(session_review.resolve_root(builtin), Path.cwd() / "wiki")
+        self.assertEqual(session_review.snapshot_dir(Path("/r"), core), Path("/r/context/snapshot"))
+        self.assertEqual(session_review.snapshot_dir(Path("/r"), builtin), Path("/r/snapshot"))
 
 
 class BuiltinSnapshotTests(unittest.TestCase):
@@ -554,14 +652,11 @@ class BuiltinSnapshotTests(unittest.TestCase):
 
 class SetAndValidateStatusTests(unittest.TestCase):
     def setUp(self):
-        self._old = os.environ.get("SESSION_REVIEW_WIKI_CLI")
-        os.environ["SESSION_REVIEW_WIKI_CLI"] = "none"  # force built-in backend
+        self._env = mock.patch.dict(os.environ, {"SESSION_REVIEW_SNAPSHOT_PROVIDER": "builtin"})
+        self._env.start()
 
     def tearDown(self):
-        if self._old is None:
-            os.environ.pop("SESSION_REVIEW_WIKI_CLI", None)
-        else:
-            os.environ["SESSION_REVIEW_WIKI_CLI"] = self._old
+        self._env.stop()
 
     def _seed(self, vault):
         session_review.builtin_snapshot_save(
@@ -620,22 +715,8 @@ class SetAndValidateStatusTests(unittest.TestCase):
         session_review.validate_status(ok)
 
 
-import subprocess  # noqa: E402
-
-CLI = SCRIPT_DIR / "session_review.py"
-WIKI_CLI = (SCRIPT_DIR.parents[1] / "wiki-markdown" / "skills" / "wiki"
-            / "scripts" / "wiki_cli.py")
-
-
-def run_cli(*args, cwd=None, env=None):
-    merged = os.environ.copy()
-    merged.update(env or {})
-    return subprocess.run([sys.executable, str(CLI), *args], cwd=cwd, env=merged,
-                          text=True, capture_output=True)
-
-
 class FacadeCliTests(unittest.TestCase):
-    BUILTIN = {"SESSION_REVIEW_WIKI_CLI": "none"}
+    BUILTIN = {"SESSION_REVIEW_SNAPSHOT_PROVIDER": "builtin"}
 
     def test_builtin_end_to_end_save_load_setstatus_validate_discard(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -854,3 +935,204 @@ class FastModeStatusJsonCliTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _status_fence(**overrides) -> str:
+    status = {
+        "phase": "awaiting-review", "active_actor": "none", "lock_since": None,
+        "next_actor": "reviewer", "target_mode": "diff", "target_ref": "b",
+        "base_ref": "a", "responding_to": "a", "round": 1,
+        "flow_mode": "self", "review_strength": "normal", "blocking_count": 0,
+    }
+    status.update(overrides)
+    return "```yaml\n" + session_review.render_status(status).rstrip() + "\n```"
+
+
+@unittest.skipUnless(WIKI_CLI.exists(), "wiki_cli not present")
+class WikiProviderCliTests(unittest.TestCase):
+    """`snapshot-provider: wiki-markdown` delegates to wiki_cli (located as the
+    monorepo sibling); nothing about wiki is assumed unless configured."""
+
+    def test_facade_round_trip_through_wiki_cli(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            (root / ".session-review.yml").write_text("snapshot-provider: wiki-markdown\n")
+            (root / "wiki").mkdir()  # wiki_cli wants an existing vault
+            env = {"SESSION_REVIEW_SNAPSHOT_PROVIDER": "", "SESSION_REVIEW_SNAPSHOT_CLI": "",
+                   "WIKI_VAULT": ""}
+            r = run_cli("doctor", "--json", cwd=root, env=env)
+            doctor = json.loads(r.stdout)
+            self.assertEqual(doctor["backend"]["provider"], "wiki-markdown")
+            self.assertEqual(doctor["backend"]["source"], "config")
+            self.assertEqual(Path(doctor["backend"]["cli"]), WIKI_CLI)
+
+            r = run_cli("snapshot-save", "--slug", "h", "--title", "T", "--summary", "s",
+                        "--tags", "x", "--discussion", _status_fence() + "\n\nREQ",
+                        "--background", "BG", cwd=root, env=env)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            path = root / "wiki" / "snapshot" / "SNAP-h.md"
+            self.assertTrue(path.exists())
+            self.assertEqual(run_cli("snapshot-dir", cwd=root, env=env).stdout.strip(),
+                             "wiki/snapshot")
+
+            r = run_cli("set-status", "--slug", "h", "--status-json", json.dumps({
+                "phase": "approved", "active_actor": "none", "lock_since": None,
+                "next_actor": "worker", "target_mode": "diff", "target_ref": "b",
+                "base_ref": "a", "responding_to": "a", "round": 1,
+                "flow_mode": "self", "review_strength": "normal", "blocking_count": 0,
+            }), cwd=root, env=env)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            loaded = json.loads(run_cli("snapshot-load", "--slug", "h", cwd=root, env=env).stdout)
+            self.assertIn('phase: "approved"', loaded["text"])
+            self.assertIn("BG", loaded["text"])
+
+            r = run_cli("snapshot-discard", "--slug", "h", cwd=root, env=env)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertFalse(path.exists())
+
+
+def _installed_context_cli():
+    """The monorepo has no context-core sibling (it lives in its own repo), so
+    tests borrow the newest installed copy from the Claude plugin cache."""
+    located = session_review.locate_provider_cli("context-core")
+    if located is not None:
+        return located
+    cache = Path.home() / ".claude" / "plugins" / "cache"
+    found = sorted(cache.glob("*/context-core/*/skills/context/scripts/context_cli.py"),
+                   key=session_review._version_key)
+    return found[-1] if found else None
+
+
+CONTEXT_CLI = _installed_context_cli()
+
+
+@unittest.skipUnless(CONTEXT_CLI is not None, "context-core not installed")
+class ContextCoreProviderCliTests(unittest.TestCase):
+    """`snapshot-provider: context-core` drives context_cli's two-phase write
+    (preview bundle → transaction apply) and keeps the status block in
+    `## 현재 맥락`. Direct body rewrites (set-status) must leave context-core's
+    index and doctor clean."""
+
+    ENV = {"SESSION_REVIEW_SNAPSHOT_PROVIDER": "context-core",
+           "SESSION_REVIEW_SNAPSHOT_CLI": str(CONTEXT_CLI), "WIKI_VAULT": ""}
+
+    def _context(self, root, *args):
+        r = subprocess.run([sys.executable, str(CONTEXT_CLI), *args, "--json"], cwd=root,
+                           text=True, capture_output=True)
+        payload = json.loads(r.stdout)
+        self.assertTrue(payload.get("ok"), payload)
+        return payload["result"]
+
+    @staticmethod
+    def _git_repo(tmp):
+        root = Path(tmp)
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        subprocess.run(["git", "-C", str(root), "-c", "user.email=t@t", "-c", "user.name=t",
+                        "commit", "-q", "--allow-empty", "-m", "init"], check=True)
+        return root
+
+    def _repo(self, tmp):
+        root = self._git_repo(tmp)
+        self._context(root, "init", "--host", "claude-code")
+        return root
+
+    def test_doctor_reports_context_core_and_init_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._git_repo(tmp)
+            blocked = json.loads(run_cli("doctor", "--json", cwd=root, env=self.ENV).stdout)
+            self.assertEqual(blocked["backend"]["provider"], "context-core")
+            self.assertEqual(Path(blocked["backend"]["cli"]), CONTEXT_CLI)
+            self.assertFalse(blocked["ok"])
+            self.assertFalse(blocked["vault"]["initialized"])
+            self._context(root, "init", "--host", "claude-code")
+            ready = json.loads(run_cli("doctor", "--json", cwd=root, env=self.ENV).stdout)
+            self.assertTrue(ready["ok"], ready)
+            self.assertEqual(Path(ready["vault"]["path"]).resolve(), root.resolve())
+
+    def test_facade_round_trip_through_context_cli(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._repo(tmp)
+            big = "\n".join(f"- [nit] item {i}" for i in range(200))  # > save's 1200-char cap
+            r = run_cli("snapshot-save", "--slug", "session-review-h", "--title", "session-review: h",
+                        "--summary", "Review handoff for h", "--tags", "session-review,review",
+                        "--discussion", _status_fence() + "\n\nREQUEST\n" + big,
+                        "--background", "target_mode=diff, base_ref=a", "--next", "reviewer runs review",
+                        "--references", "b", cwd=root, env=self.ENV)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            path = root / "context" / "snapshot" / "session-review-h.md"
+            self.assertEqual(Path(json.loads(r.stdout)["path"]).resolve(), path.resolve())
+            text = path.read_text()
+            self.assertIn('schema: "context-snapshot/v1"', text)
+            self.assertIn("## 현재 맥락\n\n```yaml\nphase: \"awaiting-review\"", text)
+            self.assertIn("- [nit] item 199", text)
+            self.assertIn("- target_mode=diff, base_ref=a\n- b", text)  # background folded into 참조
+            self.assertIn("- reviewer 판정 대기", text)  # seeded required section
+            self.assertEqual(run_cli("snapshot-dir", cwd=root, env=self.ENV).stdout.strip(),
+                             "context/snapshot")
+            index = (root / "context" / "snapshot" / "snapshot.index.md").read_text()
+            self.assertIn("session-review-h.md", index)
+
+            # status gates read the block from `## 현재 맥락`
+            status = json.loads(run_cli("status", "--slug", "session-review-h", cwd=root, env=self.ENV).stdout)
+            self.assertEqual(status["status"]["phase"], "awaiting-review")
+            r = run_cli("validate-turn", "--slug", "session-review-h", "--actor", "reviewer",
+                        "--phase", "awaiting-review", cwd=root, env=self.ENV)
+            self.assertEqual(r.returncode, 0, r.stderr)
+
+            # reviewer round: merge replaces only the primary section (title/summary/tags backfilled)
+            r = run_cli("snapshot-save", "--slug", "session-review-h", "--merge",
+                        "--discussion", _status_fence(phase="changes-requested", next_actor="worker",
+                                                      blocking_count=1)
+                        + "\n\n### 리뷰 피드백 (round 1)\n- [blocking] fix it",
+                        cwd=root, env=self.ENV)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            text = path.read_text()
+            self.assertIn("[blocking] fix it", text)
+            self.assertNotIn("REQUEST", text)
+            self.assertIn("- target_mode=diff, base_ref=a", text)  # other sections preserved
+            self.assertIn('title: "session-review: h"', text)
+            self.assertIn('tags: ["session-review","review"]', text)
+
+            # worker: set-status rewrites the block in place; context-core stays consistent
+            r = run_cli("set-status", "--slug", "session-review-h", "--status-json", json.dumps({
+                "phase": "awaiting-review", "active_actor": "none", "lock_since": None,
+                "next_actor": "reviewer", "target_mode": "diff", "target_ref": "b",
+                "base_ref": "a", "responding_to": "a", "round": 2,
+                "flow_mode": "self", "review_strength": "normal", "blocking_count": 0,
+            }), cwd=root, env=self.ENV)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("round: 2", path.read_text())
+            self.assertIn("[blocking] fix it", path.read_text())
+            doctor = self._context(root, "doctor")
+            self.assertEqual((doctor["repository_state"], doctor["issues"]), ("ready", []))
+            identifier = session_review._cc_id(root, "session-review-h")
+            loaded = self._context(root, "snapshot", "load", "--id", identifier)
+            self.assertEqual(loaded["warnings"], [])
+            self.assertIn("round: 2", loaded["sections"]["현재 맥락"])
+
+            # a no-op merge is fine (context-core reports noop; facade skips apply)
+            r = run_cli("snapshot-save", "--slug", "session-review-h", "--merge",
+                        "--references", "- target_mode=diff, base_ref=a\n- b", cwd=root, env=self.ENV)
+            self.assertEqual(r.returncode, 0, r.stderr)
+
+            r = run_cli("snapshot-discard", "--slug", "session-review-h", cwd=root, env=self.ENV)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertTrue(json.loads(r.stdout)["discarded"])
+            self.assertFalse(path.exists())
+            self.assertNotIn("session-review-h.md",
+                             (root / "context" / "snapshot" / "snapshot.index.md").read_text())
+            self.assertFalse(json.loads(run_cli("snapshot-discard", "--slug", "session-review-h",
+                                                cwd=root, env=self.ENV).stdout)["discarded"])
+
+    def test_missing_snapshot_and_cli_failure_surface_as_status_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._repo(tmp)
+            r = run_cli("snapshot-load", "--slug", "nope", cwd=root, env=self.ENV)
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("snapshot not found", r.stderr)
+            # an invalid filename is rejected by context_cli and relayed verbatim
+            r = run_cli("snapshot-save", "--slug", "bad:slug", "--title", "T", "--summary", "s",
+                        "--tags", "x", "--discussion", "d", cwd=root, env=self.ENV)
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("filename_invalid", r.stderr)

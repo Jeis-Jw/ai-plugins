@@ -5,8 +5,8 @@ description: Worker starts or resumes an addressable independent-review loop wit
 
 # request-review
 
-Worker 전용. 리뷰 루프를 시작하거나 재요청한다. 핸드셰이크는 snapshot으로
-다루고, 별도 파일포맷이나 전용 handoff 디렉터리를 만들지 않는다.
+Worker 전용. 리뷰 루프를 시작하거나 재요청한다. 핸드셰이크는 설정된 snapshot
+provider의 snapshot으로 다루고, 별도 파일포맷이나 전용 handoff 디렉터리를 만들지 않는다.
 
 ## 헬퍼 위치 (Claude Code · Codex 공통)
 
@@ -18,8 +18,10 @@ wiki_cli를 직접 호출하지 않는다.
     `$CLAUDE_PLUGIN_ROOT/scripts/session_review.py`.
   - Codex 등 `$CLAUDE_PLUGIN_ROOT`가 없는 하니스: 이 스킬이 로드된 위치의 플러그인
     루트 아래 `scripts/session_review.py` 경로로 `SR`(또는 `SESSION_REVIEW_CLI`)을 지정한다.
-- 스냅샷 백엔드는 하이브리드: wiki-markdown이 있으면 자동 위임, 없으면 내장
-  fallback(동일 포맷)으로 동작. `SESSION_REVIEW_WIKI_CLI`로 위치 지정/비활성.
+- snapshot provider는 workspace의 `.session-review.yml`이 정한다
+  (`snapshot-provider: builtin|wiki-markdown|context-core`, 선택적 `snapshot-cli:`).
+  설정이 없으면 builtin(wiki snapshot 동일 포맷 내장 writer). 자동 발견은 없다 —
+  wiki-markdown이 옆에 설치돼 있어도 설정하지 않으면 쓰지 않는다.
 
 ## 입력
 
@@ -99,7 +101,7 @@ $ARGUMENTS:
    ```bash
    python3 "$SR" status --slug "$SNAPSHOT"
    ```
-4. snapshot 저장 (facade — 백엔드 자동 선택)
+4. snapshot 저장 (facade — 설정된 provider로 위임)
    ```bash
    python3 "$SR" snapshot-save \
      --slug "$SNAPSHOT" \
@@ -115,9 +117,9 @@ $ARGUMENTS:
    요청문에 노출한다: approved는 `blocking_count=0`이지 "의견 없음"이 아니다.
    승인 feedback에도 `[should-reflect-before-implementation]`, `[directional]`,
    `[nice-to-have]`, `[nit]`가 남을 수 있다.
-5. 핸드오프 커밋
+5. 핸드오프 커밋 (snapshot 디렉터리는 provider마다 다르므로 `snapshot-dir`로 얻는다)
    ```bash
-   git add wiki/snapshot
+   git add "$(python3 "$SR" snapshot-dir)"
    git commit -m "review: request — <무엇을 왜 봐달라는지>"
    ```
 
@@ -135,6 +137,7 @@ $ARGUMENTS:
 
 ## 불변식
 
-- status 정본은 snapshot body의 `## 현재 논의` 첫 fenced `yaml` block이다.
+- status 정본은 snapshot body primary 섹션(`## 현재 논의`, context-core는
+  `## 현재 맥락`)의 첫 fenced `yaml` block이다.
 - `review: request`는 discovery marker일 뿐 상태 정본이 아니다.
 - 완료는 여기서 수행하지 않는다. `complete`가 reviewer approval과 사용자 확인을 gate 한다.

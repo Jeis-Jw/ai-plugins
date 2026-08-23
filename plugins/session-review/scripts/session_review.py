@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Session-review status block helpers.
 
-The handshake is a wiki snapshot. The machine-readable state lives in the
-first fenced yaml block inside the snapshot body's `## 현재 논의` section.
+The handshake is a snapshot written by the configured snapshot provider
+(`.session-review.yml`: builtin | wiki-markdown | context-core). The
+machine-readable state lives in the first fenced yaml block inside the
+snapshot's primary section (`## 현재 논의`, or `## 현재 맥락` for context-core).
 """
 
 from __future__ import annotations
@@ -15,12 +17,14 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import uuid
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 
-DISCUSSION_HEADING = "## 현재 논의"
+# Primary section holding the status block: wiki-markdown/builtin vs context-core.
+STATUS_HEADINGS = ("## 현재 논의", "## 현재 맥락")
 STATUS_FENCE_RE = re.compile(r"(?:^|\n)```yaml[ \t]*\n(.*?)\n```", re.DOTALL)
 KEY_VALUE_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$")
 
@@ -147,8 +151,8 @@ DEFAULT_POSTURE_BY_TARGET_AND_ROUND = {
 }
 
 # Snapshot is the handshake medium (DEC-2026-06-18). The built-in writer below
-# reproduces the SAME file format/location wiki-markdown uses — it is a fallback
-# for workspaces without wiki-markdown installed, NOT a new bespoke format.
+# reproduces the SAME file format/location wiki-markdown uses — it is the
+# default for workspaces that configure no provider, NOT a new bespoke format.
 SNAPSHOT_DIRNAME = "snapshot"
 SNAPSHOT_SECTIONS = (
     ("discussion", "현재 논의"),
@@ -178,16 +182,15 @@ def _discussion_section(text: str) -> str:
     lines = text.splitlines(keepends=True)
     start = None
     for index, line in enumerate(lines):
-        if line.strip() == DISCUSSION_HEADING:
+        if line.strip() in STATUS_HEADINGS:
             start = index + 1
             break
     if start is None:
-        raise StatusError("missing `## 현재 논의` section")
+        raise StatusError("missing status section (`## 현재 논의` or `## 현재 맥락`)")
 
     end = len(lines)
     for index in range(start, len(lines)):
-        line = lines[index]
-        if line.startswith("## ") and line.strip() != DISCUSSION_HEADING:
+        if lines[index].startswith("## "):
             end = index
             break
     return "".join(lines[start:end])
@@ -574,7 +577,7 @@ def extract_status(snapshot_text: str) -> dict[str, Any]:
     section = _discussion_section(snapshot_text)
     match = STATUS_FENCE_RE.search(section)
     if not match:
-        raise StatusError("missing first fenced yaml status block in `## 현재 논의`")
+        raise StatusError("missing first fenced yaml status block in the status section")
     return parse_status_block(match.group(1))
 
 
@@ -647,7 +650,7 @@ def replace_status(snapshot_text: str, status: dict[str, Any]) -> str:
     section = _discussion_section(snapshot_text)
     match = STATUS_FENCE_RE.search(section)
     if not match:
-        raise StatusError("missing first fenced yaml status block in `## 현재 논의`")
+        raise StatusError("missing first fenced yaml status block in the status section")
     section_start = snapshot_text.index(section)
     block_start = section_start + match.start(1)
     block_end = section_start + match.end(1)
@@ -693,46 +696,141 @@ def validate_status(status: dict[str, Any]) -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# Snapshot backend — hybrid (wiki-markdown if present, else built-in) (#3, #4)
+# Snapshot provider — chosen by `.session-review.yml` (or env), never discovered
 # ──────────────────────────────────────────────────────────────────────────
-def resolve_wiki_cli() -> Optional[Path]:
-    """Locate wiki-markdown's wiki_cli.py without depending on any harness env
-    var (must work in both Claude Code and Codex). Order: explicit override →
-    sibling-plugin search relative to this script → PATH → None (built-in)."""
-    env = os.environ.get("SESSION_REVIEW_WIKI_CLI")
-    if env is not None:
-        if env.strip().lower() in {"", "none", "off", "0"}:
-            return None
-        candidate = Path(env).expanduser()
-        return candidate if candidate.exists() else None
-    for candidate in _wiki_cli_candidates():
-        if candidate.exists():
-            return candidate
-    found = shutil.which("wiki_cli") or shutil.which("wiki_cli.py")
-    return Path(found) if found else None
+CONFIG_FILENAME = ".session-review.yml"
+PROVIDER_ENV = "SESSION_REVIEW_SNAPSHOT_PROVIDER"
+PROVIDER_CLI_ENV = "SESSION_REVIEW_SNAPSHOT_CLI"
+# name → cli (relative to that plugin's root), snapshot dir (relative to the
+# provider root), default provider root (relative to cwd).
+PROVIDERS: dict[str, dict[str, Optional[str]]] = {
+    "builtin": {"cli": None, "snapshot_dir": SNAPSHOT_DIRNAME, "default_root": "wiki"},
+    "wiki-markdown": {"cli": "skills/wiki/scripts/wiki_cli.py",
+                      "snapshot_dir": SNAPSHOT_DIRNAME, "default_root": "wiki"},
+    "context-core": {"cli": "skills/context/scripts/context_cli.py",
+                     "snapshot_dir": "context/snapshot", "default_root": "."},
+}
 
 
-def _wiki_cli_candidates() -> list[Path]:
-    here = Path(__file__).resolve()
-    parents = here.parents
-    rel = ("wiki-markdown", "skills", "wiki", "scripts", "wiki_cli.py")
-    out: list[Path] = []
-    # monorepo: plugins/session-review/scripts → plugins/wiki-markdown/.../wiki_cli.py
-    if len(parents) > 2:
-        out.append(parents[2].joinpath(*rel))
-    # installed (versioned dirs): <marketplace>/wiki-markdown/<ver>/skills/.../wiki_cli.py
-    for depth in (2, 3):
-        if len(parents) > depth:
-            out.extend(sorted(parents[depth].glob(
-                "wiki-markdown/*/skills/wiki/scripts/wiki_cli.py")))
+class Provider(NamedTuple):
+    # NamedTuple, not dataclass: this file is also loaded via exec_module without
+    # a sys.modules entry (tests/test_workflow_conformance.py), which dataclass
+    # cannot survive.
+    name: str
+    cli: Optional[Path]
+    source: str  # env | config | default
+    config_path: Optional[Path]
+
+    @property
+    def spec(self) -> dict[str, Optional[str]]:
+        return PROVIDERS[self.name]
+
+
+def parse_config(text: str) -> dict[str, str]:
+    """Flat `key: value` subset of YAML — the same shape as `.task-worker.yml`."""
+    out: dict[str, str] = {}
+    for raw in text.splitlines():
+        line = re.sub(r"(^|\s)#.*$", "", raw).strip()
+        if not line:
+            continue
+        if ":" not in line:
+            raise StatusError(f"invalid {CONFIG_FILENAME} line: {raw.strip()}")
+        key, value = line.split(":", 1)
+        out[key.strip()] = value.strip().strip("'\"")
     return out
 
 
-def resolve_vault() -> Path:
-    env = os.environ.get("WIKI_VAULT")
-    if env:
-        return Path(env).expanduser()
-    return Path.cwd() / "wiki"
+def find_config(start: Optional[Path] = None) -> Optional[Path]:
+    """`<start>/.session-review.yml`, else the same file at the git toplevel."""
+    start = (start or Path.cwd()).expanduser()
+    direct = start / CONFIG_FILENAME
+    if direct.is_file():
+        return direct
+    git = shutil.which("git")
+    if git is None or not start.is_dir():
+        return None
+    top = subprocess.run([git, "-C", str(start), "rev-parse", "--show-toplevel"],
+                         capture_output=True, text=True, check=False)
+    if top.returncode != 0:
+        return None
+    candidate = Path(top.stdout.strip()) / CONFIG_FILENAME
+    return candidate if candidate.is_file() else None
+
+
+def _version_key(path: Path) -> tuple[int, ...]:
+    for part in reversed(path.parts):
+        if re.fullmatch(r"\d+(\.\d+)*", part):
+            return tuple(int(p) for p in part.split("."))
+    return ()
+
+
+def locate_provider_cli(name: str) -> Optional[Path]:
+    """Find the *configured* provider's CLI without any harness env var:
+    monorepo sibling plugin → installed plugin cache (any marketplace, newest
+    version) → PATH. Never used to pick a provider — only to locate the one
+    named in config/env."""
+    rel = PROVIDERS[name]["cli"]
+    if rel is None:
+        return None
+    parents = Path(__file__).resolve().parents
+    # monorepo: plugins/session-review/scripts → plugins/<name>/<rel>
+    if len(parents) > 2 and (parents[2] / name / rel).is_file():
+        return parents[2] / name / rel
+    # installed: <cache>/<mkt>/session-review/<ver>/scripts → <cache>/*/<name>/<ver>/<rel>
+    found: list[Path] = []
+    for depth, pattern in ((3, f"{name}/*/{rel}"), (4, f"*/{name}/*/{rel}")):
+        if len(parents) > depth:
+            found.extend(p for p in parents[depth].glob(pattern) if p.is_file())
+    if found:
+        return max(found, key=_version_key)
+    which = shutil.which(Path(rel).name)
+    return Path(which) if which else None
+
+
+def resolve_provider(workspace: Optional[Path] = None) -> Provider:
+    """Precedence: env → `.session-review.yml` → builtin."""
+    config_path = find_config(workspace)
+    config = parse_config(config_path.read_text(encoding="utf-8")) if config_path else {}
+    env_name = (os.environ.get(PROVIDER_ENV) or "").strip()
+    if env_name:
+        name, source = env_name, "env"
+    elif config.get("snapshot-provider"):
+        name, source = config["snapshot-provider"], "config"
+    else:
+        name, source = "builtin", "default"
+    if name not in PROVIDERS:
+        raise StatusError(
+            f"unknown snapshot provider {name!r}; expected one of {', '.join(PROVIDERS)}")
+    cli: Optional[Path] = None
+    if name != "builtin":
+        explicit = os.environ.get(PROVIDER_CLI_ENV) or config.get("snapshot-cli")
+        cli = Path(explicit).expanduser() if explicit else locate_provider_cli(name)
+    return Provider(name, cli, source, config_path)
+
+
+def provider_cli(provider: Provider) -> Path:
+    if provider.cli is None or not provider.cli.is_file():
+        raise StatusError(
+            f"snapshot provider {provider.name!r} is configured but its CLI was not found"
+            f" ({provider.cli or 'no candidate'}); set `snapshot-cli:` in {CONFIG_FILENAME}"
+            f" or {PROVIDER_CLI_ENV}")
+    return provider.cli
+
+
+def resolve_root(provider: Optional[Provider] = None) -> Path:
+    """Provider root: the wiki vault (builtin/wiki-markdown — `WIKI_VAULT` or
+    ./wiki) or the git worktree holding `context/` (context-core — cwd)."""
+    provider = provider or resolve_provider()
+    if provider.name != "context-core":
+        env = os.environ.get("WIKI_VAULT")
+        if env:
+            return Path(env).expanduser()
+    return Path.cwd() / (provider.spec["default_root"] or ".")
+
+
+def snapshot_dir(root: Path, provider: Optional[Provider] = None) -> Path:
+    provider = provider or resolve_provider()
+    return root / (provider.spec["snapshot_dir"] or SNAPSHOT_DIRNAME)
 
 
 def _nearest_existing_parent(path: Path) -> Path:
@@ -742,50 +840,52 @@ def _nearest_existing_parent(path: Path) -> Path:
     return candidate
 
 
-def backend_readiness() -> dict[str, Any]:
-    override = os.environ.get("SESSION_REVIEW_WIKI_CLI")
-    wiki_cli = resolve_wiki_cli()
-    override_disabled = override is not None and override.strip().lower() in {
-        "", "none", "off", "0"
-    }
-    override_invalid = (
-        override is not None
-        and not override_disabled
-        and not Path(override).expanduser().exists()
-    )
-    if wiki_cli is not None:
-        mode = "wiki-markdown"
-        source = "override" if override is not None else "discovery"
-    else:
-        mode = "built-in"
-        source = "explicit" if override_disabled else "fallback"
+def backend_readiness(workspace: Optional[Path] = None) -> dict[str, Any]:
+    try:
+        provider = resolve_provider(workspace)
+    except StatusError as exc:
+        config_path = find_config(workspace)
+        return {"ready": False, "provider": None, "source": None, "cli": None,
+                "config": str(config_path) if config_path else None, "error": str(exc)}
+    error: Optional[str] = None
+    if provider.name != "builtin":
+        try:
+            provider_cli(provider)
+        except StatusError as exc:
+            error = str(exc)
     return {
-        "ready": True,
-        "mode": mode,
-        "source": source,
-        "wiki_cli": str(wiki_cli) if wiki_cli is not None else None,
-        "override_invalid": override_invalid,
-        "warning": "configured wiki CLI path does not exist; using built-in backend"
-        if override_invalid
-        else None,
+        "ready": error is None,
+        "provider": provider.name,
+        "source": provider.source,
+        "cli": str(provider.cli) if provider.cli is not None else None,
+        "config": str(provider.config_path) if provider.config_path else None,
+        "error": error,
     }
 
 
-def vault_readiness(vault: Path) -> dict[str, Any]:
+def vault_readiness(vault: Path, provider: Optional[Provider] = None) -> dict[str, Any]:
     vault = vault.expanduser().resolve()
     exists = vault.exists()
     is_directory = vault.is_dir() if exists else False
     parent = _nearest_existing_parent(vault)
     writable = os.access(vault if is_directory else parent, os.W_OK)
     ready = (is_directory and writable) or (not exists and parent.is_dir() and writable)
-    return {
+    status = "ready" if is_directory and writable else "creatable" if ready else "blocked"
+    payload: dict[str, Any] = {
         "ready": ready,
         "path": str(vault),
-        "status": "ready" if is_directory and writable else "creatable" if ready else "blocked",
+        "status": status,
         "exists": exists,
-        "snapshot_directory_exists": (vault / SNAPSHOT_DIRNAME).is_dir(),
+        "snapshot_directory_exists": snapshot_dir(vault, provider).is_dir(),
         "writable": writable,
     }
+    if provider is not None and provider.name == "context-core":
+        # context-core never creates its root lazily: `context_cli.py init` first.
+        initialized = (snapshot_dir(vault, provider) / "snapshot.index.md").is_file()
+        payload["ready"] = initialized and writable
+        payload["status"] = "ready" if payload["ready"] else "blocked"
+        payload["initialized"] = initialized
+    return payload
 
 
 def git_readiness(workspace: Path) -> dict[str, Any]:
@@ -831,8 +931,12 @@ def git_readiness(workspace: Path) -> dict[str, Any]:
 
 
 def doctor(workspace: Path, vault: Path) -> dict[str, Any]:
-    backend = backend_readiness()
-    vault_status = vault_readiness(vault)
+    backend = backend_readiness(workspace)
+    try:
+        provider: Optional[Provider] = resolve_provider(workspace)
+    except StatusError:
+        provider = None
+    vault_status = vault_readiness(vault, provider)
     git_status = git_readiness(workspace)
     return {
         "plugin": "session-review",
@@ -862,11 +966,18 @@ def _split_frontmatter(text: str) -> tuple[Optional[str], str]:
     return text[4:end], text[end + 5:]
 
 
+def _unquote(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        return value[1:-1]
+    return value
+
+
 def _fm_scalar(fm_text: Optional[str], key: str) -> Optional[str]:
     if not fm_text:
         return None
     m = re.search(rf"(?m)^{re.escape(key)}:\s*(.*)$", fm_text)
-    return m.group(1).strip() if m else None
+    return _unquote(m.group(1)) if m else None
 
 
 def _render_snapshot_frontmatter(fields: dict[str, Any], created_at: str,
@@ -985,16 +1096,14 @@ def builtin_snapshot_discard(vault: Path, slug: str) -> bool:
     return False
 
 
+# ── wiki-markdown adapter ─────────────────────────────────────────────────
 def _run_wiki(cli: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, str(cli), *args],
                           text=True, capture_output=True)
 
 
-def snapshot_save(vault: Path, slug: str, fields: dict[str, Any],
-                  section_values: dict[str, str], merge: bool = False) -> Path:
-    cli = resolve_wiki_cli()
-    if cli is None:
-        return builtin_snapshot_save(vault, slug, fields, section_values, merge)
+def wiki_snapshot_save(cli: Path, vault: Path, slug: str, fields: dict[str, Any],
+                       section_values: dict[str, str], merge: bool = False) -> Path:
     args = ["snapshot", "save", "--vault", str(vault), "--slug", slug,
             "--title", fields["title"], "--summary", fields["summary"],
             "--tags", ",".join(fields.get("tags", []))]
@@ -1010,10 +1119,7 @@ def snapshot_save(vault: Path, slug: str, fields: dict[str, Any],
     return vault / SNAPSHOT_DIRNAME / f"SNAP-{slug}.md"
 
 
-def snapshot_load(vault: Path, slug: str) -> dict[str, Any]:
-    cli = resolve_wiki_cli()
-    if cli is None:
-        return builtin_snapshot_load(vault, slug)
+def wiki_snapshot_load(cli: Path, vault: Path, slug: str) -> dict[str, Any]:
     result = _run_wiki(cli, "snapshot", "load", slug, "--vault", str(vault), "--json")
     if result.returncode != 0:
         raise StatusError(f"wiki_cli snapshot load failed: {result.stderr.strip()}")
@@ -1021,19 +1127,190 @@ def snapshot_load(vault: Path, slug: str) -> dict[str, Any]:
     return {"path": payload["path"], "text": payload["text"]}
 
 
-def snapshot_discard(vault: Path, slug: str) -> bool:
-    cli = resolve_wiki_cli()
-    if cli is None:
-        return builtin_snapshot_discard(vault, slug)
+def wiki_snapshot_discard(cli: Path, vault: Path, slug: str) -> bool:
     result = _run_wiki(cli, "snapshot", "discard", slug, "--vault", str(vault))
     if result.returncode != 0:
         raise StatusError(f"wiki_cli snapshot discard failed: {result.stderr.strip()}")
     return True
 
 
+# ── context-core adapter ──────────────────────────────────────────────────
+# context-core keeps SNAP artifacts under <root>/context/snapshot/<slug>.md and
+# writes only through its two-phase CLI: `snapshot save|update|discard` returns
+# a plan bundle + approval digest, `transaction apply` performs the write. The
+# review handshake is an explicitly requested handoff, so the facade approves
+# its own bundles. Section mapping (session-review → context-core):
+CC_SECTION_FLAG = {
+    "discussion": "--sec-context",          # 현재 맥락 (status block lives here)
+    "open_questions": "--sec-open-items",   # 열린 항목
+    "next_steps": "--sec-next-steps",       # 다음 단계
+    "decided": "--sec-decided",             # 정해진 것
+    "references": "--sec-refs",             # 참조 (+ background, no 배경 section)
+    "promotion_candidates": "--sec-candidates",  # capture 후보
+}
+CC_REQUIRED = ("discussion", "open_questions", "next_steps")
+# `snapshot save` caps the primary section at 1200 chars, so a snapshot is
+# created from these seeds and the real sections land via `update --merge`,
+# which has no such cap. Seeds also complete a full (non-merge) update.
+CC_SEED = {
+    "discussion": "session-review handshake",
+    "open_questions": "- reviewer 판정 대기",
+    "next_steps": "- snapshot-load 후 review skill 실행",
+}
+CC_ATTESTATION = {"assertions": [
+    {"name": "handoff_requested", "value": True,
+     "evidence_pointers": ["/owner_inputs/snapshot/current_context"]},
+    {"name": "unfinished_context_present", "value": True,
+     "evidence_pointers": ["/owner_inputs/snapshot/open_items/0"]},
+]}
+
+
+def _cc_run(cli: Path, root: Path, *args: str) -> dict[str, Any]:
+    result = subprocess.run([sys.executable, str(cli), *args, "--json"],
+                            cwd=str(root), text=True, capture_output=True)
+    try:
+        payload = json.loads(result.stdout)
+    except ValueError:
+        raise StatusError(
+            f"context_cli {' '.join(args[:2])} failed: "
+            f"{result.stderr.strip() or result.stdout.strip()}") from None
+    if result.returncode != 0 or not payload.get("ok"):
+        error = payload.get("error") or {}
+        raise StatusError(
+            f"context_cli {' '.join(args[:2])} failed: {error.get('code')}: {error.get('message')}")
+    return payload["result"]
+
+
+def _cc_apply(cli: Path, root: Path, tmp: Path, preview: dict[str, Any]) -> None:
+    if preview.get("noop"):
+        return
+    bundle = tmp / "bundle.json"
+    bundle.write_text(json.dumps(preview["bundle"], ensure_ascii=False), encoding="utf-8")
+    _cc_run(cli, root, "transaction", "apply", "--plan-bundle", f"@{bundle}",
+            "--approved-digest", preview["approval_digest"])
+
+
+def _cc_path(root: Path, slug: str) -> Path:
+    return root / "context" / "snapshot" / f"{slug}.md"
+
+
+def _cc_id(root: Path, slug: str) -> str:
+    path = _cc_path(root, slug)
+    if not path.exists():
+        raise StatusError(f"snapshot not found: {slug} (looked at {path})")
+    fm_text, _ = _split_frontmatter(path.read_text(encoding="utf-8"))
+    identifier = _fm_scalar(fm_text, "id")
+    if not identifier:
+        raise StatusError(f"not a context-core snapshot (no id): {path}")
+    return identifier
+
+
+def _cc_bullets(text: str) -> str:
+    """context-core renders every non-primary snapshot section as a `- ` list
+    (its recall projection reads 열린 항목 that way); wiki sections are free
+    text, so bulletize line-wise and keep existing bullets."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return "\n".join(line if line.startswith("- ") else f"- {line}" for line in lines)
+
+
+def _cc_section_args(tmp: Path, section_values: dict[str, str]) -> list[str]:
+    values = {k: v for k, v in section_values.items() if v is not None}
+    background = values.pop("background", None)
+    if background is not None:
+        values["references"] = "\n".join(v for v in (background, values.get("references")) if v)
+    args: list[str] = []
+    for attr, value in values.items():
+        body = tmp / f"{attr}.md"
+        # context-core compares the stored section against the input verbatim
+        # after its own strip(), so hand it the stripped text.
+        text = value.strip() if attr == "discussion" else _cc_bullets(value)
+        body.write_text(text, encoding="utf-8")
+        args += [CC_SECTION_FLAG[attr], f"@{body}"]
+    return args
+
+
+def cc_snapshot_save(cli: Path, root: Path, slug: str, fields: dict[str, Any],
+                     section_values: dict[str, str], merge: bool = False) -> Path:
+    path = _cc_path(root, slug)
+    with tempfile.TemporaryDirectory(prefix="session-review-") as tmpdir:
+        tmp = Path(tmpdir)
+        if not path.exists():
+            attestation = tmp / "attestation.json"
+            attestation.write_text(json.dumps(CC_ATTESTATION), encoding="utf-8")
+            args = ["snapshot", "save", "--title", fields["title"],
+                    "--summary", fields["summary"], "--filename", slug,
+                    "--captured-from", "workspace", "--attestation", f"@{attestation}"]
+            seed_dir = tmp / "seed"
+            seed_dir.mkdir()
+            args += _cc_section_args(seed_dir, {k: CC_SEED[k] for k in CC_REQUIRED})
+            for tag in fields.get("tags", []):
+                args += ["--tag", tag]
+            _cc_apply(cli, root, tmp, _cc_run(cli, root, *args))
+            merge = True  # overlay the real sections on the seeded artifact
+        sections = dict(section_values)
+        if not merge:
+            for attr in CC_REQUIRED:
+                sections.setdefault(attr, CC_SEED[attr])
+        args = ["snapshot", "update", "--id", _cc_id(root, slug),
+                "--title", fields["title"], "--summary", fields["summary"]]
+        if merge:
+            args.append("--merge")
+        for tag in fields.get("tags", []):
+            args += ["--tag", tag]
+        args += _cc_section_args(tmp, sections)
+        _cc_apply(cli, root, tmp, _cc_run(cli, root, *args))
+    return path
+
+
+def cc_snapshot_load(cli: Path, root: Path, slug: str) -> dict[str, Any]:
+    loaded = _cc_run(cli, root, "snapshot", "load", "--id", _cc_id(root, slug))
+    path = root / loaded["path"]
+    return {"path": str(path), "text": path.read_text(encoding="utf-8")}
+
+
+def cc_snapshot_discard(cli: Path, root: Path, slug: str) -> bool:
+    if not _cc_path(root, slug).exists():
+        return False
+    with tempfile.TemporaryDirectory(prefix="session-review-") as tmpdir:
+        preview = _cc_run(cli, root, "snapshot", "discard", "--id", _cc_id(root, slug))
+        _cc_apply(cli, root, Path(tmpdir), preview)
+    return True
+
+
+# ── provider dispatch ─────────────────────────────────────────────────────
+def snapshot_save(root: Path, slug: str, fields: dict[str, Any],
+                  section_values: dict[str, str], merge: bool = False) -> Path:
+    provider = resolve_provider()
+    if provider.name == "wiki-markdown":
+        return wiki_snapshot_save(provider_cli(provider), root, slug, fields, section_values, merge)
+    if provider.name == "context-core":
+        return cc_snapshot_save(provider_cli(provider), root, slug, fields, section_values, merge)
+    return builtin_snapshot_save(root, slug, fields, section_values, merge)
+
+
+def snapshot_load(root: Path, slug: str) -> dict[str, Any]:
+    provider = resolve_provider()
+    if provider.name == "wiki-markdown":
+        return wiki_snapshot_load(provider_cli(provider), root, slug)
+    if provider.name == "context-core":
+        return cc_snapshot_load(provider_cli(provider), root, slug)
+    return builtin_snapshot_load(root, slug)
+
+
+def snapshot_discard(root: Path, slug: str) -> bool:
+    provider = resolve_provider()
+    if provider.name == "wiki-markdown":
+        return wiki_snapshot_discard(provider_cli(provider), root, slug)
+    if provider.name == "context-core":
+        return cc_snapshot_discard(provider_cli(provider), root, slug)
+    return builtin_snapshot_discard(root, slug)
+
+
 def set_status(vault: Path, slug: str, status: dict[str, Any]) -> Path:
-    """Rewrite the status block in place (works under either backend, since both
-    store the same file). Rejects an inconsistent status before writing."""
+    """Rewrite the status block in place. Works under every provider: builtin and
+    wiki-markdown share one file, and context-core indexes frontmatter only, so
+    a body-only rewrite leaves its index/doctor clean. Rejects an inconsistent
+    status before writing."""
     validate_status(status)
     loaded = snapshot_load(vault, slug)
     new_text = replace_status(loaded["text"], status)
@@ -1096,11 +1373,11 @@ def _parse_tags(raw: str) -> list[str]:
     raw = raw.strip()
     if raw.startswith("[") and raw.endswith("]"):
         raw = raw[1:-1]
-    return [t.strip() for t in raw.split(",") if t.strip()]
+    return [t for t in (_unquote(part) for part in raw.split(",")) if t]
 
 
 def _vault_arg(args: argparse.Namespace) -> Path:
-    return Path(args.vault).expanduser() if getattr(args, "vault", None) else resolve_vault()
+    return Path(args.vault).expanduser() if getattr(args, "vault", None) else resolve_root()
 
 
 def cmd_snapshot_save(args: argparse.Namespace) -> int:
@@ -1134,6 +1411,16 @@ def cmd_snapshot_load(args: argparse.Namespace) -> int:
 def cmd_snapshot_discard(args: argparse.Namespace) -> int:
     discarded = snapshot_discard(_vault_arg(args), args.slug)
     print(json.dumps({"ok": True, "discarded": discarded}, ensure_ascii=False))
+    return 0
+
+
+def cmd_snapshot_dir(args: argparse.Namespace) -> int:
+    """Print the provider's snapshot directory (for `git add`), cwd-relative when possible."""
+    target = snapshot_dir(_vault_arg(args))
+    try:
+        print(target.resolve().relative_to(Path.cwd().resolve()))
+    except ValueError:
+        print(target)
     return 0
 
 
@@ -1193,7 +1480,14 @@ def cmd_emit_receipt(args: argparse.Namespace) -> int:
 
 def cmd_doctor(args: argparse.Namespace) -> int:
     workspace = Path(args.root).expanduser() if args.root else Path.cwd()
-    vault = Path(args.vault).expanduser() if args.vault else workspace / "wiki"
+    if args.vault:
+        vault = Path(args.vault).expanduser()
+    else:
+        try:
+            default_root = resolve_provider(workspace).spec["default_root"]
+        except StatusError:
+            default_root = PROVIDERS["builtin"]["default_root"]
+        vault = workspace / (default_root or ".")
     payload = doctor(workspace, vault)
     print(json.dumps(payload, ensure_ascii=False))
     return 0 if payload["ok"] else 1
@@ -1216,10 +1510,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_doctor = sub.add_parser(
-        "doctor", help="diagnose backend, vault and git readiness without mutation"
+        "doctor", help="diagnose snapshot provider, root and git readiness without mutation"
     )
     p_doctor.add_argument("--root", help="workspace root; default current directory")
-    p_doctor.add_argument("--vault", help="wiki vault; default <root>/wiki")
+    p_doctor.add_argument("--vault", help="provider root (wiki vault, or the worktree holding context/ for context-core); default by provider")
     p_doctor.add_argument("--json", action="store_true", help="accepted for parity; output is always JSON")
     p_doctor.set_defaults(func=cmd_doctor)
 
@@ -1253,7 +1547,7 @@ def build_parser() -> argparse.ArgumentParser:
                           help="wrap output in a ```yaml fence (ready to embed in --discussion)")
     p_render.set_defaults(func=cmd_render)
 
-    p_save = sub.add_parser("snapshot-save", help="save a handshake snapshot (wiki backend or built-in)")
+    p_save = sub.add_parser("snapshot-save", help="save a handshake snapshot via the configured provider")
     p_save.add_argument("--vault")
     p_save.add_argument("--slug", required=True)
     p_save.add_argument("--title", help="required for a new snapshot; reused from existing on --merge")
@@ -1275,6 +1569,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_discard.add_argument("--vault")
     p_discard.add_argument("--slug", required=True)
     p_discard.set_defaults(func=cmd_snapshot_discard)
+
+    p_dir = sub.add_parser("snapshot-dir", help="print the provider's snapshot directory (for git add)")
+    p_dir.add_argument("--vault")
+    p_dir.set_defaults(func=cmd_snapshot_dir)
 
     p_set = sub.add_parser("set-status", help="rewrite the status block of a snapshot in place")
     p_set.add_argument("--vault")

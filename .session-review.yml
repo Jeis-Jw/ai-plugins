@@ -1,0 +1,4 @@
+# session-review snapshot handshake provider (see plugins/session-review/README.md).
+# This repo keeps its durable context in the wiki vault, so the handshake goes
+# through wiki-markdown's own CLI (located as the monorepo sibling plugin).
+snapshot-provider: wiki-markdown

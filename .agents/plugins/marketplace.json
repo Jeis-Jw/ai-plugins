@@ -23,7 +23,7 @@
     {
       "name": "session-review",
       "source": { "source": "local", "path": "./plugins/session-review" },
-      "version": "0.6.1",
+      "version": "0.7.0",
       "description": "Independent worker/reviewer episode protocol for review continuity, feedback rounds, and auditable approval gates; not a simple same-agent self-check.",
       "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
       "category": "Productivity"

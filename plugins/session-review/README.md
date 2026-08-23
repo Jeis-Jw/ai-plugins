@@ -1,9 +1,11 @@
 # session-review
 
 `session-review` coordinates a worker/reviewer loop inside a workspace. The
-handshake is a `wiki-markdown` snapshot, the review target is either a git diff
-or a document, and convergence lands by squash-merging the review branch back
-to the worker branch after reviewer approval. Separate/team review and audit
+handshake is a snapshot written by the snapshot provider configured in
+`.session-review.yml` (built-in, `wiki-markdown`, or `context-core`), the
+review target is either a git diff or a document, and convergence lands by
+squash-merging the review branch back to the worker branch after reviewer
+approval. Separate/team review and audit
 self-review require explicit user confirmation before completion; self turnkey
 can complete without a second confirmation because that consent is part of the
 initial profile.
@@ -16,17 +18,19 @@ normal same-agent check for simple bounded verification; recording overhead can
 be reduced with fast mode, but reviewer separation is never removed.
 
 The machine-readable source of truth is the first fenced `yaml` block inside
-the snapshot `## 현재 논의` section. Helper code lives in
+the snapshot's primary section (`## 현재 논의` for built-in/`wiki-markdown`,
+`## 현재 맥락` for `context-core`). Helper code lives in
 `scripts/session_review.py`; skills call it to enforce actor ownership, locks,
 typed string fields, derived review posture, and the completion gate.
 
 ## Single CLI facade
 
 All skill operations go through `scripts/session_review.py` only — skills never
-call `wiki_cli` directly. Subcommands: `snapshot-save` / `snapshot-load` /
-`snapshot-discard` (handshake I/O), `set-status` (rewrite the status block in
-place), `validate-status` / `validate-turn` / `validate-complete` (gates),
-`render` (status block), `doctor` (read-only backend/vault/git readiness).
+call a provider CLI directly. Subcommands: `snapshot-save` / `snapshot-load` /
+`snapshot-discard` (handshake I/O), `snapshot-dir` (the provider's snapshot
+directory, for `git add`), `set-status` (rewrite the status block in place),
+`validate-status` / `validate-turn` / `validate-complete` (gates), `render`
+(status block), `doctor` (read-only provider/root/git readiness).
 Mutate commands take `--slug` (path resolved
 internally); read/validate commands (`status` / `validate-turn` /
 `validate-status` / `validate-complete`) also accept `--file` or
@@ -39,40 +43,74 @@ Reviewer episode operations use the same facade:
   transport.
 - `emit-receipt`: emits `workflow-receipt/v1` from either transport.
 
-## Snapshot backend (hybrid)
+## Snapshot provider (`.session-review.yml`)
 
-The snapshot handshake uses `wiki-markdown` when available and a built-in writer
-otherwise — both produce the **same** snapshot file format and location, so a
-workspace with only `session-review` installed still works.
+`session-review` has **no plugin dependency**. The snapshot handshake is written
+by whichever provider the workspace names in `.session-review.yml` (looked up
+in the current directory, then at the git toplevel). Nothing is auto-discovered:
+a `wiki-markdown` sitting next to this plugin is never used unless configured.
 
-- `wiki-markdown` is the **recommended companion** (keeps the snapshot index and
-  the rest of the decision graph). Without it, the built-in fallback covers the
-  review loop on its own.
-- Backend discovery is harness-agnostic (works in both Claude Code and Codex):
-  `session_review.py` self-locates via its own path; no `CLAUDE_PLUGIN_ROOT`
-  dependency in the resolver.
+```yaml
+# .session-review.yml
+snapshot-provider: context-core   # builtin (default) | wiki-markdown | context-core
+# snapshot-cli: /path/to/context_cli.py   # optional; located automatically when omitted
+```
+
+| provider | snapshot file | status section | notes |
+|---|---|---|---|
+| `builtin` (default) | `<vault>/snapshot/SNAP-<slug>.md` | `## 현재 논의` | built-in writer, same format/location as `wiki-markdown` (DEC-2026-06-18 — not a bespoke format); maintains `snapshot.md` only if it already exists |
+| `wiki-markdown` | `<vault>/snapshot/SNAP-<slug>.md` | `## 현재 논의` | delegates to `wiki_cli.py snapshot save/load/discard`; vault = `WIKI_VAULT` or `./wiki` |
+| `context-core` | `<root>/context/snapshot/<slug>.md` | `## 현재 맥락` | delegates to `context_cli.py` two-phase writes (`snapshot save/update/discard` → `transaction apply`); root = the git worktree (cwd); `context_cli.py init` must have run |
+
+`snapshot-cli` is optional: when omitted, the configured provider's CLI is
+located from this script's own path — monorepo sibling plugin, then the
+installed plugin cache (any marketplace, newest version), then `PATH`. That
+lookup is harness-agnostic (Claude Code and Codex) and runs **only** for the
+provider you named; a configured provider whose CLI cannot be found is an
+error, never a silent fallback.
+
+### context-core mapping
+
+The facade keeps one section vocabulary for every provider
+(`--discussion/--background/--decided/--open-questions/--next/--references/--promotion-candidates`).
+For `context-core` they map to `현재 맥락 / 참조 / 정해진 것 / 열린 항목 / 다음 단계 /
+참조 / capture 후보` — `--background` has no counterpart and is folded into
+`참조`. Non-primary sections are stored as `- ` lists (context-core's
+convention). Because `context_cli snapshot save` caps the primary section at
+1200 characters, a new snapshot is created from short seed sections and the real
+content lands through `snapshot update --merge`, which has no cap; the required
+`열린 항목`/`다음 단계` keep the seed text unless you pass `--open-questions` /
+`--next`. `set-status` rewrites the status block in place for every provider;
+context-core indexes frontmatter only, so its `doctor`/`load` stay clean after
+such body-only writes (covered by tests).
 
 ## Environment overrides
 
-- `SESSION_REVIEW_WIKI_CLI` — explicit path to `wiki_cli.py`, or `none`/`off` to
-  force the built-in backend.
+- `SESSION_REVIEW_SNAPSHOT_PROVIDER` — overrides `snapshot-provider`
+  (`builtin|wiki-markdown|context-core`).
+- `SESSION_REVIEW_SNAPSHOT_CLI` — overrides `snapshot-cli` (path to the provider
+  CLI).
 - `SESSION_REVIEW_CLI` — explicit path to `session_review.py` (for skill
   invocation where the harness can't supply the plugin root).
-- `WIKI_VAULT` — vault root (default `./wiki`).
+- `WIKI_VAULT` — vault root for `builtin`/`wiki-markdown` (default `./wiki`).
+  `--vault` on any subcommand overrides the provider root explicitly (for
+  `context-core` that is the worktree holding `context/`).
 
 ## Read-only doctor
 
-`session-review:doctor` does not create a config file. It reports the resolved
-`wiki-markdown|built-in` snapshot backend, override validity, vault readiness,
-and Git worktree/branch/HEAD/dirty state as JSON:
+`session-review:doctor` never creates or edits `.session-review.yml`. It reports
+the resolved provider (`provider`, `source` = env|config|default, `cli`,
+`config`), provider-root readiness (vault existence/creatability, or
+context-core initialization), and Git worktree/branch/HEAD/dirty state as JSON:
 
 ```bash
 python3 plugins/session-review/scripts/session_review.py doctor --json
 ```
 
-The built-in backend is a supported ready state. A missing Git worktree or an
-unusable vault fails readiness because the review loop cannot safely branch or
-persist its handshake.
+The built-in provider is a supported ready state. A configured provider whose
+CLI is missing, an uninitialized context-core root, a missing Git worktree, or
+an unusable vault fails readiness because the review loop cannot safely branch
+or persist its handshake.
 
 ## Self-mode profiles
 
