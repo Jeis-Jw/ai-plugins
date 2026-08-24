@@ -10,7 +10,8 @@ pause / close(완료). show는 read-only다. 고정 필드 집합 밖의 필드�
 fail-closed로 거부하고 파일을 변경하지 않는다.
 
 pause는 wiki `snapshot save`(SNAP)를 재사용해 고정 필드(완료/잔여/blocker/다음 한
-걸음)를 남긴다. wiki CLI가 해소되지 않으면 snapshot_ref:null로 생략한다(soft dep).
+걸음)를 남긴다. bridge는 설정으로만 켠다(`.studio.yml` `pause-snapshot-cli:` 또는
+`STUDIO_WIKI_CLI`); 미설정이면 snapshot_ref:null로 생략한다(soft dep, 자동 발견 없음).
 
 exit: 0 성공 / 2 usage·스키마 위반 / 3 receipt 없음 / 4 JSON 손상
 """
@@ -21,7 +22,6 @@ import argparse
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -182,34 +182,39 @@ def resume_if_paused(receipt: dict[str, Any]) -> None:
         receipt["snapshot_ref"] = None
 
 
-# ── wiki SNAP bridge (soft dependency) ───────────────────────────────────────
+# ── wiki SNAP bridge (config-selected, soft dependency) ──────────────────────
 
 def resolve_wiki_cli() -> Optional[Path]:
-    """Locate wiki-markdown's wiki_cli.py. Order: STUDIO_WIKI_CLI override
-    ("", "none", "off", "0" disable) → sibling-plugin search → PATH → None."""
+    """wiki_cli.py for the pause SNAP bridge. Explicitly configured only —
+    never auto-discovered: STUDIO_WIKI_CLI env ("", "none", "off", "0"
+    disable) → `.studio.yml` `pause-snapshot-cli:` → None (bridge off)."""
     env = os.environ.get("STUDIO_WIKI_CLI")
     if env is not None:
         if env.strip().lower() in {"", "none", "off", "0"}:
             return None
         candidate = Path(env).expanduser()
         return candidate if candidate.exists() else None
-    here = Path(__file__).resolve()
-    parents = here.parents
-    rel = ("wiki-markdown", "skills", "wiki", "scripts", "wiki_cli.py")
-    candidates: list[Path] = []
-    # monorepo: plugins/studio/scripts → plugins/wiki-markdown/.../wiki_cli.py
-    if len(parents) > 2:
-        candidates.append(parents[2].joinpath(*rel))
-    # installed (versioned dirs): <marketplace>/wiki-markdown/<ver>/skills/.../wiki_cli.py
-    for depth in (2, 3):
-        if len(parents) > depth:
-            candidates.extend(sorted(parents[depth].glob(
-                "wiki-markdown/*/skills/wiki/scripts/wiki_cli.py")))
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    found = shutil.which("wiki_cli") or shutil.which("wiki_cli.py")
-    return Path(found) if found else None
+    configured = _configured_snapshot_cli()
+    if configured is None:
+        return None
+    candidate = Path(configured).expanduser()
+    return candidate if candidate.exists() else None
+
+
+def _configured_snapshot_cli() -> Optional[str]:
+    """Read `pause-snapshot-cli` from ./.studio.yml. Soft dep — any parse
+    problem means 'not configured', never an error."""
+    config_path = Path.cwd() / ".studio.yml"
+    try:
+        text = config_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if line.startswith("pause-snapshot-cli:"):
+            value = line.split(":", 1)[1].strip().strip("\"'")
+            return value or None
+    return None
 
 
 def resolve_vault() -> Path:
@@ -233,7 +238,7 @@ def save_snapshot(receipt: dict[str, Any],
     """SNAP 저장을 시도하고 (snapshot_ref, note)를 돌려준다. soft dep — 절대 raise하지 않는다."""
     cli = resolve_wiki_cli()
     if cli is None:
-        return None, "skipped:wiki_cli_unresolved"
+        return None, "skipped:snapshot_cli_unconfigured"
     vault = resolve_vault()
     if not vault.is_dir():
         return None, "skipped:vault_missing"

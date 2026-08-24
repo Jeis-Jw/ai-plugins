@@ -20,7 +20,7 @@ python3 "${STUDIO_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/cockpit.py" status [--confi
 | source | 읽는 표면 | authority |
 |--------|-----------|-----------|
 | task-worker | `.task-worker/local/bindings/*.json` → binding마다 `definition_artifact.py resume` | live |
-| session-review | `wiki/snapshot/SNAP-*.md` → 스냅샷마다 `session_review.py status` | live |
+| session-review | `session_review.py snapshot-dir`(provider가 `.session-review.yml`로 결정)로 찾은 snapshot마다 `status`; status block 없는 snapshot은 건너뜀 | live |
 | task-github | `.task-github/orchestrate/*.json` 직접 읽기 (network·`gh` 호출 없음) | local-projection |
 | studio | `mission_receipt.py show` (RECEIPT 유닛 산출물) | live |
 

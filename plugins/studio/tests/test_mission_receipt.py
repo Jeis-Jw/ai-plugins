@@ -132,7 +132,7 @@ class MissionReceiptTests(unittest.TestCase):
             "--blocker", "-", "--next-step", "테스트 재개")
         self.assertEqual(result.returncode, 0, result.stderr)
         payload = json.loads(result.stdout)
-        self.assertEqual(payload["snapshot"], "skipped:wiki_cli_unresolved")
+        self.assertEqual(payload["snapshot"], "skipped:snapshot_cli_unconfigured")
         self.assertIsNone(payload["receipt"]["snapshot_ref"])
         self.assertEqual(payload["receipt"]["status"], "paused")
         on_disk = self.read_receipt()
@@ -206,6 +206,56 @@ class MissionReceiptTests(unittest.TestCase):
         self.assertEqual(unknown.returncode, 2)
         self.assertEqual(json.loads(unknown.stdout)["error_code"], "unknown_lane")
         self.assertEqual(self.receipt_path().read_bytes(), before)
+
+
+class PauseSnapshotConfigTests(unittest.TestCase):
+    """The wiki bridge is config-selected — never auto-discovered."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.cwd = Path(tmp.name)
+
+    def run_bare(self, *args: str, extra: dict[str, str] | None = None
+                 ) -> subprocess.CompletedProcess[str]:
+        env = os.environ.copy()
+        env.pop("STUDIO_WIKI_CLI", None)  # no env override, no default disable
+        env.pop("WIKI_VAULT", None)
+        env.update(extra or {})
+        return subprocess.run(
+            [sys.executable, str(SCRIPT), *args],
+            check=False, capture_output=True, text=True, cwd=self.cwd, env=env)
+
+    def test_unconfigured_pause_never_discovers_the_sibling_wiki(self) -> None:
+        # The monorepo has wiki-markdown right next door; without config it must stay unused.
+        (self.cwd / "wiki").mkdir()
+        self.run_bare("init", "m1", "--objective", "x")
+        result = self.run_bare("pause", "m1", "--done", "a", "--next-step", "b")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["snapshot"], "skipped:snapshot_cli_unconfigured")
+        self.assertEqual(list((self.cwd / "wiki").rglob("*.md")), [])
+
+    def test_studio_yml_pause_snapshot_cli_enables_the_bridge(self) -> None:
+        (self.cwd / "wiki").mkdir()
+        (self.cwd / ".studio.yml").write_text(
+            f"pause-snapshot-cli: {WIKI_CLI}  # wiki bridge\n", encoding="utf-8")
+        self.run_bare("init", "m1", "--objective", "SNAP via config")
+        result = self.run_bare("pause", "m1", "--done", "a", "--next-step", "b")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["snapshot"], "saved")
+        self.assertTrue((self.cwd / "wiki" / "snapshot" / "SNAP-studio-mission-m1.md").is_file())
+
+    def test_env_off_beats_configured_cli(self) -> None:
+        (self.cwd / "wiki").mkdir()
+        (self.cwd / ".studio.yml").write_text(
+            f"pause-snapshot-cli: {WIKI_CLI}\n", encoding="utf-8")
+        self.run_bare("init", "m1", "--objective", "x", extra={"STUDIO_WIKI_CLI": "off"})
+        result = self.run_bare("pause", "m1", "--done", "a", "--next-step", "b",
+                               extra={"STUDIO_WIKI_CLI": "off"})
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["snapshot"], "skipped:snapshot_cli_unconfigured")
 
 
 if __name__ == "__main__":

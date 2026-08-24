@@ -28,6 +28,21 @@ STUB_RECEIPT_SHOW = """import json
 print(json.dumps({"ok": True, "mission": "demo-mission", "resume": ["step-1"]}))
 """
 
+# session-review facade stub: `snapshot-dir` prints the provider dir, `status`
+# answers per slug; slugs listed in FAIL exit nonzero (no review status block).
+STUB_SESSION_REVIEW = """import json, sys
+DIR = {snapshot_dir!r}
+STATUS = {status!r}
+if sys.argv[1] == "snapshot-dir":
+    print(DIR)
+elif sys.argv[1] == "status":
+    slug = sys.argv[sys.argv.index("--slug") + 1]
+    if slug not in STATUS:
+        sys.stderr.write("no status block\\n")
+        sys.exit(2)
+    print(json.dumps({{"ok": True, "status": STATUS[slug]}}))
+"""
+
 BINDING = {
     "schema": "task-worker.provider-binding/v1",
     "binding_id": "b-demo",
@@ -183,6 +198,67 @@ class CockpitTests(unittest.TestCase):
             [{"source": "task-github", "action": "task-github:orchestrate", "ref": "#82"}],
         )
 
+    def _write_session_review_stub(self, snapshot_dir: str, status: dict) -> None:
+        write(
+            self.roots["SESSION_REVIEW_ROOT"] / "scripts" / "session_review.py",
+            STUB_SESSION_REVIEW.format(snapshot_dir=snapshot_dir, status=status),
+        )
+
+    def test_session_review_scan_uses_snapshot_dir_not_wiki_layout(self) -> None:
+        # context-core-shaped provider dir: no wiki/, no SNAP- prefix, its own index file.
+        self._write_session_review_stub(
+            "context/snapshot",
+            {"session-review-h": {"phase": "awaiting-review", "round": 1, "next_actor": "reviewer"}},
+        )
+        write(self.workspace / "context" / "snapshot" / "session-review-h.md", "---\nid: x\n---\n")
+        write(self.workspace / "context" / "snapshot" / "snapshot.index.md", "index\n")
+        _, report = self.report()
+        source = self.source(report, "session-review")
+        self.assertEqual(source["state"], "present")
+        self.assertEqual(
+            source["summary"],
+            {"snapshots": [{"slug": "session-review-h", "phase": "awaiting-review",
+                            "round": 1, "next_actor": "reviewer"}]},
+        )
+        self.assertEqual(
+            report["next"],
+            [{"source": "session-review", "action": "session-review:review",
+              "ref": "session-review-h"}],
+        )
+
+    def test_session_review_scan_strips_snap_prefix_and_skips_non_review_snapshots(self) -> None:
+        # wiki-shaped dir: SNAP-<slug>.md naming, snapshot.md index, plus a
+        # pause SNAP without a status block that must be skipped, not an error.
+        self._write_session_review_stub(
+            "wiki/snapshot",
+            {"h": {"phase": "approved", "round": 2, "next_actor": "worker"}},
+        )
+        for name in ("SNAP-h.md", "SNAP-studio-mission-m1.md", "snapshot.md"):
+            write(self.workspace / "wiki" / "snapshot" / name, "x\n")
+        _, report = self.report()
+        source = self.source(report, "session-review")
+        self.assertEqual(source["state"], "present")
+        self.assertEqual([row["slug"] for row in source["summary"]["snapshots"]], ["h"])
+        self.assertEqual(
+            report["next"],
+            [{"source": "session-review", "action": "session-review:complete", "ref": "h"}],
+        )
+
+    def test_session_review_scan_with_only_non_review_snapshots_is_absent(self) -> None:
+        self._write_session_review_stub("wiki/snapshot", {})
+        write(self.workspace / "wiki" / "snapshot" / "SNAP-studio-mission-m1.md", "x\n")
+        _, report = self.report()
+        self.assertEqual(self.source(report, "session-review")["state"], "absent")
+
+    def test_session_review_snapshot_dir_failure_is_source_error(self) -> None:
+        write(
+            self.roots["SESSION_REVIEW_ROOT"] / "scripts" / "session_review.py",
+            "import sys\nsys.exit(2)\n",
+        )
+        _, report = self.report()
+        source = self.source(report, "session-review")
+        self.assertEqual((source["state"], source["reason"]), ("error", "exit_nonzero"))
+
     def test_studio_receipt_show_passes_payload_through(self) -> None:
         write(self.roots["STUDIO_ROOT"] / "scripts" / "mission_receipt.py", STUB_RECEIPT_SHOW)
         _, report = self.report()
@@ -192,6 +268,85 @@ class CockpitTests(unittest.TestCase):
             source["summary"],
             {"ok": True, "mission": "demo-mission", "resume": ["step-1"]},
         )
+
+
+REAL_SESSION_REVIEW = PLUGIN.parent / "session-review"
+
+
+@unittest.skipUnless(
+    (REAL_SESSION_REVIEW / "scripts" / "session_review.py").is_file(),
+    "session-review not present in this checkout",
+)
+class CockpitSessionReviewIntegrationTests(CockpitTests):
+    """Same scan against the real session-review facade (builtin provider)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.roots["SESSION_REVIEW_ROOT"] = REAL_SESSION_REVIEW
+
+    def _seed_episode(self, slug: str) -> None:
+        status = {
+            "phase": "awaiting-review", "active_actor": "none", "lock_since": None,
+            "next_actor": "reviewer", "target_mode": "diff", "target_ref": "b",
+            "base_ref": "a", "responding_to": "a", "round": 1,
+            "flow_mode": "self", "review_strength": "normal", "blocking_count": 0,
+        }
+        env = os.environ.copy()
+        env.update({"SESSION_REVIEW_SNAPSHOT_PROVIDER": "builtin", "WIKI_VAULT": ""})
+        script = REAL_SESSION_REVIEW / "scripts" / "session_review.py"
+        rendered = subprocess.run(
+            [sys.executable, str(script), "render", "--fenced", "--status-json", json.dumps(status)],
+            capture_output=True, text=True, cwd=self.workspace, env=env, check=True)
+        subprocess.run(
+            [sys.executable, str(script), "snapshot-save", "--slug", slug, "--title", "T",
+             "--summary", "s", "--tags", "session-review", "--discussion", rendered.stdout],
+            capture_output=True, text=True, cwd=self.workspace, env=env, check=True)
+
+    def test_real_builtin_episode_shows_up_with_next_action(self) -> None:
+        self._seed_episode("h")
+        _, report = self.report()
+        source = self.source(report, "session-review")
+        self.assertEqual(source["state"], "present", source)
+        self.assertEqual(
+            source["summary"]["snapshots"],
+            [{"slug": "h", "phase": "awaiting-review", "round": 1, "next_actor": "reviewer"}],
+        )
+        self.assertEqual(
+            report["next"],
+            [{"source": "session-review", "action": "session-review:review", "ref": "h"}],
+        )
+
+    # inherited stub tests rerun harmlessly with the real root only when they
+    # write their own SESSION_REVIEW_ROOT stub — which setUp restored, so drop them.
+    def test_session_review_scan_uses_snapshot_dir_not_wiki_layout(self) -> None:  # noqa: D102
+        pass
+
+    def test_session_review_scan_strips_snap_prefix_and_skips_non_review_snapshots(self) -> None:
+        pass
+
+    def test_session_review_scan_with_only_non_review_snapshots_is_absent(self) -> None:
+        pass
+
+    def test_session_review_snapshot_dir_failure_is_source_error(self) -> None:
+        pass
+
+    def test_all_sources_missing_is_absent_everywhere_and_exit_zero(self) -> None:
+        pass
+
+    def test_task_worker_fixture_yields_summary_and_one_next(self) -> None:
+        pass
+
+    def test_failing_adapter_is_error_with_fixed_reason_and_no_prose(self) -> None:
+        pass
+
+    def test_non_json_adapter_output_is_invalid_json_error(self) -> None:
+        pass
+
+    def test_task_github_ledger_is_read_directly_as_local_projection(self) -> None:
+        pass
+
+    def test_studio_receipt_show_passes_payload_through(self) -> None:
+        pass
 
 
 if __name__ == "__main__":

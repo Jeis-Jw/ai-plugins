@@ -238,8 +238,15 @@ def validate_config(config: Any) -> list[dict[str, str]]:
     if not isinstance(config, dict):
         return [_problem("config", "must be a mapping")]
 
-    for key in sorted(set(config) - {"defaults", "execute", "roles", "providers"}):
+    for key in sorted(set(config) - {"defaults", "execute", "roles", "providers", "pause-snapshot-cli"}):
         problems.append(_problem(key, "unknown top-level key"))
+
+    if "pause-snapshot-cli" in config:
+        value = config["pause-snapshot-cli"]
+        if value is not None and (not isinstance(value, str) or not value.strip()):
+            problems.append(
+                _problem("pause-snapshot-cli", "must be a wiki_cli.py path string or null")
+            )
 
     def validate_command(value: Any, where: str) -> str | None:
         if value in (None, ""):

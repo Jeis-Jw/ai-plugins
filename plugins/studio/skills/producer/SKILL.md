@@ -152,8 +152,9 @@ python3 "${STUDIO_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/mission_receipt.py" <subcom
 | 완료 | 최종 보고 직후 | `close <mission_id>` |
 
 - `pause`는 wiki `snapshot save`(SNAP)를 재사용해 고정 필드(완료/잔여/blocker/다음 한
-  걸음)를 남기고 `snapshot_ref`를 기록한다. wiki CLI가 해소되지 않으면
-  `snapshot_ref:null`로 생략한다 — hard dependency가 아니다.
+  걸음)를 남기고 `snapshot_ref`를 기록한다. 이 bridge는 설정으로만 켠다 —
+  `.studio.yml`의 `pause-snapshot-cli: <wiki_cli.py 경로>` 또는 `STUDIO_WIKI_CLI` env.
+  미설정이면 자동 발견 없이 `snapshot_ref:null`로 생략한다 — hard dependency가 아니다.
 - SNAP은 transient다. paused 미션에 lane 전이가 오면 재개(status:active)로 간주해
   폐기하고, `close`에서도 폐기한다. `snapshot_ref`는 null로 돌아간다.
 - 세션 재개는 `show <mission_id>`로 receipt를 읽고 ready_next와 lane의 host agent id에서

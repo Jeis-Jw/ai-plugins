@@ -8,7 +8,7 @@ not a gate, so it always exits 0 (argparse usage errors exit 2).
 Fixed sources (deliberately not configurable — issue #85):
 
     task-worker      definition_artifact.py resume per local binding    live
-    session-review   session_review.py status per SNAP-* snapshot       live
+    session-review   session_review.py snapshot-dir + status per file   live
     task-github      .task-github/orchestrate/*.json direct read        local-projection
     studio           mission_receipt.py show                            live
 
@@ -120,18 +120,52 @@ def _scan_task_worker(root: Path) -> tuple[str, Any, list[dict[str, Any]]]:
     return "present", {"bindings": rows}, next_actions
 
 
+SNAPSHOT_INDEX_FILES = {"snapshot.md", "snapshot.index.md"}  # wiki / context-core area indexes
+
+
+def _run_line(script: Path, args: list[str], cwd: Path) -> str:
+    """Run one adapter CLI that prints a single plain line (not JSON)."""
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(script), *args],
+            capture_output=True,
+            text=True,
+            cwd=str(cwd),
+            timeout=ADAPTER_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise AdapterError(REASON_TIMEOUT) from error
+    if proc.returncode != 0 or not proc.stdout.strip():
+        raise AdapterError(REASON_EXIT_NONZERO)
+    return proc.stdout.strip().splitlines()[0]
+
+
 def _scan_session_review(root: Path) -> tuple[str, Any, list[dict[str, Any]]]:
     script = _sibling_root("SESSION_REVIEW_ROOT", "session-review") / "scripts" / "session_review.py"
-    vault = root / "wiki"
-    snapshot_dir = vault / "snapshot"
-    snapshot_paths = sorted(snapshot_dir.glob("SNAP-*.md")) if snapshot_dir.is_dir() else []
-    if not script.is_file() or not snapshot_paths:
+    if not script.is_file():
+        return "absent", None, []
+    # Ask session-review where its snapshots live — the workspace's
+    # .session-review.yml decides the provider (wiki vault vs context/snapshot),
+    # so cockpit never assumes the wiki layout.
+    snapshot_dir = root / _run_line(script, ["snapshot-dir"], cwd=root)
+    snapshot_paths = (
+        sorted(p for p in snapshot_dir.glob("*.md") if p.name not in SNAPSHOT_INDEX_FILES)
+        if snapshot_dir.is_dir()
+        else []
+    )
+    if not snapshot_paths:
         return "absent", None, []
     rows: list[dict[str, Any]] = []
     next_actions: list[dict[str, Any]] = []
     for path in snapshot_paths:
-        slug = path.stem[len("SNAP-"):]
-        payload = _run_json(script, ["status", "--slug", slug, "--vault", str(vault)], cwd=root)
+        # builtin/wiki-markdown store SNAP-<slug>.md; context-core stores <slug>.md.
+        slug = path.stem[len("SNAP-"):] if path.stem.startswith("SNAP-") else path.stem
+        try:
+            payload = _run_json(script, ["status", "--slug", slug], cwd=root)
+        except AdapterError as error:
+            if error.code == REASON_TIMEOUT:
+                raise
+            continue  # snapshot without a review status block (e.g. a pause SNAP) — not an episode
         status = payload.get("status") or {}
         phase = status.get("phase")
         next_actor = status.get("next_actor")
@@ -145,6 +179,8 @@ def _scan_session_review(root: Path) -> tuple[str, Any, list[dict[str, Any]]]:
         else:
             action = "session-review:review"
         next_actions.append({"source": "session-review", "action": action, "ref": slug})
+    if not rows:
+        return "absent", None, []  # only non-review snapshots in the provider dir
     return "present", {"snapshots": rows}, next_actions
 
 

@@ -31,7 +31,7 @@
     {
       "name": "studio",
       "source": { "source": "local", "path": "./plugins/studio" },
-      "version": "0.15.0",
+      "version": "0.16.0",
       "description": "Description-driven root Producer that selects host-provided skills and coordinates role-based native crews.",
       "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
       "category": "Productivity"

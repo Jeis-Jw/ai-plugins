@@ -104,6 +104,13 @@ providers:
         )
         self.assertEqual(studio_config.validate_config(config), [])
 
+    def test_pause_snapshot_cli_accepts_path_or_null_and_rejects_other(self) -> None:
+        self.assertEqual(
+            studio_config.validate_config({"pause-snapshot-cli": "/x/wiki_cli.py"}), [])
+        self.assertEqual(studio_config.validate_config({"pause-snapshot-cli": None}), [])
+        problems = studio_config.validate_config({"pause-snapshot-cli": 3})
+        self.assertEqual(problems[0]["where"], "pause-snapshot-cli")
+
     def test_unknown_structure_and_non_string_profile_fail(self) -> None:
         unknown = studio_config.parse_yaml_subset(
             """
